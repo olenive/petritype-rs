@@ -23,6 +23,13 @@ use crate::place::ErasedToken;
 /// Which variant an input edge gets is fixed by its
 /// [`EdgeKind`](crate::EdgeKind), so the extractors in [`crate::edge`] may
 /// treat any other variant as a bug rather than a runtime error.
+///
+/// Three of the four variants own their tokens, which is what lets a
+/// [`Firing`](crate::Firing) be `Send` and outlive the call that launched it:
+/// the arguments of a detachable transition are all `ErasedInput<'static>`.
+/// Only [`Borrowed`](ErasedInput::Borrowed) ties a firing to the net, and it
+/// is filled in — after the other places have been drained — for inline
+/// firings alone.
 pub enum ErasedInput<'a> {
     /// One owned token: a [`TakeEdge`](crate::TakeEdge), or the clone a
     /// [`SnapshotEdge`](crate::SnapshotEdge) took of the front token.

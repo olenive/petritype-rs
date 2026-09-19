@@ -43,9 +43,13 @@ pub(crate) struct TransitionSlot {
     /// Output places in declaration order — the order of the slots in what
     /// the body returns.
     pub(crate) outputs: Vec<PlaceId>,
-    /// The erased body. `Option` because firing takes it out of the net for
-    /// the duration of the call: a transition with no body in its slot is in
-    /// flight, which is also what stops it being launched twice.
+    /// The erased body. `Option` because firing takes it out of the net: it
+    /// travels with the [`Firing`](crate::Firing) from
+    /// [`launch`](crate::Net::launch) until
+    /// [`distribute`](crate::Net::distribute) puts it back, and an empty slot
+    /// is the whole of the in-flight mark — there is no register of airborne
+    /// firings, which is also what stops one transition being launched twice
+    /// ([`Net::in_flight`](crate::Net::in_flight)).
     pub(crate) body: Option<ErasedBody>,
     /// The author's extra condition on firing, or `None` for "no condition".
     pub(crate) guard: Option<Guard>,
@@ -107,6 +111,22 @@ pub struct TransitionInfo<'a> {
     /// still `enabled`. What can fire is
     /// [`Net::is_fireable`](crate::Net::is_fireable).
     pub enabled: bool,
+    /// Whether this transition's body is out of its slot right now: it was
+    /// [launched](crate::Net::launch) and the firing has not been
+    /// [distributed](crate::Net::distribute) yet.
+    ///
+    /// An in-flight transition is never fireable, whatever its places hold
+    /// and whatever its switch says. A diagram usually draws it differently —
+    /// this is the transition that is *working*.
+    pub in_flight: bool,
+    /// Whether a firing of this transition can leave the net.
+    ///
+    /// False exactly when some input is a
+    /// [`MutateEdge`](crate::MutateEdge), whose body parameter borrows a
+    /// token where it lies: such a firing runs inline inside
+    /// [`launch`](crate::Net::launch) instead of being handed to a worker.
+    /// Derived from the edge kinds, never asked of the author.
+    pub detachable: bool,
 }
 
 /// The handle [`NetBuilder::transition`](crate::NetBuilder::transition)

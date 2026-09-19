@@ -11,15 +11,25 @@ use crate::ids::{PlaceId, TokenId, TransitionId};
 /// [`Net::label`](crate::Net::label), ...) is the other channel, for the
 /// initial mirror and for detail panels.
 ///
-/// The enum is `#[non_exhaustive]`: match with a `_` arm. This slice only ever
-/// emits [`Added`](Event::Added), [`Removed`](Event::Removed) and
-/// [`Mutated`](Event::Mutated); the firing variants are declared now so that
-/// observers written against this version keep compiling as the engine grows.
+/// The enum is `#[non_exhaustive]`: match with a `_` arm. Everything here is
+/// emitted except [`ParamChanged`](Event::ParamChanged), which arrives with
+/// parameters; the variant is declared now so that observers written against
+/// this version keep compiling as the engine grows.
+///
+/// Which variants a firing produces depends on the path it took, and the two
+/// never mix: [`step`](crate::Net::step) and [`fire`](crate::Net::fire) log
+/// one [`Fired`](Event::Fired), while [`launch`](crate::Net::launch) and
+/// [`distribute`](crate::Net::distribute) log
+/// [`Launched`](Event::Launched) and then [`Distributed`](Event::Distributed),
+/// because time passes in between. Either way a firing's
+/// [`Mutated`](Event::Mutated) events come immediately before the event that
+/// ends it, and a failure ends it with [`Failed`](Event::Failed) instead.
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub enum Event {
     /// One complete firing, consumed and produced together. Emitted by the
-    /// sequential path, where no time passes between the two.
+    /// sequential path — [`step`](crate::Net::step) and
+    /// [`fire`](crate::Net::fire) — where no time passes between the two.
     Fired {
         /// The transition that fired.
         transition: TransitionId,
@@ -28,15 +38,22 @@ pub enum Event {
         /// The tokens written to the output places, and where they went.
         produced: Vec<(PlaceId, TokenId)>,
     },
-    /// Stage one of a concurrent firing: the inputs have left their places and
-    /// the body is airborne.
+    /// Stage one of a staged firing ([`Net::launch`](crate::Net::launch)):
+    /// the inputs have left their places and the body is airborne.
+    ///
+    /// The transition is [in flight](crate::Net::in_flight) from here until
+    /// its [`Distributed`](Event::Distributed) or
+    /// [`Failed`](Event::Failed).
     Launched {
         /// The transition now in flight.
         transition: TransitionId,
         /// The tokens taken out of the input places, and where they were.
         consumed: Vec<(PlaceId, TokenId)>,
     },
-    /// Stage three of a concurrent firing: the body's outputs have landed.
+    /// Stage three of a staged firing
+    /// ([`Net::distribute`](crate::Net::distribute)): the body's outputs have
+    /// landed. What was consumed was reported by the
+    /// [`Launched`](Event::Launched) that opened this firing.
     Distributed {
         /// The transition that completed.
         transition: TransitionId,

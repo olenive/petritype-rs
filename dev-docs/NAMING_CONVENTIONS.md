@@ -55,7 +55,11 @@ rename backlog.
 | stop-without-error limit | `stop_after_n_firings` | `stop_after_n_firings` | — |
 | raise-past-this limit | `error_after_n_firings` | `error_after_n_firings` | — |
 | summary of a run | `RunSummary { quiesced, fired_count }` | `RunSummary { quiesced, n_fired, fired }` | rename `n_fired` |
-| transitions whose bodies are running | `in_flight` | `in_flight` | — |
+| transitions whose bodies are running | `in_flight`, `is_in_flight` | `in_flight` | — |
+| stage-1 result, owns tokens + body | `Firing` (`transition`, `is_pending`, `run`) | the tuple `stage_1_…` returns | — |
+| stage-2 result, carries the body home | `Completed` (`transition`, `succeeded`) | — | — |
+| no `MutateEdge` input, so the body may run elsewhere | `detachable` | — | — |
+| a `Completed` from another net / for a transition not in flight | `NetError::ForeignFiring`, `NetError::NotInFlight` | — | — |
 | switch a transition off/on | `enable`, `disable`, `set_enabled`, `is_enabled` | `Enable`, `Disable` commands | — |
 | append tokens | `extend` (many), `put` (one) | `Extend` | — |
 | replace all tokens | `set_tokens` | `SetTokens` | — |

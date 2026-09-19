@@ -393,13 +393,23 @@ list in declaration order; returning `None` fires nothing this step.
 ### 6.2 Three stages
 
 ```rust
-let firing: Firing = net.launch(t)?;      // stage 1: consume per edge kind; body taken out of the net
-let done: Completed = firing.run();       // stage 2: call the body; catches panics
-net.distribute(done)?;                    // stage 3: assign ids, push to places, put body back, emit event
+let firing: Firing = net.launch(t)?;      // stage 1: consume per edge kind; body taken out of the net; Launched
+let done: Completed = firing.run();       // stage 2: call the body (no-op if launch ran it inline); catches panics (slice 7)
+net.distribute(done)?;                    // stage 3: put body back, check, push to places, Distributed or Failed
+
+firing.transition(); firing.is_pending();   // false when launch ran the body inline (MutateEdge)
+done.transition(); done.succeeded();
+net.in_flight() -> Vec<TransitionId>; net.is_in_flight(t)   // slots whose body is out
 ```
 
 - `Firing` owns the consumed tokens and the body. It does not borrow `Net`.
-  If the transition is *detachable* (no `MutateEdge` inputs), `Firing: Send`.
+  `Firing` and `Completed` are always `Send + Sync`: airborne inputs are
+  owned, and the body is `Send + Sync` by construction.
+- Both carry the net's `NetId`; `distribute` checks it (`ForeignFiring`),
+  then that the transition is in flight (`NotInFlight`), before touching
+  anything. Dropping a `Firing` or `Completed` instead of distributing it
+  strands the transition in flight for good (the body never comes home);
+  both types are `#[must_use]`. See §17.
 - If the transition has a `MutateEdge` input, `launch` runs the body inline
   and returns an already-`Completed` firing. Derived from edge kinds, no user
   flag.
@@ -479,9 +489,9 @@ with the closure). See §17.
 Error types (`thiserror`, all `#[non_exhaustive]`):
 - `BuildError` — from `NetBuilder::build`.
 - `NetError` — API misuse: `NoSuchPlace`, `NoSuchToken`, `TypeMismatch`,
-  `NoSuchTransition`, `NotFireable`, distributing into an undeclared or
-  removed place, snapshot with a `no_clone` place. Wraps `FiringFailed`
-  transparently so that `net.fire(t)` returns one error type.
+  `NoSuchTransition`, `NotFireable`, `ForeignFiring`, `NotInFlight`,
+  snapshot with a `no_clone` place. Wraps `FiringFailed` transparently so
+  that `net.fire(t)` and `net.distribute(done)` return one error type.
 - `FiringFailed` — a body returned `Err` or panicked; carries the transition,
   the boxed error, and whether inputs were restored.
 - `CommandError` — external input rejected (unknown place, type mismatch).
@@ -500,8 +510,8 @@ for a visualiser are O(changes), never O(state).
 #[non_exhaustive]
 pub enum Event {
     Fired       { transition: TransitionId, consumed: Vec<(PlaceId, TokenId)>, produced: Vec<(PlaceId, TokenId)> },
-    Launched    { transition: TransitionId, consumed: Vec<(PlaceId, TokenId)> },   // concurrent
-    Distributed { transition: TransitionId, produced: Vec<(PlaceId, TokenId)> },   // concurrent
+    Launched    { transition: TransitionId, consumed: Vec<(PlaceId, TokenId)> },   // staged path: net.launch
+    Distributed { transition: TransitionId, produced: Vec<(PlaceId, TokenId)> },   // staged path: net.distribute
     Failed      { transition: TransitionId, lost: Vec<(PlaceId, TokenId)>, restored: bool, error: String },
     Added       { place: PlaceId, token: TokenId },      // external extend / put (not seeds: builder seeding is setup, emits nothing)
     Removed     { place: PlaceId, token: TokenId },      // external remove / set_tokens
@@ -511,14 +521,18 @@ pub enum Event {
 }
 ```
 
-`Fired` is emitted by the sequential path; the concurrent path emits
-`Launched` then `Distributed` because time passes between them.
+`Fired` is emitted by the inline path (`step`, `fire`); the staged path
+(`launch` … `distribute`, which is what a concurrent driver uses) emits
+`Launched` then `Distributed` because time passes between them. Per firing
+the order is `Launched`, `Mutated`*, then `Distributed` or `Failed`; the
+`state_counter` therefore moves once more on the staged path than on the
+inline one.
 
 ### 8.2 Read API
 
 ```rust
 net.places()      -> impl Iterator<Item = (PlaceId, PlaceInfo<'_>)>    // by value: name, type_name, count (count is live, never stored)
-net.transitions() -> impl Iterator<Item = (TransitionId, TransitionInfo<'_>)>  // by value: name, enabled, in_flight
+net.transitions() -> impl Iterator<Item = (TransitionId, TransitionInfo<'_>)>  // by value: name, inputs, outputs, enabled, in_flight, detachable
 net.edges()       -> impl Iterator<Item = EdgeInfo>   // from, to, kind
 net.place_named(&str) -> Option<PlaceId>;  net.transition_named(&str) -> Option<TransitionId>
 net.fireable() -> Vec<TransitionId>;  net.is_fireable(t) -> bool;  net.is_enabled(t) -> bool;  net.priority_of(t) -> f64
@@ -724,7 +738,7 @@ Check that the name `petritype` is free on crates.io before publishing.
 | positional slot may hold one / maybe one / many | trait `IntoTokens<T>` for `T`, `Option<T>`, `Vec<T>` |
 | routing by payload type without runtime reflection | trait `RoutedOutput` (`describe` lists `TypeId`s, `emit` pushes into a `RouteSink`); `#[derive(Routed)]` proc macro names `petritype::routing`, so that module is public; table resolved from types at `transition()`, problems reported at `build()`. Cost of marker-based form selection: a return type that fits neither form is blamed on `IntoOutcome`, whose notes therefore describe both forms |
 | body in flight without borrowing the net | `Option<Box<dyn FnMut>>` slot, `Option::take` on launch |
-| bodies on other threads | `Send + 'static` bounds; `Firing: Send` when detachable; `std::thread::scope` |
+| bodies on other threads | `Send + 'static` bounds; `Firing` and `Completed` always `Send` (owned inputs; `MutateEdge` runs inline at `launch`); `std::thread::scope` |
 | no aliasing between tokens | ownership and moves; `Clone` explicit; `Arc` for sharing; `Arc::make_mut` for copy-on-write |
 | forbid unsafe sharing | `Send + Sync` bounds reject `Rc`, `RefCell`, `Cell` |
 | single writer | `&mut Net` |
@@ -743,6 +757,11 @@ Check that the name `petritype` is free on crates.io before publishing.
 - Stamped net id in `PlaceRef`: **done, slice 2** (§4.1).
 - Observability of an inner net used as a transition (§6.6): how a visualiser
   reaches inside. Deferred until the Bevy adapter needs it.
+- Stranded in-flight transitions: a dropped `Firing`/`Completed`, a panicking
+  worker, or a rejected `distribute` (which consumes its argument) loses the
+  body for good. Slice 7's `catch_unwind` inside `Firing::run` removes the
+  main hazard; the misuse rejections could hand the value back
+  (`Err((NetError, Completed))`). Decide when a driver needs it.
 
 ## 18. Implementation plan
 

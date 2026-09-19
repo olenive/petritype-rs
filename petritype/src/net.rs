@@ -114,7 +114,9 @@ impl Net {
     /// assert_eq!(info.name, "Double");
     /// assert_eq!(info.inputs, [(inbox.id(), EdgeKind::Take)]);
     /// assert_eq!(info.outputs, [out.id()]);
-    /// assert!(info.enabled);
+    /// assert!(info.enabled, "the switch is on");
+    /// assert!(!info.in_flight, "nothing has been launched");
+    /// assert!(info.detachable, "no mutating edge, so it may run off the net");
     /// assert_eq!(net.transition_named("Double"), Some(id));
     /// ```
     pub fn transitions(&self) -> impl Iterator<Item = (TransitionId, TransitionInfo<'_>)> {
@@ -126,6 +128,10 @@ impl Net {
                 inputs: &slot.inputs,
                 outputs: &slot.outputs,
                 enabled: slot.enabled,
+                // An empty body slot is the in-flight mark: there is no
+                // register of airborne firings to consult.
+                in_flight: slot.body.is_none(),
+                detachable: slot.detachable,
             };
             (id, info)
         })

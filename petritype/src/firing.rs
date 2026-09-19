@@ -18,29 +18,53 @@
 //! still does); this crate needs the word for the switch, which is the one an
 //! author sets and a visualiser draws.
 //!
-//! # One firing
+//! # One firing, in three stages
 //!
-//! [`Net::step`] scans for the fireable transitions, asks the selector which
-//! one to fire, and fires it inline in three stages:
+//! Every firing goes through the same three stages, and each of them is
+//! public, because the middle one may happen somewhere else entirely:
 //!
-//! 1. **consume** — take the body out of its slot and take the inputs out of
-//!    their places, one argument per input edge ([`consume`]);
-//! 2. **run** — call the body with them;
-//! 3. **distribute** — resolve where every token the body returned belongs,
-//!    mint an id for each, push them into their output places, put the body
-//!    back, and log what happened ([`Net::distribute`]). Resolution happens
-//!    before any write, so a [`Distribution`](crate::Distribution) that names
-//!    a place this transition does not own fails the firing without leaving
-//!    half of it behind.
+//! 1. [`Net::launch`] — take the body out of its slot and take the inputs out
+//!    of their places, one argument per input edge ([`consume`]). The tokens
+//!    are out of their places the moment this returns, which is what resolves
+//!    a conflict between two transitions that wanted the same token, and the
+//!    empty body slot is what "in flight" means. The result is a [`Firing`]:
+//!    it owns the tokens and the body and borrows nothing of the net.
+//! 2. [`Firing::run`] — call the body. A `Firing` is `Send`, so this may
+//!    happen on a worker thread, in a task pool, or a frame later.
+//! 3. [`Net::distribute`] — put the body back, resolve where every token the
+//!    body returned belongs, mint an id for each, push them into their output
+//!    places, and log what happened. Resolution happens before any write, so
+//!    a [`Distribution`](crate::Distribution) that names a place this
+//!    transition does not own fails the firing without leaving half of it
+//!    behind.
 //!
-//! They are three steps of one function here because sequential firing has
-//! nothing to do between them. The split is kept so that the concurrent
-//! slice can publish stage 1 and stage 3 as `launch` and `distribute` with a
-//! `Firing` in between, without rewriting what each stage does.
+//! The net is the only writer throughout: stages one and three take
+//! `&mut Net`, and the stage between them has no net to write to.
+//!
+//! [`Net::step`] and [`Net::fire`] are those same three stages run back to
+//! back, with nothing in between and nothing to hand out — which is why they
+//! report one [`Event::Fired`](crate::Event::Fired) where the staged path
+//! reports an [`Event::Launched`](crate::Event::Launched) and then an
+//! [`Event::Distributed`](crate::Event::Distributed): in the sequential path
+//! no time passes between the two (DESIGN §8.1). Both paths run the same
+//! code; only the reporting differs.
+//!
+//! # Inline firings
+//!
+//! A transition with a [`MutateEdge`](crate::MutateEdge) input is not
+//! *detachable*: its body is handed a borrow into a place, so its firing
+//! cannot leave the net. [`launch`](Net::launch) therefore runs the body
+//! itself and hands back a `Firing` that is already done —
+//! [`is_pending`](Firing::is_pending) is false and [`run`](Firing::run) only
+//! unwraps it. Everything else is the same, including the events and the trip
+//! home through [`distribute`](Net::distribute), so a driver need not care
+//! which kind of transition it is holding.
+
+use std::fmt;
 
 use crate::distribution::DistributionError;
 use crate::edge::EdgeKind;
-use crate::erased::{ErasedInput, ErasedInputs, ErasedOutcome, OutputTarget};
+use crate::erased::{ErasedBody, ErasedInput, ErasedInputs, ErasedOutcome, OutputTarget};
 use crate::error::{FiringFailed, NetError};
 use crate::event::Event;
 use crate::ids::{NetId, PlaceId, TokenId, TransitionId};
@@ -120,6 +144,38 @@ impl Net {
         self.transitions
             .get(transition.0 as usize)
             .is_some_and(|slot| self.slot_is_fireable(slot))
+    }
+
+    /// Every transition whose body is out of its slot, in declaration order.
+    ///
+    /// A transition is in flight from [`launch`](Net::launch) until the
+    /// [`Completed`] it produced comes back to
+    /// [`distribute`](Net::distribute). The list is what a visualiser
+    /// highlights, and what a driver waits on before it decides that a net is
+    /// quiescent: nothing is fireable and nothing is airborne.
+    ///
+    /// [`step`](Net::step) and [`fire`](Net::fire) never leave anything in
+    /// flight — they take all three stages in one call — so this is empty
+    /// unless `launch` was used.
+    pub fn in_flight(&self) -> Vec<TransitionId> {
+        self.transitions
+            .iter()
+            .enumerate()
+            .filter(|(_, slot)| slot.body.is_none())
+            .map(|(index, _)| TransitionId(index as u32))
+            .collect()
+    }
+
+    /// Whether this one transition's body is out of its slot. An unknown id
+    /// is not in flight.
+    ///
+    /// An in-flight transition is never [fireable](Net::fireable), whatever
+    /// its places hold and whatever its switch says, which is what stops one
+    /// transition being launched twice.
+    pub fn is_in_flight(&self, transition: TransitionId) -> bool {
+        self.transitions
+            .get(transition.0 as usize)
+            .is_some_and(|slot| slot.body.is_none())
     }
 
     /// The scan, written once. Takes the slot rather than the id because
@@ -291,12 +347,136 @@ impl Net {
         Ok(())
     }
 
+    // ----- the three stages -----------------------------------------------
+
+    /// Stage one: consumes this transition's inputs and takes its body out of
+    /// the net.
+    ///
+    /// The tokens leave their places *now*, which is the whole point: a peer
+    /// transition that wanted one of them is no longer
+    /// [fireable](Net::fireable), so consuming in the launch sweep is what
+    /// resolves conflicts, with no locks and no in-flight registry (DESIGN
+    /// §6.4). The transition is [in flight](Net::is_in_flight) until the
+    /// [`Completed`] comes back to [`distribute`](Net::distribute), and
+    /// cannot be launched again meanwhile.
+    ///
+    /// Emits [`Event::Launched`] naming the tokens that were taken.
+    ///
+    /// A transition that is not *detachable* — one with a
+    /// [`MutateEdge`](crate::MutateEdge) input, whose body borrows a token
+    /// where it lies — has its body run inside this call, and the `Firing`
+    /// comes back with [`is_pending`](Firing::is_pending) false.
+    ///
+    /// ```
+    /// # use petritype::{NetBuilder, TakeEdge};
+    /// # let mut b = NetBuilder::new();
+    /// # let inbox = b.place::<u32>("Inbox");
+    /// # let out = b.place::<u32>("Out");
+    /// let double = b
+    ///     .transition("Double", (TakeEdge(inbox),), (out,), |n: u32| (n * 2,))
+    ///     .id();
+    /// let mut net = b.build()?;
+    /// net.put(inbox, 21);
+    ///
+    /// let firing = net.launch(double)?;
+    /// assert_eq!(net.count(inbox.id()), 0, "consumed at launch");
+    /// assert_eq!(net.in_flight(), [double]);
+    /// assert!(!net.is_fireable(double), "in flight, so not fireable");
+    ///
+    /// net.distribute(firing.run())?;
+    /// assert!(net.in_flight().is_empty());
+    /// assert_eq!(net.fired_count(), 1);
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// [`NetError::NoSuchTransition`] for an unknown id, and
+    /// [`NetError::NotFireable`] for a transition that cannot fire right now
+    /// — including one that is already in flight. The net is untouched in
+    /// both cases.
+    ///
+    /// # Panics
+    ///
+    /// As [`step`](Net::step): a panicking body is not caught yet. An inline
+    /// firing panics inside this call.
+    #[must_use = "a Firing that is dropped instead of distributed strands its transition in \
+                  flight for good: the body never comes home"]
+    pub fn launch(&mut self, transition: TransitionId) -> Result<Firing, NetError> {
+        let slot = self
+            .transitions
+            .get(transition.0 as usize)
+            .ok_or(NetError::NoSuchTransition { transition })?;
+        if !self.slot_is_fireable(slot) {
+            return Err(NetError::NotFireable { transition });
+        }
+        Ok(self.launch_now(transition, Report::Staged))
+    }
+
+    /// Stage three: puts the body back and writes what it produced.
+    ///
+    /// Atomic: every target place is resolved and checked before any token is
+    /// written, so a firing that cannot be applied writes nothing at all. The
+    /// body goes home first of all, on the failing path too, so that a
+    /// failure never strands the transition in flight.
+    ///
+    /// Emits the [`Mutated`](Event::Mutated) events of this firing's
+    /// [`MutateEdge`](crate::MutateEdge) inputs, then
+    /// [`Event::Distributed`] naming the tokens that landed — or
+    /// [`Event::Failed`] if the body failed — and adds one to
+    /// [`fired_count`](Net::fired_count) on success.
+    ///
+    /// # Errors
+    ///
+    /// [`NetError::ForeignFiring`] if the `Completed` was launched by another
+    /// net, [`NetError::NotInFlight`] if this net's transition is not in
+    /// flight, and [`NetError::FiringFailed`] if the body returned `Err`.
+    /// The net is untouched in the first two cases; in the third it is
+    /// consistent, with the firing's inputs gone (DESIGN §7).
+    ///
+    /// The `Completed` is consumed whichever way this goes, so a rejected one
+    /// takes its body with it: the two rejections above are misuse, and the
+    /// net they belong to keeps that transition in flight.
+    pub fn distribute(&mut self, completed: Completed) -> Result<(), NetError> {
+        // The stamp first, exactly as a `PlaceRef` is checked before it is
+        // used as an index: a `TransitionId` from another net would otherwise
+        // name whatever transition sits at that index here.
+        if completed.net != self.id {
+            return Err(NetError::ForeignFiring {
+                transition: completed.transition,
+                from: completed.net,
+            });
+        }
+        if !self.is_in_flight(completed.transition) {
+            return Err(NetError::NotInFlight {
+                transition: completed.transition,
+            });
+        }
+        self.distribute_completed(completed)?;
+        Ok(())
+    }
+
+    // ----- the stages, written once ---------------------------------------
+
     /// One firing, all three stages, with fireability already established.
     fn fire_now(&mut self, transition: TransitionId) -> Result<(), FiringFailed> {
+        let completed = self.launch_now(transition, Report::Fired).run();
+        self.distribute_completed(completed)
+    }
+
+    /// Stage one, with fireability already established.
+    ///
+    /// `report` is how this firing will describe itself: one
+    /// [`Fired`](Event::Fired) at the end for the sequential path, or
+    /// [`Launched`](Event::Launched) here and
+    /// [`Distributed`](Event::Distributed) at stage three for the staged one.
+    /// It travels with the firing, so the two paths differ in nothing but
+    /// what they log.
+    fn launch_now(&mut self, transition: TransitionId, report: Report) -> Firing {
         let index = transition.0 as usize;
-        // Out of its slot for the duration of the call: the body may not
-        // borrow the transition list while it runs, and an empty slot is what
-        // "in flight" means.
+        // Out of its slot until stage three: the body may not borrow the
+        // transition list while it runs, and an empty slot is what "in
+        // flight" means.
         let mut body = self.transitions[index]
             .body
             .take()
@@ -304,7 +484,7 @@ impl Net {
 
         let mut consumed = Vec::new();
         let mut mutated = Vec::new();
-        let outcome = {
+        let state = {
             // Field by field, so that the input places can be emptied while
             // the edge list is read out of the transition beside them.
             let Net {
@@ -312,34 +492,64 @@ impl Net {
                 transitions,
                 ..
             } = &mut *self;
-            // Stage 1, and stage 2 in the same scope: a `MutateEdge` hands
-            // the body a borrow into a place, which has to outlive the call
-            // and end before stage 3 writes anything.
-            let args = consume(
-                places,
-                &transitions[index].inputs,
-                &mut consumed,
-                &mut mutated,
-            );
-            body(ErasedInputs::new(args))
+            let inputs = &transitions[index].inputs;
+            let args = consume(places, inputs, &mut consumed, &mut mutated);
+            if transitions[index].detachable {
+                Stage::Airborne { body, args }
+            } else {
+                // Stage two, here and now: a `MutateEdge` hands the body a
+                // borrow into a place, which may neither travel with the
+                // `Firing` nor still be alive when stage three writes.
+                let args = borrow_mutated(places, inputs, args);
+                let outcome = body(ErasedInputs::new(args));
+                Stage::Ran { body, outcome }
+            }
         };
 
+        if report == Report::Staged {
+            self.emit(Event::Launched {
+                transition,
+                consumed: consumed.clone(),
+            });
+        }
+        Firing {
+            net: self.id,
+            transition,
+            consumed,
+            mutated,
+            report,
+            state,
+        }
+    }
+
+    /// Stage three, with the stamp and the in-flight slot already checked.
+    fn distribute_completed(&mut self, completed: Completed) -> Result<(), FiringFailed> {
+        let Completed {
+            transition,
+            consumed,
+            mutated,
+            report,
+            body,
+            outcome,
+            ..
+        } = completed;
         // Home before anything else can go wrong, on the failing path too:
         // DESIGN §7 promises a consistent net after a failure, and a body
         // left out of its slot would strand the transition in flight.
-        self.transitions[index].body = Some(body);
-        self.distribute(transition, outcome, consumed, mutated)
+        self.transitions[transition.0 as usize].body = Some(body);
+        self.distribute_outcome(transition, outcome, consumed, mutated, report)
     }
 
-    /// Stage 3: place what the body produced, or account for its failure.
+    /// Places what the body produced, or accounts for its failure.
     ///
     /// `consumed` and `mutated` are stage one's records, in edge order.
-    fn distribute(
+    fn distribute_outcome(
         &mut self,
         transition: TransitionId,
         outcome: ErasedOutcome,
         consumed: Vec<(PlaceId, TokenId)>,
         mutated: Vec<(PlaceId, TokenId)>,
+        report: Report,
     ) -> Result<(), FiringFailed> {
         let produced = match outcome {
             ErasedOutcome::Ok(tokens) => tokens,
@@ -417,10 +627,19 @@ impl Net {
         }
 
         self.emit_mutations(&mutated);
-        self.emit(Event::Fired {
-            transition,
-            consumed,
-            produced: landed,
+        self.emit(match report {
+            // The sequential path: consumed and produced together, because
+            // nothing happened between them.
+            Report::Fired => Event::Fired {
+                transition,
+                consumed,
+                produced: landed,
+            },
+            // The staged path already said what was consumed, at launch.
+            Report::Staged => Event::Distributed {
+                transition,
+                produced: landed,
+            },
         });
         self.fired_count += 1;
         Ok(())
@@ -541,6 +760,213 @@ impl Net {
     }
 }
 
+/// A firing that has left the net: stage one done, the body in hand.
+///
+/// A `Firing` owns the tokens its transition consumed and the body that will
+/// turn them into outputs, and borrows nothing of the net — so it is `Send`,
+/// and stage two may happen on a worker thread, in a task pool, or a frame
+/// later while the net goes on firing other transitions. The net meanwhile
+/// knows only that this transition's body slot is empty:
+/// [`Net::is_in_flight`].
+///
+/// [`run`](Firing::run) turns it into a [`Completed`], which
+/// [`Net::distribute`] hands back to the net.
+///
+/// # The body has to come home
+///
+/// Dropping a `Firing`, or the [`Completed`] it becomes, **strands its
+/// transition in flight for good**: the body is inside the value that was
+/// dropped, the slot stays empty, and the transition is never
+/// [fireable](Net::fireable) again. The consumed tokens go with it. There is
+/// no recovery API in this version, so a driver that can drop a firing —
+/// because a worker panicked, or a channel was closed — should treat that as
+/// a failure of the whole run.
+#[must_use = "a Firing that is dropped instead of run and distributed strands its transition in \
+              flight for good: the body never comes home"]
+pub struct Firing {
+    /// The net that launched this firing, checked by
+    /// [`distribute`](Net::distribute) before anything else.
+    net: NetId,
+    /// The transition whose body is in here.
+    transition: TransitionId,
+    /// What stage one took out of the input places, in edge order.
+    consumed: Vec<(PlaceId, TokenId)>,
+    /// The tokens a [`MutateEdge`](crate::MutateEdge) borrowed, in edge
+    /// order. They never left their places; stage three reports them.
+    mutated: Vec<(PlaceId, TokenId)>,
+    /// Which events this firing reports, decided by the path that launched
+    /// it.
+    report: Report,
+    /// How far along this firing is.
+    state: Stage,
+}
+
+/// What a [`Firing`] is carrying: work still to do, or an answer already.
+enum Stage {
+    /// A detachable transition: the body and its owned arguments, waiting for
+    /// [`Firing::run`]. The arguments are `'static` — only whole tokens and
+    /// clones of them, never a borrow into a place — which is what makes a
+    /// `Firing` `Send`.
+    Airborne {
+        body: ErasedBody,
+        args: Vec<ErasedInput<'static>>,
+    },
+    /// A transition that was not detachable, so
+    /// [`launch`](Net::launch) already called its body inline; `run` only
+    /// unwraps this.
+    Ran {
+        body: ErasedBody,
+        outcome: ErasedOutcome,
+    },
+}
+
+/// Which events one firing reports: the difference between the sequential
+/// path and the staged one, and the only difference between them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Report {
+    /// [`step`](Net::step) and [`fire`](Net::fire): one
+    /// [`Event::Fired`](crate::Event::Fired) at the end.
+    Fired,
+    /// [`launch`](Net::launch) and [`distribute`](Net::distribute):
+    /// [`Launched`](crate::Event::Launched) when the tokens leave and
+    /// [`Distributed`](crate::Event::Distributed) when they land, because
+    /// time passes in between.
+    Staged,
+}
+
+impl Firing {
+    /// The transition this firing belongs to — the one that is in flight
+    /// until this firing is distributed.
+    pub fn transition(&self) -> TransitionId {
+        self.transition
+    }
+
+    /// Whether [`run`](Firing::run) still has work to do.
+    ///
+    /// False when [`launch`](Net::launch) ran the body inline, which it does
+    /// for a transition that is not detachable: one with a
+    /// [`MutateEdge`](crate::MutateEdge) input, whose body borrows a token
+    /// where it lies. Such a firing must not be sent to a worker — there is
+    /// nothing for the worker to do, and the mutation has already happened —
+    /// so a driver sends the pending ones and runs the rest on the spot.
+    pub fn is_pending(&self) -> bool {
+        matches!(self.state, Stage::Airborne { .. })
+    }
+
+    /// Stage two: calls the body.
+    ///
+    /// This is the one stage with no net in sight, which is exactly why it is
+    /// its own step: it may run anywhere, for as long as it likes. A firing
+    /// that was already run inline is unwrapped unchanged.
+    ///
+    /// # Panics
+    ///
+    /// A panicking body is not caught yet: the panic unwinds through `run`
+    /// and the body is lost with the firing, stranding its transition in
+    /// flight. The slice that adds `catch_unwind` turns that into an ordinary
+    /// [`FiringFailed`] with the body back in its slot.
+    pub fn run(self) -> Completed {
+        let Firing {
+            net,
+            transition,
+            consumed,
+            mutated,
+            report,
+            state,
+        } = self;
+        let (body, outcome) = match state {
+            Stage::Airborne { mut body, args } => {
+                let outcome = body(ErasedInputs::new(args));
+                (body, outcome)
+            }
+            Stage::Ran { body, outcome } => (body, outcome),
+        };
+        Completed {
+            net,
+            transition,
+            consumed,
+            mutated,
+            report,
+            body,
+            outcome,
+        }
+    }
+}
+
+/// A firing whose body has run: stage two done, the outputs and the body
+/// waiting to go home.
+///
+/// `Send`, like the [`Firing`] it came from, so it can be posted back to the
+/// thread that holds the net — an `mpsc` channel of `Completed` is what a
+/// concurrent driver waits on. Hand it to [`Net::distribute`], which is the
+/// only thing that can be done with it: the net is the single writer, and
+/// everything this value knows about where the tokens go is the net's to
+/// resolve.
+///
+/// Dropping one strands its transition in flight for good, as dropping a
+/// [`Firing`] does.
+#[must_use = "a Completed that is dropped instead of distributed strands its transition in \
+              flight for good: the body never comes home"]
+pub struct Completed {
+    /// The net that launched this firing.
+    net: NetId,
+    /// The transition whose body ran.
+    transition: TransitionId,
+    /// What stage one took out of the input places, in edge order.
+    consumed: Vec<(PlaceId, TokenId)>,
+    /// The tokens a [`MutateEdge`](crate::MutateEdge) borrowed, in edge
+    /// order.
+    mutated: Vec<(PlaceId, TokenId)>,
+    /// Which events this firing reports.
+    report: Report,
+    /// On its way back to its slot.
+    body: ErasedBody,
+    /// What the body produced, or how it failed.
+    outcome: ErasedOutcome,
+}
+
+impl Completed {
+    /// The transition whose body ran — the one that is in flight until this
+    /// is distributed.
+    pub fn transition(&self) -> TransitionId {
+        self.transition
+    }
+
+    /// Whether the body produced outputs rather than an error.
+    ///
+    /// A driver may look before it distributes, to decide what to do about a
+    /// failure. It still has to distribute: that is what puts the body back
+    /// and logs the [`Failed`](crate::Event::Failed) event, and it is where
+    /// the failure is reported as [`FiringFailed`].
+    pub fn succeeded(&self) -> bool {
+        matches!(self.outcome, ErasedOutcome::Ok(_))
+    }
+}
+
+impl fmt::Debug for Firing {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Firing")
+            .field("transition", &self.transition)
+            .field("net", &self.net)
+            .field("consumed", &self.consumed)
+            // The body is a closure and the outcome may hold tokens of any
+            // type: how far along the firing is, is what a reader can use.
+            .field("pending", &self.is_pending())
+            .finish_non_exhaustive()
+    }
+}
+
+impl fmt::Debug for Completed {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Completed")
+            .field("transition", &self.transition)
+            .field("net", &self.net)
+            .field("consumed", &self.consumed)
+            .field("succeeded", &self.succeeded())
+            .finish_non_exhaustive()
+    }
+}
+
 /// The selector a net uses until [`Net::set_selector`] replaces it: highest
 /// priority wins, ties go to the transition declared first.
 ///
@@ -557,27 +983,29 @@ pub(crate) fn default_selector(net: &Net, fireable: &[TransitionId]) -> Option<T
     best.map(|(transition, _)| transition)
 }
 
-/// Stage 1: one argument per input edge, in declaration order, taking out of
-/// the places whatever each edge kind takes.
+/// Stage one: one argument per input edge, in declaration order, taking out
+/// of the places whatever each edge kind takes.
 ///
 /// A free function over the places alone, rather than a method, because that
-/// is the shape the concurrent slice needs: consuming is what resolves
-/// conflicts between transitions, and it must be doable while the rest of the
-/// net is borrowed elsewhere.
-fn consume<'a>(
-    places: &'a mut [PlaceSlot],
+/// is the shape the staged path needs: consuming is what resolves conflicts
+/// between transitions, and it must be doable while the rest of the net is
+/// borrowed beside it.
+///
+/// Every argument it produces is **owned** — `ErasedInput<'static>` — which
+/// is what lets a [`Firing`] be `Send` and outlive the call that made it. A
+/// [`MutateEdge`](crate::MutateEdge) has no owned argument to give, since its
+/// token stays in its place, so it leaves an [`ErasedInput::Taken`] behind
+/// and is recorded in `mutated`; [`borrow_mutated`] fills those positions in,
+/// for the inline path that is the only one allowed to hold such a borrow.
+fn consume(
+    places: &mut [PlaceSlot],
     inputs: &[(PlaceId, EdgeKind)],
     consumed: &mut Vec<(PlaceId, TokenId)>,
     mutated: &mut Vec<(PlaceId, TokenId)>,
-) -> Vec<ErasedInput<'a>> {
+) -> Vec<ErasedInput<'static>> {
     let mut args = Vec::with_capacity(inputs.len());
-    // Where the mutating edges are: the argument each fills and the place it
-    // borrows. They are filled in a second pass, because a `&mut` into a
-    // place may not be held while the pass that drains the other places is
-    // still running.
-    let mut borrows: Vec<(usize, usize)> = Vec::new();
 
-    for (position, &(place, kind)) in inputs.iter().enumerate() {
+    for &(place, kind) in inputs {
         let index = place.0 as usize;
         match kind {
             EdgeKind::Take => {
@@ -608,29 +1036,113 @@ fn consume<'a>(
             EdgeKind::Mutate => {
                 let (token, _) = places[index].tokens.front().expect(NON_EMPTY);
                 mutated.push((place, *token));
-                borrows.push((position, index));
-                // Overwritten by the pass below; a body never sees it.
+                // Overwritten by `borrow_mutated`, which is the only caller
+                // allowed to hold the borrow; a body never sees this.
                 args.push(ErasedInput::Taken);
             }
         }
     }
 
-    if !borrows.is_empty() {
-        // `slice::get_disjoint_mut` wants its indices as a fixed-size array
-        // and a transition's mutating edges are only counted at run time, so
-        // the same job is done with `iter_mut`: its items borrow the slice
-        // rather than the iterator, so every borrow this pass takes may be
-        // alive at once. That they are disjoint is
-        // `BuildError::DuplicateInputPlace`'s doing — no two input edges of
-        // one transition name the same place.
-        for (index, slot) in places.iter_mut().enumerate() {
-            let Some(&(position, _)) = borrows.iter().find(|&&(_, place)| place == index) else {
-                continue;
-            };
-            let (_, value) = slot.tokens.front_mut().expect(NON_EMPTY);
-            args[position] = ErasedInput::Borrowed(value);
-        }
+    args
+}
+
+/// Fills in the arguments of the mutating edges: the front token of each
+/// place, borrowed where it lies.
+///
+/// The second half of stage one, and inline firing's alone. A `&mut` into a
+/// place may not be taken while [`consume`] is still draining the other
+/// places, and may not outlive the call to the body, so it is taken here,
+/// between the two, by the one path that calls the body inside the net.
+///
+/// `args` comes in owned and goes out borrowing `places` for `'a`: an
+/// `ErasedInput<'static>` is an `ErasedInput<'a>` for any shorter `'a`, which
+/// is what the annotation below says.
+fn borrow_mutated<'a>(
+    places: &'a mut [PlaceSlot],
+    inputs: &[(PlaceId, EdgeKind)],
+    args: Vec<ErasedInput<'static>>,
+) -> Vec<ErasedInput<'a>> {
+    let mut args: Vec<ErasedInput<'a>> = args;
+    // Where the mutating edges are: the argument each fills and the place it
+    // borrows.
+    let borrows: Vec<(usize, usize)> = inputs
+        .iter()
+        .enumerate()
+        .filter(|(_, (_, kind))| *kind == EdgeKind::Mutate)
+        .map(|(position, (place, _))| (position, place.0 as usize))
+        .collect();
+    if borrows.is_empty() {
+        return args;
+    }
+
+    // `slice::get_disjoint_mut` wants its indices as a fixed-size array and a
+    // transition's mutating edges are only counted at run time, so the same
+    // job is done with `iter_mut`: its items borrow the slice rather than the
+    // iterator, so every borrow this pass takes may be alive at once. That
+    // they are disjoint is `BuildError::DuplicateInputPlace`'s doing — no two
+    // input edges of one transition name the same place.
+    for (index, slot) in places.iter_mut().enumerate() {
+        let Some(&(position, _)) = borrows.iter().find(|&&(_, place)| place == index) else {
+            continue;
+        };
+        let (_, value) = slot.tokens.front_mut().expect(NON_EMPTY);
+        args[position] = ErasedInput::Borrowed(value);
     }
 
     args
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::edge::TakeEdge;
+    use crate::erased::ErasedInputs;
+    use crate::{Event, NetBuilder};
+
+    /// [`NetError::NotInFlight`] is a guard the safe API cannot reach: a
+    /// [`Completed`] is minted only by [`Net::launch`], which leaves its
+    /// transition in flight, and [`Net::distribute`] consumes the one it is
+    /// given — so there is never a second one to hand over. It is exercised
+    /// from in here, where a `Completed` for a transition whose body is back
+    /// home can be built by hand.
+    #[test]
+    fn distributing_a_transition_that_is_not_in_flight_is_refused() {
+        let mut b = NetBuilder::new();
+        let inbox = b.place::<u32>("Inbox");
+        let out = b.place::<u32>("Out");
+        b.seed(inbox, [1]);
+        let copy = b
+            .transition("Copy", (TakeEdge(inbox),), (out,), |n: u32| (n,))
+            .id();
+        let mut net = b.build().expect("a one-transition net");
+
+        let firing = net.launch(copy).expect("fireable");
+        net.distribute(firing.run()).expect("in flight");
+        assert!(net.in_flight().is_empty(), "the body is back in its slot");
+
+        let ghost = Completed {
+            net: net.id(),
+            transition: copy,
+            consumed: Vec::new(),
+            mutated: Vec::new(),
+            report: Report::Staged,
+            body: Box::new(|_: ErasedInputs<'_>| ErasedOutcome::Ok(Vec::new())),
+            outcome: ErasedOutcome::Ok(Vec::new()),
+        };
+        assert!(matches!(
+            net.distribute(ghost),
+            Err(NetError::NotInFlight { transition }) if transition == copy
+        ));
+
+        assert_eq!(net.fired_count(), 1, "the rejected firing changed nothing");
+        assert_eq!(net.count(out.id()), 1);
+        let events: Vec<Event> = net.drain_events().collect();
+        assert!(
+            matches!(
+                events[..],
+                [Event::Launched { .. }, Event::Distributed { .. }]
+            ),
+            "the one firing that did happen, and nothing since: {events:?}"
+        );
+    }
 }

@@ -7,11 +7,11 @@
 //! rather than O(state).
 //!
 //! This version covers *declaring* a net — places, tokens, transitions and
-//! the edges between them — reading it back, and firing it one transition at
-//! a time. The wiring below is checked when it compiles. A body may return
-//! its outputs as a tuple, slot by slot, as one value to be [routed to the
-//! output place of its type](routing), or as a [`Distribution`] of
-//! `(place, token)` pairs it names itself — which
+//! the edges between them — reading it back, and firing it, one transition at
+//! a time or several at once. The wiring below is checked when it compiles. A
+//! body may return its outputs as a tuple, slot by slot, as one value to be
+//! [routed to the output place of its type](routing), or as a
+//! [`Distribution`] of `(place, token)` pairs it names itself — which
 //! [`output_distribution`](OutputDistribution::output_distribution) lets an
 //! author write beside the net, leaving the domain function unchanged.
 //!
@@ -104,6 +104,53 @@
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 //!
+//! # Firing in three stages
+//!
+//! The [`step`](Net::step) above is three stages in one call. They are public
+//! one at a time as well, because the middle one need not happen where the
+//! net is:
+//!
+//! ```
+//! use petritype::{NetBuilder, TakeEdge};
+//!
+//! let mut b = NetBuilder::new();
+//! let inbox = b.place::<u32>("Inbox");
+//! let out = b.place::<u32>("Out");
+//! b.seed(inbox, [21]);
+//! let double = b
+//!     .transition("Double", (TakeEdge(inbox),), (out,), |n: u32| (n * 2,))
+//!     .id();
+//! let mut net = b.build()?;
+//!
+//! // Stage 1: the token leaves Inbox now, and the body leaves its slot.
+//! let firing = net.launch(double)?;
+//! assert_eq!(net.count(inbox.id()), 0);
+//! assert_eq!(net.in_flight(), [double]);
+//!
+//! // Stage 2: wherever you like. A `Firing` owns its tokens and its body.
+//! let completed = std::thread::spawn(move || firing.run())
+//!     .join()
+//!     .expect("the body did not panic");
+//!
+//! // Stage 3: the net writes, as it is the only thing that ever does.
+//! net.distribute(completed)?;
+//! assert!(net.in_flight().is_empty());
+//! let token = net.tokens(out.id()).next().expect("one token landed").0;
+//! assert_eq!(net.token::<u32>(out.id(), token), Some(&42));
+//! # Ok::<(), Box<dyn std::error::Error>>(())
+//! ```
+//!
+//! The split exists because a body may be slow, and may want a thread, a task
+//! pool or a later frame: [`Firing`] and [`Completed`] are `Send` and own
+//! everything they need, so stage two can run anywhere while the net remains
+//! the single writer — nothing but [`launch`](Net::launch) and
+//! [`distribute`](Net::distribute) touches a place. Taking the tokens at
+//! launch is also what resolves conflicts: a peer transition that wanted one
+//! of them is simply not fireable any more, with no locks anywhere. A
+//! transition whose body borrows a token in its place ([`MutateEdge`]) cannot
+//! leave the net, so `launch` runs it inline and hands back a `Firing` that
+//! is already done — a driver can then treat every transition alike.
+//!
 //! # Where things are
 //!
 //! - [`NetBuilder`] declares places and transitions and produces a [`Net`].
@@ -137,6 +184,11 @@
 //! - [`Net::fireable`] and [`Net::is_fireable`] say what could fire now;
 //!   [`Net::step`] fires one transition, [`Net::fire`] fires a named one,
 //!   and a body that returns `Err` gives [`FiringFailed`].
+//! - [`Net::launch`], [`Firing::run`] and [`Net::distribute`] are those same
+//!   three stages taken one at a time, with [`Net::in_flight`] and
+//!   [`Net::is_in_flight`] naming the transitions whose bodies are out.
+//!   Dropping a [`Firing`] or a [`Completed`] instead of distributing it
+//!   strands its transition in flight for good.
 //! - [`TransitionBuilder::guard`] and [`TransitionBuilder::priority`] decide
 //!   what is fireable and which of the fireable ones the default
 //!   [`Selector`] picks; [`Net::set_selector`] replaces that choice, and
@@ -175,7 +227,7 @@ pub use distribution::{
 pub use edge::{EdgeKind, InputEdge, InputEdges, MutateEdge, SnapshotEdge, TakeAllEdge, TakeEdge};
 pub use error::{BuildError, FiringFailed, NetError};
 pub use event::Event;
-pub use firing::Selector;
+pub use firing::{Completed, Firing, Selector};
 pub use ids::{NetId, PlaceId, PlaceRef, TokenId, TransitionId};
 pub use net::{Net, PlaceInfo};
 pub use routing::{Either, RoutedOutput};

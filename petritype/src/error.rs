@@ -1,6 +1,6 @@
 //! Error types. All are `#[non_exhaustive]`: match with a `_` arm.
 
-use crate::ids::{PlaceId, TokenId, TransitionId};
+use crate::ids::{NetId, PlaceId, TokenId, TransitionId};
 
 /// A net that cannot be built, returned by
 /// [`NetBuilder::build`](crate::NetBuilder::build).
@@ -153,6 +153,38 @@ pub enum NetError {
         expected: &'static str,
         /// The type that was offered.
         found: &'static str,
+    },
+    /// [`Net::distribute`](crate::Net::distribute) was handed a
+    /// [`Completed`](crate::Completed) that another net launched.
+    ///
+    /// Checked before anything else, because a
+    /// [`TransitionId`] means nothing outside its own net: every net numbers
+    /// its transitions from zero, so the id would otherwise name whichever
+    /// transition happens to sit at that index here. The net is untouched —
+    /// and so is the net that launched the firing, whose transition stays in
+    /// flight, since the `Completed` was consumed by the call.
+    #[error("transition {transition:?} was launched by net {from:?}, not this one")]
+    ForeignFiring {
+        /// The transition the firing belongs to, in the net that launched it.
+        transition: TransitionId,
+        /// That net.
+        from: NetId,
+    },
+    /// [`Net::distribute`](crate::Net::distribute) was handed a
+    /// [`Completed`](crate::Completed) for a transition whose body is already
+    /// in its slot.
+    ///
+    /// A transition is in flight from
+    /// [`launch`](crate::Net::launch) until the firing it produced is
+    /// distributed ([`Net::in_flight`](crate::Net::in_flight)), and a
+    /// `Completed` is consumed by the call that distributes it, so the safe
+    /// API gives no way to distribute one twice. This is the guard that keeps
+    /// it that way: nothing is written, and the outputs of the rejected
+    /// firing are dropped with it.
+    #[error("transition {transition:?} is not in flight")]
+    NotInFlight {
+        /// The transition that was not airborne.
+        transition: TransitionId,
     },
     /// A firing this call started failed. [`Net::fire`](crate::Net::fire)
     /// reports a body's failure this way; [`Net::step`](crate::Net::step)

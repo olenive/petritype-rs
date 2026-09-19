@@ -1,0 +1,287 @@
+//! Declaring a net. The builder is the only place where the concrete token
+//! type of each place is still known, so it is where the per-place vtable is
+//! filled in.
+
+use std::any::{TypeId, type_name};
+use std::collections::{HashSet, VecDeque};
+use std::fmt;
+
+use crate::error::BuildError;
+use crate::ids::{PlaceId, PlaceRef};
+use crate::net::Net;
+use crate::place::{CloneFn, DebugFn, ErasedToken, PlaceMeta, PlaceSlot, clone_of, debug_of};
+
+/// How many characters a label keeps by default, as in Python petritype.
+const DEFAULT_LABEL_LIMIT: usize = 100;
+
+/// Declares the places of a net and builds it.
+///
+/// ```
+/// use petritype::NetBuilder;
+///
+/// #[derive(Debug, Clone, PartialEq)]
+/// struct Parcel { id: u32 }
+///
+/// let mut b = NetBuilder::new();
+/// let inbox = b.place::<Parcel>("Inbox");     // PlaceRef<Parcel>
+/// b.seed(inbox, [Parcel { id: 1 }]);
+/// let net = b.build()?;
+///
+/// assert_eq!(net.count(inbox.id()), 1);
+/// # Ok::<(), petritype::BuildError>(())
+/// ```
+///
+/// Places do not chain: `place` returns the typed handle you need for
+/// everything else, and the few per-place options take that handle
+/// ([`seed`](NetBuilder::seed), and `serializable` with the `serde`
+/// feature).
+pub struct NetBuilder {
+    /// Places in declaration order; the index is the [`PlaceId`].
+    places: Vec<PlaceSlot>,
+    /// Initial tokens per place, parallel to `places`. They are erased values
+    /// without ids: ids are minted by [`build`](NetBuilder::build) so that a
+    /// half-built net never hands out ids the net will not have.
+    seeds: Vec<Vec<ErasedToken>>,
+    label_limit: usize,
+}
+
+impl NetBuilder {
+    /// A builder with no places and the default label limit of 100
+    /// characters.
+    pub fn new() -> Self {
+        NetBuilder {
+            places: Vec::new(),
+            seeds: Vec::new(),
+            label_limit: DEFAULT_LABEL_LIMIT,
+        }
+    }
+
+    /// Declares a place holding tokens of type `T`.
+    ///
+    /// The bound is the universal token bound: `Debug` for labels, `Clone` for
+    /// snapshots (never called unless something asks for one), `Send + Sync`
+    /// because bodies may run on another thread and the net may live in a
+    /// `Resource`, and `'static` because tokens are owned values, not borrows.
+    /// A type that cannot be cloned goes in a
+    /// [`place_no_clone`](NetBuilder::place_no_clone).
+    ///
+    /// The returned [`PlaceRef<T>`] is `Copy`: hold it in a local and use it
+    /// as often as you like.
+    pub fn place<T>(&mut self, name: impl Into<String>) -> PlaceRef<T>
+    where
+        T: fmt::Debug + Clone + Send + Sync + 'static,
+    {
+        self.insert::<T>(name.into(), Some(clone_of::<T> as CloneFn))
+    }
+
+    /// Declares a place holding tokens that cannot be cloned — a `File`, a
+    /// socket, a connection handle.
+    ///
+    /// Everything else works as in [`place`](NetBuilder::place). What such a
+    /// place gives up is every feature built on cloning a token: snapshot
+    /// edges, restoring tokens on failure, and whole-net snapshots.
+    pub fn place_no_clone<T>(&mut self, name: impl Into<String>) -> PlaceRef<T>
+    where
+        T: fmt::Debug + Send + Sync + 'static,
+    {
+        self.insert::<T>(name.into(), None)
+    }
+
+    /// Gives a place its initial tokens. Repeated calls append.
+    ///
+    /// Seeded tokens get their ids at [`build`](NetBuilder::build) time, in
+    /// place order, so they are the lowest ids in the net and every later
+    /// token sorts after them.
+    ///
+    /// Seeding is setup, not change: it emits no events and leaves
+    /// [`Net::state_counter`] at zero. A view attaching to a fresh net reads
+    /// the initial marking with [`Net::places`] and [`Net::tokens`], and only
+    /// then follows [`Net::drain_events`] for what happens next.
+    ///
+    /// # Panics
+    ///
+    /// If `place` came from a different builder.
+    pub fn seed<T, I>(&mut self, place: PlaceRef<T>, tokens: I)
+    where
+        T: Send + Sync + 'static,
+        I: IntoIterator<Item = T>,
+    {
+        let index = self.index_of(place, "seed");
+        self.seeds[index].extend(
+            tokens
+                .into_iter()
+                .map(|token| Box::new(token) as ErasedToken),
+        );
+    }
+
+    /// Records how to convert this place's tokens to and from JSON, enabling
+    /// [`Net::json`] for them.
+    ///
+    /// Serialisation is opt-in per place: most tokens are never inspected
+    /// structurally, and requiring `Serialize` on every token type would tax
+    /// every author for a feature few need.
+    ///
+    /// # Panics
+    ///
+    /// If `place` came from a different builder.
+    #[cfg(feature = "serde")]
+    pub fn serializable<T>(&mut self, place: PlaceRef<T>)
+    where
+        T: serde::Serialize + serde::de::DeserializeOwned + Send + Sync + 'static,
+    {
+        let index = self.index_of(place, "serializable");
+        let meta = &mut self.places[index].meta;
+        meta.to_json = Some(crate::place::to_json_of::<T> as crate::place::ToJsonFn);
+        meta.from_json = Some(crate::place::from_json_of::<T> as crate::place::FromJsonFn);
+    }
+
+    /// Sets the maximum number of characters [`Net::label`] returns before
+    /// truncating. The default is 100.
+    pub fn label_limit(&mut self, limit: usize) {
+        self.label_limit = limit;
+    }
+
+    /// Checks the declarations and produces the net.
+    ///
+    /// The fresh net holds the seeded marking, an empty event log, and every
+    /// counter at zero: nothing has happened to it yet.
+    ///
+    /// # Errors
+    ///
+    /// [`BuildError::DuplicatePlaceName`] if two places share a name.
+    pub fn build(self) -> Result<Net, BuildError> {
+        let mut seen = HashSet::with_capacity(self.places.len());
+        for slot in &self.places {
+            if !seen.insert(slot.meta.name.as_str()) {
+                return Err(BuildError::DuplicatePlaceName {
+                    name: slot.meta.name.clone(),
+                });
+            }
+        }
+
+        let mut net = Net {
+            places: self.places,
+            next_token_id: 0,
+            topology_counter: 0,
+            state_counter: 0,
+            fired_count: 0,
+            label_limit: self.label_limit,
+            events: Vec::new(),
+        };
+        for (index, tokens) in self.seeds.into_iter().enumerate() {
+            let place = PlaceId(index as u32);
+            for token in tokens {
+                // `insert_erased`, not `push_erased`: the initial marking is
+                // where the net starts, not a change to report.
+                net.insert_erased(place, token, "<seed>")
+                    .expect("a seed is checked against its place's type by the builder");
+            }
+        }
+        Ok(net)
+    }
+
+    // ----- internals ------------------------------------------------------
+
+    /// Appends a place with its vtable filled in for `T`.
+    fn insert<T>(&mut self, name: String, clone: Option<CloneFn>) -> PlaceRef<T>
+    where
+        T: fmt::Debug + Send + Sync + 'static,
+    {
+        let id = PlaceId(self.places.len() as u32);
+        self.places.push(PlaceSlot {
+            meta: PlaceMeta {
+                name,
+                type_name: type_name::<T>(),
+                type_id: TypeId::of::<T>(),
+                // The generic function is instantiated for `T` here, where `T`
+                // is known, and kept as an ordinary `fn` pointer afterwards.
+                debug: debug_of::<T> as DebugFn,
+                clone,
+                #[cfg(feature = "serde")]
+                to_json: None,
+                #[cfg(feature = "serde")]
+                from_json: None,
+            },
+            tokens: VecDeque::new(),
+        });
+        self.seeds.push(Vec::new());
+        PlaceRef::new(id)
+    }
+
+    /// The index of a handle in this builder, with the type check a foreign
+    /// handle would otherwise slip past.
+    fn index_of<T: 'static>(&self, place: PlaceRef<T>, method: &str) -> usize {
+        let index = place.id().0 as usize;
+        let matches = self
+            .places
+            .get(index)
+            .is_some_and(|slot| slot.meta.type_id == TypeId::of::<T>());
+        assert!(
+            matches,
+            "{method}: this PlaceRef<{}> does not come from this builder",
+            type_name::<T>()
+        );
+        index
+    }
+}
+
+impl Default for NetBuilder {
+    fn default() -> Self {
+        NetBuilder::new()
+    }
+}
+
+impl fmt::Debug for NetBuilder {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("NetBuilder")
+            .field("places", &self.places)
+            .field("seeded", &self.seeds.iter().map(Vec::len).sum::<usize>())
+            .field("label_limit", &self.label_limit)
+            .finish()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn duplicate_names_are_rejected() {
+        let mut b = NetBuilder::new();
+        let _ = b.place::<u32>("Same");
+        let _ = b.place::<String>("Same");
+        let error = b.build().unwrap_err();
+        assert!(matches!(error, BuildError::DuplicatePlaceName { ref name } if name == "Same"));
+    }
+
+    #[test]
+    #[should_panic(expected = "does not come from this builder")]
+    fn seeding_with_a_foreign_handle_panics() {
+        let mut other = NetBuilder::new();
+        let foreign = other.place::<u32>("Elsewhere");
+
+        let mut b = NetBuilder::new();
+        b.seed(foreign, [1_u32]);
+    }
+
+    #[test]
+    fn seeds_are_numbered_in_place_order() {
+        let mut b = NetBuilder::new();
+        let first = b.place::<u32>("First");
+        let second = b.place::<u32>("Second");
+        b.seed(second, [10, 11]);
+        b.seed(first, [1]);
+        let net = b.build().unwrap();
+
+        let ids: Vec<_> = net
+            .tokens(first.id())
+            .chain(net.tokens(second.id()))
+            .map(|(id, _)| id)
+            .collect();
+        let mut sorted = ids.clone();
+        sorted.sort();
+        assert_eq!(ids, sorted);
+        assert_eq!(net.count(first.id()), 1);
+        assert_eq!(net.count(second.id()), 2);
+    }
+}

@@ -1,0 +1,22 @@
+[package]
+name = "petritype"
+version = "0.1.0"
+description = "Typed, executable, observable Petri nets."
+readme = "../README.md"
+keywords = ["petri-net", "dataflow", "workflow", "simulation"]
+categories = ["data-structures", "simulation"]
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+thiserror = "2"
+serde = { version = "1", features = ["derive"], optional = true }
+serde_json = { version = "1", optional = true }
+
+[features]
+serde = ["dep:serde", "dep:serde_json"]
+
+[package.metadata.docs.rs]
+all-features = true

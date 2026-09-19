@@ -110,7 +110,8 @@ pub struct PlaceRef<T>(PlaceId, PhantomData<fn() -> T>);   // typed handle from 
   - `topology_counter`: connectivity changes only (place, transition, edge
     added or removed). v1 never bumps it.
   - `state_counter`: everything else — token added, removed, mutated,
-    transition toggled.
+    transition toggled. A change tick for observers, not a firing count:
+    a freshly built net is at 0 however it was seeded.
   - `fired_count`: number of completed firings. A statistic, not a counter of
     changes.
 - Known footgun: a `PlaceRef` from one builder is a valid index into another
@@ -395,6 +396,19 @@ loop:
 
 The core has no clock. Time-based guards call `Instant::now()` themselves.
 
+### 6.6 Composition: a net as a transition
+
+A `Net` can be the body of a transition in a larger net, as in Python where a
+net is used as a function. No engine support is needed: a body is a stateful
+closure (`FnMut`, `Send + Sync`) and `Net` is `Send + Sync`, so the closure
+owns the inner net, puts its inputs into the inner net's input places, runs it
+to completion with `drivers::run`, drains the inner output places and returns
+the results. Planned sugar: `inner.as_transition(inputs, outputs)` that
+writes that closure. Observability stops at the boundary: the outer net's
+events do not describe the inner firing; a visualiser that wants to look
+inside must be handed the inner net (for example via `Arc<Mutex<Net>>` shared
+with the closure). See §17.
+
 ## 7. Failure semantics
 
 - **Expected outcomes are data.** Route a token to an error place via a
@@ -440,7 +454,7 @@ pub enum Event {
     Launched    { transition: TransitionId, consumed: Vec<(PlaceId, TokenId)> },   // concurrent
     Distributed { transition: TransitionId, produced: Vec<(PlaceId, TokenId)> },   // concurrent
     Failed      { transition: TransitionId, lost: Vec<(PlaceId, TokenId)>, restored: bool, error: String },
-    Added       { place: PlaceId, token: TokenId },      // external extend / put / seed
+    Added       { place: PlaceId, token: TokenId },      // external extend / put (not seeds: builder seeding is setup, emits nothing)
     Removed     { place: PlaceId, token: TokenId },      // external remove / set_tokens
     Mutated     { place: PlaceId, token: TokenId },      // MutateEdge, or replace()
     Toggled     { transition: TransitionId, enabled: bool },
@@ -454,8 +468,8 @@ pub enum Event {
 ### 8.2 Read API
 
 ```rust
-net.places()      -> impl Iterator<Item = (PlaceId, &PlaceInfo)>       // name, type_name, count
-net.transitions() -> impl Iterator<Item = (TransitionId, &TransitionInfo)>  // name, enabled, in_flight
+net.places()      -> impl Iterator<Item = (PlaceId, PlaceInfo<'_>)>    // by value: name, type_name, count (count is live, never stored)
+net.transitions() -> impl Iterator<Item = (TransitionId, TransitionInfo<'_>)>  // by value: name, enabled, in_flight
 net.edges()       -> impl Iterator<Item = EdgeInfo>   // from, to, kind
 net.place_named(&str) -> Option<PlaceId>;  net.transition_named(&str) -> Option<TransitionId>
 net.count(place)  -> usize
@@ -501,7 +515,7 @@ pub enum Command {
 net.apply(cmd) -> Result<(), CommandError>   // the one runtime TypeId check in the engine
 ```
 
-The typed methods call `apply`. Channels between a UI thread and the driver
+The typed methods and `apply` share one erased insertion path (`push_erased`). Channels between a UI thread and the driver
 are the caller's concern. With the `serde` feature, `Command` has a
 serialisable form for places marked `serializable`.
 
@@ -673,7 +687,12 @@ Check that the name `petritype` is free on crates.io before publishing.
 - Identity preservation for pass-through bodies (`Keep(token)`): deferred
   until an animation needs it.
 - `Broadcast(value)` sugar: deferred.
-- Stamped net id in `PlaceRef` to catch cross-net handle misuse: deferred.
+- Stamped net id in `PlaceRef`: **decided, slice 2.** Composition (§6.6) puts
+  two nets' handles in one scope, so each `NetBuilder` takes a process-unique
+  id (`AtomicU32`), every `PlaceRef` carries it, and every net method compares
+  it before using the index. Handle grows from 4 to 8 bytes.
+- Observability of an inner net used as a transition (§6.6): how a visualiser
+  reaches inside. Deferred until the Bevy adapter needs it.
 
 ## 18. Implementation plan
 

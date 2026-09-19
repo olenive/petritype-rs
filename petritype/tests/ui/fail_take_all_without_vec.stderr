@@ -1,0 +1,17 @@
+error[E0631]: type mismatch in closure arguments
+  --> tests/ui/fail_take_all_without_vec.rs:11:7
+   |
+11 |     b.transition("Not a batch", (TakeAllEdge(inbox),), (out,), |n: u32| (n,));
+   |       ^^^^^^^^^^ expected due to this                          -------- found signature defined here
+   |
+   = note: expected closure signature `fn(Vec<u32>) -> _`
+              found closure signature `fn(u32) -> _`
+   = note: required for `{closure@$DIR/tests/ui/fail_take_all_without_vec.rs:11:64: 11:72}` to implement `TransitionBody<(TakeAllEdge<u32>,), (PlaceRef<u32>,), (_, _)>`
+note: required by a bound in `NetBuilder::transition`
+  --> src/builder.rs
+   |
+   |     pub fn transition<Edges, Outputs, Body, Marker>(
+   |            ---------- required by a bound in this associated function
+...
+   |         Body: TransitionBody<Edges, Outputs, Marker>,
+   |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `NetBuilder::transition`

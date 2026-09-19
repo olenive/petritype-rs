@@ -1,0 +1,17 @@
+error[E0631]: type mismatch in closure arguments
+  --> tests/ui/fail_body_param_type.rs:16:7
+   |
+16 |     b.transition("Wrong type", (TakeEdge(inbox),), (out,), |n: Note| (n.0,));
+   |       ^^^^^^^^^^ expected due to this                      --------- found signature defined here
+   |
+   = note: expected closure signature `fn(u32) -> _`
+              found closure signature `fn(Note) -> _`
+   = note: required for `{closure@$DIR/tests/ui/fail_body_param_type.rs:16:60: 16:69}` to implement `TransitionBody<(TakeEdge<u32>,), (PlaceRef<u32>,), (_, _)>`
+note: required by a bound in `NetBuilder::transition`
+  --> src/builder.rs
+   |
+   |     pub fn transition<Edges, Outputs, Body, Marker>(
+   |            ---------- required by a bound in this associated function
+...
+   |         Body: TransitionBody<Edges, Outputs, Marker>,
+   |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `NetBuilder::transition`

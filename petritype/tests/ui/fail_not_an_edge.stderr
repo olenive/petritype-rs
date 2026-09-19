@@ -1,0 +1,67 @@
+error[E0277]: `PlaceRef<u32>` is not an input edge
+  --> tests/ui/fail_not_an_edge.rs:10:35
+   |
+10 |     b.transition("No edge kind", (inbox,), (out,), |n: u32| (n,));
+   |       ----------                  ^^^^^ not an input edge
+   |       |
+   |       required by a bound introduced by this call
+   |
+   = help: the trait `InputEdge` is not implemented for `PlaceRef<u32>`
+   = note: an input must say how it reads its place: `TakeEdge(p)`, `TakeAllEdge(p)`, `SnapshotEdge(p)` or `MutateEdge(p)`
+help: the following other types implement trait `InputEdge`
+  --> src/edge.rs
+   |
+   | impl<T: Send + Sync + 'static> InputEdge for TakeEdge<T> {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `TakeEdge<T>`
+...
+   | impl<T: Send + Sync + 'static> InputEdge for TakeAllEdge<T> {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `TakeAllEdge<T>`
+...
+   | impl<T: Clone + Send + Sync + 'static> InputEdge for SnapshotEdge<T> {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `SnapshotEdge<T>`
+...
+   | impl<T: Send + Sync + 'static> InputEdge for MutateEdge<T> {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `MutateEdge<T>`
+   = note: required for `(PlaceRef<u32>,)` to implement `InputEdges`
+note: required by a bound in `NetBuilder::transition`
+  --> src/builder.rs
+   |
+   |     pub fn transition<Edges, Outputs, Body, Marker>(
+   |            ---------- required by a bound in this associated function
+...
+   |         Edges: InputEdges,
+   |                ^^^^^^^^^^ required by this bound in `NetBuilder::transition`
+
+error[E0277]: `PlaceRef<u32>` is not an input edge
+  --> tests/ui/fail_not_an_edge.rs:10:52
+   |
+10 |     b.transition("No edge kind", (inbox,), (out,), |n: u32| (n,));
+   |       ----------                                   ^^^^^^^^^^^^^ not an input edge
+   |       |
+   |       required by a bound introduced by this call
+   |
+   = help: the trait `InputEdge` is not implemented for `PlaceRef<u32>`
+   = note: an input must say how it reads its place: `TakeEdge(p)`, `TakeAllEdge(p)`, `SnapshotEdge(p)` or `MutateEdge(p)`
+help: the following other types implement trait `InputEdge`
+  --> src/edge.rs
+   |
+   | impl<T: Send + Sync + 'static> InputEdge for TakeEdge<T> {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `TakeEdge<T>`
+...
+   | impl<T: Send + Sync + 'static> InputEdge for TakeAllEdge<T> {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `TakeAllEdge<T>`
+...
+   | impl<T: Clone + Send + Sync + 'static> InputEdge for SnapshotEdge<T> {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `SnapshotEdge<T>`
+...
+   | impl<T: Send + Sync + 'static> InputEdge for MutateEdge<T> {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `MutateEdge<T>`
+   = note: required for `{closure@$DIR/tests/ui/fail_not_an_edge.rs:10:52: 10:60}` to implement `TransitionBody<(PlaceRef<u32>,), (PlaceRef<u32>,), (Positional, (u32,))>`
+note: required by a bound in `NetBuilder::transition`
+  --> src/builder.rs
+   |
+   |     pub fn transition<Edges, Outputs, Body, Marker>(
+   |            ---------- required by a bound in this associated function
+...
+   |         Body: TransitionBody<Edges, Outputs, Marker>,
+   |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `NetBuilder::transition`

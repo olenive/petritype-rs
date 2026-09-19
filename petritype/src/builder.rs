@@ -6,10 +6,14 @@ use std::any::{TypeId, type_name};
 use std::collections::{HashSet, VecDeque};
 use std::fmt;
 
+use crate::body::{OutputPlaces, TransitionBody};
+use crate::edge::{EdgeKind, InputEdges};
 use crate::error::BuildError;
-use crate::ids::{PlaceId, PlaceRef};
+use crate::ids::{NetId, PlaceId, PlaceRef, TransitionId, foreign_place};
 use crate::net::Net;
 use crate::place::{CloneFn, DebugFn, ErasedToken, PlaceMeta, PlaceSlot, clone_of, debug_of};
+use crate::sealed::{BodySealed, EdgeTupleSealed, PlaceTupleSealed};
+use crate::transition::{TransitionBuilder, TransitionSlot};
 
 /// How many characters a label keeps by default, as in Python petritype.
 const DEFAULT_LABEL_LIMIT: usize = 100;
@@ -36,8 +40,15 @@ const DEFAULT_LABEL_LIMIT: usize = 100;
 /// ([`seed`](NetBuilder::seed), and `serializable` with the `serde`
 /// feature).
 pub struct NetBuilder {
+    /// Stamped into every handle this builder hands out, and into the net it
+    /// builds. Minted here, once, so that a handle can say which net it
+    /// belongs to.
+    net: NetId,
     /// Places in declaration order; the index is the [`PlaceId`].
     places: Vec<PlaceSlot>,
+    /// Transitions in declaration order; the index is the
+    /// [`TransitionId`].
+    transitions: Vec<TransitionSlot>,
     /// Initial tokens per place, parallel to `places`. They are erased values
     /// without ids: ids are minted by [`build`](NetBuilder::build) so that a
     /// half-built net never hands out ids the net will not have.
@@ -46,14 +57,22 @@ pub struct NetBuilder {
 }
 
 impl NetBuilder {
-    /// A builder with no places and the default label limit of 100
-    /// characters.
+    /// A builder with no places, no transitions, a fresh [`NetId`] and the
+    /// default label limit of 100 characters.
     pub fn new() -> Self {
         NetBuilder {
+            net: NetId::mint(),
             places: Vec::new(),
+            transitions: Vec::new(),
             seeds: Vec::new(),
             label_limit: DEFAULT_LABEL_LIMIT,
         }
+    }
+
+    /// The id of the net being built, as [`Net::id`] will report it. Every
+    /// handle this builder hands out carries it.
+    pub fn id(&self) -> NetId {
+        self.net
     }
 
     /// Declares a place holding tokens of type `T`.
@@ -135,6 +154,99 @@ impl NetBuilder {
         meta.from_json = Some(crate::place::from_json_of::<T> as crate::place::FromJsonFn);
     }
 
+    /// Declares a transition: what it reads, what it writes, and the
+    /// ordinary Rust closure that turns the first into the second.
+    ///
+    /// ```
+    /// # use petritype::{NetBuilder, SnapshotEdge, TakeAllEdge};
+    /// # #[derive(Debug, Clone)] struct Parcel { weight: f32 }
+    /// # #[derive(Debug, Clone)] struct Config { max_weight: f32 }
+    /// let mut b = NetBuilder::new();
+    /// let inbox = b.place::<Parcel>("Inbox");
+    /// let config = b.place::<Config>("Config");
+    /// let heavy = b.place::<Parcel>("Heavy");
+    /// let light = b.place::<Parcel>("Light");
+    /// let count = b.place::<u32>("Count");
+    ///
+    /// let weigh = b.transition(
+    ///     "Weigh",
+    ///     (TakeAllEdge(inbox), SnapshotEdge(config)),
+    ///     (heavy, light, count),
+    ///     |parcels: Vec<Parcel>, cfg: Config| {
+    ///         let (h, l): (Vec<_>, Vec<_>) =
+    ///             parcels.into_iter().partition(|p| p.weight > cfg.max_weight);
+    ///         let n = (h.len() + l.len()) as u32;
+    ///         (h, l, Some(n))
+    ///     },
+    /// )
+    /// .id();
+    /// ```
+    ///
+    /// The three type-checked relationships are:
+    ///
+    /// - one body parameter per input edge, of the type that edge kind
+    ///   produces ([`InputEdge`](crate::InputEdge));
+    /// - one returned slot per output place, holding one token, zero or one,
+    ///   or many ([`IntoTokens`](crate::IntoTokens));
+    /// - the return value as a whole is the outputs, or a `Result` of them
+    ///   ([`IntoOutcome`](crate::IntoOutcome)).
+    ///
+    /// Annotate the closure's parameter types. Inference through the arity
+    /// traits is not reliable, and the annotation doubles as documentation of
+    /// what flows along each edge.
+    ///
+    /// Declaring a transition is setup, not change: it emits no events and
+    /// leaves every counter at zero.
+    ///
+    /// # Panics
+    ///
+    /// If any edge or output place came from another net.
+    pub fn transition<Edges, Outputs, Body, Marker>(
+        &mut self,
+        name: impl Into<String>,
+        inputs: Edges,
+        outputs: Outputs,
+        body: Body,
+    ) -> TransitionBuilder<'_>
+    where
+        Edges: InputEdges,
+        Outputs: OutputPlaces,
+        Body: TransitionBody<Edges, Outputs, Marker>,
+    {
+        let mut described = Vec::new();
+        EdgeTupleSealed::describe(&inputs, &mut described);
+        let mut edges = Vec::with_capacity(described.len());
+        // Detachable until proven otherwise: one mutating edge is enough to
+        // tie the firing to the net.
+        let mut detachable = true;
+        for (place, kind, net) in described {
+            self.index_of_erased(place, net, "transition");
+            detachable &= kind != EdgeKind::Mutate;
+            edges.push((place, kind));
+        }
+
+        let mut described = Vec::new();
+        PlaceTupleSealed::describe(&outputs, &mut described);
+        let mut targets = Vec::with_capacity(described.len());
+        for (place, net) in described {
+            self.index_of_erased(place, net, "transition");
+            targets.push(place);
+        }
+
+        let id = TransitionId(self.transitions.len() as u32);
+        self.transitions.push(TransitionSlot {
+            name: name.into(),
+            inputs: edges,
+            outputs: targets,
+            // The one place where both the typed body and the erased engine
+            // are in scope, so the one place the wrapper can be built.
+            body: Some(BodySealed::into_erased(body)),
+            enabled: true,
+            detachable,
+        });
+        TransitionBuilder { builder: self, id }
+    }
+
     /// Sets the maximum number of characters [`Net::label`] returns before
     /// truncating. The default is 100.
     pub fn label_limit(&mut self, limit: usize) {
@@ -148,7 +260,10 @@ impl NetBuilder {
     ///
     /// # Errors
     ///
-    /// [`BuildError::DuplicatePlaceName`] if two places share a name.
+    /// [`BuildError::DuplicatePlaceName`] or
+    /// [`BuildError::DuplicateTransitionName`] if two of either share a name;
+    /// [`BuildError::SnapshotOfNoClonePlace`] if a snapshot edge reads a
+    /// place that cannot clone its tokens.
     pub fn build(self) -> Result<Net, BuildError> {
         let mut seen = HashSet::with_capacity(self.places.len());
         for slot in &self.places {
@@ -159,8 +274,31 @@ impl NetBuilder {
             }
         }
 
+        let mut seen = HashSet::with_capacity(self.transitions.len());
+        for slot in &self.transitions {
+            if !seen.insert(slot.name.as_str()) {
+                return Err(BuildError::DuplicateTransitionName {
+                    name: slot.name.clone(),
+                });
+            }
+            for (place, kind) in &slot.inputs {
+                // A snapshot needs the place's cloner, which
+                // `place_no_clone` did not record — whether or not the type
+                // itself is `Clone`.
+                if *kind == EdgeKind::Snapshot && self.places[place.0 as usize].meta.clone.is_none()
+                {
+                    return Err(BuildError::SnapshotOfNoClonePlace {
+                        transition: slot.name.clone(),
+                        place: self.places[place.0 as usize].meta.name.clone(),
+                    });
+                }
+            }
+        }
+
         let mut net = Net {
+            id: self.net,
             places: self.places,
+            transitions: self.transitions,
             next_token_id: 0,
             topology_counter: 0,
             state_counter: 0,
@@ -205,22 +343,44 @@ impl NetBuilder {
             tokens: VecDeque::new(),
         });
         self.seeds.push(Vec::new());
-        PlaceRef::new(id)
+        PlaceRef::new(self.net, id)
     }
 
-    /// The index of a handle in this builder, with the type check a foreign
-    /// handle would otherwise slip past.
+    /// The index of a handle in this builder, rejecting a handle from
+    /// another net.
+    ///
+    /// The stamp is the whole check: within one net an index and a type
+    /// always agree, because the handle came from the call that created the
+    /// place. The type assertion is kept as a debug assertion to catch a bug
+    /// in that reasoning rather than a mistake by the author.
     fn index_of<T: 'static>(&self, place: PlaceRef<T>, method: &str) -> usize {
-        let index = place.id().0 as usize;
-        let matches = self
-            .places
-            .get(index)
-            .is_some_and(|slot| slot.meta.type_id == TypeId::of::<T>());
         assert!(
-            matches,
-            "{method}: this PlaceRef<{}> does not come from this builder",
+            place.net() == self.net,
+            "{}",
+            foreign_place(method, place.id(), place.net(), self.net)
+        );
+        let index = place.id().0 as usize;
+        debug_assert!(
+            self.places
+                .get(index)
+                .is_some_and(|slot| slot.meta.type_id == TypeId::of::<T>()),
+            "{method}: place #{index} of this net does not hold {}",
             type_name::<T>()
         );
+        index
+    }
+
+    /// The index of an erased output place or edge target, rejecting a
+    /// handle from another net. The typed check above cannot be used here:
+    /// the tuple traits have already forgotten `T`.
+    fn index_of_erased(&self, place: PlaceId, net: NetId, method: &str) -> usize {
+        assert!(
+            net == self.net,
+            "{}",
+            foreign_place(method, place, net, self.net)
+        );
+        let index = place.0 as usize;
+        debug_assert!(index < self.places.len(), "{method}: no place #{index}");
         index
     }
 }
@@ -234,7 +394,9 @@ impl Default for NetBuilder {
 impl fmt::Debug for NetBuilder {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("NetBuilder")
+            .field("id", &self.net)
             .field("places", &self.places)
+            .field("transitions", &self.transitions)
             .field("seeded", &self.seeds.iter().map(Vec::len).sum::<usize>())
             .field("label_limit", &self.label_limit)
             .finish()
@@ -255,13 +417,24 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "does not come from this builder")]
+    #[should_panic(expected = "but this is net")]
     fn seeding_with_a_foreign_handle_panics() {
         let mut other = NetBuilder::new();
         let foreign = other.place::<u32>("Elsewhere");
 
         let mut b = NetBuilder::new();
+        let _ = b.place::<u32>("Here");
         b.seed(foreign, [1_u32]);
+    }
+
+    #[test]
+    fn every_builder_has_its_own_id_and_passes_it_to_its_net() {
+        let a = NetBuilder::new();
+        let b = NetBuilder::new();
+        assert_ne!(a.id(), b.id());
+
+        let id = a.id();
+        assert_eq!(a.build().unwrap().id(), id);
     }
 
     #[test]

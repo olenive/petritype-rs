@@ -18,6 +18,29 @@ pub enum BuildError {
         /// The name used more than once.
         name: String,
     },
+    /// Two transitions were given the same name, which
+    /// [`Net::transition_named`](crate::Net::transition_named) and every
+    /// diagram would then be unable to tell apart.
+    #[error("duplicate transition name: {name:?}")]
+    DuplicateTransitionName {
+        /// The name used more than once.
+        name: String,
+    },
+    /// A [`SnapshotEdge`](crate::SnapshotEdge) reads a place declared with
+    /// [`place_no_clone`](crate::NetBuilder::place_no_clone).
+    ///
+    /// A snapshot is a clone of the front token, and such a place recorded no
+    /// cloner. The token type may well be `Clone` — the place is what gave
+    /// the ability up — so this cannot be a compile error. Use a
+    /// [`TakeEdge`](crate::TakeEdge), or declare the place with
+    /// [`place`](crate::NetBuilder::place).
+    #[error("transition {transition:?} snapshots place {place:?}, which cannot clone its tokens")]
+    SnapshotOfNoClonePlace {
+        /// The transition whose edge it is.
+        transition: String,
+        /// The place it reads.
+        place: String,
+    },
 }
 
 /// Misuse of the net's API at run time.

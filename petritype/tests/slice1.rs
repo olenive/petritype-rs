@@ -275,11 +275,13 @@ fn missing_places_and_tokens_are_reported_not_guessed() {
     let mut net = b.build().unwrap();
     let token = net.put(inbox, 1);
 
-    // Handles from another net: one indexes a place of a different type here,
-    // the other indexes nothing at all.
+    // Handles from another net: one would index a place of this net, the
+    // other indexes nothing at all. The stamp catches both, so neither can
+    // address a place here by accident.
     let mut other = NetBuilder::new();
     let same_index = other.place::<String>("Inbox");
     let out_of_range = other.place::<String>("Spare");
+    assert_eq!(same_index.id(), inbox.id(), "same index, different net");
 
     assert!(matches!(
         net.remove(out_of_range.id(), token),
@@ -291,7 +293,7 @@ fn missing_places_and_tokens_are_reported_not_guessed() {
     ));
     assert!(matches!(
         net.replace(same_index, token, String::new()),
-        Err(NetError::TypeMismatch { .. })
+        Err(NetError::NoSuchPlace { .. })
     ));
 
     // Removing the same token twice names the token, not the place.

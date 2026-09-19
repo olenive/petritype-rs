@@ -1,0 +1,31 @@
+error[E0277]: a transition body must return its outputs, or a `Result` of them
+  --> tests/ui/fail_result_error_not_error.rs:22:9
+   |
+18 |     b.transition(
+   |       ---------- required by a bound introduced by this call
+...
+22 |         |n: u32| -> Result<(u32,), Whoops> { Ok((n,)) },
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Result<(u32,), Whoops>` is not a transition outcome
+   |
+   = help: the trait `IntoOutcome<(PlaceRef<u32>,), _>` is not implemented for `Result<(u32,), Whoops>`
+   = note: return a tuple with one slot per output place, `()` if there are none, or `Result<Outputs, E>` where `E: std::error::Error + Send + Sync + 'static`
+   = note: a `Result` always means failure, never routing
+help: the trait `IntoOutcome<Outputs, Failing<M>>` is conditionally implemented for `Result<O, E>`
+  --> src/body.rs
+   |
+   | / impl<Outputs, O, E, M> IntoOutcome<Outputs, marker::Failing<M>> for Result<O, E>
+   | | where
+   | |     O: IntoOutcome<Outputs, M>,
+   | |     E: Error + Send + Sync + 'static,
+   | |________-----________________________^
+   |          |
+   |          unsatisfied requirement introduced here: `Whoops: std::error::Error`
+   = note: required for `{closure@$DIR/tests/ui/fail_result_error_not_error.rs:22:9: 22:43}` to implement `TransitionBody<(TakeEdge<u32>,), (PlaceRef<u32>,), (_, Result<(u32,), Whoops>)>`
+note: required by a bound in `NetBuilder::transition`
+  --> src/builder.rs
+   |
+   |     pub fn transition<Edges, Outputs, Body, Marker>(
+   |            ---------- required by a bound in this associated function
+...
+   |         Body: TransitionBody<Edges, Outputs, Marker>,
+   |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `NetBuilder::transition`

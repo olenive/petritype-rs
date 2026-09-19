@@ -44,12 +44,11 @@ pub(crate) struct PlaceMeta {
     pub(crate) debug: DebugFn,
     /// `clone_of::<T>`, or `None` for a place created with
     /// [`NetBuilder::place_no_clone`](crate::NetBuilder::place_no_clone).
-    #[expect(
-        dead_code,
-        reason = "read by snapshot edges, Net::snapshot and restore_tokens_on_failure, \
-                  which arrive in later slices; the builder must record it now because \
-                  it is the only place that still knows T"
-    )]
+    ///
+    /// Its absence is what
+    /// [`build`](crate::NetBuilder::build) rejects a snapshot edge for; it is
+    /// called by snapshot edges, `Net::snapshot` and
+    /// `restore_tokens_on_failure` in the slices that fire.
     pub(crate) clone: Option<CloneFn>,
     /// `to_json_of::<T>`, `Some` only for a place marked
     /// [`serializable`](crate::NetBuilder::serializable).

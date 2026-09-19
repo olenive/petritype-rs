@@ -5,8 +5,9 @@ use std::fmt;
 
 use crate::error::NetError;
 use crate::event::Event;
-use crate::ids::{PlaceId, PlaceRef, TokenId};
+use crate::ids::{NetId, PlaceId, PlaceRef, TokenId, TransitionId, foreign_place};
 use crate::place::{ErasedToken, PlaceSlot};
+use crate::transition::{TransitionInfo, TransitionSlot};
 
 /// A built net: places, their tokens, and the log of what has changed.
 ///
@@ -17,8 +18,13 @@ use crate::place::{ErasedToken, PlaceSlot};
 /// [`label`](Net::label) and follows changes with
 /// [`drain_events`](Net::drain_events).
 pub struct Net {
+    /// Stamped into every [`PlaceRef`] this net's builder handed out, and
+    /// compared before any of them is used as an index.
+    pub(crate) id: NetId,
     /// Indexed by [`PlaceId`]; ids are never reused, so this vector only grows.
     pub(crate) places: Vec<PlaceSlot>,
+    /// Indexed by [`TransitionId`], in declaration order.
+    pub(crate) transitions: Vec<TransitionSlot>,
     /// The id the next token will get. Monotonic for the life of the net.
     pub(crate) next_token_id: u64,
     /// Bumped by connectivity changes only. Nothing in this version bumps it.
@@ -54,6 +60,15 @@ pub struct PlaceInfo<'a> {
 impl Net {
     // ----- read API -------------------------------------------------------
 
+    /// This net's id, the one every [`PlaceRef`] it handed out carries.
+    ///
+    /// Two nets built from two builders never share an id, so a handle can
+    /// always say which net it means — which is what makes composition, where
+    /// an inner net is the body of an outer net's transition, safe to write.
+    pub fn id(&self) -> NetId {
+        self.id
+    }
+
     /// Every place, in id order, with its name, token type and token count.
     ///
     /// ```
@@ -75,6 +90,46 @@ impl Net {
             };
             (id, info)
         })
+    }
+
+    /// Every transition, in declaration order, with its name, its input
+    /// edges and its output places.
+    ///
+    /// ```
+    /// # use petritype::{EdgeKind, NetBuilder, TakeEdge};
+    /// # let mut b = NetBuilder::new();
+    /// # let inbox = b.place::<u32>("Inbox");
+    /// # let out = b.place::<u32>("Out");
+    /// # b.transition("Double", (TakeEdge(inbox),), (out,), |n: u32| (n * 2,));
+    /// # let net = b.build().unwrap();
+    /// let (id, info) = net.transitions().next().unwrap();
+    /// assert_eq!(info.name, "Double");
+    /// assert_eq!(info.inputs, [(inbox.id(), EdgeKind::Take)]);
+    /// assert_eq!(info.outputs, [out.id()]);
+    /// assert!(info.enabled);
+    /// assert_eq!(net.transition_named("Double"), Some(id));
+    /// ```
+    pub fn transitions(&self) -> impl Iterator<Item = (TransitionId, TransitionInfo<'_>)> {
+        self.transitions.iter().enumerate().map(|(index, slot)| {
+            // The index is where the id came from in the first place.
+            let id = TransitionId(index as u32);
+            let info = TransitionInfo {
+                name: &slot.name,
+                inputs: &slot.inputs,
+                outputs: &slot.outputs,
+                enabled: slot.enabled,
+            };
+            (id, info)
+        })
+    }
+
+    /// The id of the transition with this name, if the net has one. Names are
+    /// unique: [`build`](crate::NetBuilder::build) rejects duplicates.
+    pub fn transition_named(&self, name: &str) -> Option<TransitionId> {
+        self.transitions
+            .iter()
+            .position(|slot| slot.name == name)
+            .map(|index| TransitionId(index as u32))
     }
 
     /// The id of the place with this name, if the net has one. Names are
@@ -219,7 +274,7 @@ impl Net {
     {
         tokens
             .into_iter()
-            .map(|token| self.push_typed(place, token))
+            .map(|token| self.push_typed(place, token, "extend"))
             .collect()
     }
 
@@ -230,7 +285,7 @@ impl Net {
     ///
     /// If `place` does not belong to this net.
     pub fn put<T: Send + Sync + 'static>(&mut self, place: PlaceRef<T>, token: T) -> TokenId {
-        self.push_typed(place, token)
+        self.push_typed(place, token, "put")
     }
 
     /// Replaces everything in a place. An empty iterator clears it.
@@ -248,6 +303,10 @@ impl Net {
         T: Send + Sync + 'static,
         I: IntoIterator<Item = T>,
     {
+        // Checked before the clear, not by the extend that follows it: a
+        // foreign handle must not empty a place of this net on its way to
+        // the panic.
+        self.checked_index(place, "set_tokens");
         self.clear(place.id());
         self.extend(place, tokens);
     }
@@ -287,16 +346,22 @@ impl Net {
     ///
     /// # Errors
     ///
-    /// [`NetError::NoSuchPlace`], [`NetError::NoSuchToken`], or
-    /// [`NetError::TypeMismatch`] if `place` is a handle from another net that
-    /// happens to index a place of a different type. The net is unchanged in
-    /// all three cases.
+    /// [`NetError::NoSuchPlace`] if the handle is from another net, or
+    /// [`NetError::NoSuchToken`]; the net is unchanged in both cases. Unlike
+    /// the infallible half of this API, `replace` has somewhere to report a
+    /// foreign handle, so it does. ([`NetError::TypeMismatch`] is kept as a
+    /// defensive check: a stamped handle always indexes a place of its own
+    /// type, and the erased command route is where a type can really be
+    /// wrong.)
     pub fn replace<T: Send + Sync + 'static>(
         &mut self,
         place: PlaceRef<T>,
         token: TokenId,
         value: T,
     ) -> Result<(), NetError> {
+        if place.net() != self.id {
+            return Err(NetError::NoSuchPlace { place: place.id() });
+        }
         let place = place.id();
         {
             let slot = self
@@ -393,9 +458,32 @@ impl Net {
 
     /// `push_erased` for a caller that still knows `T`, where the only way to
     /// fail is to use a handle from another net.
-    fn push_typed<T: Send + Sync + 'static>(&mut self, place: PlaceRef<T>, value: T) -> TokenId {
+    fn push_typed<T: Send + Sync + 'static>(
+        &mut self,
+        place: PlaceRef<T>,
+        value: T,
+        method: &str,
+    ) -> TokenId {
+        self.checked_index(place, method);
         self.push_erased(place.id(), Box::new(value), type_name::<T>())
-            .unwrap_or_else(|error| panic!("{error} (is this PlaceRef from another net?)"))
+            .expect("a stamped handle indexes a place of its own type")
+    }
+
+    /// The index of a handle in this net, or a panic naming both nets.
+    ///
+    /// The infallible half of the API — [`extend`](Net::extend),
+    /// [`put`](Net::put), [`set_tokens`](Net::set_tokens) — has nowhere to
+    /// report a foreign handle, and silently writing to whatever place sits
+    /// at that index in *this* net would be the worse answer. The fallible
+    /// half ([`remove`](Net::remove), [`replace`](Net::replace)) returns
+    /// [`NetError::NoSuchPlace`] instead.
+    fn checked_index<T>(&self, place: PlaceRef<T>, method: &str) -> usize {
+        assert!(
+            place.net() == self.id,
+            "{}",
+            foreign_place(method, place.id(), place.net(), self.id)
+        );
+        place.id().0 as usize
     }
 
     /// Removes every token of a place, emitting one
@@ -414,7 +502,9 @@ impl Net {
 impl fmt::Debug for Net {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Net")
+            .field("id", &self.id)
             .field("places", &self.places)
+            .field("transitions", &self.transitions)
             .field("state_counter", &self.state_counter)
             .field("topology_counter", &self.topology_counter)
             .field("fired_count", &self.fired_count)

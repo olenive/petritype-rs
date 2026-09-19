@@ -99,7 +99,9 @@ pub struct PlaceId(u32);        // erased; used in events and the read API
 pub struct TransitionId(u32);
 pub struct TokenId(u64);        // monotonic per Net
 
-pub struct PlaceRef<T>(PlaceId, PhantomData<fn() -> T>);   // typed handle from the builder
+pub struct NetId(u32);          // process-unique, minted per NetBuilder
+
+pub struct PlaceRef<T> { place: PlaceId, net: NetId, _t: PhantomData<fn() -> T> }  // typed handle, 8 bytes
 ```
 
 - Ids are **never reused**. Consumed tokens retire their id. Removed places or
@@ -114,9 +116,13 @@ pub struct PlaceRef<T>(PlaceId, PhantomData<fn() -> T>);   // typed handle from 
     a freshly built net is at 0 however it was seeded.
   - `fired_count`: number of completed firings. A statistic, not a counter of
     changes.
-- Known footgun: a `PlaceRef` from one builder is a valid index into another
-  net. Same as Bevy's `Entity` across worlds. Accepted for v1; a stamped net
-  id in handles is the fix if it bites.
+- `PlaceRef` is stamped with its net's `NetId` (an `AtomicU32` counter, one
+  per process; not stable across runs, never serialised). Every method that
+  takes a `PlaceRef` compares the stamp first, so a handle from another net
+  cannot index this one: infallible methods (`put`, `seed`, `transition`, ..)
+  panic with both net ids in the message; fallible ones return
+  `NetError::NoSuchPlace`. Needed because composition (§6.6) puts two nets'
+  handles in one scope. `PlaceId` and `TransitionId` stay unstamped.
 
 ### 4.2 Places and tokens
 
@@ -326,7 +332,9 @@ Builder ergonomics:
 Conventions:
 - Annotate closure parameter types. Inference through the arity trait is not
   reliable, and the annotation doubles as documentation.
-- Input arity is capped at 12. Output arity likewise.
+- Input arity is capped at 12. Output arity likewise. Inputs and outputs are
+  always tuples: a single one needs the trailing comma, `(TakeEdge(p),)` and
+  `(count,)`, and the empty tuple `()` means none.
 - Bodies may return `Outputs` or `Result<Outputs, E>` where
   `E: Error + Send + Sync + 'static` (trait `IntoOutcome`).
 - Mismatch errors use `#[diagnostic::on_unimplemented]` so the compiler says
@@ -580,8 +588,8 @@ Always:
 - `SnapshotEdge` from a `no_clone` place.
 - `restore_tokens_on_failure` on a transition with a `no_clone` input.
 - Routed-output resolution (§4.5): unroutable, ambiguous, unreachable.
-- Non-unit return with zero output places.
-- Output slot count vs output place count (defensive).
+- (Output slot count vs output place count is carried by the types; a
+  `debug_assert!` in `distribute` guards the erased index.)
 
 Opt-in:
 - `b.assert_acyclic()`: DFS over consuming input edges and output edges; read
@@ -592,7 +600,8 @@ Opt-in:
   docs say so.
 
 Compile-time (no check needed): edge kinds vs parameter types, positional
-slot types, seeded token types, `Distribution::to` argument types.
+slot types and count, non-unit return with zero output places, seeded token
+types, `Distribution::to` argument types.
 
 ## 13. Drivers
 
@@ -667,7 +676,7 @@ Check that the name `petritype` is free on crates.io before publishing.
 | bodies of any arity in one list | trait over tuples, `macro_rules!` impls for arity 0..=12 (as Bevy `IntoSystem`, axum handlers) |
 | `&mut T` parameters from `MutateEdge` | generic associated type `type Arg<'a>` on the edge-kind trait |
 | readable mismatch errors | `#[diagnostic::on_unimplemented]` |
-| body may return plain or `Result` | trait `IntoOutcome` over the return type |
+| body may return plain or `Result` | trait `IntoOutcome<Outputs, Marker>` over the return type; marker tags (`Positional`, `Failing<M>`, later `Routed`) keep the impls from overlapping, as Bevy's `IntoSystem<Marker>` |
 | positional slot may hold one / maybe one / many | trait `IntoTokens<T>` for `T`, `Option<T>`, `Vec<T>` |
 | routing by payload type without runtime reflection | trait `RoutedOutput` with a static `TypeId` list; `#[derive(Routed)]` proc macro; resolved to indices at build |
 | body in flight without borrowing the net | `Option<Box<dyn FnMut>>` slot, `Option::take` on launch |
@@ -682,15 +691,12 @@ Check that the name `petritype` is free on crates.io before publishing.
 
 ## 17. Open questions
 
-- `MutateEdge` implementation: GAT-based `&mut T` first; fallback is
-  take-and-return if it fights the arity macro.
+- `MutateEdge` implementation: **resolved, slice 2.** The GAT route works
+  under the arity macro and the `for<'a> FnMut` bound; no fallback.
 - Identity preservation for pass-through bodies (`Keep(token)`): deferred
   until an animation needs it.
 - `Broadcast(value)` sugar: deferred.
-- Stamped net id in `PlaceRef`: **decided, slice 2.** Composition (§6.6) puts
-  two nets' handles in one scope, so each `NetBuilder` takes a process-unique
-  id (`AtomicU32`), every `PlaceRef` carries it, and every net method compares
-  it before using the index. Handle grows from 4 to 8 bytes.
+- Stamped net id in `PlaceRef`: **done, slice 2** (§4.1).
 - Observability of an inner net used as a transition (§6.6): how a visualiser
   reaches inside. Deferred until the Bevy adapter needs it.
 

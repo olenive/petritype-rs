@@ -1,0 +1,31 @@
+error[E0277]: a transition body must return one slot per output place
+  --> tests/ui/fail_non_tuple_return.rs:16:60
+   |
+16 |     b.transition("Bare value", (TakeEdge(inbox),), (out,), |n: u32| n * 2);
+   |       ----------                                           ^^^^^^^^^^^^^^ `u32` does not match the output places
+   |       |
+   |       required by a bound introduced by this call
+   |
+   = help: the trait `PositionalOutputs<(PlaceRef<u32>,)>` is not implemented for `u32`
+   = note: outputs `(PlaceRef<u32>,)` want a tuple of that many slots, where slot i is `T`, `Option<T>` or `Vec<T>` for the type of output place i
+   = note: returning a value that is not a tuple, to be routed to the output place of its own type, is not supported yet
+   = help: the following other types implement trait `PositionalOutputs<Outputs>`:
+             `()` implements `PositionalOutputs<()>`
+             `(R0, R1)` implements `PositionalOutputs<(PlaceRef<A0>, PlaceRef<A1>)>`
+             `(R0, R1, R2)` implements `PositionalOutputs<(PlaceRef<A0>, PlaceRef<A1>, PlaceRef<A2>)>`
+             `(R0, R1, R2, R3)` implements `PositionalOutputs<(PlaceRef<A0>, PlaceRef<A1>, PlaceRef<A2>, PlaceRef<A3>)>`
+             `(R0, R1, R2, R3, R4)` implements `PositionalOutputs<(PlaceRef<A0>, PlaceRef<A1>, PlaceRef<A2>, PlaceRef<A3>, PlaceRef<A4>)>`
+             `(R0, R1, R2, R3, R4, R5)` implements `PositionalOutputs<(PlaceRef<A0>, PlaceRef<A1>, PlaceRef<A2>, PlaceRef<A3>, PlaceRef<A4>, PlaceRef<A5>)>`
+             `(R0, R1, R2, R3, R4, R5, R6)` implements `PositionalOutputs<(PlaceRef<A0>, PlaceRef<A1>, PlaceRef<A2>, PlaceRef<A3>, PlaceRef<A4>, PlaceRef<A5>, PlaceRef<A6>)>`
+             `(R0, R1, R2, R3, R4, R5, R6, R7)` implements `PositionalOutputs<(PlaceRef<A0>, PlaceRef<A1>, PlaceRef<A2>, PlaceRef<A3>, PlaceRef<A4>, PlaceRef<A5>, PlaceRef<A6>, PlaceRef<A7>)>`
+           and $N others
+   = note: required for `u32` to implement `IntoOutcome<(PlaceRef<u32>,), Positional>`
+   = note: required for `{closure@$DIR/tests/ui/fail_non_tuple_return.rs:16:60: 16:68}` to implement `TransitionBody<(TakeEdge<u32>,), (PlaceRef<u32>,), (Positional, u32)>`
+note: required by a bound in `NetBuilder::transition`
+  --> src/builder.rs
+   |
+   |     pub fn transition<Edges, Outputs, Body, Marker>(
+   |            ---------- required by a bound in this associated function
+...
+   |         Body: TransitionBody<Edges, Outputs, Marker>,
+   |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `NetBuilder::transition`

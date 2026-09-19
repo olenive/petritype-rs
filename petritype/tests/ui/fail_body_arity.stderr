@@ -1,0 +1,18 @@
+error[E0593]: closure is expected to take 2 arguments, but it takes 1 argument
+  --> tests/ui/fail_body_arity.rs:11:7
+   |
+11 |     b.transition(
+   |       ^^^^^^^^^^ expected closure that takes 2 arguments
+...
+15 |         |n: u32| (n,),
+   |         -------- takes 1 argument
+   |
+   = note: required for `{closure@$DIR/tests/ui/fail_body_arity.rs:15:9: 15:17}` to implement `TransitionBody<(TakeEdge<u32>, TakeEdge<u32>), (PlaceRef<u32>,), (_, _)>`
+note: required by a bound in `NetBuilder::transition`
+  --> src/builder.rs
+   |
+   |     pub fn transition<Edges, Outputs, Body, Marker>(
+   |            ---------- required by a bound in this associated function
+...
+   |         Body: TransitionBody<Edges, Outputs, Marker>,
+   |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `NetBuilder::transition`

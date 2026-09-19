@@ -1,0 +1,5 @@
+error: `Routed` cannot be derived for a type with a lifetime: a token is an owned value, so every routed payload must be `'static`
+  --> tests/ui/fail_routed_lifetime.rs:10:14
+   |
+10 | enum Outcome<'a> {
+   |              ^^

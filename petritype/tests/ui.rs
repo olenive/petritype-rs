@@ -6,6 +6,16 @@
 //! `TRYBUILD=overwrite cargo test --test ui` after a toolchain bump, and read
 //! the diff — a message that stops naming edges, slots or places is a
 //! regression even when it still fails to compile.
+//!
+//! Two things make these files move for reasons other than a bug. The paths
+//! in a message are feature-sensitive, so a case whose types differ between
+//! feature sets has to be written to survive both. And a mismatched *output*
+//! is now reported one level higher than it was: with two output forms
+//! competing for the same `IntoOutcome` bound, neither impl applies when the
+//! return type fits neither, so the compiler blames `IntoOutcome` rather than
+//! the `PositionalOutputs` or `IntoTokens` obligation inside it. That is why
+//! `IntoOutcome`'s notes spell out both forms and name the output places:
+//! the message has to carry what the deeper one used to.
 
 #[test]
 fn declarations_that_must_not_compile() {

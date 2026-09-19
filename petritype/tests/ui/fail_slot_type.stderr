@@ -1,22 +1,22 @@
-error[E0277]: an output slot of type `u32` does not fit an output place of type `Note`
+error[E0277]: a transition body must return its outputs, or a `Result` of them
   --> tests/ui/fail_slot_type.rs:16:62
    |
 16 |     b.transition("Wrong slot", (TakeEdge(inbox),), (notes,), |n: u32| (n,));
-   |       ---------- required by a bound introduced by this call ^^^^^^^^^^^^^ not `Note`, `Option<Note>` or `Vec<Note>`
+   |       ---------- required by a bound introduced by this call ^^^^^^^^^^^^^ `(u32,)` is not a transition outcome
    |
-   = help: the trait `IntoTokens<Note>` is not implemented for `u32`
-   = note: a positional output slot holds one token (`Note`), zero or one (`Option<Note>`) or many (`Vec<Note>`)
-help: the following other types implement trait `IntoTokens<T>`
+   = help: the trait `IntoOutcome<(PlaceRef<Note>,), _>` is not implemented for `(u32,)`
+   = note: positional: outputs `(PlaceRef<Note>,)` want a tuple of that many slots, where slot i is `T`, `Option<T>` or `Vec<T>` for the type of output place i, and `()` for no outputs at all
+   = note: routed: a value that is not a tuple, whose every payload goes to the output place that holds its type — derive `Routed` on the enum or struct you return
+   = note: either form may be wrapped in `Result<_, E>` where `E: std::error::Error + Send + Sync + 'static`; a `Result` always means failure, never routing
+help: the trait `IntoOutcome<Outputs, Failing<M>>` is implemented for `Result<O, E>`
   --> src/body.rs
    |
-   | impl<T> IntoTokens<T> for Option<T> {
-   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Option<T>`
-...
-   | impl<T> IntoTokens<T> for Vec<T> {
-   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Vec<T>`
-   = note: required for `(u32,)` to implement `PositionalOutputs<(PlaceRef<Note>,)>`
-   = note: required for `(u32,)` to implement `IntoOutcome<(PlaceRef<Note>,), Positional>`
-   = note: required for `{closure@$DIR/tests/ui/fail_slot_type.rs:16:62: 16:70}` to implement `TransitionBody<(TakeEdge<u32>,), (PlaceRef<Note>,), (Positional, (u32,))>`
+   | / impl<Outputs, O, E, M> IntoOutcome<Outputs, marker::Failing<M>> for Result<O, E>
+   | | where
+   | |     O: IntoOutcome<Outputs, M>,
+   | |     E: Error + Send + Sync + 'static,
+   | |_____________________________________^
+   = note: required for `{closure@$DIR/tests/ui/fail_slot_type.rs:16:62: 16:70}` to implement `TransitionBody<(TakeEdge<u32>,), (PlaceRef<Note>,), (_, (u32,))>`
 note: required by a bound in `NetBuilder::transition`
   --> src/builder.rs
    |

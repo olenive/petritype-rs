@@ -1,0 +1,5 @@
+error: a routed variant carries exactly one payload, `Variant(T)`, not named fields: give the fields a struct of their own and route that
+  --> tests/ui/fail_routed_named_variant.rs:11:13
+   |
+11 |     Weighed { parcel: Parcel },
+   |             ^^^^^^^^^^^^^^^^^^

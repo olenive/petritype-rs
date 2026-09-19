@@ -1,0 +1,5 @@
+error: `Routed` cannot be derived for a union: derive it on an enum, whose variants carry the payloads, or on a struct, which is routed whole
+ --> tests/ui/fail_routed_union.rs:7:1
+  |
+7 | union Choice {
+  | ^^^^^

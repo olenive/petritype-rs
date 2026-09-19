@@ -362,9 +362,12 @@ impl Net {
         // Distribution cannot fail here, so DESIGN §6.2's "every target place
         // is checked before any token is written" holds trivially: every
         // index came from the body's return type, which the builder matched
-        // against the declared output places at compile time. The routed and
-        // `Distribution` output forms resolve their indices before this
-        // point too, so the check stays a `debug_assert!`.
+        // against the declared output places at compile time. A routed body
+        // is no different by the time its tokens arrive here — its indices
+        // come from the table resolved when it was declared, and
+        // `NetBuilder::build` refuses a net whose routing does not resolve —
+        // and the `Distribution` form will resolve its own before this point
+        // too, so the check stays a `debug_assert!`.
         let mut landed = Vec::with_capacity(produced.len());
         for (index, token) in produced {
             debug_assert!(

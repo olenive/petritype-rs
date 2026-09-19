@@ -185,7 +185,8 @@ struct TransitionSlot {
     name: String,
     inputs: Vec<(PlaceId, EdgeKind)>,      // EdgeKind::{Take, TakeAll, Snapshot, Mutate}
     outputs: Vec<PlaceId>,                 // positional; also the target set for routed / Distribution
-    routing: RoutingTable,                 // built at build(): TypeId -> output index, for routed bodies
+    // no routing field: a routed body's TypeId -> output index table is resolved from types when the
+    // body is wrapped (transition()) and captured by the erased closure; problems surface at build()
     body: Option<Box<dyn FnMut(ErasedInputs) -> ErasedOutcome + Send + Sync>>,  // None while in flight
     guard: Option<Box<dyn Fn(&Net) -> bool + Send + Sync>>,
     priority: Option<Box<dyn Fn(&Net) -> f64 + Send + Sync>>,
@@ -226,11 +227,19 @@ distinguishing information and the author must care anyway.
 (heavy, light, count)  ⇐  |ps: Vec<Parcel>| -> (Vec<Parcel>, Vec<Parcel>, Option<u32>)
 ```
 
-**Routed** — the return type is not a tuple. Each emitted value goes to the
-unique output place of its type. Order of output places is irrelevant.
-Implemented by trait `RoutedOutput` with a static list of payload types and
-a runtime `emit()`; impls for `T`, `Option<T>`, `Vec<T>`, `Either<A, B>`,
-and `#[derive(Routed)]` for user enums (variant payload type = destination).
+**Routed** — the return type is not a tuple. Each emitted payload goes to
+the unique output place of its type. Order of output places is irrelevant.
+Trait `RoutedOutput` (`petritype::routing`) lists the payload types
+(`describe`) and emits them (`emit`); implemented by `#[derive(Routed)]` on
+an **enum** (each single-field tuple variant `V(P)` sends `P` to the place
+of type `P`; a unit variant emits nothing) or on a **struct** (a leaf: the
+whole value goes to the place of its own type), by `Either<A, B>` (our own
+enum), and by `Option<T>` / `Vec<T>` whose `T: RoutedOutput` (`None` emits
+nothing; a `Vec` is always a batch). Payloads are leaves: `Batch(Vec<Job>)`
+is one token at a `Vec<Job>` place. There is deliberately **no impl for a
+bare `T`**: it would overlap `Option<T>` / `Vec<T>` under coherence and make
+`Option<u32>` ambiguous at the call site (E0283). A bare std value uses the
+positional 1-tuple `(value,)`; a bare user type derives `Routed`.
 
 ```rust
 (successes, uncertain)  ⇐  |d: ScrapedData| -> Outcome   // enum Outcome { Ok(SuccessfulScrape), Unsure(UncertainScrapeResult) }
@@ -241,8 +250,9 @@ Build-time checks for routed bodies (`BuildError` naming transition and type):
   (`UnroutableOutput` / `AmbiguousOutput`: use positional or a newtype);
 - every output place is reachable by some payload type (the diagram must not
   lie).
-- `Vec<T>` has two readings: batch at a `T` place, or one token at a `Vec<T>`
-  place. Exactly one of those must be among the outputs.
+- The `TypeId -> output index` table is resolved from types alone when the
+  body is wrapped, so `transition()` stays infallible; the first problem per
+  transition is kept by the builder and reported by `build()`.
 
 **Distribution** — the body, or an *output distribution function* composed
 after it, returns a `Distribution`: typed `(place, token)` pairs. The escape
@@ -611,7 +621,8 @@ Always:
 - One input edge per place per transition (`DuplicateInputPlace`).
 - `SnapshotEdge` from a `no_clone` place.
 - `restore_tokens_on_failure` on a transition with a `no_clone` input.
-- Routed-output resolution (§4.5): unroutable, ambiguous, unreachable.
+- Routed-output resolution (§4.5): `UnroutableOutput`, `AmbiguousOutput`,
+  `UnreachableOutput`, each naming the transition and the type or place.
 - (Output slot count vs output place count is carried by the types; a
   `debug_assert!` in `distribute` guards the erased index.)
 
@@ -662,7 +673,7 @@ Cargo workspace, edition 2024, MSRV = current stable minus two (must be
 | crate | contents | deps |
 |---|---|---|
 | `petritype` | builder, `Net`, events, checks, `drivers` | `thiserror`; feature `serde` adds `serde`, `serde_json` |
-| `petritype-derive` | `#[derive(Routed)]` | `syn`, `quote`; re-exported by `petritype` |
+| `petritype-derive` | `#[derive(Routed)]` on enums (variants) and structs (leaf) | `syn` 2, `quote`, `proc-macro2`; re-exported by `petritype` unconditionally as `petritype::Routed` |
 | `petritype-dot` | Graphviz DOT text of a net and its marking | none |
 | `petritype-bevy` | `NetRes`, mirror systems, token entities, in-flight highlighting, task-pool driver | pins one Bevy version |
 | `petritype-tokio` | only if a need appears | |
@@ -702,7 +713,7 @@ Check that the name `petritype` is free on crates.io before publishing.
 | readable mismatch errors | `#[diagnostic::on_unimplemented]` |
 | body may return plain or `Result` | trait `IntoOutcome<Outputs, Marker>` over the return type; marker tags (`Positional`, `Failing<M>`, later `Routed`) keep the impls from overlapping, as Bevy's `IntoSystem<Marker>` |
 | positional slot may hold one / maybe one / many | trait `IntoTokens<T>` for `T`, `Option<T>`, `Vec<T>` |
-| routing by payload type without runtime reflection | trait `RoutedOutput` with a static `TypeId` list; `#[derive(Routed)]` proc macro; resolved to indices at build |
+| routing by payload type without runtime reflection | trait `RoutedOutput` (`describe` lists `TypeId`s, `emit` pushes into a `RouteSink`); `#[derive(Routed)]` proc macro names `petritype::routing`, so that module is public; table resolved from types at `transition()`, problems reported at `build()`. Cost of marker-based form selection: a return type that fits neither form is blamed on `IntoOutcome`, whose notes therefore describe both forms |
 | body in flight without borrowing the net | `Option<Box<dyn FnMut>>` slot, `Option::take` on launch |
 | bodies on other threads | `Send + 'static` bounds; `Firing: Send` when detachable; `std::thread::scope` |
 | no aliasing between tokens | ownership and moves; `Clone` explicit; `Arc` for sharing; `Arc::make_mut` for copy-on-write |

@@ -17,8 +17,10 @@
 //! Every impl here is written next to the impl of its public partner, by the
 //! same macro, so the two halves cannot drift apart.
 
+use std::any::TypeId;
+
 use crate::edge::EdgeKind;
-use crate::erased::{ErasedBody, ErasedInput, ErasedOutcome};
+use crate::erased::{ErasedBody, ErasedInput, ErasedOutcome, RouteTable, RoutingProblem};
 use crate::ids::{NetId, PlaceId};
 use crate::place::ErasedToken;
 
@@ -56,6 +58,14 @@ pub trait EdgeTupleSealed {
 pub trait PlaceTupleSealed {
     /// Appends `(place, net)` for each output place.
     fn describe(&self, out: &mut Vec<(PlaceId, NetId)>);
+
+    /// Appends `(type id, type name)` for the token type of each output
+    /// place.
+    ///
+    /// Static, because routing is resolved from types alone: the handles
+    /// say which places a transition writes to, and this says what they
+    /// hold, which is the half a payload type is matched against.
+    fn describe_types(out: &mut Vec<(TypeId, &'static str)>);
 }
 
 /// The engine half of [`PositionalOutputs`](crate::PositionalOutputs):
@@ -69,8 +79,20 @@ pub trait PositionalSealed<Out> {
 /// The engine half of [`IntoOutcome`](crate::IntoOutcome): turning whatever
 /// the body returned into the one shape the engine distributes.
 pub trait OutcomeSealed<Out, M> {
-    /// Consumes the body's return value.
-    fn into_outcome(self) -> ErasedOutcome;
+    /// Resolves this output form against those output places, once, when the
+    /// transition is declared.
+    ///
+    /// Only the routed form has anything to resolve; the others answer with
+    /// an empty table. The `Err` is stashed by
+    /// [`transition`](crate::NetBuilder::transition), which must stay
+    /// infallible, and reported by
+    /// [`build`](crate::NetBuilder::build), which knows the transition's
+    /// name.
+    fn routing() -> Result<RouteTable, RoutingProblem>;
+
+    /// Consumes the body's return value, sending each token to the output
+    /// place the form says it belongs to.
+    fn into_outcome(self, routes: &RouteTable) -> ErasedOutcome;
 }
 
 /// The engine half of [`TransitionBody`](crate::TransitionBody): wrapping a
@@ -78,5 +100,11 @@ pub trait OutcomeSealed<Out, M> {
 pub trait BodySealed<E, O, M> {
     /// Wraps this body, once, at declaration time. The wrapper extracts one
     /// argument per edge, calls the body, and converts what it returns.
-    fn into_erased(self) -> ErasedBody;
+    ///
+    /// The routing table is resolved here too, where the return type and the
+    /// output places are both in scope, and captured by the wrapper — which
+    /// is why no table is stored beside the transition. A table that cannot
+    /// be resolved comes back as the second half of the pair, for
+    /// [`build`](crate::NetBuilder::build) to refuse the net with.
+    fn into_erased(self) -> (ErasedBody, Option<RoutingProblem>);
 }

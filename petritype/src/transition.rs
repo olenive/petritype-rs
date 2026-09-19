@@ -25,9 +25,13 @@ pub(crate) type Priority = Box<dyn Fn(&Net) -> f64 + Send + Sync>;
 
 /// One transition as the net holds it, with its body's types erased.
 ///
-/// The fields this slice fills are the ones it can check; `routing`,
+/// The fields this slice fills are the ones it can check;
 /// `restore_tokens_on_failure` and the rest of DESIGN §4.4 arrive with the
-/// slices that read them.
+/// slices that read them. There is no `routing` field, although DESIGN §4.4
+/// lists one: a body that routes its outputs by type resolves its
+/// `TypeId -> output index` table when it is declared and the erased body
+/// captures it, so the net itself stores nothing about routing and firing
+/// costs one lookup either way.
 pub(crate) struct TransitionSlot {
     /// The name given in the builder; unique within a net.
     pub(crate) name: String,

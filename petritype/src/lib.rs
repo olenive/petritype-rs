@@ -8,7 +8,9 @@
 //!
 //! This version covers *declaring* a net — places, tokens, transitions and
 //! the edges between them — reading it back, and firing it one transition at
-//! a time. The wiring below is checked when it compiles.
+//! a time. The wiring below is checked when it compiles. A body may return
+//! its outputs as a tuple, slot by slot, or as one value to be [routed to the
+//! output place of its type](routing).
 //!
 //! ```
 //! use petritype::{EdgeKind, Event, NetBuilder, SnapshotEdge, TakeEdge};
@@ -110,6 +112,10 @@
 //!   [`EdgeKind`] is the same thing with the type forgotten.
 //! - [`IntoTokens`] decides how many tokens one returned slot is worth, and
 //!   [`IntoOutcome`] tells outputs from failure.
+//! - [`RoutedOutput`] is the other output form: a body that returns a value
+//!   rather than a tuple has each payload sent to the output place of its
+//!   type, which is what [`#[derive(Routed)]`](Routed) and [`Either`] are
+//!   for — see the [`routing`] module.
 //! - [`Net::places`], [`Net::transitions`], [`Net::tokens`], [`Net::label`]
 //!   and [`Net::token`] read the net; [`Net::drain_events`] follows it.
 //! - [`Net::extend`], [`Net::put`], [`Net::set_tokens`], [`Net::remove`] and
@@ -146,6 +152,7 @@ mod firing;
 mod ids;
 mod net;
 mod place;
+pub mod routing;
 mod sealed;
 mod transition;
 
@@ -157,7 +164,12 @@ pub use event::Event;
 pub use firing::Selector;
 pub use ids::{NetId, PlaceId, PlaceRef, TokenId, TransitionId};
 pub use net::{Net, PlaceInfo};
+pub use routing::{Either, RoutedOutput};
 pub use transition::{TransitionBuilder, TransitionInfo};
+
+/// Routes a returned value to the output place of its type; see
+/// [`RoutedOutput`] and the [`routing`] module.
+pub use petritype_derive::Routed;
 
 /// The `serde_json` this crate was built against, re-exported so that callers
 /// of [`Net::json`] need not match its version by hand.

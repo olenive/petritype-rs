@@ -12,6 +12,7 @@
 //! traits' methods, which are reachable through the public traits; the module
 //! is private, so the names never leave the crate.
 
+use std::any::TypeId;
 use std::fmt;
 
 use crate::place::ErasedToken;
@@ -103,3 +104,113 @@ impl fmt::Debug for ErasedOutcome {
 /// firing found in the places.
 pub(crate) type ErasedBody =
     Box<dyn for<'a> FnMut(ErasedInputs<'a>) -> ErasedOutcome + Send + Sync>;
+
+/// Where each routed payload type goes: the `TypeId -> output index` table a
+/// transition with a routed body resolves when it is declared.
+///
+/// One table per transition, built once from the payload types of what the
+/// body returns and the types of its output places, and then captured by the
+/// erased body. Firing only looks an index up, so routing costs no more at
+/// run time than the positional form, which knows its indices from the start.
+///
+/// The table is a small vector rather than a map: a transition has at most
+/// twelve outputs, and a linear scan over that many `TypeId`s beats hashing
+/// one.
+pub struct RouteTable {
+    /// One entry per routable payload type, in the order
+    /// [`describe`](crate::RoutedOutput::describe) listed them.
+    entries: Vec<(TypeId, usize)>,
+}
+
+impl RouteTable {
+    /// The table of a body that routes nothing: the positional and failing
+    /// forms carry one so that every outcome is converted the same way.
+    pub(crate) fn empty() -> Self {
+        RouteTable {
+            entries: Vec::new(),
+        }
+    }
+
+    /// Resolves the payload types of a routed return value against the types
+    /// of a transition's output places (both in declaration order), or says
+    /// why they cannot be.
+    ///
+    /// This is DESIGN §4.5's check and the table in one pass, because they
+    /// are the same question: a payload type resolves iff exactly one output
+    /// place holds it, and an output place is honest iff some payload type
+    /// resolves to it.
+    pub(crate) fn resolve(
+        payloads: &[(TypeId, &'static str)],
+        outputs: &[(TypeId, &'static str)],
+    ) -> Result<RouteTable, RoutingProblem> {
+        let mut entries = Vec::with_capacity(payloads.len());
+        for &(payload, type_name) in payloads {
+            let mut matching = outputs
+                .iter()
+                .enumerate()
+                .filter(|(_, (output, _))| *output == payload)
+                .map(|(index, _)| index);
+            let Some(index) = matching.next() else {
+                return Err(RoutingProblem::Unroutable { type_name });
+            };
+            if matching.next().is_some() {
+                return Err(RoutingProblem::Ambiguous { type_name });
+            }
+            entries.push((payload, index));
+        }
+
+        // Every output place has to be reachable by something, or the
+        // diagram draws an edge no token can travel.
+        for (index, (output, _)) in outputs.iter().enumerate() {
+            if !entries.iter().any(|(payload, _)| payload == output) {
+                return Err(RoutingProblem::Unreachable { output: index });
+            }
+        }
+
+        Ok(RouteTable { entries })
+    }
+
+    /// The output place this payload type goes to, or `None` for a type the
+    /// table was not built for.
+    pub(crate) fn index_of(&self, payload: TypeId) -> Option<usize> {
+        self.entries
+            .iter()
+            .find(|(type_id, _)| *type_id == payload)
+            .map(|(_, index)| *index)
+    }
+}
+
+impl fmt::Debug for RouteTable {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // The `TypeId`s print as opaque hashes, so the indices are what is
+        // worth showing: which outputs this transition can route to.
+        f.debug_list()
+            .entries(self.entries.iter().map(|(_, index)| index))
+            .finish()
+    }
+}
+
+/// Why a routed body and its output places do not fit together.
+///
+/// Produced when the transition is declared, where the transition's name is
+/// not yet known and an output place is still an index;
+/// [`build`](crate::NetBuilder::build) turns it into the
+/// [`BuildError`](crate::BuildError) that names both.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RoutingProblem {
+    /// A payload type with no output place of that type.
+    Unroutable {
+        /// The payload type that has nowhere to go.
+        type_name: &'static str,
+    },
+    /// Two output places of one type, so the type no longer picks one.
+    Ambiguous {
+        /// The payload type that has more than one destination.
+        type_name: &'static str,
+    },
+    /// An output place that no payload type can reach.
+    Unreachable {
+        /// Its index among the transition's output places.
+        output: usize,
+    },
+}

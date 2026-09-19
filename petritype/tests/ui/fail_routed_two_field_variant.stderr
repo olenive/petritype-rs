@@ -1,0 +1,5 @@
+error: a routed variant carries exactly one payload, `Variant(T)`
+  --> tests/ui/fail_routed_two_field_variant.rs:11:12
+   |
+11 |     Weighed(Parcel, f32),
+   |            ^^^^^^^^^^^^^

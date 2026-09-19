@@ -1,0 +1,19 @@
+[package]
+name = "petritype-derive"
+version = "0.1.0"
+description = "The #[derive(Routed)] macro for petritype: route a returned value to the output place of its type."
+readme = "../README.md"
+keywords = ["petri-net", "derive", "macro"]
+categories = ["data-structures", "simulation"]
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+proc-macro = true
+
+[dependencies]
+syn = { version = "2", features = ["derive"] }
+quote = "1"
+proc-macro2 = "1"

@@ -7,7 +7,8 @@
 //!    implemented for every arity from 0 to 12.
 //! 2. Does what the body returns match the output places? —
 //!    [`PositionalOutputs`], slot by slot, with [`IntoTokens`] deciding how
-//!    many tokens one slot is worth.
+//!    many tokens one slot is worth, or
+//!    [`RoutedOutput`](crate::RoutedOutput), payload type by payload type.
 //! 3. Is the return value an outcome at all? — [`IntoOutcome`], which also
 //!    recognises `Result` as failure rather than as data.
 //!
@@ -15,13 +16,15 @@
 //! [`ErasedBody`](crate::erased::ErasedBody) at declaration time, so firing
 //! costs no type juggling at all.
 
+use std::any::{TypeId, type_name};
 use std::error::Error;
 
 use crate::arity::for_each_arity;
 use crate::edge::InputEdge;
-use crate::erased::{ErasedBody, ErasedInputs, ErasedOutcome};
+use crate::erased::{ErasedBody, ErasedInputs, ErasedOutcome, RouteTable, RoutingProblem};
 use crate::ids::{NetId, PlaceId, PlaceRef};
 use crate::place::ErasedToken;
+use crate::routing::{RouteSink, RouteSpec, RoutedOutput};
 use crate::sealed::{BodySealed, EdgeSealed, OutcomeSealed, PlaceTupleSealed, PositionalSealed};
 
 pub mod marker {
@@ -42,6 +45,12 @@ pub mod marker {
     /// The body returned a tuple: slot *i* goes to output place *i*.
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
     pub struct Positional;
+
+    /// The body returned one value to be routed by type: each payload goes
+    /// to the output place that holds its type, whatever order the outputs
+    /// were declared in. See [`RoutedOutput`](crate::RoutedOutput).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    pub struct Routed;
 
     /// The body returned `Result<O, E>`, where `O` is itself an outcome in
     /// the form `M`. Failure wraps any other form rather than replacing it.
@@ -128,37 +137,57 @@ pub trait OutputPlaces: PlaceTupleSealed {}
     label = "`{Self}` does not match the output places",
     note = "outputs `{Outputs}` want a tuple of that many slots, where slot i is `T`, \
             `Option<T>` or `Vec<T>` for the type of output place i",
-    note = "returning a value that is not a tuple, to be routed to the output place of its \
-            own type, is not supported yet"
+    note = "a value that is not a tuple is routed by type instead: derive `Routed` on the enum \
+            or struct you return, so that each payload goes to the output place that holds it"
 )]
 pub trait PositionalOutputs<Outputs>: PositionalSealed<Outputs> {}
 
 /// What a transition body may return.
 ///
-/// Either the outputs themselves, or `Result<Outputs, E>`. A `Result` always
+/// One of the output forms, or `Result<Outputs, E>` of one. A `Result` always
 /// means failure, never routing (DESIGN §7): a body that wants to send a
 /// value to one place or another returns data that says so, not an `Err`.
+///
+/// Two forms are implemented so far, and they are told apart by the shape of
+/// the return type:
+///
+/// - **positional** — a tuple, one slot per output place, matched by order
+///   ([`PositionalOutputs`]);
+/// - **routed** — a value that is not a tuple, matched by type
+///   ([`RoutedOutput`](crate::RoutedOutput)), which is what
+///   [`#[derive(Routed)]`](crate::Routed) implements.
 ///
 /// # How later output forms plug in
 ///
 /// The `Marker` parameter exists so that new forms can be added without
-/// colliding with this slice's impls. Routed outputs will add
-/// `impl<O: RoutedOutput> IntoOutcome<Outputs, marker::Routed> for O` and the
-/// `Distribution` form another impl with its own tag; because the tags
-/// differ, none of them overlaps the positional impl, and the compiler picks
-/// the form by picking the impl whose bounds hold. `Result` needs no new
-/// impl for either: [`marker::Failing<M>`] carries the inner form's tag.
+/// colliding with the ones already here. Routed outputs added
+/// `impl<O: RoutedOutput> IntoOutcome<Outputs, marker::Routed> for O`, and
+/// the `Distribution` form will add another impl with its own tag; because
+/// the tags differ, none of them overlaps the positional impl, and the
+/// compiler picks the form by picking the impl whose bounds hold. `Result`
+/// needs no new impl for any of them: [`marker::Failing<M>`] carries the
+/// inner form's tag.
 #[diagnostic::on_unimplemented(
     message = "a transition body must return its outputs, or a `Result` of them",
     label = "`{Self}` is not a transition outcome",
-    note = "return a tuple with one slot per output place, `()` if there are none, or \
-            `Result<Outputs, E>` where `E: std::error::Error + Send + Sync + 'static`",
-    note = "a `Result` always means failure, never routing"
+    note = "positional: outputs `{Outputs}` want a tuple of that many slots, where slot i is \
+            `T`, `Option<T>` or `Vec<T>` for the type of output place i, and `()` for no \
+            outputs at all",
+    note = "routed: a value that is not a tuple, whose every payload goes to the output place \
+            that holds its type — derive `Routed` on the enum or struct you return",
+    note = "either form may be wrapped in `Result<_, E>` where \
+            `E: std::error::Error + Send + Sync + 'static`; a `Result` always means failure, \
+            never routing"
 )]
 pub trait IntoOutcome<Outputs, Marker>: OutcomeSealed<Outputs, Marker> {}
 
 impl<Outputs, O: PositionalOutputs<Outputs>> OutcomeSealed<Outputs, marker::Positional> for O {
-    fn into_outcome(self) -> ErasedOutcome {
+    /// Nothing to resolve: a slot's index *is* its output place's index.
+    fn routing() -> Result<RouteTable, RoutingProblem> {
+        Ok(RouteTable::empty())
+    }
+
+    fn into_outcome(self, _routes: &RouteTable) -> ErasedOutcome {
         let mut tokens = Vec::new();
         PositionalSealed::push_erased(self, &mut tokens);
         ErasedOutcome::Ok(tokens)
@@ -167,14 +196,55 @@ impl<Outputs, O: PositionalOutputs<Outputs>> OutcomeSealed<Outputs, marker::Posi
 
 impl<Outputs, O: PositionalOutputs<Outputs>> IntoOutcome<Outputs, marker::Positional> for O {}
 
+/// The routed form: the payload types of what the body returns are matched
+/// against the types of the output places, and each emitted payload is tagged
+/// with the index that match gave it.
+///
+/// No overlap with the positional impl above, although both are written for a
+/// bare `O`: the marker differs, and nothing implements both
+/// [`PositionalOutputs`] (tuples only) and
+/// [`RoutedOutput`](crate::RoutedOutput) (never a tuple).
+impl<Outputs, O> OutcomeSealed<Outputs, marker::Routed> for O
+where
+    Outputs: OutputPlaces,
+    O: RoutedOutput,
+{
+    fn routing() -> Result<RouteTable, RoutingProblem> {
+        let mut spec = RouteSpec::new();
+        O::describe(&mut spec);
+        let mut outputs = Vec::new();
+        <Outputs as PlaceTupleSealed>::describe_types(&mut outputs);
+        RouteTable::resolve(spec.payloads(), &outputs)
+    }
+
+    fn into_outcome(self, routes: &RouteTable) -> ErasedOutcome {
+        let mut tokens = Vec::new();
+        self.emit(&mut RouteSink::new(routes, &mut tokens));
+        ErasedOutcome::Ok(tokens)
+    }
+}
+
+impl<Outputs, O> IntoOutcome<Outputs, marker::Routed> for O
+where
+    Outputs: OutputPlaces,
+    O: RoutedOutput,
+{
+}
+
 impl<Outputs, O, E, M> OutcomeSealed<Outputs, marker::Failing<M>> for Result<O, E>
 where
     O: IntoOutcome<Outputs, M>,
     E: Error + Send + Sync + 'static,
 {
-    fn into_outcome(self) -> ErasedOutcome {
+    /// The inner form's resolution: wrapping outputs in a `Result` says
+    /// nothing about where they go.
+    fn routing() -> Result<RouteTable, RoutingProblem> {
+        <O as OutcomeSealed<Outputs, M>>::routing()
+    }
+
+    fn into_outcome(self, routes: &RouteTable) -> ErasedOutcome {
         match self {
-            Ok(outputs) => OutcomeSealed::into_outcome(outputs),
+            Ok(outputs) => OutcomeSealed::into_outcome(outputs, routes),
             // Erased here, at the edge of the typed API, so that the engine
             // and the event log speak one error type whatever bodies return.
             Err(error) => ErasedOutcome::Err(Box::new(error)),
@@ -225,8 +295,17 @@ macro_rules! impl_body {
             R: IntoOutcome<Outputs, M>,
         {
             #[allow(unused_mut, unused_variables)]
-            fn into_erased(mut self) -> ErasedBody {
-                Box::new(move |mut inputs: ErasedInputs<'_>| {
+            fn into_erased(mut self) -> (ErasedBody, Option<RoutingProblem>) {
+                // Resolved here, the one place where the return type and the
+                // output places are both known, and then captured: firing
+                // looks an index up and no more. An unresolvable table is
+                // replaced by an empty one and reported, because
+                // `transition()` cannot fail and the net will not build.
+                let (routes, problem) = match <R as OutcomeSealed<Outputs, M>>::routing() {
+                    Ok(routes) => (routes, None),
+                    Err(problem) => (RouteTable::empty(), Some(problem)),
+                };
+                let body: ErasedBody = Box::new(move |mut inputs: ErasedInputs<'_>| {
                     // One argument per edge, taken in declaration order.
                     // `iter_mut` and not indexing: the items borrow the
                     // slice rather than the iterator, so a `&mut` argument
@@ -237,8 +316,9 @@ macro_rules! impl_body {
                             args.next().expect("one erased input per input edge"),
                         ),
                     )*);
-                    OutcomeSealed::into_outcome(returned)
-                })
+                    OutcomeSealed::into_outcome(returned, &routes)
+                });
+                (body, problem)
             }
         }
 
@@ -263,6 +343,11 @@ macro_rules! impl_outputs {
             fn describe(&self, out: &mut Vec<(PlaceId, NetId)>) {
                 let ($($t,)*) = self;
                 $(out.push(($t.id(), $t.net()));)*
+            }
+
+            #[allow(unused_variables)]
+            fn describe_types(out: &mut Vec<(TypeId, &'static str)>) {
+                $(out.push((TypeId::of::<$t>(), type_name::<$t>()));)*
             }
         }
 
@@ -303,14 +388,33 @@ mod tests {
     use crate::{MutateEdge, TakeAllEdge, TakeEdge};
 
     /// Wraps a body exactly as `NetBuilder::transition` does, without needing
-    /// a net: the tuples are only there to pin the type parameters.
+    /// a net: the tuples are only there to pin the type parameters. Panics
+    /// on a routing problem, which the tests that expect one ask for with
+    /// [`routing_of`] instead.
     fn erase<Edges, Outputs, M, F>(_inputs: Edges, _outputs: Outputs, body: F) -> ErasedBody
     where
         Edges: InputEdges,
         Outputs: OutputPlaces,
         F: TransitionBody<Edges, Outputs, M>,
     {
-        BodySealed::into_erased(body)
+        let (body, problem) = BodySealed::into_erased(body);
+        assert_eq!(problem, None, "this body's outputs resolve");
+        body
+    }
+
+    /// What resolving this body's return type against those output places
+    /// found, without a net and without firing.
+    fn routing_of<Edges, Outputs, M, F>(
+        _inputs: Edges,
+        _outputs: Outputs,
+        body: F,
+    ) -> Option<RoutingProblem>
+    where
+        Edges: InputEdges,
+        Outputs: OutputPlaces,
+        F: TransitionBody<Edges, Outputs, M>,
+    {
+        BodySealed::into_erased(body).1
     }
 
     fn place<T>(index: u32) -> PlaceRef<T> {
@@ -383,6 +487,84 @@ mod tests {
             ErasedOutcome::Ok(tokens) => panic!("expected a failure, got {tokens:?} tokens"),
             ErasedOutcome::Err(error) => assert_eq!(error.to_string(), "sad"),
         }
+    }
+
+    /// Two payload types, hand-written exactly as `#[derive(Routed)]` writes
+    /// it for an enum: the unit variant emits nothing.
+    #[derive(Debug)]
+    enum Outcome {
+        Number(u32),
+        Note(String),
+        Nothing,
+    }
+
+    impl RoutedOutput for Outcome {
+        fn describe(spec: &mut RouteSpec) {
+            spec.payload::<u32>();
+            spec.payload::<String>();
+        }
+
+        fn emit(self, sink: &mut RouteSink<'_>) {
+            match self {
+                Outcome::Number(value) => sink.push(value),
+                Outcome::Note(value) => sink.push(value),
+                Outcome::Nothing => {}
+            }
+        }
+    }
+
+    #[test]
+    fn a_routed_body_sends_each_payload_to_the_place_of_its_type() {
+        let numbers = place::<u32>(0);
+        let notes = place::<String>(1);
+        // Declared notes first: a routed body does not care about the order.
+        let mut body = erase((TakeEdge(numbers),), (notes, numbers), |n: u32| {
+            if n == 0 {
+                Outcome::Number(7)
+            } else {
+                Outcome::Note(String::from("hi"))
+            }
+        });
+
+        let landed = |outcome: ErasedOutcome| match outcome {
+            ErasedOutcome::Ok(tokens) => tokens,
+            ErasedOutcome::Err(error) => panic!("unexpected failure: {error}"),
+        };
+
+        let tokens = landed(body(ErasedInputs::new(vec![ErasedInput::Token(Box::new(
+            0_u32,
+        ))])));
+        assert_eq!(tokens.len(), 1);
+        assert_eq!(tokens[0].0, 1, "the u32 place, whatever its position");
+        assert_eq!(*tokens[0].1.downcast_ref::<u32>().unwrap(), 7);
+
+        let tokens = landed(body(ErasedInputs::new(vec![ErasedInput::Token(Box::new(
+            1_u32,
+        ))])));
+        assert_eq!(tokens[0].0, 0, "the String place");
+        assert_eq!(tokens[0].1.downcast_ref::<String>().unwrap(), "hi");
+    }
+
+    #[test]
+    fn a_unit_variant_produces_nothing() {
+        let numbers = place::<u32>(0);
+        let notes = place::<String>(1);
+        let mut body = erase((), (numbers, notes), || Outcome::Nothing);
+        match body(ErasedInputs::new(Vec::new())) {
+            ErasedOutcome::Ok(tokens) => assert!(tokens.is_empty()),
+            ErasedOutcome::Err(error) => panic!("unexpected failure: {error}"),
+        }
+    }
+
+    #[test]
+    fn routing_is_resolved_when_the_body_is_wrapped() {
+        let numbers = place::<u32>(0);
+        // No place for the `String` payload, and the problem is found
+        // without firing anything.
+        assert!(matches!(
+            routing_of((), (numbers,), || Outcome::Number(1)),
+            Some(RoutingProblem::Unroutable { .. })
+        ));
     }
 
     #[test]

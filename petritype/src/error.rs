@@ -59,6 +59,46 @@ pub enum BuildError {
         /// The place read more than once.
         place: String,
     },
+    /// A transition whose body [routes](crate::RoutedOutput) its outputs by
+    /// type may emit a payload of a type none of its output places holds.
+    ///
+    /// Either an output place is missing from the declaration, or the body
+    /// returns a payload the net has nowhere to put. A positional body,
+    /// where the slot rather than the type picks the place, has no such
+    /// question to answer.
+    #[error("transition {transition:?} routes {type_name} to no output place")]
+    UnroutableOutput {
+        /// The transition whose body it is.
+        transition: String,
+        /// The payload type with nowhere to go.
+        type_name: &'static str,
+    },
+    /// Two of a transition's output places hold the same type, so that type
+    /// no longer picks one of them.
+    ///
+    /// Routing by type is only unambiguous while the types are distinct.
+    /// Return a tuple instead, where order picks the place, or give one of
+    /// the two places a newtype of its own so that the types differ again.
+    #[error("transition {transition:?} has more than one output place of type {type_name}")]
+    AmbiguousOutput {
+        /// The transition whose output places they are.
+        transition: String,
+        /// The payload type with more than one destination.
+        type_name: &'static str,
+    },
+    /// A transition declares an output place that no payload type of its
+    /// routed body can reach.
+    ///
+    /// The declaration is what a diagram draws, so an edge no token can
+    /// travel is a lie about the net. Drop the output place, or return a
+    /// value that can reach it.
+    #[error("transition {transition:?} can route nothing to output place {place:?}")]
+    UnreachableOutput {
+        /// The transition whose output place it is.
+        transition: String,
+        /// The place nothing can reach.
+        place: String,
+    },
 }
 
 /// Misuse of the net's API at run time.

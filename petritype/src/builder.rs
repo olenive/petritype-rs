@@ -8,6 +8,7 @@ use std::fmt;
 
 use crate::body::{OutputPlaces, TransitionBody};
 use crate::edge::{EdgeKind, InputEdges};
+use crate::erased::RoutingProblem;
 use crate::error::BuildError;
 use crate::ids::{NetId, PlaceId, PlaceRef, TransitionId, foreign_place};
 use crate::net::Net;
@@ -53,6 +54,17 @@ pub struct NetBuilder {
     /// without ids: ids are minted by [`build`](NetBuilder::build) so that a
     /// half-built net never hands out ids the net will not have.
     seeds: Vec<Vec<ErasedToken>>,
+    /// What resolving each transition's routed outputs found, parallel to
+    /// `transitions`, and `None` for the transitions that had nothing to
+    /// resolve.
+    ///
+    /// Routing itself lives in the erased body, which captured the table it
+    /// resolved; only the complaint has to wait, because
+    /// [`transition`](NetBuilder::transition) is infallible and
+    /// [`build`](NetBuilder::build) is where a wiring mistake is reported.
+    /// It stays on the builder rather than on the transition so that the net
+    /// carries nothing that was only ever a question at build time.
+    routing: Vec<Option<RoutingProblem>>,
     label_limit: usize,
 }
 
@@ -65,6 +77,7 @@ impl NetBuilder {
             places: Vec::new(),
             transitions: Vec::new(),
             seeds: Vec::new(),
+            routing: Vec::new(),
             label_limit: DEFAULT_LABEL_LIMIT,
         }
     }
@@ -187,7 +200,10 @@ impl NetBuilder {
     /// - one body parameter per input edge, of the type that edge kind
     ///   produces ([`InputEdge`](crate::InputEdge));
     /// - one returned slot per output place, holding one token, zero or one,
-    ///   or many ([`IntoTokens`](crate::IntoTokens));
+    ///   or many ([`IntoTokens`](crate::IntoTokens)) — unless the body
+    ///   returns a value that is not a tuple, which is
+    ///   [routed](crate::RoutedOutput) to the output place of its type
+    ///   instead, in which case the order of the outputs does not matter;
     /// - the return value as a whole is the outputs, or a `Result` of them
     ///   ([`IntoOutcome`](crate::IntoOutcome)).
     ///
@@ -233,14 +249,18 @@ impl NetBuilder {
             targets.push(place);
         }
 
+        // Wrapping the body also resolves its routing, if it has any; the
+        // problem it may find is kept until `build`.
+        let (body, problem) = BodySealed::into_erased(body);
         let id = TransitionId(self.transitions.len() as u32);
+        self.routing.push(problem);
         self.transitions.push(TransitionSlot {
             name: name.into(),
             inputs: edges,
             outputs: targets,
             // The one place where both the typed body and the erased engine
             // are in scope, so the one place the wrapper can be built.
-            body: Some(BodySealed::into_erased(body)),
+            body: Some(body),
             guard: None,
             priority: None,
             enabled: true,
@@ -267,7 +287,10 @@ impl NetBuilder {
     /// [`BuildError::SnapshotOfNoClonePlace`] if a snapshot edge reads a
     /// place that cannot clone its tokens;
     /// [`BuildError::DuplicateInputPlace`] if one transition reads one place
-    /// through two input edges.
+    /// through two input edges; and, for a transition whose body
+    /// [routes](crate::RoutedOutput) its outputs by type,
+    /// [`BuildError::UnroutableOutput`], [`BuildError::AmbiguousOutput`] or
+    /// [`BuildError::UnreachableOutput`].
     pub fn build(self) -> Result<Net, BuildError> {
         let mut seen = HashSet::with_capacity(self.places.len());
         for slot in &self.places {
@@ -309,6 +332,36 @@ impl NetBuilder {
                     });
                 }
             }
+        }
+
+        // Routing last: a net whose transitions are not yet distinct or
+        // whose edges are wrong has a more basic problem to report first.
+        // Each transition resolved its own table when it was declared; this
+        // is where the index an unreachable output was known by becomes the
+        // place's name.
+        for (index, problem) in self.routing.iter().enumerate() {
+            let Some(problem) = problem else {
+                continue;
+            };
+            let slot = &self.transitions[index];
+            let transition = slot.name.clone();
+            return Err(match *problem {
+                RoutingProblem::Unroutable { type_name } => BuildError::UnroutableOutput {
+                    transition,
+                    type_name,
+                },
+                RoutingProblem::Ambiguous { type_name } => BuildError::AmbiguousOutput {
+                    transition,
+                    type_name,
+                },
+                RoutingProblem::Unreachable { output } => BuildError::UnreachableOutput {
+                    transition,
+                    place: self.places[slot.outputs[output].0 as usize]
+                        .meta
+                        .name
+                        .clone(),
+                },
+            });
         }
 
         let mut net = Net {
@@ -424,6 +477,10 @@ impl fmt::Debug for NetBuilder {
             .field("places", &self.places)
             .field("transitions", &self.transitions)
             .field("seeded", &self.seeds.iter().map(Vec::len).sum::<usize>())
+            .field(
+                "routing problems",
+                &self.routing.iter().filter(|p| p.is_some()).count(),
+            )
             .field("label_limit", &self.label_limit)
             .finish()
     }

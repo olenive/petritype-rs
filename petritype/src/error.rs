@@ -127,6 +127,37 @@ pub enum BuildError {
         /// The place it consumes.
         place: String,
     },
+    /// A transition consumes nothing, in a net built with
+    /// [`assert_no_source_transitions`](crate::NetBuilder::assert_no_source_transitions).
+    ///
+    /// Such a *source* transition takes no token out of any place when it
+    /// fires — read edges do not count, since a
+    /// [`SnapshotEdge`](crate::SnapshotEdge) and a
+    /// [`MutateEdge`](crate::MutateEdge) leave their places as they found
+    /// them — so having fired changes nothing about whether it can fire
+    /// again, and the net never quiesces. Give it a
+    /// [`TakeEdge`](crate::TakeEdge) or a
+    /// [`TakeAllEdge`](crate::TakeAllEdge), or drop the assertion:
+    /// generators and transitions fed from outside the net are deliberate
+    /// sources, and are bounded while the net runs instead.
+    #[error("transition {transition:?} consumes nothing, so it could fire forever")]
+    SourceTransition {
+        /// The offending transition — the first one, in declaration order.
+        transition: String,
+    },
+    /// The net's token flow has a cycle, in a net built with
+    /// [`assert_acyclic`](crate::NetBuilder::assert_acyclic).
+    ///
+    /// Tokens can go round it for ever, so the net has no finish line the
+    /// marking is working towards. Break the loop, or drop the assertion: a
+    /// net that legitimately runs for ever is bounded while it runs instead.
+    #[error("the net's token flow has a cycle: {}", path.join(" -> "))]
+    Cycle {
+        /// The nodes of the cycle by name, from the node the walk closed on
+        /// round to itself: the first and the last name are the same one,
+        /// and places and transitions alternate in between.
+        path: Vec<String>,
+    },
 }
 
 /// Misuse of the net's API at run time.

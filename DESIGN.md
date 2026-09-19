@@ -542,7 +542,7 @@ inline one.
 ```rust
 net.places()      -> impl Iterator<Item = (PlaceId, PlaceInfo<'_>)>    // by value: name, type_name, count (count is live, never stored)
 net.transitions() -> impl Iterator<Item = (TransitionId, TransitionInfo<'_>)>  // by value: name, inputs, outputs, enabled, in_flight, detachable
-net.edges()       -> impl Iterator<Item = EdgeInfo>   // from, to, kind
+net.edges()       -> impl Iterator<Item = EdgeInfo>   // Input { place, transition, kind } | Output { transition, place, slot }; transition order, inputs then outputs
 net.place_named(&str) -> Option<PlaceId>;  net.transition_named(&str) -> Option<TransitionId>
 net.fireable() -> Vec<TransitionId>;  net.is_fireable(t) -> bool;  net.is_enabled(t) -> bool;  net.priority_of(t) -> f64
 net.count(place)  -> usize
@@ -660,10 +660,16 @@ Always:
   `debug_assert!` in `distribute` guards the erased index.)
 
 Opt-in:
-- `b.assert_acyclic()`: DFS over consuming input edges and output edges; read
-  edges excluded; error names the cycle path.
+- `b.assert_acyclic()`: iterative three-colour DFS over consuming input edges
+  and output edges; read edges excluded (they move no tokens). Roots are
+  transitions in declaration order; the first cycle found is reported as
+  `BuildError::Cycle { path }`, node names from the repeated node round to
+  itself (first == last, so it normally starts at a transition), joined with
+  `" -> "` in the message.
 - `b.assert_no_source_transitions()`: every transition has at least one
-  `TakeEdge` or `TakeAllEdge` input.
+  `TakeEdge` or `TakeAllEdge` input; a transition with only read edges fails.
+  First offender in declaration order → `BuildError::SourceTransition`.
+- Both run after the always-on checks, source transitions before cycles.
 - The pair is a static termination proof; each alone proves less, and the
   docs say so.
 

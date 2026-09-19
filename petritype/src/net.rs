@@ -6,6 +6,7 @@
 use std::any::{Any, TypeId, type_name};
 use std::fmt;
 
+use crate::edge::EdgeInfo;
 use crate::error::NetError;
 use crate::event::Event;
 use crate::firing::Selector;
@@ -135,6 +136,75 @@ impl Net {
             };
             (id, info)
         })
+    }
+
+    /// Every edge of the net, as a diagram draws it: transition by
+    /// transition in declaration order, each one's input edges in
+    /// declaration order and then its output edges.
+    ///
+    /// The same wiring [`transitions`](Net::transitions) reports, one edge at
+    /// a time and with both endpoints named, which is the form a layout or a
+    /// DOT file is built from. It is topology, so it only changes when
+    /// [`topology_counter`](Net::topology_counter) does — never in this
+    /// version, where a net is wired once and then run.
+    ///
+    /// ```
+    /// # use petritype::{EdgeInfo, EdgeKind, NetBuilder, SnapshotEdge, TakeEdge};
+    /// # #[derive(Debug, Clone)] struct Parcel { id: u32, weight: f32 }
+    /// # #[derive(Debug, Clone)] struct Config { max_weight: f32 }
+    /// # let mut b = NetBuilder::new();
+    /// let inbox = b.place::<Parcel>("Inbox");
+    /// let heavy = b.place::<Parcel>("Heavy");
+    /// let config = b.place::<Config>("Config");
+    /// let weigh = b
+    ///     .transition(
+    ///         "Weigh",
+    ///         (TakeEdge(inbox), SnapshotEdge(config)),
+    ///         (heavy,),
+    ///         |parcel: Parcel, cfg: Config| (Some(parcel).filter(|p| p.weight > cfg.max_weight),),
+    ///     )
+    ///     .id();
+    /// let net = b.build()?;
+    ///
+    /// assert_eq!(
+    ///     net.edges().collect::<Vec<_>>(),
+    ///     [
+    ///         EdgeInfo::Input { place: inbox.id(), transition: weigh, kind: EdgeKind::Take },
+    ///         EdgeInfo::Input { place: config.id(), transition: weigh, kind: EdgeKind::Snapshot },
+    ///         EdgeInfo::Output { transition: weigh, place: heavy.id(), slot: 0 },
+    ///     ],
+    /// );
+    /// # Ok::<(), petritype::BuildError>(())
+    /// ```
+    ///
+    /// A place nothing reads or writes appears in no edge; it is still a
+    /// node, and [`places`](Net::places) is where a diagram gets its nodes.
+    pub fn edges(&self) -> impl Iterator<Item = EdgeInfo> {
+        self.transitions
+            .iter()
+            .enumerate()
+            .flat_map(|(index, slot)| {
+                // The index is where the id came from in the first place.
+                let transition = TransitionId(index as u32);
+                let inputs = slot
+                    .inputs
+                    .iter()
+                    .map(move |&(place, kind)| EdgeInfo::Input {
+                        place,
+                        transition,
+                        kind,
+                    });
+                let outputs =
+                    slot.outputs
+                        .iter()
+                        .enumerate()
+                        .map(move |(slot, &place)| EdgeInfo::Output {
+                            transition,
+                            place,
+                            slot,
+                        });
+                inputs.chain(outputs)
+            })
     }
 
     /// The id of the transition with this name, if the net has one. Names are

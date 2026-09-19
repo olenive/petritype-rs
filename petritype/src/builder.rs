@@ -1,6 +1,38 @@
 //! Declaring a net. The builder is the only place where the concrete token
 //! type of each place is still known, so it is where the per-place vtable is
 //! filled in.
+//!
+//! It is also where the net is checked. Most checks always run — duplicate
+//! names, two input edges into one place, a snapshot or a restore of a place
+//! that cannot clone, an output no payload type can reach — because each one
+//! is a wiring mistake with no sensible reading. Two more are opt-in, because
+//! what they forbid is legitimate in many nets:
+//! [`assert_acyclic`](NetBuilder::assert_acyclic) and
+//! [`assert_no_source_transitions`](NetBuilder::assert_no_source_transitions).
+//!
+//! # The termination proof
+//!
+//! Together the two are a static proof that the net stops. The marking is
+//! finite, every firing consumes at least one token (no source transitions),
+//! and tokens only move forward through a directed acyclic graph, so the
+//! supply is finite and no firing replenishes anything upstream of itself:
+//! the net runs out of things to do.
+//!
+//! Each alone proves less. An acyclic net with a source transition never
+//! quiesces, because the source's firing leaves every place it reads as it
+//! found them and it is immediately fireable again. A net where every
+//! transition consumes can still run for ever around a cycle, since the
+//! tokens a firing consumes come back to where they started.
+//!
+//! The proof is about the net left to itself. Tokens put in from outside
+//! after [`build`](NetBuilder::build) — [`Net::put`](crate::Net::put),
+//! [`Net::extend`](crate::Net::extend),
+//! [`Net::set_tokens`](crate::Net::set_tokens) — are outside it: an
+//! interactive net that is fed while it runs has no finish line, and is
+//! bounded while it runs instead. Read edges are outside it too, and are
+//! excluded from both checks, because they move no tokens: a configuration
+//! place every transition snapshots is not a cycle, and a transition that
+//! only reads is a source however many input edges it has.
 
 use std::any::{TypeId, type_name};
 use std::collections::{HashSet, VecDeque};
@@ -18,6 +50,48 @@ use crate::transition::{TransitionBuilder, TransitionSlot};
 
 /// How many characters a label keeps by default, as in Python petritype.
 const DEFAULT_LABEL_LIMIT: usize = 100;
+
+/// One node of the token-flow graph
+/// [`assert_acyclic`](NetBuilder::assert_acyclic) walks.
+///
+/// The two kinds are numbered separately, so a node is a kind and an index:
+/// names are unique per kind, and a place and a transition may share one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Node {
+    /// The place with this index.
+    Place(u32),
+    /// The transition with this index.
+    Transition(u32),
+}
+
+/// How far the walk has got with a node.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Colour {
+    /// Not reached yet.
+    Unseen,
+    /// On the path being walked right now: reaching it again closes a cycle.
+    OnPath,
+    /// Walked, along with everything reachable from it, and no cycle found
+    /// through it. Reaching it again is a second way to the same place, not
+    /// a loop.
+    Done,
+}
+
+/// The colour of a node, from the two vectors the walk keeps.
+fn colour(node: Node, places: &[Colour], transitions: &[Colour]) -> Colour {
+    match node {
+        Node::Place(id) => places[id as usize],
+        Node::Transition(id) => transitions[id as usize],
+    }
+}
+
+/// Paints a node in whichever of the two vectors it belongs to.
+fn set_colour(node: Node, places: &mut [Colour], transitions: &mut [Colour], colour: Colour) {
+    match node {
+        Node::Place(id) => places[id as usize] = colour,
+        Node::Transition(id) => transitions[id as usize] = colour,
+    }
+}
 
 /// Declares the places of a net and builds it.
 ///
@@ -66,6 +140,16 @@ pub struct NetBuilder {
     /// carries nothing that was only ever a question at build time.
     routing: Vec<Option<RoutingProblem>>,
     label_limit: usize,
+    /// Whether [`build`](NetBuilder::build) refuses a net whose token flow
+    /// has a cycle, as asked for by
+    /// [`assert_acyclic`](NetBuilder::assert_acyclic). Off by default: a
+    /// feedback loop is a perfectly good net.
+    assert_acyclic: bool,
+    /// Whether [`build`](NetBuilder::build) refuses a net with a transition
+    /// that consumes nothing, as asked for by
+    /// [`assert_no_source_transitions`](NetBuilder::assert_no_source_transitions).
+    /// Off by default: a generator is a perfectly good transition.
+    assert_no_source_transitions: bool,
 }
 
 impl NetBuilder {
@@ -79,6 +163,8 @@ impl NetBuilder {
             seeds: Vec::new(),
             routing: Vec::new(),
             label_limit: DEFAULT_LABEL_LIMIT,
+            assert_acyclic: false,
+            assert_no_source_transitions: false,
         }
     }
 
@@ -284,6 +370,104 @@ impl NetBuilder {
         self.label_limit = limit;
     }
 
+    /// Asks [`build`](NetBuilder::build) to refuse a net whose token flow
+    /// has a cycle.
+    ///
+    /// The graph walked has both kinds of node, places and transitions, and
+    /// two kinds of edge: a **consuming** input edge, from a place to a
+    /// transition that takes from it ([`TakeEdge`](crate::TakeEdge) and
+    /// [`TakeAllEdge`](crate::TakeAllEdge)), and every output edge, from a
+    /// transition to a place it writes. Read edges are left out —
+    /// [`SnapshotEdge`](crate::SnapshotEdge) and
+    /// [`MutateEdge`](crate::MutateEdge) move no tokens, so a loop through
+    /// one cannot feed itself, and a configuration place every transition
+    /// reads is not a cycle.
+    ///
+    /// ```
+    /// # use petritype::{BuildError, NetBuilder, TakeEdge};
+    /// let mut b = NetBuilder::new();
+    /// b.assert_acyclic();
+    /// let inbox = b.place::<u32>("Inbox");
+    /// b.transition("Loop", (TakeEdge(inbox),), (inbox,), |n: u32| (n + 1,));
+    ///
+    /// let error = b.build().expect_err("Loop feeds its own input place");
+    /// assert_eq!(
+    ///     error.to_string(),
+    ///     "the net's token flow has a cycle: Loop -> Inbox -> Loop",
+    /// );
+    /// ```
+    ///
+    /// Passing proves that tokens only move forward, not that the net stops:
+    /// a transition with no consuming input fires for ever in a perfectly
+    /// acyclic net.
+    ///
+    /// # The pair
+    ///
+    /// With
+    /// [`assert_no_source_transitions`](NetBuilder::assert_no_source_transitions)
+    /// this is a static proof that the net stops. The marking is finite,
+    /// every firing consumes at least one token, and tokens only move
+    /// forward through a directed acyclic graph, so nothing a firing
+    /// consumes can come back to it and the net runs out of things to do.
+    /// The proof is about the net left to itself: tokens put in from outside
+    /// after `build` — [`Net::put`](crate::Net::put),
+    /// [`Net::extend`](crate::Net::extend) — are outside it, and a net that
+    /// is fed while it runs is bounded while it runs instead.
+    ///
+    /// # Errors
+    ///
+    /// [`BuildError::Cycle`] from [`build`](NetBuilder::build), naming the
+    /// nodes of one cycle from the node the walk closed on round to itself,
+    /// so that the first and the last name are the same one. Transitions are
+    /// walked in declaration order and their output places in declaration
+    /// order, and the first cycle closed is the one reported; a net with
+    /// several is built once more after each is broken.
+    pub fn assert_acyclic(&mut self) -> &mut Self {
+        self.assert_acyclic = true;
+        self
+    }
+
+    /// Asks [`build`](NetBuilder::build) to refuse a net with a transition
+    /// that consumes nothing.
+    ///
+    /// Every transition must have at least one consuming input edge — a
+    /// [`TakeEdge`](crate::TakeEdge) or a
+    /// [`TakeAllEdge`](crate::TakeAllEdge). A transition without one is a
+    /// *source*: it takes no token out of any place, so firing it changes
+    /// nothing about whether it can fire again, and it fires for ever. Read
+    /// edges do not count, and a transition whose every input is a
+    /// [`SnapshotEdge`](crate::SnapshotEdge) or a
+    /// [`MutateEdge`](crate::MutateEdge) is a source like one with no inputs
+    /// at all: both leave their places as they found them.
+    ///
+    /// ```
+    /// # use petritype::{BuildError, NetBuilder};
+    /// let mut b = NetBuilder::new();
+    /// b.assert_no_source_transitions();
+    /// let out = b.place::<u32>("Out");
+    /// b.transition("Spawn", (), (out,), || (1_u32,));
+    ///
+    /// let error = b.build().expect_err("Spawn consumes nothing");
+    /// assert!(matches!(error, BuildError::SourceTransition { ref transition } if transition == "Spawn"));
+    /// ```
+    ///
+    /// Passing proves that every firing shrinks the marking, not that the
+    /// net stops: tokens can still go round a cycle for ever, since what one
+    /// firing consumes the next one puts back. Only paired with
+    /// [`assert_acyclic`](NetBuilder::assert_acyclic) is it a termination
+    /// proof, as that method's docs set out. A generator, or a transition fed
+    /// from outside the net, is a deliberate source — do not assert this on
+    /// such a net.
+    ///
+    /// # Errors
+    ///
+    /// [`BuildError::SourceTransition`] from [`build`](NetBuilder::build),
+    /// naming the first such transition in declaration order.
+    pub fn assert_no_source_transitions(&mut self) -> &mut Self {
+        self.assert_no_source_transitions = true;
+        self
+    }
+
     /// Checks the declarations and produces the net.
     ///
     /// The fresh net holds the seeded marking, an empty event log, and every
@@ -303,6 +487,12 @@ impl NetBuilder {
     /// [routes](crate::RoutedOutput) its outputs by type,
     /// [`BuildError::UnroutableOutput`], [`BuildError::AmbiguousOutput`] or
     /// [`BuildError::UnreachableOutput`].
+    ///
+    /// Then, only if they were asked for,
+    /// [`BuildError::SourceTransition`] from
+    /// [`assert_no_source_transitions`](NetBuilder::assert_no_source_transitions)
+    /// and [`BuildError::Cycle`] from
+    /// [`assert_acyclic`](NetBuilder::assert_acyclic).
     pub fn build(self) -> Result<Net, BuildError> {
         let mut seen = HashSet::with_capacity(self.places.len());
         for slot in &self.places {
@@ -390,6 +580,25 @@ impl NetBuilder {
             });
         }
 
+        // The opt-in checks last: a net that is wired wrongly has a more
+        // basic problem to report than one that is wired for ever. The
+        // per-transition complaint comes before the whole-net one, being the
+        // easier of the two to act on.
+        if self.assert_no_source_transitions {
+            for slot in &self.transitions {
+                if !slot.inputs.iter().any(|(_, kind)| kind.consumes()) {
+                    return Err(BuildError::SourceTransition {
+                        transition: slot.name.clone(),
+                    });
+                }
+            }
+        }
+        if self.assert_acyclic
+            && let Some(path) = self.find_cycle()
+        {
+            return Err(BuildError::Cycle { path });
+        }
+
         let mut net = Net {
             id: self.net,
             places: self.places,
@@ -423,6 +632,100 @@ impl NetBuilder {
     /// read as it does; this is how it reaches back in.
     pub(crate) fn transition_slot(&mut self, id: TransitionId) -> &mut TransitionSlot {
         &mut self.transitions[id.0 as usize]
+    }
+
+    /// The first cycle in the net's token flow, as the names of its nodes
+    /// from the node the walk closed on round to itself, or `None` if there
+    /// is none.
+    ///
+    /// A depth-first walk with three colours — unseen, on the path, done —
+    /// where meeting a node that is on the path is a cycle. The stack is
+    /// explicit rather than the call stack, so that a long pipeline cannot
+    /// overflow it. Every transition is a root, in declaration order, which
+    /// is enough: a cycle alternates places and transitions, so it contains
+    /// a transition, and a transition already walked was walked with
+    /// everything reachable from it.
+    fn find_cycle(&self) -> Option<Vec<String>> {
+        // The reverse of `inputs`, taken once: which transitions consume a
+        // place, in declaration order. Read edges are not token flow.
+        let mut consumers: Vec<Vec<u32>> = vec![Vec::new(); self.places.len()];
+        for (index, slot) in self.transitions.iter().enumerate() {
+            for (place, kind) in &slot.inputs {
+                if kind.consumes() {
+                    consumers[place.0 as usize].push(index as u32);
+                }
+            }
+        }
+
+        // One colour per node, in two vectors because the two kinds are
+        // numbered separately.
+        let mut places = vec![Colour::Unseen; self.places.len()];
+        let mut transitions = vec![Colour::Unseen; self.transitions.len()];
+        for root in 0..self.transitions.len() as u32 {
+            if transitions[root as usize] != Colour::Unseen {
+                continue;
+            }
+            transitions[root as usize] = Colour::OnPath;
+            // The path being walked, each node with how many of its
+            // successors have been followed so far.
+            let mut path = vec![(Node::Transition(root), 0_usize)];
+            while let Some(&(node, followed)) = path.last() {
+                path.last_mut().expect("the path is not empty here").1 += 1;
+                let Some(next) = self.successor(&consumers, node, followed) else {
+                    // Every way out of this node led nowhere: it is not on
+                    // any cycle, and nothing need come back to it.
+                    set_colour(node, &mut places, &mut transitions, Colour::Done);
+                    path.pop();
+                    continue;
+                };
+                match colour(next, &places, &transitions) {
+                    Colour::OnPath => {
+                        let from = path
+                            .iter()
+                            .position(|(node, _)| *node == next)
+                            .expect("a node on the path is in the path");
+                        return Some(
+                            path[from..]
+                                .iter()
+                                .map(|(node, _)| self.node_name(*node))
+                                .chain(std::iter::once(self.node_name(next)))
+                                .collect(),
+                        );
+                    }
+                    Colour::Done => {}
+                    Colour::Unseen => {
+                        set_colour(next, &mut places, &mut transitions, Colour::OnPath);
+                        path.push((next, 0));
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// Where the `index`-th edge out of `node` leads, or `None` once they are
+    /// exhausted: a transition's output places, or the transitions that
+    /// consume a place, both in declaration order.
+    fn successor(&self, consumers: &[Vec<u32>], node: Node, index: usize) -> Option<Node> {
+        match node {
+            Node::Transition(id) => self.transitions[id as usize]
+                .outputs
+                .get(index)
+                .map(|place| Node::Place(place.0)),
+            Node::Place(id) => consumers[id as usize]
+                .get(index)
+                .map(|transition| Node::Transition(*transition)),
+        }
+    }
+
+    /// What to call a node in a reported cycle. Names are unique per kind,
+    /// and a place and a transition may share one, so a path can name the
+    /// same word twice without meaning the same node.
+    fn node_name(&self, node: Node) -> String {
+        match node {
+            Node::Place(id) => self.places[id as usize].meta.name.clone(),
+            Node::Transition(id) => self.transitions[id as usize].name.clone(),
+        }
     }
 
     /// Appends a place with its vtable filled in for `T`.
@@ -508,6 +811,11 @@ impl fmt::Debug for NetBuilder {
                 &self.routing.iter().filter(|p| p.is_some()).count(),
             )
             .field("label_limit", &self.label_limit)
+            .field("assert_acyclic", &self.assert_acyclic)
+            .field(
+                "assert_no_source_transitions",
+                &self.assert_no_source_transitions,
+            )
             .finish()
     }
 }

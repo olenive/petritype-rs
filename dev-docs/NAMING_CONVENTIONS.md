@@ -44,8 +44,9 @@ rename backlog.
 | put consumed tokens back on failure | `restore_tokens_on_failure` | `restore_tokens_on_failure` | — |
 | a body panicked | `BodyPanicked` (inside `FiringFailed`) | the exception inside `TransitionFailedError` | — |
 | the tokens a failed firing took | `Event::Failed { consumed, restored }` (same word as `Fired`/`Launched`) | `TransitionFailedError(consumed, restored)` | — |
-| static check: no cycles | `assert_acyclic` | `assert_acyclic` | — |
-| static check: every transition consumes | `assert_no_source_transitions` | `assert_no_source_transitions` | — |
+| static check: no cycles | `assert_acyclic` → `BuildError::Cycle { path }` (first cycle, `" -> "`) | `assert_acyclic` (all cycles, `" → "`) | — |
+| one edge, as a diagram draws it | `EdgeInfo::{Input { place, transition, kind }, Output { transition, place, slot }}`, `net.edges()` | plotting-layer edge structs (`return_index` = `slot`) | — |
+| static check: every transition consumes | `assert_no_source_transitions` → `BuildError::SourceTransition` (first offender) | `assert_no_source_transitions` (all offenders) | — |
 | lookup by name | `place_named`, `transition_named` | `place_named` | add `transition_named` |
 | execution mode | `Mode::Sequential`, `Mode::Concurrent` | `ExecutionMode.SEQUENTIAL`, `.CONCURRENT` | — |
 | fire stage 1: consume inputs, take body | `launch` | `stage_1_extract_argument_tokens_from_places` | rename `launch` |

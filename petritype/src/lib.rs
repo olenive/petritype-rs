@@ -20,7 +20,11 @@
 //! [routed to the output place of its type](routing), or as a
 //! [`Distribution`] of `(place, token)` pairs it names itself — which
 //! [`output_distribution`](OutputDistribution::output_distribution) lets an
-//! author write beside the net, leaving the domain function unchanged.
+//! author write beside the net, leaving the domain function unchanged. What
+//! the compiler cannot check is checked when the net is built, including two
+//! opt-in assertions — [`NetBuilder::assert_acyclic`] and
+//! [`NetBuilder::assert_no_source_transitions`] — which together prove that a
+//! net left to itself stops.
 //!
 //! ```
 //! use petritype::{EdgeKind, Event, NetBuilder, SnapshotEdge, TakeEdge};
@@ -182,6 +186,10 @@
 //!   anything.
 //! - [`Net::places`], [`Net::transitions`], [`Net::tokens`], [`Net::label`]
 //!   and [`Net::token`] read the net; [`Net::drain_events`] follows it.
+//! - [`Net::edges`] is that same wiring one edge at a time, as [`EdgeInfo`]:
+//!   place → transition with the [`EdgeKind`] saying how it is read, or
+//!   transition → place with the slot it is written from. It is what a
+//!   diagram draws.
 //! - [`Net::extend`], [`Net::put`], [`Net::set_tokens`], [`Net::remove`] and
 //!   [`Net::replace`] change the marking from outside.
 //! - **fireable** and **enabled** are two different questions:
@@ -204,6 +212,13 @@
 //!   what is fireable and which of the fireable ones the default
 //!   [`Selector`] picks; [`Net::set_selector`] replaces that choice, and
 //!   [`Net::enable`] / [`Net::disable`] switch a transition off and on.
+//! - [`NetBuilder::assert_acyclic`] and
+//!   [`NetBuilder::assert_no_source_transitions`] are the two opt-in checks
+//!   [`NetBuilder::build`] makes: no loop in the token flow, and every
+//!   transition consuming at least one token. The pair is a static proof
+//!   that the net quiesces ([`BuildError::Cycle`],
+//!   [`BuildError::SourceTransition`]); each alone proves less, and their
+//!   docs say how much.
 //!
 //! # Features
 //!
@@ -235,7 +250,9 @@ pub use builder::NetBuilder;
 pub use distribution::{
     Distribution, DistributionError, OutputDistribution, WithOutputDistribution,
 };
-pub use edge::{EdgeKind, InputEdge, InputEdges, MutateEdge, SnapshotEdge, TakeAllEdge, TakeEdge};
+pub use edge::{
+    EdgeInfo, EdgeKind, InputEdge, InputEdges, MutateEdge, SnapshotEdge, TakeAllEdge, TakeEdge,
+};
 pub use error::{BodyPanicked, BuildError, FiringFailed, NetError};
 pub use event::Event;
 pub use firing::{Completed, Firing, Selector};

@@ -20,7 +20,7 @@ use std::fmt;
 
 use crate::arity::for_each_arity;
 use crate::erased::ErasedInput;
-use crate::ids::{NetId, PlaceId, PlaceRef};
+use crate::ids::{NetId, PlaceId, PlaceRef, TransitionId};
 use crate::sealed::{EdgeSealed, EdgeTupleSealed};
 
 /// Which of the four input edge kinds an edge is, with its type forgotten.
@@ -49,6 +49,44 @@ impl EdgeKind {
     pub fn consumes(self) -> bool {
         matches!(self, EdgeKind::Take | EdgeKind::TakeAll)
     }
+}
+
+/// One edge of the net, as a diagram draws it.
+///
+/// This is what [`Net::edges`](crate::Net::edges) reports: the same wiring
+/// [`Net::transitions`](crate::Net::transitions) carries per transition, but
+/// one edge at a time, which is the form a layout, a DOT file or a set of
+/// view entities is built from.
+///
+/// The two directions are two variants rather than a `from`/`to` pair
+/// because they carry different things: an input edge carries the
+/// [kind](EdgeKind) saying *how* the transition reads the place, and an
+/// output edge carries the position of its slot among the transition's
+/// outputs, which is what a positional body returns into.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum EdgeInfo {
+    /// place → transition, with how the transition reads it.
+    Input {
+        /// The place read.
+        place: PlaceId,
+        /// The transition reading it.
+        transition: TransitionId,
+        /// Which of the four ways it is read; only the two
+        /// [consuming](EdgeKind::consumes) kinds move tokens.
+        kind: EdgeKind,
+    },
+    /// transition → place, positional index `slot` among the transition's
+    /// outputs.
+    Output {
+        /// The transition writing.
+        transition: TransitionId,
+        /// The place written to.
+        place: PlaceId,
+        /// This place's index in the transition's declared outputs, which is
+        /// the slot a positional body returns into. Counted from zero.
+        slot: usize,
+    },
 }
 
 /// Consumes the front token of a place; the body parameter is `T`.

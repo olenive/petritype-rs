@@ -241,6 +241,8 @@ impl NetBuilder {
             // The one place where both the typed body and the erased engine
             // are in scope, so the one place the wrapper can be built.
             body: Some(BodySealed::into_erased(body)),
+            guard: None,
+            priority: None,
             enabled: true,
             detachable,
         });
@@ -263,7 +265,9 @@ impl NetBuilder {
     /// [`BuildError::DuplicatePlaceName`] or
     /// [`BuildError::DuplicateTransitionName`] if two of either share a name;
     /// [`BuildError::SnapshotOfNoClonePlace`] if a snapshot edge reads a
-    /// place that cannot clone its tokens.
+    /// place that cannot clone its tokens;
+    /// [`BuildError::DuplicateInputPlace`] if one transition reads one place
+    /// through two input edges.
     pub fn build(self) -> Result<Net, BuildError> {
         let mut seen = HashSet::with_capacity(self.places.len());
         for slot in &self.places {
@@ -281,7 +285,19 @@ impl NetBuilder {
                     name: slot.name.clone(),
                 });
             }
+            // One input edge per place per transition. Both halves of
+            // firing rely on it: "fireable iff every input place is
+            // non-empty" is only exact while one edge wants one place, and
+            // the `&mut` borrows a mutating edge hands the body are disjoint
+            // by construction rather than by a run-time check.
+            let mut read = HashSet::with_capacity(slot.inputs.len());
             for (place, kind) in &slot.inputs {
+                if !read.insert(*place) {
+                    return Err(BuildError::DuplicateInputPlace {
+                        transition: slot.name.clone(),
+                        place: self.places[place.0 as usize].meta.name.clone(),
+                    });
+                }
                 // A snapshot needs the place's cloner, which
                 // `place_no_clone` did not record — whether or not the type
                 // itself is `Clone`.
@@ -303,6 +319,7 @@ impl NetBuilder {
             topology_counter: 0,
             state_counter: 0,
             fired_count: 0,
+            selector: None,
             label_limit: self.label_limit,
             events: Vec::new(),
         };
@@ -319,6 +336,15 @@ impl NetBuilder {
     }
 
     // ----- internals ------------------------------------------------------
+
+    /// The slot a [`TransitionBuilder`] writes its options into.
+    ///
+    /// The handle holds the builder rather than the slot so that the borrow
+    /// is one `&mut NetBuilder`, which is what lets the chain in DESIGN §5
+    /// read as it does; this is how it reaches back in.
+    pub(crate) fn transition_slot(&mut self, id: TransitionId) -> &mut TransitionSlot {
+        &mut self.transitions[id.0 as usize]
+    }
 
     /// Appends a place with its vtable filled in for `T`.
     fn insert<T>(&mut self, name: String, clone: Option<CloneFn>) -> PlaceRef<T>

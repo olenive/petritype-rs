@@ -6,17 +6,35 @@ use std::fmt;
 use crate::edge::EdgeKind;
 use crate::erased::ErasedBody;
 use crate::ids::{PlaceId, TransitionId};
+use crate::net::Net;
+
+/// A transition's guard: may this transition fire, given the whole net?
+///
+/// Called with `&Net` during the scan in
+/// [`Net::fireable`](crate::Net::fireable), so a guard may read any place's
+/// count or tokens, not only its own transition's inputs. `Fn` rather than
+/// `FnMut`: a guard is a question, asked as often as the engine likes, and
+/// answering it must not change the net.
+pub(crate) type Guard = Box<dyn Fn(&Net) -> bool + Send + Sync>;
+
+/// A transition's priority: how much the default selector wants to fire it.
+///
+/// Called with `&Net`, like a guard, so a priority may depend on the marking.
+/// A transition without one scores `0.0`.
+pub(crate) type Priority = Box<dyn Fn(&Net) -> f64 + Send + Sync>;
 
 /// One transition as the net holds it, with its body's types erased.
 ///
-/// The fields this slice fills are the ones it can check; `guard`,
-/// `priority`, `routing`, `restore_tokens_on_failure` and the rest of DESIGN
-/// §4.4 arrive with the slices that read them.
+/// The fields this slice fills are the ones it can check; `routing`,
+/// `restore_tokens_on_failure` and the rest of DESIGN §4.4 arrive with the
+/// slices that read them.
 pub(crate) struct TransitionSlot {
     /// The name given in the builder; unique within a net.
     pub(crate) name: String,
     /// Input places and how each is read, in declaration order — the order of
-    /// the body's parameters.
+    /// the body's parameters. The places are distinct:
+    /// [`build`](crate::NetBuilder::build) rejects two input edges into one
+    /// place.
     pub(crate) inputs: Vec<(PlaceId, EdgeKind)>,
     /// Output places in declaration order — the order of the slots in what
     /// the body returns.
@@ -25,8 +43,15 @@ pub(crate) struct TransitionSlot {
     /// the duration of the call: a transition with no body in its slot is in
     /// flight, which is also what stops it being launched twice.
     pub(crate) body: Option<ErasedBody>,
-    /// Whether the transition may be selected at all. Transitions start
-    /// enabled; `enable` / `disable` come with the firing slices.
+    /// The author's extra condition on firing, or `None` for "no condition".
+    pub(crate) guard: Option<Guard>,
+    /// What the default selector ranks this transition by, or `None` for
+    /// `0.0`.
+    pub(crate) priority: Option<Priority>,
+    /// The on/off switch: a disabled transition is never fireable, whatever
+    /// its places hold. Transitions start switched on;
+    /// [`Net::enable`](crate::Net::enable) and
+    /// [`Net::disable`](crate::Net::disable) flip it.
     pub(crate) enabled: bool,
     /// True unless some input is a [`MutateEdge`](crate::MutateEdge).
     ///
@@ -42,9 +67,11 @@ impl fmt::Debug for TransitionSlot {
             .field("name", &self.name)
             .field("inputs", &self.inputs)
             .field("outputs", &self.outputs)
-            // The body is a closure: all a reader can be told is whether it
-            // is at home.
+            // The body, the guard and the priority are closures: all a reader
+            // can be told is whether they are there.
             .field("in_flight", &self.body.is_none())
+            .field("guard", &self.guard.is_some())
+            .field("priority", &self.priority.is_some())
             .field("enabled", &self.enabled)
             .field("detachable", &self.detachable)
             .finish()
@@ -62,11 +89,19 @@ impl fmt::Debug for TransitionSlot {
 pub struct TransitionInfo<'a> {
     /// The transition's name, unique within the net.
     pub name: &'a str,
-    /// Input places and how each is read, in declaration order.
+    /// Input places and how each is read, in declaration order. The places
+    /// are distinct.
     pub inputs: &'a [(PlaceId, EdgeKind)],
     /// Output places, in declaration order.
     pub outputs: &'a [PlaceId],
-    /// Whether the transition may be selected for firing.
+    /// The on/off switch, as
+    /// [`Net::enable`](crate::Net::enable) and
+    /// [`Net::disable`](crate::Net::disable) leave it.
+    ///
+    /// This is *not* whether the transition can fire now: a switched-on
+    /// transition whose input places are empty, or whose guard says no, is
+    /// still `enabled`. What can fire is
+    /// [`Net::is_fireable`](crate::Net::is_fireable).
     pub enabled: bool,
 }
 
@@ -74,20 +109,26 @@ pub struct TransitionInfo<'a> {
 /// returns, for the options that belong to one transition.
 ///
 /// It holds the builder borrowed, which is why places are declared first: the
-/// borrow lasts as long as the chain. In this version the only method is
-/// [`id`](TransitionBuilder::id); `guard`, `priority`,
+/// borrow lasts as long as the chain. Each option takes `&mut self` and
+/// returns `&mut Self`, so they chain, and [`id`](TransitionBuilder::id)
+/// yields the [`TransitionId`] when something later names this transition:
+///
+/// ```
+/// # use petritype::{NetBuilder, TakeEdge};
+/// # let mut b = NetBuilder::new();
+/// # let inbox = b.place::<u32>("Inbox");
+/// # let out = b.place::<u32>("Out");
+/// let double = b
+///     .transition("Double", (TakeEdge(inbox),), (out,), |n: u32| (n * 2,))
+///     .guard(move |net| net.count(inbox.id()) >= 2)
+///     .priority(|_| 1.0)
+///     .id();
+/// ```
+///
 /// `output_distribution` and `restore_tokens_on_failure` arrive with the
-/// slices that act on them, and each will take `&mut self` and return
-/// `&mut Self` so that the chain in DESIGN §5 reads as written.
+/// slices that act on them.
 pub struct TransitionBuilder<'a> {
-    /// The builder to write the options into. Held now so that the borrow —
-    /// and the chaining it makes possible — is the same in this version as in
-    /// the next one.
-    #[expect(
-        dead_code,
-        reason = "the option methods that write through it arrive in later slices; the \
-                  borrow itself is already part of the API's shape"
-    )]
+    /// The builder to write the options into.
     pub(crate) builder: &'a mut crate::NetBuilder,
     pub(crate) id: TransitionId,
 }
@@ -98,6 +139,51 @@ impl TransitionBuilder<'_> {
     /// transition.
     pub fn id(&self) -> TransitionId {
         self.id
+    }
+
+    /// Adds a condition on firing: the transition is
+    /// [fireable](crate::Net::fireable) only while `f` returns true.
+    ///
+    /// The guard is asked with the whole net in hand, so it may look
+    /// anywhere — `net.count(place.id())`, `net.token::<T>(..)`, a clock, a
+    /// captured atomic — and it is asked once per transition per scan, so it
+    /// should be cheap and must not be counted on to run a fixed number of
+    /// times. A guard that returns false is not an error: the transition
+    /// simply does not appear in [`Net::fireable`](crate::Net::fireable).
+    ///
+    /// The guard is a question about the net, so it takes `&Net` and cannot
+    /// change it. It outlives the call that declared it, so a guard that
+    /// names a place is written `move |net| ...`: a
+    /// [`PlaceRef`](crate::PlaceRef) is `Copy`, so moving one in costs
+    /// nothing and leaves the original usable. A second call replaces the
+    /// first.
+    pub fn guard<F>(&mut self, f: F) -> &mut Self
+    where
+        F: Fn(&Net) -> bool + Send + Sync + 'static,
+    {
+        self.builder.transition_slot(self.id).guard = Some(Box::new(f));
+        self
+    }
+
+    /// Ranks this transition for the default selector: of the fireable
+    /// transitions, the one scoring highest fires, and ties go to the one
+    /// declared first.
+    ///
+    /// A transition without a priority scores `0.0`, so a single
+    /// `.priority(|_| 1.0)` is enough to put one transition ahead of every
+    /// other. The score may depend on the marking, since `f` is given the
+    /// net. `NaN` is read as `0.0`.
+    ///
+    /// A custom [`selector`](crate::Net::set_selector) may ignore priorities
+    /// entirely. Like a guard, a priority outlives its declaration, so one
+    /// that names a place is written `move |net| ...`. A second call replaces
+    /// the first.
+    pub fn priority<F>(&mut self, f: F) -> &mut Self
+    where
+        F: Fn(&Net) -> f64 + Send + Sync + 'static,
+    {
+        self.builder.transition_slot(self.id).priority = Some(Box::new(f));
+        self
     }
 }
 

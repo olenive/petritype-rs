@@ -11,7 +11,10 @@
 //! | [`MutateEdge<T>`] | nothing (borrows the front token) | `&mut T` |
 //!
 //! All four require the place to be non-empty for the transition to be
-//! enabled, including the two that do not consume.
+//! [fireable](crate::Net::fireable), including the two that do not consume,
+//! and one transition may read one place through one edge only: two edges
+//! into the same place are a
+//! [`BuildError::DuplicateInputPlace`](crate::BuildError::DuplicateInputPlace).
 
 use std::fmt;
 
@@ -50,6 +53,12 @@ impl EdgeKind {
 
 /// Consumes the front token of a place; the body parameter is `T`.
 ///
+/// Places are FIFO, so the front token is the oldest one. A transition may
+/// hold only one input edge into a given place, so two `TakeEdge`s do not
+/// take two tokens: that is a
+/// [`BuildError::DuplicateInputPlace`](crate::BuildError::DuplicateInputPlace),
+/// and taking several tokens at once is what [`TakeAllEdge`] is for.
+///
 /// ```
 /// # use petritype::{NetBuilder, TakeEdge};
 /// # let mut b = NetBuilder::new();
@@ -65,7 +74,7 @@ pub struct TakeEdge<T>(
 /// Consumes every token of a place at once; the body parameter is `Vec<T>`,
 /// oldest first.
 ///
-/// The transition is enabled when the place holds at least one token, so a
+/// The transition is fireable when the place holds at least one token, so a
 /// batch is "everything that has arrived by now", not a fixed size.
 pub struct TakeAllEdge<T>(
     /// The place to drain.
@@ -90,9 +99,17 @@ pub struct SnapshotEdge<T>(
 /// parameter is `&mut T`.
 ///
 /// The token keeps its id and its position in the queue, so a view refreshes
-/// its label rather than destroying and recreating it. Because the body holds
-/// a borrow into the net, a transition with a mutating edge is not
-/// *detachable*: it runs inline instead of being handed to a worker.
+/// its label rather than destroying and recreating it: one
+/// [`Event::Mutated`](crate::Event::Mutated) per mutating edge is emitted
+/// before the firing's [`Event::Fired`](crate::Event::Fired), and a body that
+/// mutates and then fails has still mutated. Because the body holds a borrow
+/// into the net, a transition with a mutating edge is not *detachable*: it
+/// runs inline instead of being handed to a worker.
+///
+/// Several mutating edges in one transition hand the body several `&mut`s at
+/// once, which is sound because they point at different places: two input
+/// edges into one place are a
+/// [`BuildError::DuplicateInputPlace`](crate::BuildError::DuplicateInputPlace).
 pub struct MutateEdge<T>(
     /// The place whose front token to borrow.
     pub PlaceRef<T>,

@@ -1,10 +1,14 @@
 //! The net itself: token storage, the read API and external input.
+//!
+//! Firing is the other half of `Net`, and lives in [`crate::firing`]: which
+//! transitions could fire, which one does, and what one firing changes.
 
 use std::any::{Any, TypeId, type_name};
 use std::fmt;
 
 use crate::error::NetError;
 use crate::event::Event;
+use crate::firing::Selector;
 use crate::ids::{NetId, PlaceId, PlaceRef, TokenId, TransitionId, foreign_place};
 use crate::place::{ErasedToken, PlaceSlot};
 use crate::transition::{TransitionInfo, TransitionSlot};
@@ -33,6 +37,10 @@ pub struct Net {
     pub(crate) state_counter: u64,
     /// Completed firings. A statistic, not a change counter.
     pub(crate) fired_count: u64,
+    /// How [`step`](Net::step) chooses among the fireable transitions, or
+    /// `None` for the default (highest priority, ties to the transition
+    /// declared first). Set by [`set_selector`](Net::set_selector).
+    pub(crate) selector: Option<Selector>,
     /// Maximum number of characters in a [`label`](Net::label).
     pub(crate) label_limit: usize,
     /// Appended to by the net, drained by the driver.
@@ -397,9 +405,13 @@ impl Net {
         id
     }
 
-    /// Appends an event and counts it as a state change. Every event this
-    /// slice emits is one.
-    fn emit(&mut self, event: Event) {
+    /// Appends an event and counts it as a state change. Every event the net
+    /// emits is one, which is what makes
+    /// [`state_counter`](Net::state_counter) a count of events: one firing
+    /// bumps it once for its [`Fired`](Event::Fired) or
+    /// [`Failed`](Event::Failed), plus once per
+    /// [`Mutated`](Event::Mutated) a mutating edge produced.
+    pub(crate) fn emit(&mut self, event: Event) {
         self.events.push(event);
         self.state_counter += 1;
     }
@@ -456,6 +468,22 @@ impl Net {
         Ok(token)
     }
 
+    /// The output side of a firing: mint an id and push a token whose type
+    /// was checked when the transition was declared.
+    ///
+    /// [`insert_erased`](Net::insert_erased) without the two things stage
+    /// three does not need. There is nothing to blame in a type mismatch,
+    /// because the body's return type was matched against the output place's
+    /// type at compile time; and there is no [`Added`](Event::Added), because
+    /// a firing reports every token it produced together in one
+    /// [`Fired`](Event::Fired). Insertion from outside the net
+    /// ([`push_erased`](Net::push_erased)) and the builder's seeds are
+    /// unaffected.
+    pub(crate) fn push_produced(&mut self, place: PlaceId, value: ErasedToken) -> TokenId {
+        self.insert_erased(place, value, "<produced>")
+            .expect("a body's return type is matched against its output places when declared")
+    }
+
     /// `push_erased` for a caller that still knows `T`, where the only way to
     /// fail is to use a handle from another net.
     fn push_typed<T: Send + Sync + 'static>(
@@ -508,6 +536,9 @@ impl fmt::Debug for Net {
             .field("state_counter", &self.state_counter)
             .field("topology_counter", &self.topology_counter)
             .field("fired_count", &self.fired_count)
+            // A selector is a closure: all a reader can be told is whether
+            // the net has one of its own.
+            .field("custom_selector", &self.selector.is_some())
             .field("pending_events", &self.events.len())
             .finish()
     }

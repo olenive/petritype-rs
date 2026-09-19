@@ -7,8 +7,8 @@
 //! rather than O(state).
 //!
 //! This version covers *declaring* a net — places, tokens, transitions and
-//! the edges between them — and reading it back. The wiring below is checked
-//! when it compiles; firing it comes next.
+//! the edges between them — reading it back, and firing it one transition at
+//! a time. The wiring below is checked when it compiles.
 //!
 //! ```
 //! use petritype::{EdgeKind, Event, NetBuilder, SnapshotEdge, TakeEdge};
@@ -68,7 +68,35 @@
 //!     net.drain_events().collect::<Vec<_>>(),
 //!     [Event::Added { place: inbox.id(), token }],
 //! );
-//! # Ok::<(), petritype::BuildError>(())
+//!
+//! // Firing is the net running. `step` scans for the transitions that could
+//! // fire, asks the selector for one, and fires it inline. The first parcel
+//! // is light, so the `Option` slot produces nothing; the second is heavy.
+//! assert_eq!(net.fireable(), [weigh]);
+//! assert_eq!(net.step()?, Some(weigh));
+//! assert_eq!(net.count(heavy.id()), 0);
+//! assert_eq!(net.step()?, Some(weigh));
+//! assert_eq!(net.count(heavy.id()), 1);
+//!
+//! // Inbox is empty now, so nothing is fireable: the net is quiescent.
+//! assert!(net.fireable().is_empty());
+//! assert_eq!(net.step()?, None);
+//! assert_eq!(net.fired_count(), 2);
+//!
+//! // One `Fired` per firing, naming exactly which tokens it consumed and
+//! // which it produced — the second firing took the parcel put in above.
+//! let events: Vec<Event> = net.drain_events().collect();
+//! let landed = net.tokens(heavy.id()).next().unwrap().0;
+//! assert_eq!(events.len(), 2);
+//! assert_eq!(
+//!     events[1],
+//!     Event::Fired {
+//!         transition: weigh,
+//!         consumed: vec![(inbox.id(), token)],
+//!         produced: vec![(heavy.id(), landed)],
+//!     },
+//! );
+//! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 //!
 //! # Where things are
@@ -86,6 +114,17 @@
 //!   and [`Net::token`] read the net; [`Net::drain_events`] follows it.
 //! - [`Net::extend`], [`Net::put`], [`Net::set_tokens`], [`Net::remove`] and
 //!   [`Net::replace`] change the marking from outside.
+//! - **fireable** and **enabled** are two different questions:
+//!   [`Net::enable`] / [`Net::disable`] work the author's on/off switch,
+//!   while *fireable* means "could fire right now" — switched on, input
+//!   places non-empty, guard saying yes.
+//! - [`Net::fireable`] and [`Net::is_fireable`] say what could fire now;
+//!   [`Net::step`] fires one transition, [`Net::fire`] fires a named one,
+//!   and a body that returns `Err` gives [`FiringFailed`].
+//! - [`TransitionBuilder::guard`] and [`TransitionBuilder::priority`] decide
+//!   what is fireable and which of the fireable ones the default
+//!   [`Selector`] picks; [`Net::set_selector`] replaces that choice, and
+//!   [`Net::enable`] / [`Net::disable`] switch a transition off and on.
 //!
 //! # Features
 //!
@@ -103,6 +142,7 @@ mod edge;
 mod erased;
 mod error;
 mod event;
+mod firing;
 mod ids;
 mod net;
 mod place;
@@ -112,8 +152,9 @@ mod transition;
 pub use body::{IntoOutcome, IntoTokens, OutputPlaces, PositionalOutputs, TransitionBody, marker};
 pub use builder::NetBuilder;
 pub use edge::{EdgeKind, InputEdge, InputEdges, MutateEdge, SnapshotEdge, TakeAllEdge, TakeEdge};
-pub use error::{BuildError, NetError};
+pub use error::{BuildError, FiringFailed, NetError};
 pub use event::Event;
+pub use firing::Selector;
 pub use ids::{NetId, PlaceId, PlaceRef, TokenId, TransitionId};
 pub use net::{Net, PlaceInfo};
 pub use transition::{TransitionBuilder, TransitionInfo};

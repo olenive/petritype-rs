@@ -1,6 +1,6 @@
 //! Error types. All are `#[non_exhaustive]`: match with a `_` arm.
 
-use crate::ids::{PlaceId, TokenId};
+use crate::ids::{PlaceId, TokenId, TransitionId};
 
 /// A net that cannot be built, returned by
 /// [`NetBuilder::build`](crate::NetBuilder::build).
@@ -41,12 +41,32 @@ pub enum BuildError {
         /// The place it reads.
         place: String,
     },
+    /// One transition reads one place through two input edges, whatever their
+    /// kinds.
+    ///
+    /// A transition's input places must be distinct, because both halves of
+    /// firing assume it: "[fireable](crate::Net::fireable) iff every input
+    /// place is non-empty" would have to count how many tokens each edge
+    /// wants otherwise, and the `&mut` borrows a
+    /// [`MutateEdge`](crate::MutateEdge) hands the body are disjoint only
+    /// because no two edges name the same place. Take a batch with one
+    /// [`TakeAllEdge`](crate::TakeAllEdge), or split the work between two
+    /// transitions.
+    #[error("transition {transition:?} reads place {place:?} through more than one input edge")]
+    DuplicateInputPlace {
+        /// The transition whose edges they are.
+        transition: String,
+        /// The place read more than once.
+        place: String,
+    },
 }
 
 /// Misuse of the net's API at run time.
 ///
 /// These are recoverable in the sense that the net is left untouched: nothing
-/// is added, removed or mutated when one of these is returned.
+/// is added, removed or mutated when one of these is returned — with the one
+/// exception of [`FiringFailed`](NetError::FiringFailed), where the net is
+/// consistent but the firing's inputs are gone.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum NetError {
@@ -56,6 +76,22 @@ pub enum NetError {
     NoSuchPlace {
         /// The offending id.
         place: PlaceId,
+    },
+    /// No transition with this id exists in this net. Usually an id from a
+    /// different net, since ids are never reused within one.
+    #[error("no such transition: {transition:?}")]
+    NoSuchTransition {
+        /// The offending id.
+        transition: TransitionId,
+    },
+    /// [`Net::fire`](crate::Net::fire) was told to fire a transition that
+    /// cannot fire: it is switched off, one of its input places is empty, or
+    /// its guard says no. [`Net::fireable`](crate::Net::fireable) lists the
+    /// ones that can.
+    #[error("transition {transition:?} is not fireable")]
+    NotFireable {
+        /// The transition that was asked to fire.
+        transition: TransitionId,
     },
     /// The place exists but holds no token with this id. The token may have
     /// been consumed, removed, or never have belonged to this place.
@@ -78,4 +114,40 @@ pub enum NetError {
         /// The type that was offered.
         found: &'static str,
     },
+    /// A firing this call started failed. [`Net::fire`](crate::Net::fire)
+    /// reports a body's failure this way; [`Net::step`](crate::Net::step)
+    /// returns the [`FiringFailed`] itself.
+    #[error(transparent)]
+    FiringFailed(#[from] FiringFailed),
+}
+
+/// A firing whose body returned `Err`.
+///
+/// By the time this is returned the net is consistent again (DESIGN §7): the
+/// body is back in its slot, the transition is not in flight, and nothing was
+/// distributed, so the next [`step`](crate::Net::step) works. What the firing
+/// consumed is *gone* unless [`restored`](FiringFailed::restored) says
+/// otherwise; [`Event::Failed`](crate::Event::Failed) records which tokens
+/// those were.
+///
+/// The transition's name is not carried: an error is read next to the net
+/// that produced it, and
+/// [`Net::transitions`](crate::Net::transitions) turns the id into a name.
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+#[error("transition {transition:?} failed: {error}")]
+pub struct FiringFailed {
+    /// The transition whose body failed.
+    pub transition: TransitionId,
+    /// What the body returned, erased at the edge of the typed API so that
+    /// the engine speaks one error type whatever bodies return. It is also
+    /// this error's [`source`](std::error::Error::source).
+    #[source]
+    pub error: Box<dyn std::error::Error + Send + Sync>,
+    /// Whether the consumed tokens were put back in their places.
+    ///
+    /// Always `false` for now: `restore_tokens_on_failure` arrives with the
+    /// slice that adds the flag, and until then a failed firing loses its
+    /// inputs.
+    pub restored: bool,
 }

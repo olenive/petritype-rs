@@ -56,14 +56,6 @@ impl<'a> ErasedInputs<'a> {
     /// Collects the arguments for one firing. The engine builds this in
     /// declaration order; the generated wrapper consumes it in the same
     /// order.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the firing stages that build the arguments arrive in a later slice; \
-                      the crate's own tests already call bodies with them"
-        )
-    )]
     pub(crate) fn new(inputs: Vec<ErasedInput<'a>>) -> Self {
         ErasedInputs(inputs)
     }

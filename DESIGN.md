@@ -85,10 +85,12 @@ Dropped, and why:
 - **Edge**: a directed connection. Input edges have a *kind*; output edges are
   positional.
 - **Marking**: the set of all tokens in all places.
-- **Enabled**: a transition whose every input place is non-empty, whose guard
-  passes, and which is not disabled.
+- **Enabled**: the author's on/off switch on a transition (`enable`,
+  `disable`, `Toggled`).
+- **Fireable**: a transition that is enabled, not in flight, whose every
+  input place is non-empty and whose guard passes.
 - **Firing**: consume inputs, run body, distribute outputs.
-- **Quiescent**: nothing enabled and nothing in flight.
+- **Quiescent**: nothing fireable and nothing in flight.
 
 ## 4. Representation
 
@@ -116,6 +118,9 @@ pub struct PlaceRef<T> { place: PlaceId, net: NetId, _t: PhantomData<fn() -> T> 
     a freshly built net is at 0 however it was seeded.
   - `fired_count`: number of completed firings. A statistic, not a counter of
     changes.
+  - `emit` bumps `state_counter` once per event: a firing bumps it by one
+    (`Fired`) plus one per `MutateEdge` (`Mutated`); a failed firing likewise
+    (`Mutated`s then `Failed`); a toggle by one.
 - `PlaceRef` is stamped with its net's `NetId` (an `AtomicU32` counter, one
   per process; not stable across runs, never serialised). Every method that
   takes a `PlaceRef` compares the stamp first, so a handle from another net
@@ -198,6 +203,10 @@ Input edge kinds and the body parameter each produces:
 | `TakeAllEdge(p)` | every token | `Vec<T>` | yes |
 | `SnapshotEdge(p)` | no | `T` (clone of the front token) | yes |
 | `MutateEdge(p)` | no | `&mut T` (front token, in place) | yes |
+
+A transition reads each place through at most one input edge
+(`DuplicateInputPlace` at build), so fireability is exactly "every input
+place non-empty" and `MutateEdge` borrows are disjoint by construction.
 
 Bodies are `FnMut`: they may hold private mutable state (counters, RNGs).
 Anything captured must be `Send + Sync`; use `move`, `Arc`, `Mutex`, atomics.
@@ -308,7 +317,7 @@ let weigh = b.transition(
         (h, l, Some(n))                                  // positional: same-typed outputs
     },
 )
-.guard(|net| net.count(inbox.id()) >= 2)
+.guard(move |net| net.count(inbox.id()) >= 2)       // 'static: `move` the Copy handle in
 .priority(|_| 1.0)
 .restore_tokens_on_failure()
 .id();                                                   // TransitionId, only if needed later
@@ -332,6 +341,8 @@ Builder ergonomics:
 Conventions:
 - Annotate closure parameter types. Inference through the arity trait is not
   reliable, and the annotation doubles as documentation.
+- Bodies, guards and priorities are `'static`: capture place handles with
+  `move` (`PlaceRef` is `Copy`, so it costs nothing).
 - Input arity is capped at 12. Output arity likewise. Inputs and outputs are
   always tuples: a single one needs the trailing comma, `(TakeEdge(p),)` and
   `(count,)`, and the empty tuple `()` means none.
@@ -343,15 +354,22 @@ Conventions:
 
 ## 6. Firing semantics
 
-### 6.1 Enabledness and selection
+### 6.1 Fireability and selection
 
-A transition is enabled iff every input place is non-empty, `enabled` is
-true, and the guard (if any) returns true. The enabled set is computed by a
-linear scan each step; incremental tracking is a later optimisation.
+A transition is **fireable** iff its `enabled` switch is on, its body is in
+its slot (not in flight), every input place is non-empty (all four edge
+kinds need a token present) and its guard, if any, returns true. Guards run
+during the scan, after the cheaper checks. `Net::fireable()` lists the
+fireable transitions in declaration order; `Net::is_fireable(t)` asks about
+one. The scan is linear each step; incremental tracking is a later
+optimisation. ("Enabled" alone means the switch: `enable`, `disable`,
+`is_enabled`.)
 
-Selection among enabled transitions: the net's selector, default = highest
-priority (unset scores 0.0), ties broken by declaration order. Custom
-selector: `Fn(&Net, &[TransitionId]) -> Option<TransitionId>`.
+Selection among fireable transitions: the net's selector, default = highest
+priority (unset or NaN scores 0.0; `Net::priority_of(t)` exposes the score),
+ties broken by declaration order. Custom selector via `net.set_selector(f)`,
+`f: Fn(&Net, &[TransitionId]) -> Option<TransitionId>`, offered the fireable
+list in declaration order; returning `None` fires nothing this step.
 
 ### 6.2 Three stages
 
@@ -377,8 +395,10 @@ net.distribute(done)?;                    // stage 3: assign ids, push to places
 net.step() -> Result<Option<TransitionId>, FiringFailed>
 ```
 
-Select, launch, run, distribute, inline. `Ok(None)` = nothing enabled.
-Deterministic given the selector: the basis for tests and replay.
+Select, launch, run, distribute, inline. `Ok(None)` = nothing fireable, or
+the selector declined. Deterministic given the selector: the basis for tests
+and replay. `net.fire(t) -> Result<(), NetError>` fires a named transition
+regardless of the selector (`NotFireable` if it cannot fire right now).
 
 ### 6.4 Concurrent
 
@@ -439,8 +459,10 @@ with the closure). See §17.
 
 Error types (`thiserror`, all `#[non_exhaustive]`):
 - `BuildError` — from `NetBuilder::build`.
-- `NetError` — API misuse: launching a non-enabled transition, distributing
-  into an undeclared or removed place, snapshot with a `no_clone` place.
+- `NetError` — API misuse: `NoSuchPlace`, `NoSuchToken`, `TypeMismatch`,
+  `NoSuchTransition`, `NotFireable`, distributing into an undeclared or
+  removed place, snapshot with a `no_clone` place. Wraps `FiringFailed`
+  transparently so that `net.fire(t)` returns one error type.
 - `FiringFailed` — a body returned `Err` or panicked; carries the transition,
   the boxed error, and whether inputs were restored.
 - `CommandError` — external input rejected (unknown place, type mismatch).
@@ -480,6 +502,7 @@ net.places()      -> impl Iterator<Item = (PlaceId, PlaceInfo<'_>)>    // by val
 net.transitions() -> impl Iterator<Item = (TransitionId, TransitionInfo<'_>)>  // by value: name, enabled, in_flight
 net.edges()       -> impl Iterator<Item = EdgeInfo>   // from, to, kind
 net.place_named(&str) -> Option<PlaceId>;  net.transition_named(&str) -> Option<TransitionId>
+net.fireable() -> Vec<TransitionId>;  net.is_fireable(t) -> bool;  net.is_enabled(t) -> bool;  net.priority_of(t) -> f64
 net.count(place)  -> usize
 net.tokens(place) -> impl Iterator<Item = (TokenId, &dyn Any)>
 net.label(place, token) -> Option<String>            // via PlaceMeta.debug; truncated to label_limit (default 100) + "..."
@@ -585,6 +608,7 @@ run or that a reader of the net should know about.
 
 Always:
 - Duplicate place or transition names.
+- One input edge per place per transition (`DuplicateInputPlace`).
 - `SnapshotEdge` from a `no_clone` place.
 - `restore_tokens_on_failure` on a transition with a `no_clone` input.
 - Routed-output resolution (§4.5): unroutable, ambiguous, unreachable.

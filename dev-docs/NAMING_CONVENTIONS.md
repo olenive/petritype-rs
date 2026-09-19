@@ -62,8 +62,9 @@ rename backlog.
 | replace one token by id | `replace` | — (no ids) | — |
 | change counters | `topology_counter`, `state_counter` | — | add if useful |
 | enabling predicate | `guard` | `guard` | — |
+| can fire now: switched on, inputs present, guard passes | `fireable`, `is_fireable` | — | — |
 | selection hint | `priority` | `priority` | — |
-| custom chooser | `selector` | `transition_selector` | — |
+| custom chooser | `set_selector`, type `Selector` | `transition_selector` | — |
 | per-run value a transition declares it needs | `Param::<T>`, `b.param(v)`, `net.set_param(v)` | `kwargs`, `SetParam` | — |
 
 ## Rust-specific conventions

@@ -3,7 +3,9 @@
 Typed, executable, observable Petri nets in Rust. A port of
 [petritype](https://github.com/olenive/petritype) (Python).
 
-*Pre-implementation. See `DESIGN.md` for the design and
+*Work in progress: declaring a net and firing it sequentially work (slices 1–3
+of `DESIGN.md` §18); concurrency, routed outputs, drivers and the visualiser
+are still to come. See `DESIGN.md` for the design and
 `dev-docs/NAMING_CONVENTIONS.md` for vocabulary shared with the Python library.*
 
 ## Core Idea

@@ -174,23 +174,43 @@ fn every_edge_kind_is_accepted_with_its_own_parameter_type() {
 fn a_body_may_have_no_inputs_or_twelve() {
     let mut b = NetBuilder::new();
     let p = b.place::<u32>("Numbers");
+    // Twelve *distinct* places: a transition reads one place through one
+    // edge, so twelve inputs need twelve places.
+    let (p0, p1, p2, p3) = (
+        b.place::<u32>("P0"),
+        b.place::<u32>("P1"),
+        b.place::<u32>("P2"),
+        b.place::<u32>("P3"),
+    );
+    let (p4, p5, p6, p7) = (
+        b.place::<u32>("P4"),
+        b.place::<u32>("P5"),
+        b.place::<u32>("P6"),
+        b.place::<u32>("P7"),
+    );
+    let (p8, p9, p10, p11) = (
+        b.place::<u32>("P8"),
+        b.place::<u32>("P9"),
+        b.place::<u32>("P10"),
+        b.place::<u32>("P11"),
+    );
 
     b.transition("None", (), (p,), || (0_u32,));
     b.transition(
         "Twelve",
         (
-            TakeEdge(p),
-            TakeEdge(p),
-            TakeEdge(p),
-            TakeEdge(p),
-            TakeEdge(p),
-            TakeEdge(p),
-            TakeEdge(p),
-            TakeEdge(p),
-            TakeEdge(p),
-            TakeEdge(p),
-            TakeEdge(p),
-            TakeEdge(p),
+            TakeEdge(p0),
+            TakeEdge(p1),
+            TakeEdge(p2),
+            TakeEdge(p3),
+            TakeEdge(p4),
+            TakeEdge(p5),
+            TakeEdge(p6),
+            TakeEdge(p7),
+            TakeEdge(p8),
+            TakeEdge(p9),
+            TakeEdge(p10),
+            TakeEdge(p11),
         ),
         (p,),
         #[allow(clippy::too_many_arguments)]

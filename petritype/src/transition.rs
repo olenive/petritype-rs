@@ -25,10 +25,7 @@ pub(crate) type Priority = Box<dyn Fn(&Net) -> f64 + Send + Sync>;
 
 /// One transition as the net holds it, with its body's types erased.
 ///
-/// The fields this slice fills are the ones it can check;
-/// `restore_tokens_on_failure` and the rest of DESIGN §4.4 arrive with the
-/// slices that read them. There is no `routing` field, although DESIGN §4.4
-/// lists one: a body that routes its outputs by type resolves its
+/// There is no `routing` field, although DESIGN §4.4 lists one: a body that routes its outputs by type resolves its
 /// `TypeId -> output index` table when it is declared and the erased body
 /// captures it, so the net itself stores nothing about routing and firing
 /// costs one lookup either way.
@@ -61,6 +58,15 @@ pub(crate) struct TransitionSlot {
     /// [`Net::enable`](crate::Net::enable) and
     /// [`Net::disable`](crate::Net::disable) flip it.
     pub(crate) enabled: bool,
+    /// Whether a failed firing puts the tokens it consumed back, as asked for
+    /// by
+    /// [`TransitionBuilder::restore_tokens_on_failure`](crate::TransitionBuilder::restore_tokens_on_failure).
+    ///
+    /// Off by default. When it is on, stage one clones every token a
+    /// consuming edge takes, the clones travel with the firing, and a failure
+    /// puts them back at the front of their places
+    /// ([`Net::distribute`](crate::Net::distribute)).
+    pub(crate) restore_tokens_on_failure: bool,
     /// True unless some input is a [`MutateEdge`](crate::MutateEdge).
     ///
     /// A mutating edge means the body borrows a token where it lies, so the
@@ -81,6 +87,7 @@ impl fmt::Debug for TransitionSlot {
             .field("guard", &self.guard.is_some())
             .field("priority", &self.priority.is_some())
             .field("enabled", &self.enabled)
+            .field("restore_tokens_on_failure", &self.restore_tokens_on_failure)
             .field("detachable", &self.detachable)
             .finish()
     }
@@ -149,7 +156,6 @@ pub struct TransitionInfo<'a> {
 ///     .id();
 /// ```
 ///
-/// `restore_tokens_on_failure` arrives with the slice that acts on it.
 /// `output_distribution` is deliberately *not* here, although DESIGN §5 lists
 /// it: by the time this handle exists the body's return type has been erased,
 /// and the point of an output distribution function is that its own return
@@ -212,6 +218,81 @@ impl TransitionBuilder<'_> {
         F: Fn(&Net) -> f64 + Send + Sync + 'static,
     {
         self.builder.transition_slot(self.id).priority = Some(Box::new(f));
+        self
+    }
+
+    /// Puts the tokens a firing of this transition consumed back in their
+    /// places if it fails, instead of losing them.
+    ///
+    /// A failed firing loses its inputs by default: the body owns them by the
+    /// time it fails, and may have changed or dropped them. This flag buys
+    /// them back with a clone. Stage one clones every token a consuming edge
+    /// takes — [`TakeEdge`](crate::TakeEdge) and
+    /// [`TakeAllEdge`](crate::TakeAllEdge) — before the body sees anything,
+    /// the clones travel with the firing, and any failure of it (an `Err`, a
+    /// panic, or a [`Distribution`](crate::Distribution) naming a place the
+    /// transition may not write to) puts them back at the **front** of their
+    /// places, in the order they were taken and with the ids they had. The
+    /// firing is undone rather than recorded, so the transition can simply
+    /// fire again — which is what lets a driver retry one.
+    ///
+    /// [`SnapshotEdge`](crate::SnapshotEdge) and
+    /// [`MutateEdge`](crate::MutateEdge) consume nothing, so there is nothing
+    /// to restore for them: a snapshot's clone was never in a place, and a
+    /// mutation was made where the token lies and stands, failure or not.
+    ///
+    /// The cost is one clone per consumed token per firing of *this*
+    /// transition, taken whether or not the firing goes on to fail.
+    /// Transitions without the flag clone nothing. A token that is expensive
+    /// to copy wants an `Arc` inside it, where a clone is a counter bump.
+    ///
+    /// ```
+    /// # use petritype::{NetBuilder, TakeEdge};
+    /// # #[derive(Debug)] struct Refused;
+    /// # impl std::fmt::Display for Refused {
+    /// #     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    /// #         f.write_str("refused")
+    /// #     }
+    /// # }
+    /// # impl std::error::Error for Refused {}
+    /// # let mut b = NetBuilder::new();
+    /// # let inbox = b.place::<u32>("Inbox");
+    /// # let out = b.place::<u32>("Out");
+    /// # b.seed(inbox, [1]);
+    /// b.transition(
+    ///     "Fussy",
+    ///     (TakeEdge(inbox),),
+    ///     (out,),
+    ///     |_n: u32| -> Result<(u32,), Refused> { Err(Refused) },
+    /// )
+    /// .restore_tokens_on_failure();
+    /// let mut net = b.build()?;
+    /// let token = net.tokens(inbox.id()).next().unwrap().0;
+    ///
+    /// let failure = net.step().expect_err("this body always fails");
+    /// assert!(failure.restored);
+    /// assert_eq!(net.count(inbox.id()), 1, "the token is back");
+    /// assert_eq!(
+    ///     net.tokens(inbox.id()).next().unwrap().0,
+    ///     token,
+    ///     "and it is the same token, not a new one",
+    /// );
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// [`BuildError::RestoreOfNoClonePlace`](crate::BuildError::RestoreOfNoClonePlace)
+    /// from [`build`](crate::NetBuilder::build) if this transition consumes a
+    /// place declared with
+    /// [`place_no_clone`](crate::NetBuilder::place_no_clone), which has no
+    /// cloner to take the clones with. Reading such a place through a
+    /// [`MutateEdge`](crate::MutateEdge) is fine: nothing is consumed, so
+    /// nothing is cloned.
+    pub fn restore_tokens_on_failure(&mut self) -> &mut Self {
+        self.builder
+            .transition_slot(self.id)
+            .restore_tokens_on_failure = true;
         self
     }
 }

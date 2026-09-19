@@ -60,16 +60,34 @@ pub enum Event {
         /// The tokens written to the output places, and where they went.
         produced: Vec<(PlaceId, TokenId)>,
     },
-    /// A firing whose body returned `Err` or panicked.
+    /// A firing whose body returned `Err` or panicked, or whose
+    /// [`Distribution`](crate::Distribution) named a place the transition may
+    /// not write to. Nothing was distributed.
     Failed {
         /// The transition that failed.
         transition: TransitionId,
-        /// The consumed tokens, which are gone unless `restored` is true.
-        lost: Vec<(PlaceId, TokenId)>,
-        /// Whether the inputs were put back, as asked for by
-        /// `restore_tokens_on_failure`.
+        /// The tokens this firing took out of the input places, and where
+        /// they were — the same list a successful firing reports as
+        /// `consumed`. Where they are now is what `restored` says.
+        consumed: Vec<(PlaceId, TokenId)>,
+        /// Whether the tokens in `consumed` were put back, as asked for by
+        /// [`restore_tokens_on_failure`](crate::TransitionBuilder::restore_tokens_on_failure).
+        ///
+        /// True: every one of them is back at the *front* of its place, in
+        /// the order it was taken and with the id it had — the firing was
+        /// undone, and an observer that re-reads the marking when this event
+        /// arrives sees them there. Restoring emits no
+        /// [`Added`](Event::Added) of its own, because nothing new appeared:
+        /// this flag is the whole report. (True with an empty `consumed` for
+        /// a restoring transition that consumes nothing at all, which reads
+        /// nothing but snapshots and mutating edges.)
+        ///
+        /// False: they are gone, and their ids are retired.
         restored: bool,
-        /// The body's error, rendered with `Display`.
+        /// The failure, rendered with `Display`. A panicking body reads
+        /// `"panicked: ..."` ([`BodyPanicked`](crate::BodyPanicked)); the
+        /// value itself is on the
+        /// [`FiringFailed`](crate::FiringFailed) the failing call returns.
         error: String,
     },
     /// A token appeared in a place from outside the net: an

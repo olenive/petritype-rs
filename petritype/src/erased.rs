@@ -110,9 +110,12 @@ pub enum ErasedOutcome {
     /// Tokens to distribute, each tagged with the output place it is
     /// addressed to. Order is the order they will be pushed.
     Ok(Vec<(OutputTarget, ErasedToken)>),
-    /// The body returned `Err`, or panicked (from a later slice on). The net
-    /// is not written to; failure handling decides what happens to the
-    /// consumed tokens.
+    /// The body returned `Err`, or panicked — a caught panic is a
+    /// [`BodyPanicked`](crate::BodyPanicked) in this box, and nothing
+    /// downstream tells the two apart. The net is not written to; whether the
+    /// consumed tokens come back is the transition's
+    /// [`restore_tokens_on_failure`](crate::TransitionBuilder::restore_tokens_on_failure)
+    /// flag's business.
     Err(Box<dyn std::error::Error + Send + Sync>),
 }
 

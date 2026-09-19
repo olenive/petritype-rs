@@ -170,8 +170,8 @@ Universal bound: `T: Debug + Clone + Send + Sync + 'static`.
 
 Escape hatch: `place_no_clone::<T>()` drops the `Clone` bound (for `File`,
 sockets, handles). Such a place cannot be the source of a `SnapshotEdge` or
-an input to a `restore_tokens_on_failure` transition (build error), and makes
-`Net::snapshot()` return `Err`.
+a consuming input to a `restore_tokens_on_failure` transition (build errors;
+a `MutateEdge` from it is fine), and makes `Net::snapshot()` return `Err`.
 
 Big data idiom: put heavy fields in `Arc`. Moves are free (a `Vec` is 24
 bytes to move); `Arc::clone` is a counter bump; `Arc::make_mut` is
@@ -394,7 +394,7 @@ list in declaration order; returning `None` fires nothing this step.
 
 ```rust
 let firing: Firing = net.launch(t)?;      // stage 1: consume per edge kind; body taken out of the net; Launched
-let done: Completed = firing.run();       // stage 2: call the body (no-op if launch ran it inline); catches panics (slice 7)
+let done: Completed = firing.run();       // stage 2: call the body (no-op if launch ran it inline); catches panics
 net.distribute(done)?;                    // stage 3: put body back, check, push to places, Distributed or Failed
 
 firing.transition(); firing.is_pending();   // false when launch ran the body inline (MutateEdge)
@@ -472,15 +472,24 @@ with the closure). See §17.
   routed enum or a positional `Option` slot.
 - **Unexpected failures return `Err`** from the body, erased to
   `Box<dyn Error + Send + Sync>`.
-- **Panics are caught** (`catch_unwind` with `AssertUnwindSafe`) and converted
-  to a failure with message `"panicked: ..."`. Under `panic = "abort"` the
+- **Panics are caught** (`catch_unwind` with `AssertUnwindSafe`), in
+  `Firing::run` and around the inline call in `launch`, and converted to a
+  failure whose error is `BodyPanicked { message }` (`Display`
+  `"panicked: {message}"`; message = the `&str`/`String` payload, else
+  `"panic payload of unknown type"`). The body still comes home, carrying
+  whatever state the panic left it in; a `MutateEdge` mutation made before
+  the panic stands and is reported as `Mutated`. Under `panic = "abort"` the
   process dies, as the user chose.
-- **Consumed tokens are lost by default.** `Failed { transition, lost, restored, error }`
-  records their ids and places.
-- **`restore_tokens_on_failure(t)`** clones inputs before the body runs; on
-  failure the clones go back to the front of their places in original order.
-  Cost: one clone per fire of that transition. Build error if any input place
-  is `no_clone`.
+- **Consumed tokens are lost by default.** `Failed { transition, consumed, restored, error }`
+  records their ids and places; with `restored == true` they are back.
+- **`restore_tokens_on_failure(t)`** clones the consumed tokens (`TakeEdge`,
+  `TakeAllEdge`) at launch; the clones travel with the firing, and on any
+  failure in stage three (body `Err`, panic, bad `Distribution`) go back to
+  the front of their places in original order **with their original
+  `TokenId`s**, before the `Failed` event and without events of their own.
+  Snapshot and mutate edges consume nothing, so nothing is restored for them.
+  Cost: one clone per consumed token per fire of that transition. Build error
+  (`RestoreOfNoClonePlace`) if a consuming input place is `no_clone`.
 - **The net stays consistent** after any failure: body returned to its slot,
   transition not in flight, nothing distributed.
 - Drivers apply a policy on `FiringFailed`: `Stop` (default), `Disable` the
@@ -512,7 +521,7 @@ pub enum Event {
     Fired       { transition: TransitionId, consumed: Vec<(PlaceId, TokenId)>, produced: Vec<(PlaceId, TokenId)> },
     Launched    { transition: TransitionId, consumed: Vec<(PlaceId, TokenId)> },   // staged path: net.launch
     Distributed { transition: TransitionId, produced: Vec<(PlaceId, TokenId)> },   // staged path: net.distribute
-    Failed      { transition: TransitionId, lost: Vec<(PlaceId, TokenId)>, restored: bool, error: String },
+    Failed      { transition: TransitionId, consumed: Vec<(PlaceId, TokenId)>, restored: bool, error: String },
     Added       { place: PlaceId, token: TokenId },      // external extend / put (not seeds: builder seeding is setup, emits nothing)
     Removed     { place: PlaceId, token: TokenId },      // external remove / set_tokens
     Mutated     { place: PlaceId, token: TokenId },      // MutateEdge, or replace()
@@ -643,7 +652,8 @@ Always:
 - Duplicate place or transition names.
 - One input edge per place per transition (`DuplicateInputPlace`).
 - `SnapshotEdge` from a `no_clone` place.
-- `restore_tokens_on_failure` on a transition with a `no_clone` input.
+- `restore_tokens_on_failure` on a transition with a consuming (`TakeEdge`,
+  `TakeAllEdge`) input from a `no_clone` place.
 - Routed-output resolution (§4.5): `UnroutableOutput`, `AmbiguousOutput`,
   `UnreachableOutput`, each naming the transition and the type or place.
 - (Output slot count vs output place count is carried by the types; a
@@ -757,11 +767,12 @@ Check that the name `petritype` is free on crates.io before publishing.
 - Stamped net id in `PlaceRef`: **done, slice 2** (§4.1).
 - Observability of an inner net used as a transition (§6.6): how a visualiser
   reaches inside. Deferred until the Bevy adapter needs it.
-- Stranded in-flight transitions: a dropped `Firing`/`Completed`, a panicking
-  worker, or a rejected `distribute` (which consumes its argument) loses the
-  body for good. Slice 7's `catch_unwind` inside `Firing::run` removes the
-  main hazard; the misuse rejections could hand the value back
-  (`Err((NetError, Completed))`). Decide when a driver needs it.
+- Stranded in-flight transitions: a `Firing`/`Completed` dropped without
+  being distributed, or a rejected `distribute` (`ForeignFiring`,
+  `NotInFlight`, which consume their argument), loses the body for good.
+  Panics no longer strand (caught since slice 7). The misuse rejections could
+  hand the value back (`Err((NetError, Completed))`). Decide when a driver
+  needs it.
 
 ## 18. Implementation plan
 

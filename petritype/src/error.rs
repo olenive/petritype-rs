@@ -1,5 +1,7 @@
 //! Error types. All are `#[non_exhaustive]`: match with a `_` arm.
 
+use std::any::Any;
+
 use crate::ids::{NetId, PlaceId, TokenId, TransitionId};
 
 /// A net that cannot be built, returned by
@@ -99,6 +101,32 @@ pub enum BuildError {
         /// The place nothing can reach.
         place: String,
     },
+    /// A transition asked to
+    /// [`restore_tokens_on_failure`](crate::TransitionBuilder::restore_tokens_on_failure)
+    /// consumes from a place declared with
+    /// [`place_no_clone`](crate::NetBuilder::place_no_clone).
+    ///
+    /// Restoring works on clones taken before the body runs, because the body
+    /// owns the tokens themselves and may have consumed or wrecked them by
+    /// the time it fails; a place with no cloner has nothing to take. Only
+    /// the consuming edges are affected — [`TakeEdge`](crate::TakeEdge) and
+    /// [`TakeAllEdge`](crate::TakeAllEdge) — since a
+    /// [`MutateEdge`](crate::MutateEdge) takes nothing out of its place and
+    /// so has nothing to put back, and a
+    /// [`SnapshotEdge`](crate::SnapshotEdge) of such a place is already
+    /// refused by [`SnapshotOfNoClonePlace`](BuildError::SnapshotOfNoClonePlace).
+    /// Drop the flag, or declare the place with
+    /// [`place`](crate::NetBuilder::place).
+    #[error(
+        "transition {transition:?} restores its inputs on failure but consumes place {place:?}, \
+         which cannot clone its tokens"
+    )]
+    RestoreOfNoClonePlace {
+        /// The transition whose flag it is.
+        transition: String,
+        /// The place it consumes.
+        place: String,
+    },
 }
 
 /// Misuse of the net's API at run time.
@@ -106,7 +134,8 @@ pub enum BuildError {
 /// These are recoverable in the sense that the net is left untouched: nothing
 /// is added, removed or mutated when one of these is returned — with the one
 /// exception of [`FiringFailed`](NetError::FiringFailed), where the net is
-/// consistent but the firing's inputs are gone.
+/// consistent but the firing's inputs are gone (unless the transition asked
+/// to [restore](crate::TransitionBuilder::restore_tokens_on_failure) them).
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum NetError {
@@ -193,7 +222,7 @@ pub enum NetError {
     FiringFailed(#[from] FiringFailed),
 }
 
-/// A firing whose body returned `Err`.
+/// A firing whose body returned `Err` or panicked.
 ///
 /// By the time this is returned the net is consistent again (DESIGN §7): the
 /// body is back in its slot, the transition is not in flight, and nothing was
@@ -201,6 +230,10 @@ pub enum NetError {
 /// consumed is *gone* unless [`restored`](FiringFailed::restored) says
 /// otherwise; [`Event::Failed`](crate::Event::Failed) records which tokens
 /// those were.
+///
+/// A panicking body arrives here like any other failure, with
+/// [`BodyPanicked`] as the [`error`](FiringFailed::error) — downcast it to
+/// tell the two apart.
 ///
 /// The transition's name is not carried: an error is read next to the net
 /// that produced it, and
@@ -218,8 +251,61 @@ pub struct FiringFailed {
     pub error: Box<dyn std::error::Error + Send + Sync>,
     /// Whether the consumed tokens were put back in their places.
     ///
-    /// Always `false` for now: `restore_tokens_on_failure` arrives with the
-    /// slice that adds the flag, and until then a failed firing loses its
-    /// inputs.
+    /// True exactly for a transition declared with
+    /// [`restore_tokens_on_failure`](crate::TransitionBuilder::restore_tokens_on_failure),
+    /// whose consumed tokens are back at the front of their places with the
+    /// ids they had. False otherwise: a failed firing loses its inputs by
+    /// default, because the body owned them and may have changed or dropped
+    /// them before it failed.
     pub restored: bool,
+}
+
+/// A body that panicked, as the failure its firing reports.
+///
+/// Panics are caught (DESIGN §7): [`Firing::run`](crate::Firing::run) wraps
+/// the call to a detachable body, and [`launch`](crate::Net::launch) wraps
+/// the inline call it makes for a transition with a
+/// [`MutateEdge`](crate::MutateEdge) input, both in
+/// [`catch_unwind`](std::panic::catch_unwind). Either way the panic becomes
+/// this error, the firing fails like one whose body returned `Err`, and the
+/// body goes home to its slot — so one panicking token does not strand a
+/// transition in flight for good.
+///
+/// What comes home is whatever the panic left behind: a body is `FnMut` and
+/// may keep state of its own, and a panic can stop it half way through
+/// changing it. The net's own state is not in question — nothing was
+/// distributed — and a token a [`MutateEdge`](crate::MutateEdge) body had
+/// already changed stays changed, since the change was made where the token
+/// lies.
+///
+/// Nothing can be caught under `panic = "abort"`, where the process dies at
+/// the panic, as the profile asked.
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+#[error("panicked: {message}")]
+pub struct BodyPanicked {
+    /// The panic payload as text: the message a `panic!` carried, or
+    /// `"panic payload of unknown type"` for a payload that is neither a
+    /// `&str` nor a `String` — which only
+    /// [`panic_any`](std::panic::panic_any) can produce.
+    pub message: String,
+}
+
+impl BodyPanicked {
+    /// Reads the message out of a caught payload.
+    ///
+    /// The two types `panic!` itself produces, in that order: a literal
+    /// message is a `&'static str` and a formatted one a `String`. Anything
+    /// else came from [`panic_any`](std::panic::panic_any) and has no text to
+    /// read, so the type is not named either — `Any` cannot say what it is.
+    pub(crate) fn from_payload(payload: Box<dyn Any + Send>) -> BodyPanicked {
+        let message = if let Some(message) = payload.downcast_ref::<&'static str>() {
+            (*message).to_owned()
+        } else if let Some(message) = payload.downcast_ref::<String>() {
+            message.clone()
+        } else {
+            String::from("panic payload of unknown type")
+        };
+        BodyPanicked { message }
+    }
 }

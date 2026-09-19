@@ -338,7 +338,8 @@ impl<F, G> fmt::Debug for WithOutputDistribution<F, G> {
 /// are resolved, *before* any of its tokens are written, so a distribution
 /// with a good pair and a bad one writes neither (DESIGN §6.2). The firing
 /// then fails exactly as a body returning `Err`
-/// does: the consumed tokens are lost, an
+/// does: the consumed tokens are lost — or put back, for a transition that
+/// [restores them](crate::TransitionBuilder::restore_tokens_on_failure) — an
 /// [`Event::Failed`](crate::Event::Failed) records them, and the error is the
 /// [`source`](std::error::Error::source) of the
 /// [`FiringFailed`](crate::FiringFailed) that comes back from

@@ -364,7 +364,7 @@ fn a_failing_body_is_reported_when_it_is_distributed() {
         )
         .id();
     let mut net = b.build().unwrap();
-    let lost = vec![pairs(&net, inbox.id())[0]];
+    let consumed = vec![pairs(&net, inbox.id())[0]];
 
     let completed = net.launch(fussy).expect("fireable").run();
     assert!(!completed.succeeded(), "the body returned Err");
@@ -373,7 +373,10 @@ fn a_failing_body_is_reported_when_it_is_distributed() {
     match net.distribute(completed) {
         Err(NetError::FiringFailed(failure)) => {
             assert_eq!(failure.transition, fussy);
-            assert!(!failure.restored, "restoring inputs is a later slice");
+            assert!(
+                !failure.restored,
+                "this transition does not restore its inputs"
+            );
             assert_eq!(failure.error.to_string(), "refused");
         }
         other => panic!("expected a wrapped firing failure, got {other:?}"),
@@ -386,7 +389,7 @@ fn a_failing_body_is_reported_when_it_is_distributed() {
         net.drain_events().collect::<Vec<_>>(),
         [Event::Failed {
             transition: fussy,
-            lost,
+            consumed,
             restored: false,
             error: "refused".to_owned(),
         }],

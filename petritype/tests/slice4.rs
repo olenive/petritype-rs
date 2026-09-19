@@ -401,7 +401,7 @@ fn an_err_from_a_routed_body_is_a_failure_and_loses_its_inputs() {
         net.drain_events().collect::<Vec<_>>(),
         [Event::Failed {
             transition: fussy,
-            lost: consumed,
+            consumed,
             restored: false,
             error: String::from("refused"),
         }]

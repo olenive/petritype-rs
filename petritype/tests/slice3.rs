@@ -669,11 +669,14 @@ fn a_body_that_returns_err_loses_its_inputs_and_leaves_the_net_usable() {
         )
         .id();
     let mut net = b.build().unwrap();
-    let lost = vec![pairs(&net, inbox.id())[0]];
+    let consumed = vec![pairs(&net, inbox.id())[0]];
 
     let failure = net.step().expect_err("the first token is refused");
     assert_eq!(failure.transition, fussy);
-    assert!(!failure.restored, "restoring inputs is a later slice");
+    assert!(
+        !failure.restored,
+        "this transition does not restore its inputs"
+    );
     assert_eq!(failure.error.to_string(), "refused");
     assert!(failure.to_string().ends_with("failed: refused"));
 
@@ -685,7 +688,7 @@ fn a_body_that_returns_err_loses_its_inputs_and_leaves_the_net_usable() {
         net.drain_events().collect::<Vec<_>>(),
         [Event::Failed {
             transition: fussy,
-            lost,
+            consumed,
             restored: false,
             error: "refused".to_owned(),
         }]

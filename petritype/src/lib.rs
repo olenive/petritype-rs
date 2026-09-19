@@ -8,7 +8,14 @@
 //!
 //! This version covers *declaring* a net — places, tokens, transitions and
 //! the edges between them — reading it back, and firing it, one transition at
-//! a time or several at once. The wiring below is checked when it compiles. A
+//! a time or several at once. What a firing does when it goes wrong is
+//! settled too: an expected outcome is *data*, routed to an error place like
+//! any other token, while a body that returns `Err` or panics has **failed**
+//! — the panic is caught, the body goes back to its slot, nothing is
+//! distributed, and the tokens the firing consumed are lost, unless the
+//! transition was declared with
+//! [`restore_tokens_on_failure`](TransitionBuilder::restore_tokens_on_failure),
+//! which puts them back where they were. The wiring below is checked when it compiles. A
 //! body may return its outputs as a tuple, slot by slot, as one value to be
 //! [routed to the output place of its type](routing), or as a
 //! [`Distribution`] of `(place, token)` pairs it names itself — which
@@ -183,7 +190,11 @@
 //!   places non-empty, guard saying yes.
 //! - [`Net::fireable`] and [`Net::is_fireable`] say what could fire now;
 //!   [`Net::step`] fires one transition, [`Net::fire`] fires a named one,
-//!   and a body that returns `Err` gives [`FiringFailed`].
+//!   and a body that returns `Err` or panics gives [`FiringFailed`].
+//! - [`TransitionBuilder::restore_tokens_on_failure`] is the one dial on
+//!   failure: with it, a failed firing puts the tokens it consumed back where
+//!   it found them; without it they are gone. [`BodyPanicked`] is what a
+//!   caught panic looks like once it is a failure like any other.
 //! - [`Net::launch`], [`Firing::run`] and [`Net::distribute`] are those same
 //!   three stages taken one at a time, with [`Net::in_flight`] and
 //!   [`Net::is_in_flight`] naming the transitions whose bodies are out.
@@ -225,7 +236,7 @@ pub use distribution::{
     Distribution, DistributionError, OutputDistribution, WithOutputDistribution,
 };
 pub use edge::{EdgeKind, InputEdge, InputEdges, MutateEdge, SnapshotEdge, TakeAllEdge, TakeEdge};
-pub use error::{BuildError, FiringFailed, NetError};
+pub use error::{BodyPanicked, BuildError, FiringFailed, NetError};
 pub use event::Event;
 pub use firing::{Completed, Firing, Selector};
 pub use ids::{NetId, PlaceId, PlaceRef, TokenId, TransitionId};

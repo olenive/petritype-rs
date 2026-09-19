@@ -251,7 +251,7 @@ fn a_fallible_body_distributes_its_ok_and_fails_on_its_err() {
         net.drain_events().collect::<Vec<_>>(),
         [Event::Failed {
             transition: make,
-            lost: consumed,
+            consumed,
             restored: false,
             error: String::from("refused"),
         }]
@@ -436,7 +436,7 @@ fn a_place_that_is_not_an_output_fails_the_whole_firing() {
         net.drain_events().collect::<Vec<_>>(),
         [Event::Failed {
             transition: make,
-            lost: consumed,
+            consumed,
             restored: false,
             error: format!(
                 "transition {make:?} distributed a token to place {:?}, \

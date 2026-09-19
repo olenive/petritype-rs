@@ -59,17 +59,41 @@
 //! unwraps it. Everything else is the same, including the events and the trip
 //! home through [`distribute`](Net::distribute), so a driver need not care
 //! which kind of transition it is holding.
+//!
+//! # When a firing fails
+//!
+//! A body fails by returning `Err` or by panicking, and the two arrive the
+//! same way (DESIGN §7). Stage two is the only place a body is ever called —
+//! [`Firing::run`] for a detachable one, inside [`launch`](Net::launch) for
+//! an inline one — and both calls are wrapped in
+//! [`catch_unwind`](std::panic::catch_unwind), so a panic becomes a
+//! [`BodyPanicked`](crate::BodyPanicked) failure instead of unwinding out
+//! through a worker thread with the body in its hand. Stage three then
+//! reports it: the body goes back to its slot first of all, nothing is
+//! distributed, and [`Event::Failed`] says which tokens the firing had
+//! consumed.
+//!
+//! Those tokens are lost by default — the body owned them, and a failure says
+//! nothing about what it did with them first — unless the transition was
+//! declared with
+//! [`restore_tokens_on_failure`](crate::TransitionBuilder::restore_tokens_on_failure),
+//! in which case stage one took a clone of each and stage three puts the
+//! clones back at the front of their places, with the ids they had, before it
+//! reports anything. A [`MutateEdge`](crate::MutateEdge) mutation is not
+//! undone either way: it was made where the token lies, and there is nothing
+//! to roll back to.
 
 use std::fmt;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use crate::distribution::DistributionError;
 use crate::edge::EdgeKind;
 use crate::erased::{ErasedBody, ErasedInput, ErasedInputs, ErasedOutcome, OutputTarget};
-use crate::error::{FiringFailed, NetError};
+use crate::error::{BodyPanicked, FiringFailed, NetError};
 use crate::event::Event;
 use crate::ids::{NetId, PlaceId, TokenId, TransitionId};
 use crate::net::Net;
-use crate::place::{ErasedToken, PlaceSlot};
+use crate::place::{ErasedToken, PlaceMeta, PlaceSlot};
 use crate::transition::TransitionSlot;
 
 /// Why an input place is never empty once stage one starts: being fireable
@@ -244,9 +268,11 @@ impl Net {
     ///
     /// `Ok(Some(t))` says `t` fired. `Ok(None)` says nothing did, either
     /// because nothing was fireable — the net is quiescent — or because the
-    /// selector declined. `Err` says the body returned `Err`: the net is
-    /// consistent, the firing's inputs are gone, and a further `step` works
-    /// (DESIGN §7).
+    /// selector declined. `Err` says the body returned `Err` or panicked: the
+    /// net is consistent, the firing's inputs are gone unless the transition
+    /// asked to
+    /// [restore](crate::TransitionBuilder::restore_tokens_on_failure) them,
+    /// and a further `step` works (DESIGN §7).
     ///
     /// One successful firing appends one [`Event::Fired`], preceded by an
     /// [`Event::Mutated`] per [`MutateEdge`](crate::MutateEdge), and adds one
@@ -282,11 +308,12 @@ impl Net {
     ///
     /// # Panics
     ///
-    /// A panicking body is not caught yet: the panic unwinds through `step`,
-    /// and because the body was taken out of its slot before the call, the
-    /// transition stays in flight and is never fireable again. The slice that
-    /// adds `catch_unwind` turns that into an ordinary
-    /// [`FiringFailed`] with the body back in place.
+    /// Not for a panicking body: the panic is caught and returned as a
+    /// [`FiringFailed`] whose error is a
+    /// [`BodyPanicked`](crate::BodyPanicked), with the body back in its slot
+    /// and the net consistent — the same failure a body that returned `Err`
+    /// would produce. Under `panic = "abort"` there is nothing to catch and
+    /// the process dies, as that profile asked.
     pub fn step(&mut self) -> Result<Option<TransitionId>, FiringFailed> {
         let fireable = self.fireable();
         if fireable.is_empty() {
@@ -328,13 +355,14 @@ impl Net {
     ///
     /// [`NetError::NoSuchTransition`] for an unknown id and
     /// [`NetError::NotFireable`] for a transition that cannot fire right now;
-    /// the net is untouched in both cases. A body that returns `Err` gives
-    /// [`NetError::FiringFailed`], with the same consequences as for
-    /// [`step`](Net::step).
+    /// the net is untouched in both cases. A body that returns `Err` or
+    /// panics gives [`NetError::FiringFailed`], with the same consequences as
+    /// for [`step`](Net::step).
     ///
     /// # Panics
     ///
-    /// As [`step`](Net::step): a panicking body is not caught yet.
+    /// As [`step`](Net::step): a panicking body is caught and reported as a
+    /// failure, not propagated.
     pub fn fire(&mut self, transition: TransitionId) -> Result<(), NetError> {
         let slot = self
             .transitions
@@ -398,8 +426,10 @@ impl Net {
     ///
     /// # Panics
     ///
-    /// As [`step`](Net::step): a panicking body is not caught yet. An inline
-    /// firing panics inside this call.
+    /// Not for a panicking body, inline firing included: the panic is caught
+    /// here, and the `Firing` comes back carrying the failure exactly as it
+    /// would carry one a body returned. [`distribute`](Net::distribute) is
+    /// where every failure is reported, whichever stage produced it.
     #[must_use = "a Firing that is dropped instead of distributed strands its transition in \
                   flight for good: the body never comes home"]
     pub fn launch(&mut self, transition: TransitionId) -> Result<Firing, NetError> {
@@ -423,16 +453,21 @@ impl Net {
     /// Emits the [`Mutated`](Event::Mutated) events of this firing's
     /// [`MutateEdge`](crate::MutateEdge) inputs, then
     /// [`Event::Distributed`] naming the tokens that landed — or
-    /// [`Event::Failed`] if the body failed — and adds one to
-    /// [`fired_count`](Net::fired_count) on success.
+    /// [`Event::Failed`] if the firing failed — and adds one to
+    /// [`fired_count`](Net::fired_count) on success. A transition that
+    /// [restores its inputs](crate::TransitionBuilder::restore_tokens_on_failure)
+    /// has them back in their places before the `Failed` event is appended,
+    /// so an observer that re-reads the marking when it sees that event sees
+    /// them there.
     ///
     /// # Errors
     ///
     /// [`NetError::ForeignFiring`] if the `Completed` was launched by another
     /// net, [`NetError::NotInFlight`] if this net's transition is not in
-    /// flight, and [`NetError::FiringFailed`] if the body returned `Err`.
-    /// The net is untouched in the first two cases; in the third it is
-    /// consistent, with the firing's inputs gone (DESIGN §7).
+    /// flight, and [`NetError::FiringFailed`] if the body returned `Err` or
+    /// panicked, or named a place it may not write to. The net is untouched
+    /// in the first two cases; in the third it is consistent, with the
+    /// firing's inputs gone or restored (DESIGN §7).
     ///
     /// The `Completed` is consumed whichever way this goes, so a rejected one
     /// takes its body with it: the two rejections above are misuse, and the
@@ -484,6 +519,13 @@ impl Net {
 
         let mut consumed = Vec::new();
         let mut mutated = Vec::new();
+        // `Some`, empty, for a transition that restores its inputs: the
+        // clones are taken by `consume`, below, before the body sees a thing.
+        // `None` for every other transition, which is also what says that
+        // there is nothing to put back.
+        let mut restore = self.transitions[index]
+            .restore_tokens_on_failure
+            .then(Vec::new);
         let state = {
             // Field by field, so that the input places can be emptied while
             // the edge list is read out of the transition beside them.
@@ -493,7 +535,13 @@ impl Net {
                 ..
             } = &mut *self;
             let inputs = &transitions[index].inputs;
-            let args = consume(places, inputs, &mut consumed, &mut mutated);
+            let args = consume(
+                places,
+                inputs,
+                &mut consumed,
+                &mut mutated,
+                restore.as_mut(),
+            );
             if transitions[index].detachable {
                 Stage::Airborne { body, args }
             } else {
@@ -501,7 +549,7 @@ impl Net {
                 // borrow into a place, which may neither travel with the
                 // `Firing` nor still be alive when stage three writes.
                 let args = borrow_mutated(places, inputs, args);
-                let outcome = body(ErasedInputs::new(args));
+                let outcome = call_body(&mut body, args);
                 Stage::Ran { body, outcome }
             }
         };
@@ -517,6 +565,7 @@ impl Net {
             transition,
             consumed,
             mutated,
+            restore,
             report,
             state,
         }
@@ -528,6 +577,7 @@ impl Net {
             transition,
             consumed,
             mutated,
+            restore,
             report,
             body,
             outcome,
@@ -535,25 +585,32 @@ impl Net {
         } = completed;
         // Home before anything else can go wrong, on the failing path too:
         // DESIGN §7 promises a consistent net after a failure, and a body
-        // left out of its slot would strand the transition in flight.
+        // left out of its slot would strand the transition in flight. A body
+        // that panicked comes home as well, carrying whatever state the panic
+        // left it in.
         self.transitions[transition.0 as usize].body = Some(body);
-        self.distribute_outcome(transition, outcome, consumed, mutated, report)
+        self.distribute_outcome(transition, outcome, consumed, mutated, restore, report)
     }
 
     /// Places what the body produced, or accounts for its failure.
     ///
-    /// `consumed` and `mutated` are stage one's records, in edge order.
+    /// `consumed` and `mutated` are stage one's records, in edge order, and
+    /// `restore` the clones it took if this transition restores its inputs.
     fn distribute_outcome(
         &mut self,
         transition: TransitionId,
         outcome: ErasedOutcome,
         consumed: Vec<(PlaceId, TokenId)>,
         mutated: Vec<(PlaceId, TokenId)>,
+        restore: Option<Vec<(PlaceId, TokenId, ErasedToken)>>,
         report: Report,
     ) -> Result<(), FiringFailed> {
         let produced = match outcome {
             ErasedOutcome::Ok(tokens) => tokens,
             ErasedOutcome::Err(error) => {
+                // The tokens go back first, so that the marking is already
+                // whole when the `Failed` event an observer reads arrives.
+                let restored = self.restore_consumed(restore);
                 // A body that mutated a token through a `MutateEdge` and then
                 // failed has still mutated it — the change went into the
                 // place as it was made, and there is nothing to roll back to
@@ -561,14 +618,14 @@ impl Net {
                 self.emit_mutations(&mutated);
                 self.emit(Event::Failed {
                     transition,
-                    lost: consumed,
-                    restored: false,
+                    consumed,
+                    restored,
                     error: error.to_string(),
                 });
                 return Err(FiringFailed {
                     transition,
                     error,
-                    restored: false,
+                    restored,
                 });
             }
         };
@@ -600,18 +657,20 @@ impl Net {
                         Err(error) => {
                             // A firing that cannot be applied fails like any
                             // other (DESIGN §4.5): nothing written, the
-                            // consumed tokens lost, the net consistent.
+                            // consumed tokens lost or restored, the net
+                            // consistent.
+                            let restored = self.restore_consumed(restore);
                             self.emit_mutations(&mutated);
                             self.emit(Event::Failed {
                                 transition,
-                                lost: consumed,
-                                restored: false,
+                                consumed,
+                                restored,
                                 error: error.to_string(),
                             });
                             return Err(FiringFailed {
                                 transition,
                                 error: Box::new(error),
-                                restored: false,
+                                restored,
                             });
                         }
                     }
@@ -619,6 +678,10 @@ impl Net {
             };
             resolved.push((place, token));
         }
+
+        // The firing stood, so the clones a restoring transition took are
+        // dropped here, unread: they exist only for the failing path.
+        drop(restore);
 
         let mut landed = Vec::with_capacity(resolved.len());
         for (place, token) in resolved {
@@ -683,6 +746,40 @@ impl Net {
             });
         }
         Ok(place)
+    }
+
+    /// Puts a failed firing's consumed tokens back, and says whether there
+    /// was a promise to keep.
+    ///
+    /// `None` is a transition that does not restore, and the answer is false:
+    /// its inputs are gone. `Some` is one that does, and the answer is true
+    /// however many tokens are in the list — a restoring transition that
+    /// consumes nothing (only snapshots and mutating edges) restores an empty
+    /// list, and says so.
+    ///
+    /// The clones go in at the *front*, in the order they were taken, which
+    /// is what "the firing is undone" means for a FIFO place: the next firing
+    /// sees exactly what this one saw. They keep their original
+    /// [`TokenId`]s — the ids were never retired, because the firing they
+    /// belonged to never completed — and nothing is minted, so no
+    /// [`Added`](Event::Added) is emitted either; the
+    /// [`Failed`](Event::Failed) event's `restored` flag is the whole report.
+    ///
+    /// The list is walked backwards so that each place's tokens end up in
+    /// front in the order they left it: the last one taken is pushed first
+    /// and ends up behind the ones taken before it. Two input edges never
+    /// name one place ([`DuplicateInputPlace`](crate::BuildError::DuplicateInputPlace)),
+    /// so the places' groups cannot interleave.
+    fn restore_consumed(&mut self, restore: Option<Vec<(PlaceId, TokenId, ErasedToken)>>) -> bool {
+        let Some(restore) = restore else {
+            return false;
+        };
+        for (place, token, value) in restore.into_iter().rev() {
+            self.places[place.0 as usize]
+                .tokens
+                .push_front((token, value));
+        }
+        true
     }
 
     /// One [`Event::Mutated`] per mutating edge, in edge order.
@@ -794,6 +891,17 @@ pub struct Firing {
     /// The tokens a [`MutateEdge`](crate::MutateEdge) borrowed, in edge
     /// order. They never left their places; stage three reports them.
     mutated: Vec<(PlaceId, TokenId)>,
+    /// The clones stage one took of the consumed tokens, in the order it took
+    /// them, for a transition declared with
+    /// [`restore_tokens_on_failure`](crate::TransitionBuilder::restore_tokens_on_failure);
+    /// `None` for every other transition.
+    ///
+    /// They ride along with the firing — wherever the body runs, they do not
+    /// — and stage three either puts them back, if the firing failed, or
+    /// drops them. Each carries the id its original had, because a restored
+    /// token is the same token: the firing that would have retired the id
+    /// never completed.
+    restore: Option<Vec<(PlaceId, TokenId, ErasedToken)>>,
     /// Which events this firing reports, decided by the path that launched
     /// it.
     report: Report,
@@ -812,8 +920,9 @@ enum Stage {
         args: Vec<ErasedInput<'static>>,
     },
     /// A transition that was not detachable, so
-    /// [`launch`](Net::launch) already called its body inline; `run` only
-    /// unwraps this.
+    /// [`launch`](Net::launch) already called its body inline — catching its
+    /// panic, if it had one, exactly as [`Firing::run`] would have; `run`
+    /// only unwraps this.
     Ran {
         body: ErasedBody,
         outcome: ErasedOutcome,
@@ -859,24 +968,32 @@ impl Firing {
     /// its own step: it may run anywhere, for as long as it likes. A firing
     /// that was already run inline is unwrapped unchanged.
     ///
+    /// A panicking body does not panic this call: the body runs inside
+    /// [`catch_unwind`](std::panic::catch_unwind), and a panic becomes a
+    /// [`BodyPanicked`](crate::BodyPanicked) failure carried home like any
+    /// other. That matters most exactly here, where the body may be on a
+    /// worker thread: an escaping panic would kill the thread and take the
+    /// body with it, and the transition would be in flight for good. The
+    /// panic message still reaches stderr through the panic hook, which this
+    /// crate does not touch.
+    ///
     /// # Panics
     ///
-    /// A panicking body is not caught yet: the panic unwinds through `run`
-    /// and the body is lost with the firing, stranding its transition in
-    /// flight. The slice that adds `catch_unwind` turns that into an ordinary
-    /// [`FiringFailed`] with the body back in its slot.
+    /// Not for a panicking body, as above. Under `panic = "abort"` there is
+    /// nothing to catch and the process dies, as that profile asked.
     pub fn run(self) -> Completed {
         let Firing {
             net,
             transition,
             consumed,
             mutated,
+            restore,
             report,
             state,
         } = self;
         let (body, outcome) = match state {
             Stage::Airborne { mut body, args } => {
-                let outcome = body(ErasedInputs::new(args));
+                let outcome = call_body(&mut body, args);
                 (body, outcome)
             }
             Stage::Ran { body, outcome } => (body, outcome),
@@ -886,6 +1003,7 @@ impl Firing {
             transition,
             consumed,
             mutated,
+            restore,
             report,
             body,
             outcome,
@@ -917,6 +1035,10 @@ pub struct Completed {
     /// The tokens a [`MutateEdge`](crate::MutateEdge) borrowed, in edge
     /// order.
     mutated: Vec<(PlaceId, TokenId)>,
+    /// The clones of the consumed tokens, for a transition that restores them
+    /// on failure; `None` for every other transition. See
+    /// [`Firing`](Firing#structfield.restore).
+    restore: Option<Vec<(PlaceId, TokenId, ErasedToken)>>,
     /// Which events this firing reports.
     report: Report,
     /// On its way back to its slot.
@@ -932,12 +1054,15 @@ impl Completed {
         self.transition
     }
 
-    /// Whether the body produced outputs rather than an error.
+    /// Whether the body produced outputs rather than a failure — a returned
+    /// `Err` or a caught panic, which are the same thing by the time they get
+    /// here.
     ///
     /// A driver may look before it distributes, to decide what to do about a
-    /// failure. It still has to distribute: that is what puts the body back
-    /// and logs the [`Failed`](crate::Event::Failed) event, and it is where
-    /// the failure is reported as [`FiringFailed`].
+    /// failure. It still has to distribute: that is what puts the body back,
+    /// puts the consumed tokens back if the transition asked for it, and logs
+    /// the [`Failed`](crate::Event::Failed) event, and it is where the
+    /// failure is reported as [`FiringFailed`].
     pub fn succeeded(&self) -> bool {
         matches!(self.outcome, ErasedOutcome::Ok(_))
     }
@@ -997,11 +1122,19 @@ pub(crate) fn default_selector(net: &Net, fireable: &[TransitionId]) -> Option<T
 /// token stays in its place, so it leaves an [`ErasedInput::Taken`] behind
 /// and is recorded in `mutated`; [`borrow_mutated`] fills those positions in,
 /// for the inline path that is the only one allowed to hold such a borrow.
+///
+/// `restore` is `Some` for a transition declared with
+/// [`restore_tokens_on_failure`](crate::TransitionBuilder::restore_tokens_on_failure),
+/// and every token a consuming edge takes is cloned into it, with its id, in
+/// the order it was taken. The clone is taken *here*, before the body is
+/// given anything, because that is the last moment the token is certainly
+/// intact: from the next line on the body owns it.
 fn consume(
     places: &mut [PlaceSlot],
     inputs: &[(PlaceId, EdgeKind)],
     consumed: &mut Vec<(PlaceId, TokenId)>,
     mutated: &mut Vec<(PlaceId, TokenId)>,
+    mut restore: Option<&mut Vec<(PlaceId, TokenId, ErasedToken)>>,
 ) -> Vec<ErasedInput<'static>> {
     let mut args = Vec::with_capacity(inputs.len());
 
@@ -1009,7 +1142,11 @@ fn consume(
         let index = place.0 as usize;
         match kind {
             EdgeKind::Take => {
-                let (token, value) = places[index].tokens.pop_front().expect(NON_EMPTY);
+                let slot = &mut places[index];
+                let (token, value) = slot.tokens.pop_front().expect(NON_EMPTY);
+                if let Some(restore) = restore.as_deref_mut() {
+                    restore.push((place, token, restore_clone(&slot.meta, &value)));
+                }
                 consumed.push((place, token));
                 args.push(ErasedInput::Token(value));
             }
@@ -1017,6 +1154,9 @@ fn consume(
                 let slot = &mut places[index];
                 let mut values = Vec::with_capacity(slot.tokens.len());
                 for (token, value) in slot.tokens.drain(..) {
+                    if let Some(restore) = restore.as_deref_mut() {
+                        restore.push((place, token, restore_clone(&slot.meta, &value)));
+                    }
                     consumed.push((place, token));
                     values.push(value);
                 }
@@ -1044,6 +1184,44 @@ fn consume(
     }
 
     args
+}
+
+/// The clone a restoring transition takes of one token it consumes, with that
+/// place's cloner.
+///
+/// [`build`](crate::NetBuilder::build) refuses a transition that restores and
+/// consumes a place without a cloner
+/// ([`RestoreOfNoClonePlace`](crate::BuildError::RestoreOfNoClonePlace)), so
+/// by the time a firing runs the question has been answered.
+fn restore_clone(meta: &PlaceMeta, value: &ErasedToken) -> ErasedToken {
+    let clone = meta.clone.expect(
+        "build rejects restoring a transition that consumes a place which cannot clone its tokens",
+    );
+    clone(&**value)
+}
+
+/// Stage two, wherever it happens: call the body, and turn a panic into a
+/// failure instead of letting it out.
+///
+/// The one place a body is ever called, so the one place the catch belongs.
+/// A panic becomes [`BodyPanicked`](crate::BodyPanicked) and travels on as an
+/// ordinary failure: the body comes home, the net stays consistent, and a
+/// worker thread running this survives to report it (DESIGN §7).
+///
+/// [`AssertUnwindSafe`] is the honest answer rather than a dodge. What the
+/// call touches is the body, which is `FnMut` and whose own state a panic may
+/// well leave half-updated — that is documented on `BodyPanicked` and is the
+/// author's to reason about — and this firing's arguments, which are owned
+/// here and dropped with the unwind. The net is not in scope at all on the
+/// detachable path, and on the inline path the only borrow into it is the
+/// mutating edge's token, whose type cannot make the *net* inconsistent: a
+/// half-changed token is a value the author's own code left behind, and the
+/// [`Mutated`](Event::Mutated) event reports it either way.
+fn call_body(body: &mut ErasedBody, args: Vec<ErasedInput<'_>>) -> ErasedOutcome {
+    match catch_unwind(AssertUnwindSafe(move || body(ErasedInputs::new(args)))) {
+        Ok(outcome) => outcome,
+        Err(payload) => ErasedOutcome::Err(Box::new(BodyPanicked::from_payload(payload))),
+    }
 }
 
 /// Fills in the arguments of the mutating edges: the front token of each
@@ -1125,6 +1303,7 @@ mod tests {
             transition: copy,
             consumed: Vec::new(),
             mutated: Vec::new(),
+            restore: None,
             report: Report::Staged,
             body: Box::new(|_: ErasedInputs<'_>| ErasedOutcome::Ok(Vec::new())),
             outcome: ErasedOutcome::Ok(Vec::new()),

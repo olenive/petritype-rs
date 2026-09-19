@@ -46,9 +46,11 @@ pub(crate) struct PlaceMeta {
     /// [`NetBuilder::place_no_clone`](crate::NetBuilder::place_no_clone).
     ///
     /// Its absence is what
-    /// [`build`](crate::NetBuilder::build) rejects a snapshot edge for; it is
-    /// called by snapshot edges, `Net::snapshot` and
-    /// `restore_tokens_on_failure` in the slices that fire.
+    /// [`build`](crate::NetBuilder::build) rejects a snapshot edge, and a
+    /// consuming edge of a transition that
+    /// [restores its inputs](crate::TransitionBuilder::restore_tokens_on_failure),
+    /// for. It is called by snapshot edges, by the clone stage one takes for
+    /// such a transition, and by `Net::snapshot` in the slice that adds it.
     pub(crate) clone: Option<CloneFn>,
     /// `to_json_of::<T>`, `Some` only for a place marked
     /// [`serializable`](crate::NetBuilder::serializable).
@@ -111,7 +113,8 @@ pub(crate) fn debug_of<T: fmt::Debug + 'static>(value: &dyn Any) -> String {
 ///
 /// Recorded by [`NetBuilder::place`](crate::NetBuilder::place) and never
 /// called unless the author asks for a snapshot, a snapshot edge or token
-/// restoration on failure.
+/// restoration on failure — once per consumed token per firing, in that last
+/// case.
 pub(crate) fn clone_of<T: Clone + Send + Sync + 'static>(value: &dyn Any) -> ErasedToken {
     Box::new(
         value

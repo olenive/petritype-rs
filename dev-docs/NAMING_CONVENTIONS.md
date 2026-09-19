@@ -42,6 +42,8 @@ rename backlog.
 | a firing's body raised / returned `Err` | `FiringFailed` | `TransitionFailedError` | rename |
 | fuse spent | `TooManyFirings` | `TooManyFiringsError` | — |
 | put consumed tokens back on failure | `restore_tokens_on_failure` | `restore_tokens_on_failure` | — |
+| a body panicked | `BodyPanicked` (inside `FiringFailed`) | the exception inside `TransitionFailedError` | — |
+| the tokens a failed firing took | `Event::Failed { consumed, restored }` (same word as `Fired`/`Launched`) | `TransitionFailedError(consumed, restored)` | — |
 | static check: no cycles | `assert_acyclic` | `assert_acyclic` | — |
 | static check: every transition consumes | `assert_no_source_transitions` | `assert_no_source_transitions` | — |
 | lookup by name | `place_named`, `transition_named` | `place_named` | add `transition_named` |

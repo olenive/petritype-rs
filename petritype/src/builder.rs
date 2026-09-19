@@ -272,6 +272,7 @@ impl NetBuilder {
             guard: None,
             priority: None,
             enabled: true,
+            restore_tokens_on_failure: false,
             detachable,
         });
         TransitionBuilder { builder: self, id }
@@ -294,6 +295,9 @@ impl NetBuilder {
     /// [`BuildError::DuplicateTransitionName`] if two of either share a name;
     /// [`BuildError::SnapshotOfNoClonePlace`] if a snapshot edge reads a
     /// place that cannot clone its tokens;
+    /// [`BuildError::RestoreOfNoClonePlace`] if a transition that
+    /// [restores its inputs on failure](crate::TransitionBuilder::restore_tokens_on_failure)
+    /// consumes such a place;
     /// [`BuildError::DuplicateInputPlace`] if one transition reads one place
     /// through two input edges; and, for a transition whose body
     /// [routes](crate::RoutedOutput) its outputs by type,
@@ -335,6 +339,20 @@ impl NetBuilder {
                 if *kind == EdgeKind::Snapshot && self.places[place.0 as usize].meta.clone.is_none()
                 {
                     return Err(BuildError::SnapshotOfNoClonePlace {
+                        transition: slot.name.clone(),
+                        place: self.places[place.0 as usize].meta.name.clone(),
+                    });
+                }
+                // Restoring is done with clones taken at stage one, so a
+                // transition that restores can only consume places that can
+                // clone. The read edges are exempt because they consume
+                // nothing: a mutating edge has nothing to put back, and a
+                // snapshot of such a place was refused just above.
+                if slot.restore_tokens_on_failure
+                    && matches!(*kind, EdgeKind::Take | EdgeKind::TakeAll)
+                    && self.places[place.0 as usize].meta.clone.is_none()
+                {
+                    return Err(BuildError::RestoreOfNoClonePlace {
                         transition: slot.name.clone(),
                         place: self.places[place.0 as usize].meta.name.clone(),
                     });

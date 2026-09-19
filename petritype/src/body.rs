@@ -7,10 +7,17 @@
 //!    implemented for every arity from 0 to 12.
 //! 2. Does what the body returns match the output places? —
 //!    [`PositionalOutputs`], slot by slot, with [`IntoTokens`] deciding how
-//!    many tokens one slot is worth, or
-//!    [`RoutedOutput`](crate::RoutedOutput), payload type by payload type.
+//!    many tokens one slot is worth; [`RoutedOutput`](crate::RoutedOutput),
+//!    payload type by payload type; or nothing at all for a
+//!    [`Distribution`](crate::Distribution), which names its places itself
+//!    and is checked when its tokens land.
 //! 3. Is the return value an outcome at all? — [`IntoOutcome`], which also
 //!    recognises `Result` as failure rather than as data.
+//!
+//! What answers question 2 may be the return type of the body or of an
+//! [output distribution function](crate::OutputDistribution) composed after
+//! it; the pair is a body too, and the impls for it are written by the same
+//! arity macro.
 //!
 //! The answers are wrapped, once, into an
 //! [`ErasedBody`](crate::erased::ErasedBody) at declaration time, so firing
@@ -20,8 +27,11 @@ use std::any::{TypeId, type_name};
 use std::error::Error;
 
 use crate::arity::for_each_arity;
+use crate::distribution::WithOutputDistribution;
 use crate::edge::InputEdge;
-use crate::erased::{ErasedBody, ErasedInputs, ErasedOutcome, RouteTable, RoutingProblem};
+use crate::erased::{
+    ErasedBody, ErasedInputs, ErasedOutcome, OutputTarget, RouteTable, RoutingProblem,
+};
 use crate::ids::{NetId, PlaceId, PlaceRef};
 use crate::place::ErasedToken;
 use crate::routing::{RouteSink, RouteSpec, RoutedOutput};
@@ -52,10 +62,30 @@ pub mod marker {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
     pub struct Routed;
 
+    /// The body returned a [`Distribution`](crate::Distribution): the places
+    /// were named outright, so neither order nor type picks them.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    pub struct Distributed;
+
     /// The body returned `Result<O, E>`, where `O` is itself an outcome in
     /// the form `M`. Failure wraps any other form rather than replacing it.
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
     pub struct Failing<M>(PhantomData<fn() -> M>);
+
+    /// An [output distribution function](crate::OutputDistribution) composed
+    /// after a body that returns its result directly.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    pub struct Plain;
+
+    /// An [output distribution function](crate::OutputDistribution) composed
+    /// after a body that returns `Result<R, E>`: the function takes the `R`,
+    /// and an `Err` fails the firing without calling it.
+    ///
+    /// The tag is what keeps the two wrapper impls apart — they differ only
+    /// in the shape of the body's return type, which no where-clause of the
+    /// other could rule in.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    pub struct Fallible;
 }
 
 /// How many tokens one positional output slot is worth.
@@ -148,25 +178,33 @@ pub trait PositionalOutputs<Outputs>: PositionalSealed<Outputs> {}
 /// means failure, never routing (DESIGN §7): a body that wants to send a
 /// value to one place or another returns data that says so, not an `Err`.
 ///
-/// Two forms are implemented so far, and they are told apart by the shape of
-/// the return type:
+/// The three forms are told apart by the return type:
 ///
 /// - **positional** — a tuple, one slot per output place, matched by order
 ///   ([`PositionalOutputs`]);
 /// - **routed** — a value that is not a tuple, matched by type
 ///   ([`RoutedOutput`](crate::RoutedOutput)), which is what
-///   [`#[derive(Routed)]`](crate::Routed) implements.
+///   [`#[derive(Routed)]`](crate::Routed) implements;
+/// - **distribution** — a [`Distribution`](crate::Distribution), whose pairs
+///   name their places outright, for the decisions only the data can make.
 ///
-/// # How later output forms plug in
+/// # How the output forms plug in
 ///
-/// The `Marker` parameter exists so that new forms can be added without
-/// colliding with the ones already here. Routed outputs added
-/// `impl<O: RoutedOutput> IntoOutcome<Outputs, marker::Routed> for O`, and
-/// the `Distribution` form will add another impl with its own tag; because
-/// the tags differ, none of them overlaps the positional impl, and the
+/// The `Marker` parameter is what keeps them from colliding. Positional
+/// outputs are `impl<O: PositionalOutputs<Outputs>> IntoOutcome<Outputs,
+/// marker::Positional> for O`, routed ones the same shape under
+/// [`marker::Routed`], and the distribution form is written for the concrete
+/// [`Distribution`](crate::Distribution) under [`marker::Distributed`].
+/// Because the tags differ, none of the impls overlaps another, and the
 /// compiler picks the form by picking the impl whose bounds hold. `Result`
 /// needs no new impl for any of them: [`marker::Failing<M>`] carries the
 /// inner form's tag.
+///
+/// A body wrapped with
+/// [`output_distribution`](crate::OutputDistribution::output_distribution)
+/// adds nothing here either: the wrapper is a *body*, and the form is read
+/// from what the distribution function returns, which is again one of these
+/// three.
 #[diagnostic::on_unimplemented(
     message = "a transition body must return its outputs, or a `Result` of them",
     label = "`{Self}` is not a transition outcome",
@@ -175,7 +213,10 @@ pub trait PositionalOutputs<Outputs>: PositionalSealed<Outputs> {}
             outputs at all",
     note = "routed: a value that is not a tuple, whose every payload goes to the output place \
             that holds its type — derive `Routed` on the enum or struct you return",
-    note = "either form may be wrapped in `Result<_, E>` where \
+    note = "distribution: a `Distribution` of (place, token) pairs, built with \
+            `Distribution::new().to(place, token)`, for choosing between output places of the \
+            same type",
+    note = "any of the three may be wrapped in `Result<_, E>` where \
             `E: std::error::Error + Send + Sync + 'static`; a `Result` always means failure, \
             never routing"
 )]
@@ -268,24 +309,51 @@ where
 /// `Send + Sync + 'static`, because it may run on another thread and the net
 /// itself must stay `Send + Sync`.
 ///
+/// It is also implemented for such a closure with an
+/// [output distribution function](crate::OutputDistribution) composed after
+/// it — a [`WithOutputDistribution`], which is a body of the same arity whose
+/// outputs are read from what the *function* returns. The function takes the
+/// body's result, or, when the body returns `Result<R, E>`, the `R` inside an
+/// `Ok`.
+///
 /// `Marker` is inferred; see [`marker`].
 #[diagnostic::on_unimplemented(
     message = "transition body parameters do not match its input edges",
     label = "this body cannot be called with what `{Edges}` produces",
     note = "one parameter per edge, in order: `TakeEdge(p)` gives `T`, `TakeAllEdge(p)` gives \
             `Vec<T>`, `SnapshotEdge(p)` gives `T`, `MutateEdge(p)` gives `&mut T`",
+    note = "with `.output_distribution(f)`, the output distribution function `f` takes exactly \
+            what the body returns — the value inside the `Ok` if that is a `Result` — and \
+            returns the outputs in any form, usually a `Distribution`",
     note = "a body must be `Send + Sync + 'static`: capture an `Arc`, a `Mutex` or an atomic \
             rather than an `Rc` or a `RefCell`"
 )]
 pub trait TransitionBody<Edges, Outputs, Marker>: BodySealed<Edges, Outputs, Marker> {}
 
-/// The heart of the slice: one impl per input arity.
+/// The heart of the slice: one impl per input arity, and now three of them —
+/// a bare closure, and a closure with an
+/// [output distribution function](crate::OutputDistribution) composed after
+/// it, whose body returns its result either directly or in a `Result`.
 ///
-/// The marker is `(M, R)` — the outcome form and the body's return type —
-/// because an impl may not leave a type parameter to be pinned by a where
-/// clause alone, and `R` appears only in the `FnMut` bound. Putting it in the
-/// marker constrains it and costs nothing: the compiler infers the whole
-/// marker at the call site.
+/// The marker is `(M, R)` for a bare body — the outcome form and the body's
+/// return type — because an impl may not leave a type parameter to be pinned
+/// by a where clause alone, and `R` appears only in the `FnMut` bound. Putting
+/// it in the marker constrains it and costs nothing: the compiler infers the
+/// whole marker at the call site.
+///
+/// The wrapped forms need the same trick twice over, so their marker is
+/// `(M, R, R2, tag)`: `R` is what the body returns, `R2` what the
+/// distribution function returns and therefore what the output form is read
+/// from, and the tag is [`marker::Plain`] or [`marker::Fallible`]. The two
+/// tags exist because the impls differ only in the *shape* of `R` — `R`
+/// against `Result<R, E>` — which coherence cannot see, since a `Result` is a
+/// perfectly good `R`. With different tags the impls cannot overlap, and at a
+/// call site the compiler discards whichever one the distribution function's
+/// own parameter type contradicts: a function taking `Ball` rules out the
+/// fallible reading of a body returning `Ball`, and a function taking `Ball`
+/// after a body returning `Result<Ball, E>` rules out the plain one. That is
+/// also why the crate asks for annotated closure parameters — an unannotated
+/// `|ball|` leaves nothing to choose by.
 macro_rules! impl_body {
     ($(($t:ident, $r:ident, $i:tt)),*) => {
         impl<F, R, M, Outputs, $($t,)*> BodySealed<($($t,)*), Outputs, (M, R)> for F
@@ -329,6 +397,105 @@ macro_rules! impl_body {
             R: IntoOutcome<Outputs, M>,
         {
         }
+
+        // ----- the same body, with an output distribution function after it -
+
+        impl<F, G, R, R2, M, Outputs, $($t,)*>
+            BodySealed<($($t,)*), Outputs, (M, R, R2, marker::Plain)>
+            for WithOutputDistribution<F, G>
+        where
+            $($t: InputEdge,)*
+            F: for<'a> FnMut($(<$t as EdgeSealed>::Arg<'a>,)*) -> R + Send + Sync + 'static,
+            G: FnMut(R) -> R2 + Send + Sync + 'static,
+            R2: IntoOutcome<Outputs, M>,
+        {
+            #[allow(unused_mut, unused_variables)]
+            fn into_erased(mut self) -> (ErasedBody, Option<RoutingProblem>) {
+                // `R2` and not `R`: the distribution function's return type is
+                // what decides the output form, so the body's is merely its
+                // input (DESIGN §4.5).
+                let (routes, problem) = match <R2 as OutcomeSealed<Outputs, M>>::routing() {
+                    Ok(routes) => (routes, None),
+                    Err(problem) => (RouteTable::empty(), Some(problem)),
+                };
+                let body: ErasedBody = Box::new(move |mut inputs: ErasedInputs<'_>| {
+                    let mut args = inputs.iter_mut();
+                    let returned = (self.body)($(
+                        <$t as EdgeSealed>::extract(
+                            args.next().expect("one erased input per input edge"),
+                        ),
+                    )*);
+                    // Both halves are stage two, so the routing decision runs
+                    // wherever the body ran — off-thread in concurrent mode.
+                    OutcomeSealed::into_outcome((self.distribute)(returned), &routes)
+                });
+                (body, problem)
+            }
+        }
+
+        #[diagnostic::do_not_recommend]
+        impl<F, G, R, R2, M, Outputs, $($t,)*>
+            TransitionBody<($($t,)*), Outputs, (M, R, R2, marker::Plain)>
+            for WithOutputDistribution<F, G>
+        where
+            $($t: InputEdge,)*
+            F: for<'a> FnMut($(<$t as EdgeSealed>::Arg<'a>,)*) -> R + Send + Sync + 'static,
+            G: FnMut(R) -> R2 + Send + Sync + 'static,
+            R2: IntoOutcome<Outputs, M>,
+        {
+        }
+
+        impl<F, G, R, E, R2, M, Outputs, $($t,)*>
+            BodySealed<($($t,)*), Outputs, (M, Result<R, E>, R2, marker::Fallible)>
+            for WithOutputDistribution<F, G>
+        where
+            $($t: InputEdge,)*
+            F: for<'a> FnMut($(<$t as EdgeSealed>::Arg<'a>,)*) -> Result<R, E>
+                + Send + Sync + 'static,
+            G: FnMut(R) -> R2 + Send + Sync + 'static,
+            E: Error + Send + Sync + 'static,
+            R2: IntoOutcome<Outputs, M>,
+        {
+            #[allow(unused_mut, unused_variables)]
+            fn into_erased(mut self) -> (ErasedBody, Option<RoutingProblem>) {
+                let (routes, problem) = match <R2 as OutcomeSealed<Outputs, M>>::routing() {
+                    Ok(routes) => (routes, None),
+                    Err(problem) => (RouteTable::empty(), Some(problem)),
+                };
+                let body: ErasedBody = Box::new(move |mut inputs: ErasedInputs<'_>| {
+                    let mut args = inputs.iter_mut();
+                    let returned = (self.body)($(
+                        <$t as EdgeSealed>::extract(
+                            args.next().expect("one erased input per input edge"),
+                        ),
+                    )*);
+                    match returned {
+                        Ok(value) => {
+                            OutcomeSealed::into_outcome((self.distribute)(value), &routes)
+                        }
+                        // A failure is a failure whatever would have routed
+                        // it: the distribution function is not called at all,
+                        // because there is no result to distribute.
+                        Err(error) => ErasedOutcome::Err(Box::new(error)),
+                    }
+                });
+                (body, problem)
+            }
+        }
+
+        #[diagnostic::do_not_recommend]
+        impl<F, G, R, E, R2, M, Outputs, $($t,)*>
+            TransitionBody<($($t,)*), Outputs, (M, Result<R, E>, R2, marker::Fallible)>
+            for WithOutputDistribution<F, G>
+        where
+            $($t: InputEdge,)*
+            F: for<'a> FnMut($(<$t as EdgeSealed>::Arg<'a>,)*) -> Result<R, E>
+                + Send + Sync + 'static,
+            G: FnMut(R) -> R2 + Send + Sync + 'static,
+            E: Error + Send + Sync + 'static,
+            R2: IntoOutcome<Outputs, M>,
+        {
+        }
     };
 }
 
@@ -359,11 +526,11 @@ macro_rules! impl_outputs {
             $($r: IntoTokens<$t>,)*
         {
             #[allow(unused_variables, non_snake_case)]
-            fn push_erased(self, out: &mut Vec<(usize, ErasedToken)>) {
+            fn push_erased(self, out: &mut Vec<(OutputTarget, ErasedToken)>) {
                 let ($($r,)*) = self;
                 $(
                     $r.for_each_token(&mut |token| {
-                        out.push(($i, Box::new(token) as ErasedToken))
+                        out.push((OutputTarget::Index($i), Box::new(token) as ErasedToken))
                     });
                 )*
             }
@@ -444,9 +611,9 @@ mod tests {
         match outcome {
             ErasedOutcome::Ok(tokens) => {
                 assert_eq!(tokens.len(), 2);
-                assert_eq!(tokens[0].0, 0);
+                assert_eq!(tokens[0].0, OutputTarget::Index(0));
                 assert_eq!(*tokens[0].1.downcast_ref::<u32>().unwrap(), 13);
-                assert_eq!(tokens[1].0, 1);
+                assert_eq!(tokens[1].0, OutputTarget::Index(1));
                 assert_eq!(tokens[1].1.downcast_ref::<String>().unwrap(), "hi!");
             }
             ErasedOutcome::Err(error) => panic!("unexpected failure: {error}"),
@@ -463,8 +630,16 @@ mod tests {
         });
         match body(ErasedInputs::new(Vec::new())) {
             ErasedOutcome::Ok(tokens) => {
-                let indexes: Vec<usize> = tokens.iter().map(|(index, _)| *index).collect();
-                assert_eq!(indexes, [0, 2, 2], "the empty Option produced no token");
+                let targets: Vec<OutputTarget> = tokens.iter().map(|(target, _)| *target).collect();
+                assert_eq!(
+                    targets,
+                    [
+                        OutputTarget::Index(0),
+                        OutputTarget::Index(2),
+                        OutputTarget::Index(2)
+                    ],
+                    "the empty Option produced no token"
+                );
             }
             ErasedOutcome::Err(error) => panic!("unexpected failure: {error}"),
         }
@@ -535,13 +710,17 @@ mod tests {
             0_u32,
         ))])));
         assert_eq!(tokens.len(), 1);
-        assert_eq!(tokens[0].0, 1, "the u32 place, whatever its position");
+        assert_eq!(
+            tokens[0].0,
+            OutputTarget::Index(1),
+            "the u32 place, whatever its position"
+        );
         assert_eq!(*tokens[0].1.downcast_ref::<u32>().unwrap(), 7);
 
         let tokens = landed(body(ErasedInputs::new(vec![ErasedInput::Token(Box::new(
             1_u32,
         ))])));
-        assert_eq!(tokens[0].0, 0, "the String place");
+        assert_eq!(tokens[0].0, OutputTarget::Index(0), "the String place");
         assert_eq!(tokens[0].1.downcast_ref::<String>().unwrap(), "hi");
     }
 

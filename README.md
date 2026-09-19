@@ -3,9 +3,9 @@
 Typed, executable, observable Petri nets in Rust. A port of
 [petritype](https://github.com/olenive/petritype) (Python).
 
-*Work in progress: declaring a net, routed outputs (`#[derive(Routed)]`) and
-sequential firing work (slices 1–4 of `DESIGN.md` §18); `Distribution`,
-concurrency, drivers and the visualiser are still to come. See `DESIGN.md` for the design and
+*Work in progress: declaring a net, all three output forms and sequential
+firing work (slices 1–5 of `DESIGN.md` §18); concurrency, failure handling,
+drivers and the visualiser are still to come. See `DESIGN.md` for the design and
 `dev-docs/NAMING_CONVENTIONS.md` for vocabulary shared with the Python library.*
 
 ## Core Idea
@@ -26,7 +26,7 @@ places are the live state of the system.
 |---|---|---|
 | **transition** | name + input edges + output edges + body + optional output distribution function + optional guard and priority | you, in the builder |
 | **body** | the domain function; knows nothing about places | you, usually it already exists |
-| **output distribution function** | turns the body's result into "which token goes to which place"; optional | you, next to the net, where the place handles are in scope |
+| **output distribution function** | turns the body's result into "which token goes to which place"; optional; composed onto the body with `body.output_distribution(f)` | you, next to the net, where the place handles are in scope |
 | `Distribution` | the value an output distribution function returns: typed (place, token) pairs | returned, not written |
 | `distribute` | the engine step that applies whatever the body or distribution function returned | nobody; internal |
 

@@ -20,7 +20,9 @@
 use std::any::TypeId;
 
 use crate::edge::EdgeKind;
-use crate::erased::{ErasedBody, ErasedInput, ErasedOutcome, RouteTable, RoutingProblem};
+use crate::erased::{
+    ErasedBody, ErasedInput, ErasedOutcome, OutputTarget, RouteTable, RoutingProblem,
+};
 use crate::ids::{NetId, PlaceId};
 use crate::place::ErasedToken;
 
@@ -71,9 +73,11 @@ pub trait PlaceTupleSealed {
 /// The engine half of [`PositionalOutputs`](crate::PositionalOutputs):
 /// turning a returned tuple into tokens tagged with their output index.
 pub trait PositionalSealed<Out> {
-    /// Appends `(output index, token)` for every token this return value
-    /// produced, slot by slot.
-    fn push_erased(self, out: &mut Vec<(usize, ErasedToken)>);
+    /// Appends `(target, token)` for every token this return value produced,
+    /// slot by slot. The target is always an
+    /// [`Index`](OutputTarget::Index): a slot's position *is* its output
+    /// place's index.
+    fn push_erased(self, out: &mut Vec<(OutputTarget, ErasedToken)>);
 }
 
 /// The engine half of [`IntoOutcome`](crate::IntoOutcome): turning whatever

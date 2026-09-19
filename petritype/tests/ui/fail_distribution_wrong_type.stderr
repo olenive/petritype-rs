@@ -1,0 +1,13 @@
+error[E0308]: mismatched types
+  --> tests/ui/fail_distribution_wrong_type.rs:15:43
+   |
+15 |     let _ = Distribution::new().to(count, "text");
+   |                                 --        ^^^^^^ expected `u32`, found `&str`
+   |                                 |
+   |                                 arguments to this method are incorrect
+   |
+note: method defined here
+  --> src/distribution.rs
+   |
+   |     pub fn to<T: Send + Sync + 'static>(mut self, place: PlaceRef<T>, token: T) -> Self {
+   |            ^^

@@ -34,8 +34,9 @@ rename backlog.
 | non-consuming read, cloned | `SnapshotEdge(place)` | `SnapshotEdge` | — |
 | non-consuming read, live `&mut` | `MutateEdge(place)` | `MutateEdge` | — |
 | output connection | output edge (positional in the builder tuple) | `ReturnedEdgeFromTransition` | — |
-| author-written router after the body | output distribution function; builder method `.output_distribution(f)` | `output_distribution_function` field | rename `output_distribution` (alias kept); `guard` / `priority` already omit `_function` |
-| value returned by an output distribution function | `Distribution` (`Distribution::new().to(place, token)`, chainable; one constructor only) | the `{name: token}` dict | — |
+| author-written router after the body | output distribution function; body method `body.output_distribution(f)` (extension trait `OutputDistribution`, wrapper `WithOutputDistribution`) | `output_distribution_function` field | rename `output_distribution` (alias kept); `guard` / `priority` already omit `_function` |
+| value returned by an output distribution function | `Distribution` (`Distribution::new().to(place, token)`, chainable; `push` for loops; one constructor only) | the `{name: token}` dict | — |
+| a `Distribution` pair the net cannot apply | `DistributionError::{NotAnOutput, WrongType}` inside `FiringFailed` | `KeyError` / type check | — |
 | one execution of a transition | firing | firing | — |
 | number of completed firings | `fired_count` | `step_count` | rename |
 | a firing's body raised / returned `Err` | `FiringFailed` | `TransitionFailedError` | rename |

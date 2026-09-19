@@ -26,22 +26,26 @@
 //! 1. **consume** — take the body out of its slot and take the inputs out of
 //!    their places, one argument per input edge ([`consume`]);
 //! 2. **run** — call the body with them;
-//! 3. **distribute** — mint an id for every token the body returned, push it
-//!    into its output place, put the body back, and log what happened
-//!    ([`Net::distribute`]).
+//! 3. **distribute** — resolve where every token the body returned belongs,
+//!    mint an id for each, push them into their output places, put the body
+//!    back, and log what happened ([`Net::distribute`]). Resolution happens
+//!    before any write, so a [`Distribution`](crate::Distribution) that names
+//!    a place this transition does not own fails the firing without leaving
+//!    half of it behind.
 //!
 //! They are three steps of one function here because sequential firing has
 //! nothing to do between them. The split is kept so that the concurrent
 //! slice can publish stage 1 and stage 3 as `launch` and `distribute` with a
 //! `Firing` in between, without rewriting what each stage does.
 
+use crate::distribution::DistributionError;
 use crate::edge::EdgeKind;
-use crate::erased::{ErasedInput, ErasedInputs, ErasedOutcome};
+use crate::erased::{ErasedInput, ErasedInputs, ErasedOutcome, OutputTarget};
 use crate::error::{FiringFailed, NetError};
 use crate::event::Event;
-use crate::ids::{PlaceId, TokenId, TransitionId};
+use crate::ids::{NetId, PlaceId, TokenId, TransitionId};
 use crate::net::Net;
-use crate::place::PlaceSlot;
+use crate::place::{ErasedToken, PlaceSlot};
 use crate::transition::TransitionSlot;
 
 /// Why an input place is never empty once stage one starts: being fireable
@@ -359,22 +363,55 @@ impl Net {
             }
         };
 
-        // Distribution cannot fail here, so DESIGN §6.2's "every target place
-        // is checked before any token is written" holds trivially: every
-        // index came from the body's return type, which the builder matched
-        // against the declared output places at compile time. A routed body
-        // is no different by the time its tokens arrive here — its indices
-        // come from the table resolved when it was declared, and
-        // `NetBuilder::build` refuses a net whose routing does not resolve —
-        // and the `Distribution` form will resolve its own before this point
-        // too, so the check stays a `debug_assert!`.
-        let mut landed = Vec::with_capacity(produced.len());
-        for (index, token) in produced {
-            debug_assert!(
-                index < self.transitions[transition.0 as usize].outputs.len(),
-                "output index {index} is past the outputs of transition {transition:?}"
-            );
-            let place = self.transitions[transition.0 as usize].outputs[index];
+        // Atomic, as DESIGN §6.2 asks: every target is resolved and checked
+        // in this loop, and nothing is written until all of them have been.
+        // Two of the three output forms have nothing left to check — a
+        // positional slot's index came from the body's return type, which was
+        // matched against the output places at compile time, and a routed
+        // payload's from the table resolved when the transition was declared,
+        // which `NetBuilder::build` refused the net without — so their target
+        // is an index and the bound stays a `debug_assert!`. A
+        // [`Distribution`](crate::Distribution) names its places itself, from
+        // data, so its targets are checked here and a bad one fails the whole
+        // firing before any of its siblings lands.
+        let mut resolved = Vec::with_capacity(produced.len());
+        for (target, token) in produced {
+            let place = match target {
+                OutputTarget::Index(index) => {
+                    debug_assert!(
+                        index < self.transitions[transition.0 as usize].outputs.len(),
+                        "output index {index} is past the outputs of transition {transition:?}"
+                    );
+                    self.transitions[transition.0 as usize].outputs[index]
+                }
+                OutputTarget::Place(place, net) => {
+                    match self.distributed_target(transition, place, net, &token) {
+                        Ok(place) => place,
+                        Err(error) => {
+                            // A firing that cannot be applied fails like any
+                            // other (DESIGN §4.5): nothing written, the
+                            // consumed tokens lost, the net consistent.
+                            self.emit_mutations(&mutated);
+                            self.emit(Event::Failed {
+                                transition,
+                                lost: consumed,
+                                restored: false,
+                                error: error.to_string(),
+                            });
+                            return Err(FiringFailed {
+                                transition,
+                                error: Box::new(error),
+                                restored: false,
+                            });
+                        }
+                    }
+                }
+            };
+            resolved.push((place, token));
+        }
+
+        let mut landed = Vec::with_capacity(resolved.len());
+        for (place, token) in resolved {
             let token = self.push_produced(place, token);
             landed.push((place, token));
         }
@@ -387,6 +424,46 @@ impl Net {
         });
         self.fired_count += 1;
         Ok(())
+    }
+
+    /// Checks one pair of a [`Distribution`](crate::Distribution) against this
+    /// transition, and answers with the place to write to.
+    ///
+    /// Three things are asked, in the order they can go wrong:
+    ///
+    /// - the handle was stamped with *this* net, so that a
+    ///   [`PlaceRef`](crate::PlaceRef) from another net is caught rather than
+    ///   read as an index into this one;
+    /// - the place is one this transition declared as an output, because the
+    ///   output tuple is what a diagram draws and a firing may not write
+    ///   outside it;
+    /// - the token really is of that place's type. The typed API has already
+    ///   guaranteed this — [`Distribution::to`](crate::Distribution::to) takes
+    ///   a `PlaceRef<T>` and a `T` — so it is a cheap defence against a
+    ///   foreign handle whose index happens to coincide, and not a check the
+    ///   author is meant to rely on.
+    fn distributed_target(
+        &self,
+        transition: TransitionId,
+        place: PlaceId,
+        net: NetId,
+        token: &ErasedToken,
+    ) -> Result<PlaceId, DistributionError> {
+        let outputs = &self.transitions[transition.0 as usize].outputs;
+        if net != self.id || !outputs.contains(&place) {
+            return Err(DistributionError::NotAnOutput { transition, place });
+        }
+        let meta = &self.places[place.0 as usize].meta;
+        // `(**token)` and not `token`: a `Box<dyn Any + ..>` is itself `Any`,
+        // so asking the box would answer with the box's own type.
+        if (**token).type_id() != meta.type_id {
+            return Err(DistributionError::WrongType {
+                transition,
+                place,
+                expected: meta.type_name,
+            });
+        }
+        Ok(place)
     }
 
     /// One [`Event::Mutated`] per mutating edge, in edge order.

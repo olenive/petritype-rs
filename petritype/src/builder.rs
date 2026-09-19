@@ -203,9 +203,17 @@ impl NetBuilder {
     ///   or many ([`IntoTokens`](crate::IntoTokens)) — unless the body
     ///   returns a value that is not a tuple, which is
     ///   [routed](crate::RoutedOutput) to the output place of its type
-    ///   instead, in which case the order of the outputs does not matter;
+    ///   instead, in which case the order of the outputs does not matter, or
+    ///   a [`Distribution`](crate::Distribution), which names its places
+    ///   itself and is checked when its tokens land;
     /// - the return value as a whole is the outputs, or a `Result` of them
     ///   ([`IntoOutcome`](crate::IntoOutcome)).
+    ///
+    /// The body may be a closure, a function by name, or either of those with
+    /// an output distribution function composed after it by
+    /// [`output_distribution`](crate::OutputDistribution::output_distribution)
+    /// — in which case it is *that* function's return type that answers the
+    /// second and third questions.
     ///
     /// Annotate the closure's parameter types. Inference through the arity
     /// traits is not reliable, and the annotation doubles as documentation of

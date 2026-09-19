@@ -15,6 +15,7 @@
 use std::any::TypeId;
 use std::fmt;
 
+use crate::ids::{NetId, PlaceId};
 use crate::place::ErasedToken;
 
 /// One argument to a body, as the engine hands it over.
@@ -70,17 +71,38 @@ impl<'a> ErasedInputs<'a> {
     }
 }
 
+/// Where one produced token is addressed, in the two ways an output form can
+/// say it.
+///
+/// Both are resolved to a [`PlaceId`] by stage three; the difference is how
+/// much was known before the body ran, and therefore how much stage three has
+/// to check.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutputTarget {
+    /// The *i*th of the transition's declared output places: what the
+    /// positional form knows from the slot's position and the routed form
+    /// from the table it resolved when the transition was declared. Both were
+    /// checked before the net ran, so stage three only indexes.
+    Index(usize),
+    /// A place the author named, with the [`NetId`] its handle carried: the
+    /// [`Distribution`](crate::Distribution) form, whose targets no static
+    /// check could have seen. Stage three resolves it against the
+    /// transition's declared outputs, and fails the firing if it is not one
+    /// of them.
+    Place(PlaceId, NetId),
+}
+
 /// What a body produced: tokens for its output places, or a failure.
 ///
-/// The `Ok` form is one list of `(output index, token)` pairs rather than a
-/// list per place, because that single shape carries every output form:
-/// positional (slot *i* to output *i*), routed (index resolved from the
-/// payload type at build time) and `Distribution` (index looked up from the
-/// place the author named).
+/// The `Ok` form is one list of `(target, token)` pairs rather than a list per
+/// place, because that single shape carries every output form: positional
+/// (slot *i* to output *i*), routed (index resolved from the payload type when
+/// the transition was declared) and [`Distribution`](crate::Distribution) (the
+/// place named outright, checked when the tokens land).
 pub enum ErasedOutcome {
-    /// Tokens to distribute, each tagged with the index of the output place
-    /// it belongs to. Order is the order they will be pushed.
-    Ok(Vec<(usize, ErasedToken)>),
+    /// Tokens to distribute, each tagged with the output place it is
+    /// addressed to. Order is the order they will be pushed.
+    Ok(Vec<(OutputTarget, ErasedToken)>),
     /// The body returned `Err`, or panicked (from a later slice on). The net
     /// is not written to; failure handling decides what happens to the
     /// consumed tokens.

@@ -10,12 +10,17 @@
 //! Two things make these files move for reasons other than a bug. The paths
 //! in a message are feature-sensitive, so a case whose types differ between
 //! feature sets has to be written to survive both. And a mismatched *output*
-//! is now reported one level higher than it was: with two output forms
-//! competing for the same `IntoOutcome` bound, neither impl applies when the
-//! return type fits neither, so the compiler blames `IntoOutcome` rather than
-//! the `PositionalOutputs` or `IntoTokens` obligation inside it. That is why
-//! `IntoOutcome`'s notes spell out both forms and name the output places:
-//! the message has to carry what the deeper one used to.
+//! is now reported one level higher than it was: with three output forms
+//! competing for the same `IntoOutcome` bound, no impl applies when the
+//! return type fits none of them, so the compiler blames `IntoOutcome` rather
+//! than the `PositionalOutputs` or `IntoTokens` obligation inside it. That is
+//! why `IntoOutcome`'s notes spell out all three forms and name the output
+//! places: the message has to carry what the deeper one used to.
+//!
+//! The impls for a body with an output distribution function after it carry
+//! `#[diagnostic::do_not_recommend]`, or every mismatch anywhere near
+//! `transition()` would be followed by the twenty-six ways
+//! `WithOutputDistribution` implements `TransitionBody`.
 
 #[test]
 fn declarations_that_must_not_compile() {

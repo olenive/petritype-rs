@@ -129,8 +129,13 @@ pub struct TransitionInfo<'a> {
 ///     .id();
 /// ```
 ///
-/// `output_distribution` and `restore_tokens_on_failure` arrive with the
-/// slices that act on them.
+/// `restore_tokens_on_failure` arrives with the slice that acts on it.
+/// `output_distribution` is deliberately *not* here, although DESIGN §5 lists
+/// it: by the time this handle exists the body's return type has been erased,
+/// and the point of an output distribution function is that its own return
+/// type decides the output form. It is a method on the body instead —
+/// [`OutputDistribution::output_distribution`](crate::OutputDistribution::output_distribution),
+/// applied before `transition()` is called.
 pub struct TransitionBuilder<'a> {
     /// The builder to write the options into.
     pub(crate) builder: &'a mut crate::NetBuilder,

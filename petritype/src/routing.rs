@@ -84,7 +84,7 @@
 use std::any::{TypeId, type_name};
 use std::fmt;
 
-use crate::erased::RouteTable;
+use crate::erased::{OutputTarget, RouteTable};
 use crate::place::ErasedToken;
 
 /// A value that knows which output places its contents belong in.
@@ -201,12 +201,15 @@ pub struct RouteSink<'a> {
     /// The `TypeId -> output index` table for this transition.
     routes: &'a RouteTable,
     /// The tokens produced so far, in the order they were pushed.
-    out: &'a mut Vec<(usize, ErasedToken)>,
+    out: &'a mut Vec<(OutputTarget, ErasedToken)>,
 }
 
 impl<'a> RouteSink<'a> {
     /// A sink writing into one firing's token list.
-    pub(crate) fn new(routes: &'a RouteTable, out: &'a mut Vec<(usize, ErasedToken)>) -> Self {
+    pub(crate) fn new(
+        routes: &'a RouteTable,
+        out: &'a mut Vec<(OutputTarget, ErasedToken)>,
+    ) -> Self {
         RouteSink { routes, out }
     }
 
@@ -227,7 +230,8 @@ impl<'a> RouteSink<'a> {
                 type_name::<P>()
             );
         };
-        self.out.push((index, Box::new(value) as ErasedToken));
+        self.out
+            .push((OutputTarget::Index(index), Box::new(value) as ErasedToken));
     }
 }
 
@@ -378,7 +382,13 @@ mod tests {
         let routes = RouteTable::resolve(&both, &both).expect("one place per payload type");
         let mut tokens = Vec::new();
         value.emit(&mut RouteSink::new(&routes, &mut tokens));
-        tokens.into_iter().map(|(index, _)| index).collect()
+        tokens
+            .into_iter()
+            .map(|(target, _)| match target {
+                OutputTarget::Index(index) => index,
+                other => panic!("a routed payload is tagged with an index, not {other:?}"),
+            })
+            .collect()
     }
 
     #[test]

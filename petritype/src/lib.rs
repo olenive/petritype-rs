@@ -9,8 +9,11 @@
 //! This version covers *declaring* a net — places, tokens, transitions and
 //! the edges between them — reading it back, and firing it one transition at
 //! a time. The wiring below is checked when it compiles. A body may return
-//! its outputs as a tuple, slot by slot, or as one value to be [routed to the
-//! output place of its type](routing).
+//! its outputs as a tuple, slot by slot, as one value to be [routed to the
+//! output place of its type](routing), or as a [`Distribution`] of
+//! `(place, token)` pairs it names itself — which
+//! [`output_distribution`](OutputDistribution::output_distribution) lets an
+//! author write beside the net, leaving the domain function unchanged.
 //!
 //! ```
 //! use petritype::{EdgeKind, Event, NetBuilder, SnapshotEdge, TakeEdge};
@@ -112,10 +115,17 @@
 //!   [`EdgeKind`] is the same thing with the type forgotten.
 //! - [`IntoTokens`] decides how many tokens one returned slot is worth, and
 //!   [`IntoOutcome`] tells outputs from failure.
-//! - [`RoutedOutput`] is the other output form: a body that returns a value
+//! - [`RoutedOutput`] is the second output form: a body that returns a value
 //!   rather than a tuple has each payload sent to the output place of its
 //!   type, which is what [`#[derive(Routed)]`](Routed) and [`Either`] are
 //!   for — see the [`routing`] module.
+//! - [`Distribution`] is the third: `(place, token)` pairs the body names
+//!   itself, for choosing between output places of the same type or for
+//!   fanning out. [`OutputDistribution::output_distribution`] composes the
+//!   function that builds one *after* a body, so the domain function keeps
+//!   knowing nothing about places, and a pair the transition may not write to
+//!   is a [`DistributionError`] that fails the firing without writing
+//!   anything.
 //! - [`Net::places`], [`Net::transitions`], [`Net::tokens`], [`Net::label`]
 //!   and [`Net::token`] read the net; [`Net::drain_events`] follows it.
 //! - [`Net::extend`], [`Net::put`], [`Net::set_tokens`], [`Net::remove`] and
@@ -144,6 +154,7 @@
 mod arity;
 mod body;
 mod builder;
+mod distribution;
 mod edge;
 mod erased;
 mod error;
@@ -158,6 +169,9 @@ mod transition;
 
 pub use body::{IntoOutcome, IntoTokens, OutputPlaces, PositionalOutputs, TransitionBody, marker};
 pub use builder::NetBuilder;
+pub use distribution::{
+    Distribution, DistributionError, OutputDistribution, WithOutputDistribution,
+};
 pub use edge::{EdgeKind, InputEdge, InputEdges, MutateEdge, SnapshotEdge, TakeAllEdge, TakeEdge};
 pub use error::{BuildError, FiringFailed, NetError};
 pub use event::Event;

@@ -266,19 +266,28 @@ with the net's connectivity without touching domain code. It takes the body's
 result only (not the inputs), runs inside stage 2 with the body (so off-thread
 in concurrent mode), and may return any output form, not only a
 `Distribution`. When present, *its* return type decides the form and the
-body's return type is merely its input.
+body's return type is merely its input. It is composed onto the **body**,
+`body.output_distribution(f)` (extension trait `OutputDistribution`), before
+the pair is handed to `transition()`: by the time `transition()` returns the
+body's return type has been erased, so there is nothing left to compose. If
+the body returns `Result<R, E>`, `f` takes `R` and an `Err` short-circuits to
+a failure.
 
 ```rust
-b.transition("Make a Ball", (TakeEdge(rubber), TakeEdge(paint)), (red, blue, other), make_a_ball)
-    .output_distribution(|ball: Ball| {
+b.transition("Make a Ball", (TakeEdge(rubber), TakeEdge(paint)), (red, blue, other),
+    make_a_ball.output_distribution(move |ball: Ball| {
         let target = match ball.color.as_str() { "red" => red, "blue" => blue, _ => other };
-        Distribution::to(target, ball)              // to(PlaceRef<Ball>, Ball): type-checked
-    });
+        Distribution::new().to(target, ball)        // to(PlaceRef<Ball>, Ball): type-checked; chainable
+    }));
 ```
 
 Type mismatches are still compile errors. That the place is a declared output
-of *this* transition is checked at `distribute` time (`NetError`); the net
-stays consistent, tokens are lost as in any failure.
+of *this* transition (and of this net) is checked at `distribute` time, before
+anything is written; a bad pair fails the whole firing (`DistributionError`
+inside `FiringFailed`), the net stays consistent, tokens are lost as in any
+failure. There is no build-time reachability check for this form: a
+`Distribution` may never name some declared output place, and the net still
+builds.
 
 Vocabulary for one transition: **body** (domain function), **output
 distribution function** (author-written, optional), **`Distribution`** (the
@@ -338,8 +347,8 @@ let net = b.build()?;   // Result<Net, BuildError>
 Builder ergonomics:
 - **Transitions chain.** `transition()` inserts the transition and returns a
   `TransitionBuilder<'_>` (holds `&mut NetBuilder` + the id); `.guard`,
-  `.priority`, `.output_distribution`, `.restore_tokens_on_failure` mutate in
-  place and return the handle; `.id()` yields the `TransitionId` when needed.
+  `.priority`, `.restore_tokens_on_failure` mutate in place and return the
+  handle (`.output_distribution` is on the body, see §4.5); `.id()` yields the `TransitionId` when needed.
   Id-taking methods on `NetBuilder` exist underneath but are not the
   documented way.
 - **Places don't chain.** `b.place::<T>(name)` returns `PlaceRef<T>` directly;

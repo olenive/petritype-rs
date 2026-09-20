@@ -814,7 +814,7 @@ Cargo workspace, edition 2024, MSRV = current stable minus two (must be
 |---|---|---|
 | `petritype` | builder, `Net`, events, checks, `drivers` | `thiserror`; feature `serde` adds `serde`, `serde_json` |
 | `petritype-derive` | `#[derive(Routed)]` on enums (variants) and structs (leaf) | `syn` 2, `quote`, `proc-macro2`; re-exported by `petritype` unconditionally as `petritype::Routed` |
-| `petritype-dot` | Graphviz DOT text of a net and its marking | none |
+| `petritype-dot` | Graphviz DOT text of a net and its marking (**done, slice 12**) | `petritype` only |
 | `petritype-bevy` | `NetRes`, mirror systems, token entities, in-flight highlighting, task-pool driver | pins one Bevy version |
 | `petritype-tokio` | only if a need appears | |
 
@@ -824,7 +824,36 @@ match-up tokens (`TakeAllEdge` + guard + positional), coloured balls
 (`Distribution`), web scrape (routed enums), execution modes (sequential vs
 concurrent), read-edge scaler (`SnapshotEdge` + `MutateEdge`).
 
-Check that the name `petritype` is free on crates.io before publishing.
+**Done, slice 12.**
+
+- `petritype-dot` renders through a `DotSource` trait implemented for `Net`
+  and `Snapshot` (a render thread can own a snapshot), takes `&` only, and
+  is a pure function of source and `Style { rankdir, show_tokens,
+  max_tokens, highlight, graph_name }`. Node ids are `p<i>` / `t<i>`; names
+  live in labels, escaped. The styling mirrors the Python renderer (ovals
+  deepskyblue, boxes lightgreen, gold for in flight, magenta outline for the
+  last firing via `Highlight::from_event(&Event)`, dashed for `SnapshotEdge`,
+  dotted-both-ends for `MutateEdge`) with four additions: disabled
+  transitions grey and dashed, `*` on a `TakeAllEdge`, slot numbers on a
+  transition with more than one output, red for a `Failed` event. A
+  highlighted read edge keeps its shape and only changes colour.
+- The examples live in `petritype/examples/` as cargo examples with
+  `test = true`, so `cargo test` runs their assertions and `cargo run
+  --example` shows them; they draw their nets with `petritype-dot`, which
+  makes it a path-only dev-dependency of `petritype` — a cycle cargo
+  permits and strips at publish. Where the Python was perpetual or random
+  (parcel distribution) the port is finite and deterministic; where it
+  relied on `allow_token_copying` for two output places of one type
+  (caching) the pair became newtypes; the subgraph-as-a-transition outer net
+  (§6.6) is not ported. Order assertions rely on the default selector's
+  declaration-order tie-break.
+
+Names: the crate is `petritype`, the repository `petritype-rs` (decided
+2026-09-20). Same-name packages across PyPI and crates.io are the norm, an
+`-rs` suffix is discouraged on crates.io and would land in every import path,
+and the repository name already tells the two projects apart. `petritype`,
+`petritype-derive` and `petritype-dot` were all free on crates.io on
+2026-09-20.
 
 ## 15. Bevy adapter sketch
 

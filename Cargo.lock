@@ -47,6 +47,7 @@ name = "petritype"
 version = "0.1.0"
 dependencies = [
  "petritype-derive",
+ "petritype-dot",
  "serde",
  "serde_json",
  "thiserror",
@@ -60,6 +61,13 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "petritype-dot"
+version = "0.1.0"
+dependencies = [
+ "petritype",
 ]
 
 [[package]]

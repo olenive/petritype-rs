@@ -1,0 +1,14 @@
+[package]
+name = "petritype-dot"
+version = "0.1.0"
+description = "Graphviz DOT text of a petritype net and its marking."
+readme = "../README.md"
+keywords = ["petri-net", "graphviz", "dot", "visualization"]
+categories = ["data-structures", "simulation", "visualization"]
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+petritype = { path = "../petritype", version = "0.1.0" }

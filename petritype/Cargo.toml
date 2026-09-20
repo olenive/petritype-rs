@@ -18,9 +18,48 @@ serde_json = { version = "1", optional = true }
 
 [dev-dependencies]
 trybuild = "1"
+# No `version`: a path-only dev-dependency is stripped when the crate is
+# packaged, which is what makes this dependency cycle legal. The examples are
+# also the `petritype-dot` acceptance suite, so they draw the nets they run.
+petritype-dot = { path = "../petritype-dot" }
 
 [features]
 serde = ["dep:serde", "dep:serde_json"]
+
+# The eight examples port the Python acceptance set (DESIGN §14). Each one is
+# a program that runs its net and a test module that asserts what the Python
+# example asserted, so `cargo test` covers them as well as `cargo run`.
+[[example]]
+name = "quickstart"
+test = true
+
+[[example]]
+name = "parcel_distribution"
+test = true
+
+[[example]]
+name = "caching"
+test = true
+
+[[example]]
+name = "match_up_tokens"
+test = true
+
+[[example]]
+name = "coloured_balls"
+test = true
+
+[[example]]
+name = "web_scrape"
+test = true
+
+[[example]]
+name = "execution_modes"
+test = true
+
+[[example]]
+name = "read_edge_scaler"
+test = true
 
 [package.metadata.docs.rs]
 all-features = true

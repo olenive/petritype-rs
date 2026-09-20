@@ -48,6 +48,7 @@ rename backlog.
 | the tokens a failed firing took | `Event::Failed { consumed, restored }` (same word as `Fired`/`Launched`) | `TransitionFailedError(consumed, restored)` | — |
 | static check: no cycles | `assert_acyclic` → `BuildError::Cycle { path }` (first cycle, `" -> "`) | `assert_acyclic` (all cycles, `" → "`) | — |
 | one edge, as a diagram draws it | `EdgeInfo::{Input { place, transition, kind }, Output { transition, place, slot }}`, `net.edges()` | plotting-layer edge structs (`return_index` = `slot`) | — |
+| DOT text of a net | `petritype_dot::{dot, dot_with, Style, RankDir, Highlight::from_event, DotSource}` | `RustworkxToGraphviz.activation_coloured_attr_functions`, `SimpleGraphvizVisualization` | — |
 | static check: every transition consumes | `assert_no_source_transitions` → `BuildError::SourceTransition` (first offender) | `assert_no_source_transitions` (all offenders) | — |
 | lookup by name | `place_named`, `transition_named` | `place_named` | add `transition_named` |
 | execution mode | `Mode::Sequential`, `Mode::Concurrent` | `ExecutionMode.SEQUENTIAL`, `.CONCURRENT` | — |

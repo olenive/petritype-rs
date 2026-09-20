@@ -921,8 +921,12 @@ and the repository name already tells the two projects apart. `petritype`,
   `NotInFlight`, which consume their argument), loses the body for good.
   Panics no longer strand (caught since slice 7), and the drivers (slice 9)
   never drop one: they drain everything airborne before returning, on the
-  error path too. The misuse rejections could hand the value back
-  (`Err((NetError, Completed))`); still open, no caller needs it yet.
+  error path too. The misuse rejections could hand the value back.
+  **Decided 2026-09-20: deferred, and when it comes it is additive** — a
+  second method `try_distribute(done) -> Result<(), (NetError, Completed)>`
+  beside the plain `distribute`, so net authors and ordinary drivers keep
+  the simple shape and a hand-written driver that juggles several nets opts
+  in. Add it when the Bevy adapter or a user asks.
 
 ## 18. Implementation plan
 

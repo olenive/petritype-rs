@@ -42,15 +42,25 @@ impl NetId {
 /// A `PlaceId` carries no [`NetId`]: it is the cheap read-API handle, used by
 /// events, guards and inspectors that already know which net they are looking
 /// at. The stamped handle is [`PlaceRef`].
+///
+/// With the `serde` feature it is a bare JSON number, so that a
+/// `JsonCommand` and an event log read as data rather than as wrappers.
+/// [`NetId`] is deliberately *not* serialisable: it means nothing outside
+/// the process that minted it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(transparent))]
 pub struct PlaceId(pub(crate) u32);
 
 /// Identifies a transition within one [`Net`](crate::Net).
 ///
 /// Handed out in declaration order by
 /// [`NetBuilder::transition`](crate::NetBuilder::transition) and never
-/// reused. Like [`PlaceId`], it is unstamped.
+/// reused. Like [`PlaceId`], it is unstamped, and a bare JSON number with the
+/// `serde` feature.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(transparent))]
 pub struct TransitionId(pub(crate) u32);
 
 /// Identifies one token within one [`Net`](crate::Net).
@@ -58,7 +68,14 @@ pub struct TransitionId(pub(crate) u32);
 /// Token ids are handed out in increasing order and are never reused: a
 /// removed or consumed token retires its id for good, so a visualiser can key
 /// its own state by `TokenId` without fear of collision.
+///
+/// It is the one id a `JsonCommand` speaks in — places and transitions
+/// travel by name there, but a token has no name, and its id is what the
+/// event log already gave the sender. A bare JSON number with the `serde`
+/// feature.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(transparent))]
 pub struct TokenId(pub(crate) u64);
 
 /// A typed handle to a place, returned by

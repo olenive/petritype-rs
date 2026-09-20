@@ -10,6 +10,21 @@ use crate::ids::TokenId;
 /// another thread with the net.
 pub(crate) type ErasedToken = Box<dyn Any + Send + Sync>;
 
+/// Erases a batch of typed tokens, keeping their order.
+///
+/// Written once because both halves of external input need it: the typed
+/// methods on [`Net`](crate::Net), which erase on the way in, and the typed
+/// constructors of [`Command`](crate::Command), which erase on the way to a
+/// channel.
+pub(crate) fn erase_all<T: Send + Sync + 'static>(
+    tokens: impl IntoIterator<Item = T>,
+) -> Vec<ErasedToken> {
+    tokens
+        .into_iter()
+        .map(|token| Box::new(token) as ErasedToken)
+        .collect()
+}
+
 /// Renders a token for a label. See [`debug_of`].
 pub(crate) type DebugFn = fn(&dyn Any) -> String;
 
@@ -57,9 +72,9 @@ pub(crate) struct PlaceMeta {
     #[cfg(feature = "serde")]
     pub(crate) to_json: Option<ToJsonFn>,
     /// `from_json_of::<T>`, `Some` only for a place marked
-    /// [`serializable`](crate::NetBuilder::serializable).
-    /// It is not read yet; the serialisable `Command` form is what will use
-    /// it.
+    /// [`serializable`](crate::NetBuilder::serializable). It is what
+    /// [`Command::from_json`](crate::Command::from_json) decodes a wire
+    /// token with.
     #[cfg(feature = "serde")]
     pub(crate) from_json: Option<FromJsonFn>,
 }

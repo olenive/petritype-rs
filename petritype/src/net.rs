@@ -3,7 +3,7 @@
 //! Firing is the other half of `Net`, and lives in [`crate::firing`]: which
 //! transitions could fire, which one does, and what one firing changes.
 
-use std::any::{Any, TypeId, type_name};
+use std::any::{Any, type_name};
 use std::fmt;
 
 use crate::edge::EdgeInfo;
@@ -11,7 +11,7 @@ use crate::error::NetError;
 use crate::event::Event;
 use crate::firing::Selector;
 use crate::ids::{NetId, PlaceId, PlaceRef, TokenId, TransitionId, foreign_place};
-use crate::place::{ErasedToken, PlaceSlot};
+use crate::place::{ErasedToken, PlaceSlot, erase_all};
 use crate::transition::{TransitionInfo, TransitionSlot};
 
 /// A built net: places, their tokens, and the log of what has changed.
@@ -347,6 +347,10 @@ impl Net {
     /// Emits one [`Added`](Event::Added) per token and bumps
     /// [`state_counter`](Net::state_counter) once per event.
     ///
+    /// The erased [`Command::Extend`](crate::Command::Extend) is the same
+    /// call with the type forgotten, and goes through the same internal
+    /// `extend_erased` as this one, so the two cannot drift.
+    ///
     /// # Panics
     ///
     /// If `place` does not belong to this net — a `PlaceRef` is only valid
@@ -356,10 +360,9 @@ impl Net {
         T: Send + Sync + 'static,
         I: IntoIterator<Item = T>,
     {
-        tokens
-            .into_iter()
-            .map(|token| self.push_typed(place, token, "extend"))
-            .collect()
+        self.checked_index(place, "extend");
+        self.extend_erased(place.id(), erase_all(tokens), type_name::<T>())
+            .expect("a stamped handle indexes a place of its own type")
     }
 
     /// Appends one token to a place and returns its new id. Sugar for an
@@ -379,6 +382,10 @@ impl Net {
     /// gone and their ids retire, the new ones are new tokens with new ids,
     /// and a view replaying the log ends up in the same state as the net.
     ///
+    /// The erased [`Command::SetTokens`](crate::Command::SetTokens) is the
+    /// same call with the type forgotten, and goes through the same internal
+    /// `set_erased` as this one, so the two cannot drift.
+    ///
     /// # Panics
     ///
     /// If `place` does not belong to this net.
@@ -387,12 +394,12 @@ impl Net {
         T: Send + Sync + 'static,
         I: IntoIterator<Item = T>,
     {
-        // Checked before the clear, not by the extend that follows it: a
+        // Checked before the clear, not by the insertion that follows it: a
         // foreign handle must not empty a place of this net on its way to
         // the panic.
         self.checked_index(place, "set_tokens");
-        self.clear(place.id());
-        self.extend(place, tokens);
+        self.set_erased(place.id(), erase_all(tokens), type_name::<T>())
+            .expect("a stamped handle indexes a place of its own type");
     }
 
     /// Removes one token by id.
@@ -446,26 +453,7 @@ impl Net {
         if place.net() != self.id {
             return Err(NetError::NoSuchPlace { place: place.id() });
         }
-        let place = place.id();
-        {
-            let slot = self
-                .places
-                .get_mut(place.0 as usize)
-                .ok_or(NetError::NoSuchPlace { place })?;
-            if slot.meta.type_id != TypeId::of::<T>() {
-                return Err(NetError::TypeMismatch {
-                    place,
-                    expected: slot.meta.type_name,
-                    found: type_name::<T>(),
-                });
-            }
-            let index = slot
-                .position(token)
-                .ok_or(NetError::NoSuchToken { place, token })?;
-            slot.tokens[index].1 = Box::new(value);
-        }
-        self.emit(Event::Mutated { place, token });
-        Ok(())
+        self.replace_erased(place.id(), token, Box::new(value), type_name::<T>())
     }
 
     // ----- internals ------------------------------------------------------
@@ -495,8 +483,9 @@ impl Net {
     /// The one insertion path: mint an id, check the type, push the token.
     ///
     /// Everything that adds a token — the typed methods here, the seeds in
-    /// [`build`](crate::NetBuilder::build), and later the erased `Command`
-    /// form and the output side of a firing — goes through this function, so
+    /// [`build`](crate::NetBuilder::build), the erased
+    /// [`Command`](crate::Command) form and the output side of a firing —
+    /// goes through this function, so
     /// id minting and the type check are written once. It deliberately does
     /// *not* log: the caller decides whether the insertion is a change an
     /// observer should hear about ([`push_erased`](Net::push_erased)) or part
@@ -558,6 +547,105 @@ impl Net {
     pub(crate) fn push_produced(&mut self, place: PlaceId, value: ErasedToken) -> TokenId {
         self.insert_erased(place, value, "<produced>")
             .expect("a body's return type is matched against its output places when declared")
+    }
+
+    /// Checks a whole batch before any of it is written: the place exists,
+    /// and every token in it has the place's type.
+    ///
+    /// This is what makes an [`Extend`](crate::Command::Extend) or a
+    /// [`SetTokens`](crate::Command::SetTokens) all-or-nothing. Without it a
+    /// batch whose third token is of the wrong type would leave the first two
+    /// behind, and an observer would have seen two
+    /// [`Added`](Event::Added) events for a command that was rejected.
+    fn check_tokens(
+        &self,
+        place: PlaceId,
+        tokens: &[ErasedToken],
+        found: &'static str,
+    ) -> Result<(), NetError> {
+        let slot = self
+            .places
+            .get(place.0 as usize)
+            .ok_or(NetError::NoSuchPlace { place })?;
+        for token in tokens {
+            // `(**token).type_id()`: the inner `dyn Any`'s type, not the
+            // `Box`'s. See [`insert_erased`](Net::insert_erased).
+            if (**token).type_id() != slot.meta.type_id {
+                return Err(NetError::TypeMismatch {
+                    place,
+                    expected: slot.meta.type_name,
+                    found,
+                });
+            }
+        }
+        Ok(())
+    }
+
+    /// The shared body of [`extend`](Net::extend) and
+    /// [`Command::Extend`](crate::Command::Extend): check the whole batch,
+    /// then push every token with its [`Added`](Event::Added).
+    pub(crate) fn extend_erased(
+        &mut self,
+        place: PlaceId,
+        tokens: Vec<ErasedToken>,
+        found: &'static str,
+    ) -> Result<Vec<TokenId>, NetError> {
+        self.check_tokens(place, &tokens, found)?;
+        Ok(tokens
+            .into_iter()
+            .map(|token| {
+                self.push_erased(place, token, found)
+                    .expect("the batch was checked against this place above")
+            })
+            .collect())
+    }
+
+    /// The shared body of [`set_tokens`](Net::set_tokens) and
+    /// [`Command::SetTokens`](crate::Command::SetTokens): check the whole
+    /// batch, *then* clear and push.
+    ///
+    /// The check comes first so that a rejected batch does not empty the
+    /// place on its way out.
+    pub(crate) fn set_erased(
+        &mut self,
+        place: PlaceId,
+        tokens: Vec<ErasedToken>,
+        found: &'static str,
+    ) -> Result<Vec<TokenId>, NetError> {
+        self.check_tokens(place, &tokens, found)?;
+        self.clear(place);
+        self.extend_erased(place, tokens, found)
+    }
+
+    /// The shared body of [`replace`](Net::replace) and
+    /// [`Command::Replace`](crate::Command::Replace): type first, then the
+    /// token, then the write and its [`Mutated`](Event::Mutated).
+    pub(crate) fn replace_erased(
+        &mut self,
+        place: PlaceId,
+        token: TokenId,
+        value: ErasedToken,
+        found: &'static str,
+    ) -> Result<(), NetError> {
+        {
+            let slot = self
+                .places
+                .get_mut(place.0 as usize)
+                .ok_or(NetError::NoSuchPlace { place })?;
+            if (*value).type_id() != slot.meta.type_id {
+                return Err(NetError::TypeMismatch {
+                    place,
+                    expected: slot.meta.type_name,
+                    found,
+                });
+            }
+            let index = slot
+                .position(token)
+                .ok_or(NetError::NoSuchToken { place, token })?;
+            slot.tokens[index].1 = value;
+        }
+        self.emit(Event::Mutated { place, token });
+        Ok(())
     }
 
     /// `push_erased` for a caller that still knows `T`, where the only way to

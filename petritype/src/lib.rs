@@ -192,6 +192,15 @@
 //!   diagram draws.
 //! - [`Net::extend`], [`Net::put`], [`Net::set_tokens`], [`Net::remove`] and
 //!   [`Net::replace`] change the marking from outside.
+//! - [`Command`] is that same input with the types forgotten, for a sender
+//!   that holds no `&mut Net` — across a channel from a UI thread, or from a
+//!   source that never knew the types. [`Net::apply`] carries one out, and is
+//!   the one place in the engine where a type is checked at run time; it is
+//!   all-or-nothing, so a [`CommandError`] means the net neither changed nor
+//!   said anything. With the `serde` feature, `JsonCommand` is the same
+//!   instruction addressed by name and carrying `serde_json` values, which
+//!   `Command::from_json`, `Command::to_json` and `Net::apply_json`
+//!   translate.
 //! - **fireable** and **enabled** are two different questions:
 //!   [`Net::enable`] / [`Net::disable`] work the author's on/off switch,
 //!   while *fireable* means "could fire right now" — switched on, input
@@ -233,8 +242,13 @@
 //! # Features
 //!
 //! - `serde`: adds `NetBuilder::serializable` and `Net::json`, for inspectors
-//!   that want structure rather than a `Debug` string. (Both are hidden from
-//!   this page unless the feature is on.)
+//!   that want structure rather than a `Debug` string, and `JsonCommand`
+//!   with `Command::from_json`, `Command::to_json` and `Net::apply_json`, for
+//!   input that arrives as JSON rather than as Rust values. [`PlaceId`],
+//!   [`TransitionId`] and [`TokenId`] become `Serialize`/`Deserialize` as
+//!   bare numbers; [`NetId`] does not, being meaningless outside the process
+//!   that minted it. (All of these are hidden from this page unless the
+//!   feature is on.)
 
 #![warn(missing_docs, missing_debug_implementations, unreachable_pub)]
 #![forbid(unsafe_code)]
@@ -242,6 +256,7 @@
 mod arity;
 mod body;
 mod builder;
+mod command;
 mod distribution;
 pub mod drivers;
 mod edge;
@@ -258,13 +273,16 @@ mod transition;
 
 pub use body::{IntoOutcome, IntoTokens, OutputPlaces, PositionalOutputs, TransitionBody, marker};
 pub use builder::NetBuilder;
+pub use command::Command;
+#[cfg(feature = "serde")]
+pub use command::JsonCommand;
 pub use distribution::{
     Distribution, DistributionError, OutputDistribution, WithOutputDistribution,
 };
 pub use edge::{
     EdgeInfo, EdgeKind, InputEdge, InputEdges, MutateEdge, SnapshotEdge, TakeAllEdge, TakeEdge,
 };
-pub use error::{BodyPanicked, BuildError, FiringFailed, NetError};
+pub use error::{BodyPanicked, BuildError, CommandError, FiringFailed, NetError};
 pub use event::Event;
 pub use firing::{Completed, Firing, Selector};
 pub use ids::{NetId, PlaceId, PlaceRef, TokenId, TransitionId};

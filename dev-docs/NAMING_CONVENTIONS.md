@@ -70,6 +70,9 @@ rename backlog.
 | switch a transition off/on | `enable`, `disable`, `set_enabled`, `is_enabled` | `Enable`, `Disable` commands | — |
 | append tokens | `extend` (many), `put` (one) | `Extend` | — |
 | replace all tokens | `set_tokens` | `SetTokens` | — |
+| erased input crossing a thread | `Command::{Extend, SetTokens, Remove, Replace, Enable, Disable}`, typed constructors `Command::{extend, put, set_tokens, remove, replace, enable, disable}` | `Extend`, `SetTokens`, `Enable`, `Disable` dataclasses (by name) | — |
+| carry out one command | `net.apply(cmd)` → `CommandError` (atomic) | `_apply_command` (checks all tokens first, returns bool) | — |
+| JSON form of a command | `JsonCommand` (`{"command": "extend", "place": "Inbox", "tokens": [..]}`), `Command::from_json`, `Command::to_json`, `net.apply_json` | — | — |
 | remove one token by id | `remove` | — (no ids) | — |
 | replace one token by id | `replace` | — (no ids) | — |
 | change counters | `topology_counter`, `state_counter` | — | add if useful |

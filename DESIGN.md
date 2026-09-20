@@ -503,7 +503,11 @@ Error types (`thiserror`, all `#[non_exhaustive]`):
   that `net.fire(t)` and `net.distribute(done)` return one error type.
 - `FiringFailed` — a body returned `Err` or panicked; carries the transition,
   the boxed error, and whether inputs were restored.
-- `CommandError` — external input rejected (unknown place, type mismatch).
+- `CommandError` — external input rejected. Wraps `NetError` transparently
+  (unknown place, transition or token; type mismatch); with `serde`, also
+  `NotSerializable`, `InvalidToken`, `NoSuchPlaceName` and
+  `NoSuchTransitionName` from the JSON route. A rejected command changes
+  nothing and emits nothing.
 - `TooManyFirings` — the driver fuse, carrying a `RunSummary`.
 
 ## 8. Observation
@@ -583,14 +587,41 @@ pub enum Command {
     Replace   { place: PlaceId, token: TokenId, value: Box<dyn Any + Send + Sync> },
     Enable    { transition: TransitionId },
     Disable   { transition: TransitionId },
-    SetParam  { value: Box<dyn Any + Send + Sync> },
+    // SetParam { value: Box<dyn Any + Send + Sync> } arrives with parameters (§10, slice 11);
+    // the enum is #[non_exhaustive] so that is not a breaking change.
 }
+Command::{extend, put, set_tokens, replace}(place: PlaceRef<T>, ..)   // typed constructors, erased result
+Command::{remove, enable, disable}(..)
 net.apply(cmd) -> Result<(), CommandError>   // the one runtime TypeId check in the engine
 ```
 
-The typed methods and `apply` share one erased insertion path (`push_erased`). Channels between a UI thread and the driver
-are the caller's concern. With the `serde` feature, `Command` has a
-serialisable form for places marked `serializable`.
+**Done, slice 10.**
+
+- A `Command` is built typed and travels erased. It carries a bare `PlaceId`,
+  no `NetId` stamp: it is meant to cross a boundary where the stamp means
+  nothing, and the `TypeId` check in `apply` is the guard. A command built
+  for one net and applied to another therefore succeeds if the place at that
+  index has the same type, and is `TypeMismatch` otherwise.
+- `apply` is **atomic**: every token of an `Extend` or `SetTokens` is checked
+  against the place's type before anything is written or cleared (Python's
+  `_apply_command` checks all tokens first too), so a rejected command
+  changes nothing and emits nothing. `TypeMismatch.found` is `"<erased>"`: a
+  `dyn Any` knows its `TypeId` but not its name.
+- The typed methods and `apply` share one erased path (`extend_erased`,
+  `set_erased`, `replace_erased` over `push_erased`), so the two cannot
+  drift; as a consequence the typed `extend`/`set_tokens` are atomic too.
+- Channels between a UI thread and the driver are the caller's concern; a
+  driver drains one in `run_indefinitely`'s `each_tick` hook (§13).
+- With the `serde` feature, `JsonCommand` is the wire form: internally
+  tagged (`{"command": "extend", "place": "Inbox", "tokens": [1, 2]}`),
+  places and transitions **by name** (what a UI author or a saved file knows,
+  stable across declaration-order changes), tokens as `serde_json::Value`
+  and `TokenId`s as bare numbers. `Command::from_json(&net, json)` resolves
+  names and decodes tokens with the place's `from_json` (places marked
+  `serializable` only; `NotSerializable` otherwise), `Command::to_json(&net)`
+  is the inverse, `net.apply_json(json)` is decode-then-apply. `PlaceId`,
+  `TransitionId` and `TokenId` derive `Serialize`/`Deserialize` transparently;
+  `NetId` does not.
 
 Input may arrive whenever the caller holds `&mut Net`, including while
 firings are in flight.

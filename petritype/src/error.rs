@@ -253,6 +253,72 @@ pub enum NetError {
     FiringFailed(#[from] FiringFailed),
 }
 
+/// An erased [`Command`](crate::Command) the net would not carry out,
+/// returned by [`Net::apply`](crate::Net::apply).
+///
+/// A rejected command changes nothing and emits nothing (DESIGN §9), so this
+/// error is always a complete report: the net is exactly as it was before the
+/// call. Most of it is a [`NetError`] — the erased route is where a wrong
+/// type or a stale id can really arrive, since the typed API makes both a
+/// compile error or a panic. The rest is the JSON route's own vocabulary,
+/// where places and transitions travel by name and tokens as
+/// `serde_json::Value`, so there are two more ways to be wrong before the net
+/// is ever asked.
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum CommandError {
+    /// The net rejected the command: an unknown place, transition or token,
+    /// or a token of the wrong type for its place.
+    #[error(transparent)]
+    Net(#[from] NetError),
+    /// A JSON command names a place that was not marked
+    /// [`serializable`](crate::NetBuilder::serializable), so the net has no
+    /// way to decode its tokens — or, for
+    /// [`Command::to_json`](crate::Command::to_json), to encode them.
+    ///
+    /// Serialisation is opt-in per place; mark the place in the builder.
+    #[cfg(feature = "serde")]
+    #[error("place {place:?} is not marked serializable")]
+    NotSerializable {
+        /// The place whose tokens cannot cross a wire.
+        place: PlaceId,
+    },
+    /// A token in a JSON command did not parse as the place's type.
+    ///
+    /// The JSON is well-formed but the wrong shape — `"seven"` for a place of
+    /// `u32`. Nothing is applied: the command is rejected at the first token
+    /// that fails, before the net is touched.
+    #[cfg(feature = "serde")]
+    #[error("place {place:?}: token does not parse as {expected}: {source}")]
+    InvalidToken {
+        /// The place the token was meant for.
+        place: PlaceId,
+        /// The type that place holds, `std::any::type_name::<T>()`.
+        expected: &'static str,
+        /// What `serde_json` made of it.
+        #[source]
+        source: serde_json::Error,
+    },
+    /// A JSON command named a place that does not exist.
+    ///
+    /// The JSON form addresses places by name rather than by
+    /// [`PlaceId`], because a name is what an author or a saved file knows
+    /// and it survives a change in declaration order.
+    #[cfg(feature = "serde")]
+    #[error("no place named {name:?}")]
+    NoSuchPlaceName {
+        /// The name that matched no place.
+        name: String,
+    },
+    /// A JSON command named a transition that does not exist.
+    #[cfg(feature = "serde")]
+    #[error("no transition named {name:?}")]
+    NoSuchTransitionName {
+        /// The name that matched no transition.
+        name: String,
+    },
+}
+
 /// A firing whose body returned `Err` or panicked.
 ///
 /// By the time this is returned the net is consistent again (DESIGN §7): the

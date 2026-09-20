@@ -80,7 +80,10 @@ rename backlog.
 | can fire now: switched on, inputs present, guard passes | `fireable`, `is_fireable` | — | — |
 | selection hint | `priority` | `priority` | — |
 | custom chooser | `set_selector`, type `Selector`; `clear_selector` restores the default | `transition_selector` | — |
-| per-run value a transition declares it needs | `Param::<T>`, `b.param(v)`, `net.set_param(v)` | `kwargs`, `SetParam` | — |
+| per-run value a transition declares it needs | `Param::<T>::new()` in the input tuple, `b.param(v)`, `net.set_param(v)`, `net.param::<T>()` | `kwargs`, `SetParam` | — |
+| parameter on the wire | `b.serializable_param::<T>("name")`, `JsonCommand::SetParam { param, value }`, `Command::set_param(v)` | `SetParam(transition, kwargs)` (by transition, merged) | — |
+| declared parameter without a value | `BuildError::MissingParam { transition, type_name }` | missing kwarg at call time | — |
+| owned copy of a net's state | `Snapshot`, `net.snapshot()` → `NetError::NoClonePlace { place }` | `dict(graph.fired_counts)` copies only | — |
 
 ## Rust-specific conventions
 

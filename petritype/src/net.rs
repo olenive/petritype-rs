@@ -3,14 +3,16 @@
 //! Firing is the other half of `Net`, and lives in [`crate::firing`]: which
 //! transitions could fire, which one does, and what one firing changes.
 
-use std::any::{Any, type_name};
+use std::any::{Any, TypeId, type_name};
 use std::fmt;
 
+use crate::command::ERASED;
 use crate::edge::EdgeInfo;
 use crate::error::NetError;
 use crate::event::Event;
 use crate::firing::Selector;
 use crate::ids::{NetId, PlaceId, PlaceRef, TokenId, TransitionId, foreign_place};
+use crate::param::{ParamSlot, param_of, param_slot_index};
 use crate::place::{ErasedToken, PlaceSlot, erase_all};
 use crate::transition::{TransitionInfo, TransitionSlot};
 
@@ -30,6 +32,15 @@ pub struct Net {
     pub(crate) places: Vec<PlaceSlot>,
     /// Indexed by [`TransitionId`], in declaration order.
     pub(crate) transitions: Vec<TransitionSlot>,
+    /// The parameter values, one per type, in the order the builder first
+    /// heard of each type (DESIGN §10).
+    ///
+    /// A short linear list keyed by [`TypeId`] rather than a map: a net has a
+    /// handful of parameters at most, and a scan over that many `TypeId`s
+    /// beats hashing one. It never grows or shrinks after
+    /// [`build`](crate::NetBuilder::build) — only the values are replaced,
+    /// by [`set_param`](Net::set_param).
+    pub(crate) params: Vec<ParamSlot>,
     /// The id the next token will get. Monotonic for the life of the net.
     pub(crate) next_token_id: u64,
     /// Bumped by connectivity changes only. Nothing in this version bumps it.
@@ -89,16 +100,7 @@ impl Net {
     /// assert_eq!(names, ["Inbox"]);
     /// ```
     pub fn places(&self) -> impl Iterator<Item = (PlaceId, PlaceInfo<'_>)> {
-        self.places.iter().enumerate().map(|(index, slot)| {
-            // The index is where the id came from in the first place.
-            let id = PlaceId(index as u32);
-            let info = PlaceInfo {
-                name: &slot.meta.name,
-                type_name: slot.meta.type_name,
-                count: slot.tokens.len(),
-            };
-            (id, info)
-        })
+        places_of(&self.places)
     }
 
     /// Every transition, in declaration order, with its name, its input
@@ -114,6 +116,7 @@ impl Net {
     /// let (id, info) = net.transitions().next().unwrap();
     /// assert_eq!(info.name, "Double");
     /// assert_eq!(info.inputs, [(inbox.id(), EdgeKind::Take)]);
+    /// assert!(info.params.is_empty(), "no parameters declared");
     /// assert_eq!(info.outputs, [out.id()]);
     /// assert!(info.enabled, "the switch is on");
     /// assert!(!info.in_flight, "nothing has been launched");
@@ -127,6 +130,7 @@ impl Net {
             let info = TransitionInfo {
                 name: &slot.name,
                 inputs: &slot.inputs,
+                params: &slot.params,
                 outputs: &slot.outputs,
                 enabled: slot.enabled,
                 // An empty body slot is the in-flight mark: there is no
@@ -219,16 +223,13 @@ impl Net {
     /// The id of the place with this name, if the net has one. Names are
     /// unique: [`build`](crate::NetBuilder::build) rejects duplicates.
     pub fn place_named(&self, name: &str) -> Option<PlaceId> {
-        self.places
-            .iter()
-            .position(|slot| slot.meta.name == name)
-            .map(|index| PlaceId(index as u32))
+        place_named_in(&self.places, name)
     }
 
     /// How many tokens a place holds. An unknown place counts zero, so this is
     /// usable straight inside a guard.
     pub fn count(&self, place: PlaceId) -> usize {
-        self.slot(place).map_or(0, |slot| slot.tokens.len())
+        count_in(&self.places, place)
     }
 
     /// The tokens of a place, oldest first — the order in which they will be
@@ -238,14 +239,7 @@ impl Net {
     /// is known, [`label`](Net::label) for a rendering, or downcast the
     /// `&dyn Any` yourself. An unknown place yields nothing.
     pub fn tokens(&self, place: PlaceId) -> impl Iterator<Item = (TokenId, &dyn Any)> {
-        self.slot(place).into_iter().flat_map(|slot| {
-            slot.tokens.iter().map(|(id, value)| {
-                // `dyn Any + Send + Sync` unsizes to plain `dyn Any`; the auto
-                // traits matter to the net, not to a reader.
-                let value: &dyn Any = &**value;
-                (*id, value)
-            })
-        })
+        tokens_in(&self.places, place)
     }
 
     /// One token of a place, downcast to `T`.
@@ -254,9 +248,7 @@ impl Net {
     /// some other type — the typed API cannot produce that last case, but a
     /// widget that was told a type by a human can ask for the wrong one.
     pub fn token<T: 'static>(&self, place: PlaceId, token: TokenId) -> Option<&T> {
-        let slot = self.slot(place)?;
-        let index = slot.position(token)?;
-        slot.tokens[index].1.downcast_ref::<T>()
+        token_in::<T>(&self.places, place, token)
     }
 
     /// A token rendered with its type's `Debug`, for a diagram.
@@ -265,10 +257,7 @@ impl Net {
     /// character boundary, with `"..."` appended when anything was cut.
     /// `None` if the place or the token does not exist.
     pub fn label(&self, place: PlaceId, token: TokenId) -> Option<String> {
-        let slot = self.slot(place)?;
-        let index = slot.position(token)?;
-        let text = (slot.meta.debug)(&*slot.tokens[index].1);
-        Some(truncate_label(text, self.label_limit))
+        label_in(&self.places, place, token, self.label_limit)
     }
 
     /// A token rendered as JSON, for an inspector that wants structure rather
@@ -280,10 +269,41 @@ impl Net {
     /// place or token.
     #[cfg(feature = "serde")]
     pub fn json(&self, place: PlaceId, token: TokenId) -> Option<serde_json::Value> {
-        let slot = self.slot(place)?;
-        let to_json = slot.meta.to_json?;
-        let index = slot.position(token)?;
-        Some(to_json(&*slot.tokens[index].1))
+        json_in(&self.places, place, token)
+    }
+
+    /// The current value of the parameter of type `T`, or `None` if this net
+    /// has no parameter of that type (DESIGN §10).
+    ///
+    /// The borrow is the net's own value, not a clone: a body is handed a
+    /// copy because it may run elsewhere, but a reader holding `&Net` can
+    /// simply look. That is what makes a parameter usable from a
+    /// [guard](crate::TransitionBuilder::guard), which is asked with the
+    /// whole net in hand:
+    ///
+    /// ```
+    /// # use petritype::{NetBuilder, TakeEdge};
+    /// #[derive(Clone)]
+    /// struct Paused(bool);
+    ///
+    /// let mut b = NetBuilder::new();
+    /// let inbox = b.place::<u32>("Inbox");
+    /// let out = b.place::<u32>("Out");
+    /// b.seed(inbox, [1]);
+    /// b.param(Paused(true));
+    /// let double = b
+    ///     .transition("Double", (TakeEdge(inbox),), (out,), |n: u32| (n * 2,))
+    ///     .guard(|net| !net.param::<Paused>().is_some_and(|p| p.0))
+    ///     .id();
+    /// let mut net = b.build()?;
+    ///
+    /// assert!(!net.is_fireable(double), "paused");
+    /// net.set_param(Paused(false))?;
+    /// assert!(net.is_fireable(double));
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn param<T: 'static>(&self) -> Option<&T> {
+        param_of::<T>(&self.params)
     }
 
     /// Increments when the net's connectivity changes. Nothing in this
@@ -456,11 +476,61 @@ impl Net {
         self.replace_erased(place.id(), token, Box::new(value), type_name::<T>())
     }
 
-    // ----- internals ------------------------------------------------------
-
-    fn slot(&self, place: PlaceId) -> Option<&PlaceSlot> {
-        self.places.get(place.0 as usize)
+    /// Replaces the value of the parameter of type `T` (DESIGN §10).
+    ///
+    /// Emits [`ParamChanged`](Event::ParamChanged) and so bumps
+    /// [`state_counter`](Net::state_counter) once. The type name is all the
+    /// event carries: a parameter has no `Debug` bound, deliberately, so that
+    /// a secret cannot leak into a log or a label.
+    ///
+    /// **Atomic between steps.** A firing that has already been
+    /// [launched](Net::launch) keeps the clone it was given at launch, so a
+    /// body in flight is never handed a value that changes under it; the next
+    /// launch sees the new one. Parameters do not affect
+    /// [fireability](Net::fireable) — every parameter has a value from the
+    /// moment the net is built — so replacing one enables nothing and
+    /// disables nothing by itself, unless a guard reads it.
+    ///
+    /// ```
+    /// # use petritype::{Event, NetBuilder, Param, TakeEdge};
+    /// # #[derive(Clone)] struct Scale(u32);
+    /// # let mut b = NetBuilder::new();
+    /// # let inbox = b.place::<u32>("Inbox");
+    /// # let out = b.place::<u32>("Out");
+    /// # b.seed(inbox, [1, 1]);
+    /// # b.param(Scale(2));
+    /// # b.transition("Scale", (TakeEdge(inbox), Param::<Scale>::new()), (out,), |n: u32, s: Scale| (n * s.0,));
+    /// # let mut net = b.build()?;
+    /// net.step()?;
+    /// net.set_param(Scale(10))?;
+    /// net.step()?;
+    ///
+    /// let values: Vec<u32> = net
+    ///     .tokens(out.id())
+    ///     .map(|(_, v)| *v.downcast_ref::<u32>().unwrap())
+    ///     .collect();
+    /// assert_eq!(values, [2, 10], "the second firing saw the new value");
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// [`NetError::NoSuchParam`] if this net has no parameter of type `T`.
+    /// Parameters are fixed at [`build`](crate::NetBuilder::build): this adds
+    /// none, and the net is unchanged and silent when it refuses.
+    pub fn set_param<T: Clone + Send + Sync + 'static>(
+        &mut self,
+        value: T,
+    ) -> Result<(), NetError> {
+        if param_slot_index(&self.params, TypeId::of::<T>()).is_none() {
+            return Err(NetError::NoSuchParam {
+                type_name: type_name::<T>(),
+            });
+        }
+        self.set_param_erased(Box::new(value))
     }
+
+    // ----- internals ------------------------------------------------------
 
     /// Hands out the next token id. Ids are never reused.
     fn mint_token_id(&mut self) -> TokenId {
@@ -648,6 +718,28 @@ impl Net {
         Ok(())
     }
 
+    /// The shared body of [`set_param`](Net::set_param) and
+    /// [`Command::SetParam`](crate::Command::SetParam): find the parameter by
+    /// the value's own type, replace it, say so.
+    ///
+    /// The lookup is by [`TypeId`], which an erased value knows, so the two
+    /// routes are the same code; only the blame differs when there is no such
+    /// parameter, because the typed caller can name the type and this one
+    /// cannot. The [`ParamChanged`](Event::ParamChanged) event carries the
+    /// *net's* name for the type, which is the real one either way.
+    pub(crate) fn set_param_erased(&mut self, value: ErasedToken) -> Result<(), NetError> {
+        // `(*value).type_id()` and not `value.type_id()`: the latter would
+        // ask the `Box` for *its* type, as on the token path.
+        let type_id = (*value).type_id();
+        let Some(index) = param_slot_index(&self.params, type_id) else {
+            return Err(NetError::NoSuchParam { type_name: ERASED });
+        };
+        self.params[index].value = value;
+        let type_name = self.params[index].type_name;
+        self.emit(Event::ParamChanged { type_name });
+        Ok(())
+    }
+
     /// `push_erased` for a caller that still knows `T`, where the only way to
     /// fail is to use a handle from another net.
     fn push_typed<T: Send + Sync + 'static>(
@@ -697,6 +789,9 @@ impl fmt::Debug for Net {
             .field("id", &self.id)
             .field("places", &self.places)
             .field("transitions", &self.transitions)
+            // Type names only: a parameter value is never printed (DESIGN
+            // §10), and `ParamSlot`'s own `Debug` is what says so.
+            .field("params", &self.params)
             .field("state_counter", &self.state_counter)
             .field("topology_counter", &self.topology_counter)
             .field("fired_count", &self.fired_count)
@@ -706,6 +801,96 @@ impl fmt::Debug for Net {
             .field("pending_events", &self.events.len())
             .finish()
     }
+}
+
+// ----- the read API, over places alone -------------------------------------
+//
+// A [`Snapshot`](crate::Snapshot) is the net's state without its bodies, and
+// a reader must be able to ask it the same questions in the same words. These
+// functions are those questions, written once over a plain slice of places,
+// and both `Net` and `Snapshot` are thin typed wrappers around them — which
+// is also why a snapshot's labels and JSON come out exactly as the net's do:
+// it carries the same [`PlaceMeta`](crate::place::PlaceMeta) vtables.
+
+/// Every place, in id order, with its name, token type and live count.
+pub(crate) fn places_of(places: &[PlaceSlot]) -> impl Iterator<Item = (PlaceId, PlaceInfo<'_>)> {
+    places.iter().enumerate().map(|(index, slot)| {
+        // The index is where the id came from in the first place.
+        let id = PlaceId(index as u32);
+        let info = PlaceInfo {
+            name: &slot.meta.name,
+            type_name: slot.meta.type_name,
+            count: slot.tokens.len(),
+        };
+        (id, info)
+    })
+}
+
+/// The id of the place with this name, if there is one.
+pub(crate) fn place_named_in(places: &[PlaceSlot], name: &str) -> Option<PlaceId> {
+    places
+        .iter()
+        .position(|slot| slot.meta.name == name)
+        .map(|index| PlaceId(index as u32))
+}
+
+/// How many tokens a place holds; an unknown place counts zero.
+pub(crate) fn count_in(places: &[PlaceSlot], place: PlaceId) -> usize {
+    places
+        .get(place.0 as usize)
+        .map_or(0, |slot| slot.tokens.len())
+}
+
+/// The tokens of a place, oldest first and erased.
+pub(crate) fn tokens_in(
+    places: &[PlaceSlot],
+    place: PlaceId,
+) -> impl Iterator<Item = (TokenId, &dyn Any)> {
+    places.get(place.0 as usize).into_iter().flat_map(|slot| {
+        slot.tokens.iter().map(|(id, value)| {
+            // `dyn Any + Send + Sync` unsizes to plain `dyn Any`; the
+            // auto traits matter to the net, not to a reader.
+            let value: &dyn Any = &**value;
+            (*id, value)
+        })
+    })
+}
+
+/// One token of a place, downcast to `T`.
+pub(crate) fn token_in<T: 'static>(
+    places: &[PlaceSlot],
+    place: PlaceId,
+    token: TokenId,
+) -> Option<&T> {
+    let slot = places.get(place.0 as usize)?;
+    let index = slot.position(token)?;
+    slot.tokens[index].1.downcast_ref::<T>()
+}
+
+/// One token rendered with its type's `Debug`, truncated to `limit`.
+pub(crate) fn label_in(
+    places: &[PlaceSlot],
+    place: PlaceId,
+    token: TokenId,
+    limit: usize,
+) -> Option<String> {
+    let slot = places.get(place.0 as usize)?;
+    let index = slot.position(token)?;
+    let text = (slot.meta.debug)(&*slot.tokens[index].1);
+    Some(truncate_label(text, limit))
+}
+
+/// One token as JSON, for a place that recorded an encoder.
+#[cfg(feature = "serde")]
+pub(crate) fn json_in(
+    places: &[PlaceSlot],
+    place: PlaceId,
+    token: TokenId,
+) -> Option<serde_json::Value> {
+    let slot = places.get(place.0 as usize)?;
+    let to_json = slot.meta.to_json?;
+    let index = slot.position(token)?;
+    Some(to_json(&*slot.tokens[index].1))
 }
 
 /// Cuts `text` to `limit` characters, on a character boundary, appending

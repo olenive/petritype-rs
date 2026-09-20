@@ -1,6 +1,7 @@
 //! Transitions: what the net stores, what the read API reports, and the
 //! handle the builder returns while a transition is being declared.
 
+use std::any::TypeId;
 use std::fmt;
 
 use crate::edge::EdgeKind;
@@ -23,6 +24,32 @@ pub(crate) type Guard = Box<dyn Fn(&Net) -> bool + Send + Sync>;
 /// A transition without one scores `0.0`.
 pub(crate) type Priority = Box<dyn Fn(&Net) -> f64 + Send + Sync>;
 
+/// Where one of the body's arguments comes from (DESIGN §10).
+///
+/// A transition's inputs are written as one tuple, which is also the body's
+/// parameter list, but the two kinds of input are stored apart: the edges in
+/// [`TransitionSlot::inputs`](TransitionSlot::inputs), which is what
+/// fireability, the read API and the build-time checks read, and the
+/// parameters nowhere but here. This is the thread back: one entry per
+/// argument, in tuple order, saying which list the argument comes out of.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ArgSource {
+    /// The argument of the *i*th input edge of this transition.
+    Edge(usize),
+    /// The clone of a parameter value, looked up in the net by type.
+    Param {
+        /// `TypeId::of::<T>()`, the key
+        /// [`Net::set_param`](crate::Net::set_param) stores it under.
+        type_id: TypeId,
+        /// `std::any::type_name::<T>()`, for
+        /// [`BuildError::MissingParam`](crate::BuildError::MissingParam).
+        /// Also kept, in tuple order, in
+        /// [`TransitionSlot::params`](TransitionSlot::params), which is where
+        /// the read API hands it out as a slice.
+        type_name: &'static str,
+    },
+}
+
 /// One transition as the net holds it, with its body's types erased.
 ///
 /// There is no `routing` field, although DESIGN §4.4 lists one: a body that routes its outputs by type resolves its
@@ -32,11 +59,25 @@ pub(crate) type Priority = Box<dyn Fn(&Net) -> f64 + Send + Sync>;
 pub(crate) struct TransitionSlot {
     /// The name given in the builder; unique within a net.
     pub(crate) name: String,
-    /// Input places and how each is read, in declaration order — the order of
-    /// the body's parameters. The places are distinct:
+    /// Input places and how each is read, in declaration order, with the
+    /// [parameters](crate::Param) left out. The places are distinct:
     /// [`build`](crate::NetBuilder::build) rejects two input edges into one
     /// place.
+    ///
+    /// Edges only, because everything that reads this field is about places:
+    /// fireability, [`Net::edges`](crate::Net::edges), the duplicate-place
+    /// check, the acyclicity and source walks, and stage one's consumption.
+    /// [`args`](TransitionSlot::args) is what remembers where the parameters
+    /// stood among them.
     pub(crate) inputs: Vec<(PlaceId, EdgeKind)>,
+    /// The declared parameter types by name, in declaration order — what
+    /// [`TransitionInfo::params`](TransitionInfo::params) reports so that a
+    /// renderer can badge the transition (DESIGN §10).
+    pub(crate) params: Vec<&'static str>,
+    /// One entry per body argument, in the order the input tuple was
+    /// written: an index into [`inputs`](TransitionSlot::inputs), or a
+    /// parameter type to look up in the net.
+    pub(crate) args: Vec<ArgSource>,
     /// Output places in declaration order — the order of the slots in what
     /// the body returns.
     pub(crate) outputs: Vec<PlaceId>,
@@ -80,6 +121,9 @@ impl fmt::Debug for TransitionSlot {
         f.debug_struct("TransitionSlot")
             .field("name", &self.name)
             .field("inputs", &self.inputs)
+            // The type names only: a parameter's value is never printed
+            // anywhere (DESIGN §10).
+            .field("params", &self.params)
             .field("outputs", &self.outputs)
             // The body, the guard and the priority are closures: all a reader
             // can be told is whether they are there.
@@ -106,7 +150,20 @@ pub struct TransitionInfo<'a> {
     pub name: &'a str,
     /// Input places and how each is read, in declaration order. The places
     /// are distinct.
+    ///
+    /// Edges only. A [`Param<T>`](crate::Param) is an input of the
+    /// transition but not an edge of the net — it reads no place and is no
+    /// node in a diagram — so it appears in [`params`](TransitionInfo::params)
+    /// instead, and never in [`Net::edges`](crate::Net::edges).
     pub inputs: &'a [(PlaceId, EdgeKind)],
+    /// The [parameter](crate::Param) types this transition declared, by
+    /// name, in declaration order (DESIGN §10).
+    ///
+    /// Type names and nothing else: a parameter has no `Debug` bound, and a
+    /// reader is told what a transition *needs*, never what it was given. A
+    /// renderer badges the transition with these; the values live on the net
+    /// and are read with [`Net::param`](crate::Net::param).
+    pub params: &'a [&'static str],
     /// Output places, in declaration order.
     pub outputs: &'a [PlaceId],
     /// The on/off switch, as

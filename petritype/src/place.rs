@@ -47,6 +47,7 @@ pub(crate) type FromJsonFn = fn(serde_json::Value) -> Result<ErasedToken, serde_
 /// instantiates the generic functions below and coerces them to plain `fn`
 /// pointers. The cost is one pointer per place, not per token, and the token
 /// itself needs no bound beyond what the builder method asked for.
+#[derive(Clone)]
 pub(crate) struct PlaceMeta {
     /// The name given in the builder; unique within a net.
     pub(crate) name: String,
@@ -65,7 +66,10 @@ pub(crate) struct PlaceMeta {
     /// consuming edge of a transition that
     /// [restores its inputs](crate::TransitionBuilder::restore_tokens_on_failure),
     /// for. It is called by snapshot edges, by the clone stage one takes for
-    /// such a transition, and by `Net::snapshot` in the slice that adds it.
+    /// such a transition, and by
+    /// [`Net::snapshot`](crate::Net::snapshot) — which is refused outright
+    /// when any place lacks it
+    /// ([`NetError::NoClonePlace`](crate::NetError::NoClonePlace)).
     pub(crate) clone: Option<CloneFn>,
     /// `to_json_of::<T>`, `Some` only for a place marked
     /// [`serializable`](crate::NetBuilder::serializable).
@@ -100,6 +104,31 @@ impl PlaceSlot {
     /// token. Linear, because places are short and ordered.
     pub(crate) fn position(&self, token: TokenId) -> Option<usize> {
         self.tokens.iter().position(|(id, _)| *id == token)
+    }
+
+    /// A deep copy of this place — the same tokens under the same ids — or
+    /// `None` for a place declared with
+    /// [`place_no_clone`](crate::NetBuilder::place_no_clone), which recorded
+    /// no cloner.
+    ///
+    /// This is what [`Net::snapshot`](crate::Net::snapshot) is built from,
+    /// and the `None` is the whole of
+    /// [`NetError::NoClonePlace`](crate::NetError::NoClonePlace). The
+    /// [`PlaceMeta`] comes along, so a copied place answers the read API —
+    /// labels, JSON, counts — exactly as the original does.
+    pub(crate) fn try_clone(&self) -> Option<PlaceSlot> {
+        let clone = self.meta.clone?;
+        Some(PlaceSlot {
+            // Spelled out: `meta.clone` is the cloner *of a token*, and
+            // `meta.clone()` would be the metadata's own `Clone`, which is
+            // what is wanted here but reads like a typo.
+            meta: Clone::clone(&self.meta),
+            tokens: self
+                .tokens
+                .iter()
+                .map(|(id, value)| (*id, clone(&**value)))
+                .collect(),
+        })
     }
 }
 

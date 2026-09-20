@@ -46,8 +46,7 @@ pub(crate) const ERASED: &str = "<erased>";
 /// how *many* tokens a batch has rather than what they are, for the same
 /// reason.
 ///
-/// The enum is `#[non_exhaustive]`: match with a `_` arm. Parameters are the
-/// next slice, and will add a `SetParam` variant here.
+/// The enum is `#[non_exhaustive]`: match with a `_` arm.
 ///
 /// # Typed on the way out, erased on the wire
 ///
@@ -141,6 +140,7 @@ pub(crate) const ERASED: &str = "<erased>";
 /// {"command": "remove", "place": "Inbox", "token": 4}
 /// {"command": "replace", "place": "Inbox", "token": 4, "value": 9}
 /// {"command": "disable", "transition": "Double"}
+/// {"command": "set_param", "param": "api_token", "value": "s3cret"}
 /// ```
 ///
 /// Places and transitions travel by name, because a name is what an author, a
@@ -150,8 +150,9 @@ pub(crate) const ERASED: &str = "<erased>";
 /// resolves the names and decodes the tokens against a net without changing
 /// it, `Command::to_json` goes the other way, and `Net::apply_json` is the
 /// two steps in one call. Both directions need the place to be marked
-/// `NetBuilder::serializable`.
-// slice 11: SetParam { value: Box<dyn Any + Send + Sync> }
+/// `NetBuilder::serializable` — or, for a parameter, which travels under a
+/// name of its own rather than by type,
+/// `NetBuilder::serializable_param`.
 #[non_exhaustive]
 pub enum Command {
     /// Append tokens to a place, in order: [`Net::extend`] erased.
@@ -197,6 +198,19 @@ pub enum Command {
     Disable {
         /// The transition to switch off.
         transition: TransitionId,
+    },
+    /// Replace a parameter value: [`Net::set_param`] erased (DESIGN §10).
+    ///
+    /// The value carries its own type, and that type *is* the address: a
+    /// parameter is stored per [`TypeId`](std::any::TypeId), so there is no
+    /// id or name to send alongside it. A value whose type this net has no
+    /// parameter of is a
+    /// [`NetError::NoSuchParam`](crate::NetError::NoSuchParam) naming
+    /// `"<erased>"`, since an erased value cannot be asked for its type's
+    /// name.
+    SetParam {
+        /// The new value, of the parameter type it belongs to.
+        value: Box<dyn Any + Send + Sync>,
     },
 }
 
@@ -270,6 +284,32 @@ impl Command {
     pub fn disable(transition: TransitionId) -> Command {
         Command::Disable { transition }
     }
+
+    /// Replaces the value of the parameter of type `T`: [`Net::set_param`]
+    /// sent down a channel.
+    ///
+    /// ```
+    /// # use petritype::{Command, NetBuilder};
+    /// #[derive(Clone, PartialEq, Debug)]
+    /// struct Scale(u32);
+    ///
+    /// # let mut b = NetBuilder::new();
+    /// b.param(Scale(2));
+    /// let mut net = b.build()?;
+    ///
+    /// net.apply(Command::set_param(Scale(10)))?;
+    /// assert_eq!(net.param::<Scale>(), Some(&Scale(10)));
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    ///
+    /// The `Clone` bound is the parameter bound, not something the command
+    /// needs: it is here so that a value that could never *be* a parameter is
+    /// refused where it is written rather than where it lands.
+    pub fn set_param<T: Clone + Send + Sync + 'static>(value: T) -> Command {
+        Command::SetParam {
+            value: Box::new(value),
+        }
+    }
 }
 
 impl fmt::Debug for Command {
@@ -309,6 +349,9 @@ impl fmt::Debug for Command {
                 .debug_struct("Disable")
                 .field("transition", transition)
                 .finish(),
+            // Not even a type name: a parameter may be a secret, and an
+            // erased value cannot name its type anyway (DESIGN §10).
+            Command::SetParam { .. } => f.debug_struct("SetParam").finish_non_exhaustive(),
         }
     }
 }
@@ -327,7 +370,10 @@ impl Net {
     /// [`Replace`](Command::Replace), and a
     /// [`Toggled`](crate::Event::Toggled) for an
     /// [`Enable`](Command::Enable) or [`Disable`](Command::Disable) that
-    /// actually moves the switch. [`state_counter`](Net::state_counter)
+    /// actually moves the switch, and a
+    /// [`ParamChanged`](crate::Event::ParamChanged) for a
+    /// [`SetParam`](Command::SetParam).
+    /// [`state_counter`](Net::state_counter)
     /// therefore moves by the number of events, and by nothing else: `apply`
     /// has no tick of its own.
     ///
@@ -339,8 +385,10 @@ impl Net {
     /// [`CommandError::Net`], wrapping
     /// [`NoSuchPlace`](crate::NetError::NoSuchPlace),
     /// [`NoSuchTransition`](crate::NetError::NoSuchTransition),
-    /// [`NoSuchToken`](crate::NetError::NoSuchToken) or
-    /// [`TypeMismatch`](crate::NetError::TypeMismatch). **The net is
+    /// [`NoSuchToken`](crate::NetError::NoSuchToken),
+    /// [`TypeMismatch`](crate::NetError::TypeMismatch) or, for a
+    /// [`SetParam`](Command::SetParam) of a type this net has no parameter
+    /// of, [`NoSuchParam`](crate::NetError::NoSuchParam). **The net is
     /// untouched and silent in every case**: a batch is checked token by
     /// token before any of it is written, so a rejected command is one an
     /// observer never hears about.
@@ -377,6 +425,7 @@ impl Net {
             } => self.replace_erased(place, token, value, ERASED)?,
             Command::Enable { transition } => self.set_enabled(transition, true)?,
             Command::Disable { transition } => self.set_enabled(transition, false)?,
+            Command::SetParam { value } => self.set_param_erased(value)?,
         }
         Ok(())
     }
@@ -439,6 +488,19 @@ pub enum JsonCommand {
         /// The transition's name.
         transition: String,
     },
+    /// Replace a parameter value: [`Command::SetParam`].
+    SetParam {
+        /// The parameter's wire name, as given to
+        /// [`serializable_param`](crate::NetBuilder::serializable_param).
+        ///
+        /// A name and not a type name: `std::any::type_name::<T>()` is a
+        /// compiler detail that changes when a type moves module, which is
+        /// no basis for a saved file or a UI — exactly the reasoning that
+        /// sends places by name.
+        param: String,
+        /// The new value, parsed as the parameter's type.
+        value: serde_json::Value,
+    },
 }
 
 #[cfg(feature = "serde")]
@@ -453,11 +515,13 @@ impl Command {
     ///
     /// # Errors
     ///
-    /// [`CommandError::NoSuchPlaceName`] or
-    /// [`CommandError::NoSuchTransitionName`] for a name the net does not
-    /// have, [`CommandError::NotSerializable`] for a place with no decoder
-    /// recorded, and [`CommandError::InvalidToken`] for a value that does not
-    /// parse as the place's type — the first one that fails, with nothing
+    /// [`CommandError::NoSuchPlaceName`],
+    /// [`CommandError::NoSuchTransitionName`] or
+    /// [`CommandError::NoSuchParamName`] for a name the net does not have,
+    /// [`CommandError::NotSerializable`] for a place with no decoder
+    /// recorded, and [`CommandError::InvalidToken`] or
+    /// [`CommandError::InvalidParam`] for a value that does not parse as the
+    /// type it is meant for — the first one that fails, with nothing
     /// half-decoded kept.
     pub fn from_json(net: &Net, command: JsonCommand) -> Result<Command, CommandError> {
         match command {
@@ -498,6 +562,27 @@ impl Command {
             JsonCommand::Disable { transition } => Ok(Command::Disable {
                 transition: transition_id(net, &transition)?,
             }),
+            JsonCommand::SetParam { param, value } => {
+                // A parameter is addressed by its wire name, so the lookup
+                // and the decoder are the same step: only a marked parameter
+                // has either.
+                let slot = net
+                    .params
+                    .iter()
+                    .find(|slot| slot.name.as_deref() == Some(param.as_str()))
+                    .ok_or_else(|| CommandError::NoSuchParamName {
+                        name: param.clone(),
+                    })?;
+                let from_json = slot
+                    .from_json
+                    .expect("a named parameter records both codecs");
+                let value = from_json(value).map_err(|source| CommandError::InvalidParam {
+                    param,
+                    expected: slot.type_name,
+                    source,
+                })?;
+                Ok(Command::SetParam { value })
+            }
         }
     }
 
@@ -512,7 +597,11 @@ impl Command {
     /// # Errors
     ///
     /// [`CommandError::NotSerializable`] for a place with no encoder
-    /// recorded; [`CommandError::Net`] wrapping
+    /// recorded, [`CommandError::ParamNotSerializable`] for a
+    /// [`SetParam`](Command::SetParam) whose type has no wire name — or is
+    /// not a parameter of this net at all, which from here is
+    /// indistinguishable, the value having forgotten its type's name;
+    /// [`CommandError::Net`] wrapping
     /// [`NoSuchPlace`](crate::NetError::NoSuchPlace) or
     /// [`NoSuchTransition`](crate::NetError::NoSuchTransition) for an id this
     /// net does not have — which is what a command built for another net
@@ -551,6 +640,13 @@ impl Command {
             Command::Disable { transition } => Ok(JsonCommand::Disable {
                 transition: transition_name(net, *transition)?,
             }),
+            Command::SetParam { value } => {
+                let (param, to_json) = param_wire(net, &**value)?;
+                Ok(JsonCommand::SetParam {
+                    param,
+                    value: to_json(&**value),
+                })
+            }
         }
     }
 }
@@ -589,6 +685,28 @@ fn transition_id(net: &Net, name: &str) -> Result<TransitionId, CommandError> {
         .ok_or_else(|| CommandError::NoSuchTransitionName {
             name: name.to_owned(),
         })
+}
+
+/// The wire name and encoder of the parameter this value belongs to.
+///
+/// Two ways to fail, one error: a value of a type this net has no parameter
+/// of, which cannot be named because it arrived erased, and a parameter that
+/// exists but was never marked
+/// [`serializable_param`](crate::NetBuilder::serializable_param), which can.
+#[cfg(feature = "serde")]
+fn param_wire(
+    net: &Net,
+    value: &(dyn Any + Send + Sync),
+) -> Result<(String, crate::place::ToJsonFn), CommandError> {
+    let Some(slot) = crate::param::param_slot(&net.params, value.type_id()) else {
+        return Err(CommandError::ParamNotSerializable { type_name: ERASED });
+    };
+    match (slot.name.clone(), slot.to_json) {
+        (Some(name), Some(to_json)) => Ok((name, to_json)),
+        _ => Err(CommandError::ParamNotSerializable {
+            type_name: slot.type_name,
+        }),
+    }
 }
 
 /// The name of a place, or [`NetError::NoSuchPlace`](crate::NetError::NoSuchPlace).

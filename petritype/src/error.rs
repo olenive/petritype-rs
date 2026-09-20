@@ -127,6 +127,43 @@ pub enum BuildError {
         /// The place it consumes.
         place: String,
     },
+    /// A transition declared a [`Param<T>`](crate::Param) and no value of
+    /// that type was registered with
+    /// [`NetBuilder::param`](crate::NetBuilder::param).
+    ///
+    /// A parameter is not a place: there is no empty state for one to be in,
+    /// and a body is handed a clone of the value whenever it fires. So the
+    /// value has to exist before the net does, and a net that cannot supply
+    /// one is refused rather than left to fail at its first firing (DESIGN
+    /// §10). The reverse — a registered parameter no transition declares — is
+    /// fine: it is a value the net carries, for a guard or a reader.
+    ///
+    /// Reported for the first transition in declaration order that wants
+    /// one, and within it for the first such input in the order the inputs
+    /// were written.
+    #[error(
+        "transition {transition:?} declares a parameter of type {type_name}, which has no value"
+    )]
+    MissingParam {
+        /// The transition that declared it.
+        transition: String,
+        /// The parameter type with no value,
+        /// `std::any::type_name::<T>()`.
+        type_name: &'static str,
+    },
+    /// Two parameter types were marked
+    /// [`serializable_param`](crate::NetBuilder::serializable_param) under
+    /// the same wire name.
+    ///
+    /// The name is how a `JsonCommand::SetParam` picks a parameter out, as a
+    /// place's name is how it picks a place, so two types answering to one
+    /// name would make a wire message ambiguous.
+    #[cfg(feature = "serde")]
+    #[error("duplicate parameter name: {name:?}")]
+    DuplicateParamName {
+        /// The name used more than once.
+        name: String,
+    },
     /// A transition consumes nothing, in a net built with
     /// [`assert_no_source_transitions`](crate::NetBuilder::assert_no_source_transitions).
     ///
@@ -134,7 +171,8 @@ pub enum BuildError {
     /// fires — read edges do not count, since a
     /// [`SnapshotEdge`](crate::SnapshotEdge) and a
     /// [`MutateEdge`](crate::MutateEdge) leave their places as they found
-    /// them — so having fired changes nothing about whether it can fire
+    /// them, and a [`Param<T>`](crate::Param) is not a place at all — so
+    /// having fired changes nothing about whether it can fire
     /// again, and the net never quiesces. Give it a
     /// [`TakeEdge`](crate::TakeEdge) or a
     /// [`TakeAllEdge`](crate::TakeAllEdge), or drop the assertion:
@@ -246,6 +284,42 @@ pub enum NetError {
         /// The transition that was not airborne.
         transition: TransitionId,
     },
+    /// [`Net::set_param`](crate::Net::set_param), or an erased
+    /// [`Command::SetParam`](crate::Command::SetParam), named a parameter
+    /// type this net has no value for.
+    ///
+    /// Parameters are fixed when the net is built: every type some
+    /// transition declares has a value ([`BuildError::MissingParam`]), and
+    /// nothing adds a parameter afterwards, so this means the type was never
+    /// registered — usually a value meant for another net, or a newtype
+    /// mixed up with the type inside it.
+    ///
+    /// On the erased route the type cannot be named: a `dyn Any` knows its
+    /// [`TypeId`](std::any::TypeId), which is what the lookup compares, but a
+    /// `TypeId` cannot be turned back into a name. `type_name` is
+    /// `"<erased>"` there, exactly as [`TypeMismatch`](NetError::TypeMismatch)
+    /// blames `"<erased>"` for a token that arrived the same way.
+    #[error("no parameter of type {type_name} in this net")]
+    NoSuchParam {
+        /// The parameter type that has no value, or `"<erased>"` when the
+        /// value came in erased.
+        type_name: &'static str,
+    },
+    /// [`Net::snapshot`](crate::Net::snapshot) was asked for a net holding a
+    /// place declared with
+    /// [`place_no_clone`](crate::NetBuilder::place_no_clone).
+    ///
+    /// A snapshot is a copy of the marking, and such a place recorded no
+    /// cloner, so its tokens cannot be copied — a `File` or a socket is a
+    /// resource, not a value. Nothing is copied at all: the snapshot is
+    /// refused before any place is walked, so a caller never holds half a
+    /// state.
+    #[error("place {place:?} cannot clone its tokens")]
+    NoClonePlace {
+        /// The place's name, which is what a caller has to go and change in
+        /// the builder.
+        place: String,
+    },
     /// A firing this call started failed. [`Net::fire`](crate::Net::fire)
     /// reports a body's failure this way; [`Net::step`](crate::Net::step)
     /// returns the [`FiringFailed`] itself.
@@ -316,6 +390,54 @@ pub enum CommandError {
     NoSuchTransitionName {
         /// The name that matched no transition.
         name: String,
+    },
+    /// A JSON command named a parameter that no parameter type of this net
+    /// is marked with.
+    ///
+    /// The wire name comes from
+    /// [`serializable_param`](crate::NetBuilder::serializable_param), and a
+    /// parameter with no name cannot be addressed from JSON at all — so this
+    /// is both "no such parameter" and "that parameter was never marked" on
+    /// the way in.
+    #[cfg(feature = "serde")]
+    #[error("no parameter named {name:?}")]
+    NoSuchParamName {
+        /// The name that matched no parameter.
+        name: String,
+    },
+    /// [`Command::to_json`](crate::Command::to_json) was given a
+    /// [`SetParam`](crate::Command::SetParam) whose type has no wire name.
+    ///
+    /// Serialisation is opt-in per parameter type, as it is per place: mark
+    /// the type with
+    /// [`serializable_param`](crate::NetBuilder::serializable_param), which
+    /// records the codecs and the name together. A value whose type this net
+    /// has no parameter of at all is reported the same way, as `"<erased>"`:
+    /// an erased value knows its [`TypeId`](std::any::TypeId) but cannot be
+    /// asked for its name.
+    #[cfg(feature = "serde")]
+    #[error("parameter {type_name} is not marked serializable")]
+    ParamNotSerializable {
+        /// The parameter type that cannot cross a wire, or `"<erased>"`.
+        type_name: &'static str,
+    },
+    /// The value of a JSON `set_param` did not parse as the parameter's type.
+    ///
+    /// The parameter twin of [`InvalidToken`](CommandError::InvalidToken),
+    /// and separate from it because a parameter has no place to blame: it is
+    /// named on the wire and typed in the net, and neither is a
+    /// [`PlaceId`]. Nothing is applied — decoding happens before the net is
+    /// touched.
+    #[cfg(feature = "serde")]
+    #[error("parameter {param:?}: value does not parse as {expected}: {source}")]
+    InvalidParam {
+        /// The wire name the value arrived under.
+        param: String,
+        /// The type that parameter holds, `std::any::type_name::<T>()`.
+        expected: &'static str,
+        /// What `serde_json` made of it.
+        #[source]
+        source: serde_json::Error,
     },
 }
 

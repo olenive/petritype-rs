@@ -93,8 +93,9 @@ use crate::error::{BodyPanicked, FiringFailed, NetError};
 use crate::event::Event;
 use crate::ids::{NetId, PlaceId, TokenId, TransitionId};
 use crate::net::Net;
+use crate::param::{ParamSlot, param_slot};
 use crate::place::{ErasedToken, PlaceMeta, PlaceSlot};
-use crate::transition::TransitionSlot;
+use crate::transition::{ArgSource, TransitionSlot};
 
 /// Why an input place is never empty once stage one starts: being fireable
 /// is what was checked.
@@ -559,15 +560,20 @@ impl Net {
             .then(Vec::new);
         let state = {
             // Field by field, so that the input places can be emptied while
-            // the edge list is read out of the transition beside them.
+            // the edge list — and the parameter values — are read out of the
+            // net beside them.
             let Net {
                 places,
                 transitions,
+                params,
                 ..
             } = &mut *self;
             let inputs = &transitions[index].inputs;
+            let sources = &transitions[index].args;
             let args = consume(
                 places,
+                params,
+                sources,
                 inputs,
                 &mut consumed,
                 &mut mutated,
@@ -579,7 +585,7 @@ impl Net {
                 // Stage two, here and now: a `MutateEdge` hands the body a
                 // borrow into a place, which may neither travel with the
                 // `Firing` nor still be alive when stage three writes.
-                let args = borrow_mutated(places, inputs, args);
+                let args = borrow_mutated(places, sources, inputs, args);
                 let outcome = call_body(&mut body, args);
                 Stage::Ran { body, outcome }
             }
@@ -1139,8 +1145,9 @@ pub(crate) fn default_selector(net: &Net, fireable: &[TransitionId]) -> Option<T
     best.map(|(transition, _)| transition)
 }
 
-/// Stage one: one argument per input edge, in declaration order, taking out
-/// of the places whatever each edge kind takes.
+/// Stage one: one argument per input, in declaration order, taking out of the
+/// places whatever each edge kind takes and off the net whatever each
+/// parameter names.
 ///
 /// A free function over the places alone, rather than a method, because that
 /// is the shape the staged path needs: consuming is what resolves conflicts
@@ -1160,16 +1167,37 @@ pub(crate) fn default_selector(net: &Net, fireable: &[TransitionId]) -> Option<T
 /// the order it was taken. The clone is taken *here*, before the body is
 /// given anything, because that is the last moment the token is certainly
 /// intact: from the next line on the body owns it.
+///
+/// A [`Param<T>`](crate::Param) argument is a clone of the net's current
+/// value, taken here too and for the same reason (DESIGN §10): the body may
+/// run for a long time somewhere else, and a
+/// [`set_param`](Net::set_param) meanwhile must not change what it is working
+/// with. A parameter consumes nothing, so it is in neither `consumed` nor
+/// `restore` and puts nothing in an event.
+///
+/// `sources` is the tuple order — one entry per argument, saying which input
+/// edge or which parameter fills it — because `inputs` is the edges alone.
 fn consume(
     places: &mut [PlaceSlot],
+    params: &[ParamSlot],
+    sources: &[ArgSource],
     inputs: &[(PlaceId, EdgeKind)],
     consumed: &mut Vec<(PlaceId, TokenId)>,
     mutated: &mut Vec<(PlaceId, TokenId)>,
     mut restore: Option<&mut Vec<(PlaceId, TokenId, ErasedToken)>>,
 ) -> Vec<ErasedInput<'static>> {
-    let mut args = Vec::with_capacity(inputs.len());
+    let mut args = Vec::with_capacity(sources.len());
 
-    for &(place, kind) in inputs {
+    for source in sources {
+        let (place, kind) = match *source {
+            ArgSource::Edge(edge) => inputs[edge],
+            ArgSource::Param { type_id, .. } => {
+                let slot = param_slot(params, type_id)
+                    .expect("build refuses a net whose declared parameter has no value");
+                args.push(ErasedInput::Token(slot.clone_value()));
+                continue;
+            }
+        };
         let index = place.0 as usize;
         match kind {
             EdgeKind::Take => {
@@ -1268,15 +1296,21 @@ fn call_body(body: &mut ErasedBody, args: Vec<ErasedInput<'_>>) -> ErasedOutcome
 /// is what the annotation below says.
 fn borrow_mutated<'a>(
     places: &'a mut [PlaceSlot],
+    sources: &[ArgSource],
     inputs: &[(PlaceId, EdgeKind)],
     args: Vec<ErasedInput<'static>>,
 ) -> Vec<ErasedInput<'a>> {
     let mut args: Vec<ErasedInput<'a>> = args;
     // Where the mutating edges are: the argument each fills and the place it
-    // borrows.
-    let borrows: Vec<(usize, usize)> = inputs
+    // borrows. The position is the argument's, not the edge's, since a
+    // parameter may stand between two edges.
+    let borrows: Vec<(usize, usize)> = sources
         .iter()
         .enumerate()
+        .filter_map(|(position, source)| match *source {
+            ArgSource::Edge(edge) => Some((position, inputs[edge])),
+            ArgSource::Param { .. } => None,
+        })
         .filter(|(_, (_, kind))| *kind == EdgeKind::Mutate)
         .map(|(position, (place, _))| (position, place.0 as usize))
         .collect();

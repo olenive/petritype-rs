@@ -499,14 +499,17 @@ Error types (`thiserror`, all `#[non_exhaustive]`):
 - `BuildError` — from `NetBuilder::build`.
 - `NetError` — API misuse: `NoSuchPlace`, `NoSuchToken`, `TypeMismatch`,
   `NoSuchTransition`, `NotFireable`, `ForeignFiring`, `NotInFlight`,
-  snapshot with a `no_clone` place. Wraps `FiringFailed` transparently so
-  that `net.fire(t)` and `net.distribute(done)` return one error type.
+  `NoSuchParam` (a `set_param` of a type no transition declared),
+  `NoClonePlace` (a snapshot of a net with a `no_clone` place). Wraps
+  `FiringFailed` transparently so that `net.fire(t)` and
+  `net.distribute(done)` return one error type.
 - `FiringFailed` — a body returned `Err` or panicked; carries the transition,
   the boxed error, and whether inputs were restored.
 - `CommandError` — external input rejected. Wraps `NetError` transparently
   (unknown place, transition or token; type mismatch); with `serde`, also
-  `NotSerializable`, `InvalidToken`, `NoSuchPlaceName` and
-  `NoSuchTransitionName` from the JSON route. A rejected command changes
+  `NotSerializable`, `InvalidToken`, `NoSuchPlaceName`,
+  `NoSuchTransitionName`, `NoSuchParamName`, `InvalidParam` and
+  `ParamNotSerializable` from the JSON route. A rejected command changes
   nothing and emits nothing.
 - `TooManyFirings` — the driver fuse, carrying a `RunSummary`.
 
@@ -555,9 +558,22 @@ net.label(place, token) -> Option<String>            // via PlaceMeta.debug; tru
 net.token::<T>(place, token) -> Option<&T>           // typed downcast for custom widgets
 #[cfg(feature = "serde")]
 net.json(place, token) -> Option<serde_json::Value>  // structured view, serializable places only
-net.snapshot() -> Result<Net, NetError>              // deep copy; Err if any no_clone place
+net.snapshot() -> Result<Snapshot, NetError>         // owned copy of the *state*, not the net (see below); Err if any no_clone place
 net.topology_counter(), net.state_counter(), net.fired_count()
 ```
+
+`Snapshot` (slice 11) is the marking, the switches, the in-flight set, the
+parameters and the counters, cloned through the `PlaceMeta` vtables into an
+owned `Send + Sync + Clone` value with the same read API names as `Net`
+(`places`, `transitions`, `count`, `tokens`, `token`, `label`, `json`,
+`is_enabled`, `in_flight`, `param`, the counters). It is *not* a `Net`, and
+cannot be: bodies are `Box<dyn FnMut>` and cannot be cloned, and an in-flight
+transition has no body in the net at all; a what-if copy is a rebuild from
+the builder. What it is for: a renderer or inspector on another thread owns
+a consistent copy while the driver keeps `&mut Net`, and a test keeps the
+state at one moment to compare with another. The fireable set is not stored
+(guards are closures on the live net). Snapshotting emits nothing and moves
+no counter.
 
 There is no observer callback. The driver holds `&mut Net` between steps and
 is the observer.
@@ -587,8 +603,7 @@ pub enum Command {
     Replace   { place: PlaceId, token: TokenId, value: Box<dyn Any + Send + Sync> },
     Enable    { transition: TransitionId },
     Disable   { transition: TransitionId },
-    // SetParam { value: Box<dyn Any + Send + Sync> } arrives with parameters (§10, slice 11);
-    // the enum is #[non_exhaustive] so that is not a breaking change.
+    SetParam  { value: Box<dyn Any + Send + Sync> },   // slice 11; JSON form names the parameter (§10)
 }
 Command::{extend, put, set_tokens, replace}(place: PlaceRef<T>, ..)   // typed constructors, erased result
 Command::{remove, enable, disable}(..)
@@ -636,10 +651,23 @@ they need; `build()` refuses to build until every declared parameter has a
 value.
 
 ```rust
-b.transition("Fetch", (TakeEdge(urls), Param::<ApiToken>), (pages,), |url: Url, token: ApiToken| ..);
+b.transition("Fetch", (TakeEdge(urls), Param::<ApiToken>::new()), (pages,), |url: Url, token: ApiToken| ..);
 b.param(ApiToken("..."));         // build error if any declared Param type has no value
-net.set_param(ApiToken("..."));   // between steps; emits ParamChanged { type_name }
+net.set_param(ApiToken("..."))?;  // between steps; emits ParamChanged { type_name }; NoSuchParam if undeclared
+net.param::<ApiToken>()           // Option<&T>, for guards and inspectors
 ```
+
+**Done, slice 11.** `Param::<T>::new()` rather than a bare `Param::<T>`,
+which is not an expression for a struct with a phantom field. `Param<T>`
+implements `InputEdge`, the one implementor that reads no place; the sealed
+description of an input tuple yields `Edge { place, kind, net }` or
+`Param { type_id, type_name }` per position, and the transition keeps the
+body's argument order as a list of sources over its (edges-only) input list,
+so fireability, `edges()`, `DuplicateInputPlace`, the cycle and source walks
+and stage one see exactly the place edges they always did. Build checks:
+`MissingParam { transition, type_name }` (first offender), and with `serde`
+`DuplicateParamName { name }`. A registered value no transition declares is
+allowed.
 
 - **Storage**: one value per type on the `Net`, keyed by `TypeId`. Two values
   of the same underlying type need newtypes (`GithubToken(String)`,
@@ -654,9 +682,18 @@ net.set_param(ApiToken("..."));   // between steps; emits ParamChanged { type_na
   `set_param` replaces atomically between steps.
 - **Diagram**: not a node. `TransitionInfo` lists each transition's declared
   parameter types so a renderer can badge it.
-- **Snapshot**: parameters are cloned with the net.
-- **Command**: `SetParam { value: Box<dyn Any + Send + Sync> }`, type-checked
-  in `apply`; serialisable only for parameter types marked so.
+- **Snapshot**: parameters are cloned into the `Snapshot`, readable there
+  through `param::<T>()`.
+- **Command**: `SetParam { value: Box<dyn Any + Send + Sync> }` with the
+  typed constructor `Command::set_param(v)`, matched by `TypeId` in `apply`
+  (`NoSuchParam` with `type_name = "<erased>"` otherwise). On the wire,
+  `b.serializable_param::<T>("api_token")` gives the type a human-chosen
+  name — `type_name::<T>()` is a compiler detail, not a stable key — and
+  `JsonCommand::SetParam { param: "api_token", value }` addresses it;
+  `NoSuchParamName`, `InvalidParam`, `ParamNotSerializable` are the JSON
+  route's failures.
+- **Timing**: the clone is taken at launch, so a body already in flight keeps
+  the value it was given and the next launch sees the new one.
 - **Not an edge**: excluded from `edges()`, `assert_acyclic`, and
   `assert_no_source_transitions`.
 
@@ -685,6 +722,9 @@ Always:
 - `SnapshotEdge` from a `no_clone` place.
 - `restore_tokens_on_failure` on a transition with a consuming (`TakeEdge`,
   `TakeAllEdge`) input from a `no_clone` place.
+- A declared `Param::<T>` with no `param(value)` of that type
+  (`MissingParam`); with `serde`, two parameter types sharing a wire name
+  (`DuplicateParamName`). Both before routing.
 - Routed-output resolution (§4.5): `UnroutableOutput`, `AmbiguousOutput`,
   `UnreachableOutput`, each naming the transition and the type or place.
 - (Output slot count vs output place count is carried by the types; a

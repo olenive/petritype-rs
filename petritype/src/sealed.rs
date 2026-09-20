@@ -19,7 +19,7 @@
 
 use std::any::TypeId;
 
-use crate::edge::EdgeKind;
+use crate::edge::InputSpec;
 use crate::erased::{
     ErasedBody, ErasedInput, ErasedOutcome, OutputTarget, RouteTable, RoutingProblem,
 };
@@ -27,32 +27,40 @@ use crate::ids::{NetId, PlaceId};
 use crate::place::ErasedToken;
 
 /// The engine half of [`InputEdge`](crate::InputEdge): what the body
-/// parameter for this edge kind is, and how to take it out of an erased
-/// input.
+/// parameter for this input is, how to take it out of an erased input, and
+/// what the input says it is.
 pub trait EdgeSealed: Copy {
-    /// The body parameter this edge kind produces, for a body called with
-    /// tokens that live for `'a`.
+    /// The body parameter this input produces, for a body called with tokens
+    /// that live for `'a`.
     ///
     /// A generic associated type, because [`MutateEdge`](crate::MutateEdge)
     /// produces `&'a mut T`: the parameter borrows the token where it lies,
-    /// for the duration of one call. The other three kinds hand over owned
-    /// values and ignore `'a`.
+    /// for the duration of one call. The other three kinds, and
+    /// [`Param<T>`](crate::Param), hand over owned values and ignore `'a`.
     type Arg<'a>;
 
-    /// Takes this edge's argument out of the input the engine prepared.
+    /// Takes this input's argument out of the input the engine prepared.
     ///
     /// Panics if the variant does not match the edge kind, which the engine
     /// chooses, and `expect`s the downcast, which the typed handle in the
     /// edge has already guaranteed.
     fn extract<'a>(input: &'a mut ErasedInput<'_>) -> Self::Arg<'a>;
+
+    /// What this input is: a place edge with its kind and the net its handle
+    /// carried, or a parameter with its type (DESIGN §10).
+    ///
+    /// Takes `self` rather than being a constant because an edge's answer
+    /// depends on the handle inside it, and `Self: Copy` makes that free.
+    fn spec(self) -> InputSpec;
 }
 
 /// The engine half of [`InputEdges`](crate::InputEdges): the erased
-/// description of a tuple of edges, in declaration order.
+/// description of a tuple of inputs, in declaration order.
 pub trait EdgeTupleSealed {
-    /// Appends `(place, kind, net)` for each edge, so the builder can check
-    /// the stamps and record the wiring.
-    fn describe(&self, out: &mut Vec<(PlaceId, EdgeKind, NetId)>);
+    /// Appends one [`InputSpec`] per input position, in tuple order, so the
+    /// builder can check the stamps, record the wiring, and keep the order
+    /// the body's parameters are in.
+    fn describe(&self, out: &mut Vec<InputSpec>);
 }
 
 /// The engine half of [`OutputPlaces`](crate::OutputPlaces): the erased

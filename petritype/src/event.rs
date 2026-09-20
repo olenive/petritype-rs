@@ -11,10 +11,7 @@ use crate::ids::{PlaceId, TokenId, TransitionId};
 /// [`Net::label`](crate::Net::label), ...) is the other channel, for the
 /// initial mirror and for detail panels.
 ///
-/// The enum is `#[non_exhaustive]`: match with a `_` arm. Everything here is
-/// emitted except [`ParamChanged`](Event::ParamChanged), which arrives with
-/// parameters; the variant is declared now so that observers written against
-/// this version keep compiling as the engine grows.
+/// The enum is `#[non_exhaustive]`: match with a `_` arm.
 ///
 /// Which variants a firing produces depends on the path it took, and the two
 /// never mix: [`step`](crate::Net::step) and [`fire`](crate::Net::fire) log
@@ -127,8 +124,14 @@ pub enum Event {
         /// Its new state.
         enabled: bool,
     },
-    /// A parameter value was replaced. Parameters are keyed by type and are
-    /// deliberately not `Debug`, so only the type name is reported.
+    /// A parameter value was replaced: a
+    /// [`set_param`](crate::Net::set_param) or an erased
+    /// [`Command::SetParam`](crate::Command::SetParam).
+    ///
+    /// Parameters are keyed by type and are deliberately not `Debug`, so only
+    /// the type name is reported — a parameter may be a secret, and an event
+    /// log is the last place for one. Firings already in flight are
+    /// unaffected: each took its clone at launch.
     ParamChanged {
         /// The parameter type whose value changed.
         type_name: &'static str,

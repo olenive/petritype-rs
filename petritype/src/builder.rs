@@ -39,14 +39,15 @@ use std::collections::{HashSet, VecDeque};
 use std::fmt;
 
 use crate::body::{OutputPlaces, TransitionBody};
-use crate::edge::{EdgeKind, InputEdges};
+use crate::edge::{EdgeKind, InputEdges, InputSpec};
 use crate::erased::RoutingProblem;
 use crate::error::BuildError;
 use crate::ids::{NetId, PlaceId, PlaceRef, TransitionId, foreign_place};
 use crate::net::Net;
+use crate::param::ParamSlot;
 use crate::place::{CloneFn, DebugFn, ErasedToken, PlaceMeta, PlaceSlot, clone_of, debug_of};
 use crate::sealed::{BodySealed, EdgeTupleSealed, PlaceTupleSealed};
-use crate::transition::{TransitionBuilder, TransitionSlot};
+use crate::transition::{ArgSource, TransitionBuilder, TransitionSlot};
 
 /// How many characters a label keeps by default, as in Python petritype.
 const DEFAULT_LABEL_LIMIT: usize = 100;
@@ -75,6 +76,38 @@ enum Colour {
     /// through it. Reaching it again is a second way to the same place, not
     /// a loop.
     Done,
+}
+
+/// What the builder knows about one parameter type before the net is built
+/// (DESIGN §10).
+///
+/// One entry per type, created by whichever of
+/// [`param`](NetBuilder::param) and
+/// [`serializable_param`](NetBuilder::serializable_param) is called first,
+/// because neither implies the other and the order they are written in is the
+/// author's business. [`build`](NetBuilder::build) is where the two halves
+/// meet: an entry with a value becomes a [`ParamSlot`], and an entry without
+/// one is a [`BuildError::MissingParam`] if any transition declared it and
+/// nothing at all otherwise.
+struct BuilderParam {
+    type_id: TypeId,
+    type_name: &'static str,
+    /// The registered value with its cloner, or `None` for a type that has
+    /// only been marked serialisable so far.
+    value: Option<(ErasedToken, CloneFn)>,
+    /// The wire name and codecs from
+    /// [`serializable_param`](NetBuilder::serializable_param).
+    #[cfg(feature = "serde")]
+    wire: Option<ParamWire>,
+}
+
+/// What [`serializable_param`](NetBuilder::serializable_param) records: the
+/// name this parameter travels under and the two codecs for its type.
+#[cfg(feature = "serde")]
+struct ParamWire {
+    name: String,
+    to_json: crate::place::ToJsonFn,
+    from_json: crate::place::FromJsonFn,
 }
 
 /// The colour of a node, from the two vectors the walk keeps.
@@ -139,6 +172,12 @@ pub struct NetBuilder {
     /// It stays on the builder rather than on the transition so that the net
     /// carries nothing that was only ever a question at build time.
     routing: Vec<Option<RoutingProblem>>,
+    /// One entry per parameter type mentioned by
+    /// [`param`](NetBuilder::param) or
+    /// [`serializable_param`](NetBuilder::serializable_param), in the order
+    /// the types were first mentioned. A short linear list keyed by
+    /// [`TypeId`]: a net has a handful of parameters at most.
+    params: Vec<BuilderParam>,
     label_limit: usize,
     /// Whether [`build`](NetBuilder::build) refuses a net whose token flow
     /// has a cycle, as asked for by
@@ -162,6 +201,7 @@ impl NetBuilder {
             transitions: Vec::new(),
             seeds: Vec::new(),
             routing: Vec::new(),
+            params: Vec::new(),
             label_limit: DEFAULT_LABEL_LIMIT,
             assert_acyclic: false,
             assert_no_source_transitions: false,
@@ -253,6 +293,109 @@ impl NetBuilder {
         meta.from_json = Some(crate::place::from_json_of::<T> as crate::place::FromJsonFn);
     }
 
+    /// Gives the net its value for the parameter type `T` (DESIGN §10).
+    ///
+    /// A parameter is a run-varying value a transition needs but that is not
+    /// a token — an API key, a tuning constant, the configuration of this
+    /// run. It is declared as an input with
+    /// [`Param::<T>::new()`](crate::Param), stored once per net keyed by
+    /// type, and handed to a body as a clone. Registering one is setup, not
+    /// change: it emits nothing and moves no counter, and
+    /// [`Net::set_param`](crate::Net::set_param) is how it is replaced once
+    /// the net runs.
+    ///
+    /// ```
+    /// # use petritype::{NetBuilder, Param, TakeEdge};
+    /// #[derive(Clone)]
+    /// struct Scale(u32);
+    ///
+    /// let mut b = NetBuilder::new();
+    /// let inbox = b.place::<u32>("Inbox");
+    /// let out = b.place::<u32>("Out");
+    /// b.seed(inbox, [7]);
+    /// b.param(Scale(3));
+    /// b.transition(
+    ///     "Scale",
+    ///     (TakeEdge(inbox), Param::<Scale>::new()),
+    ///     (out,),
+    ///     |n: u32, scale: Scale| (n * scale.0,),
+    /// );
+    /// let mut net = b.build()?;
+    ///
+    /// net.step()?;
+    /// let token = net.tokens(out.id()).next().expect("one token").0;
+    /// assert_eq!(net.token::<u32>(out.id(), token), Some(&21));
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    ///
+    /// One value per type: a second call with the same `T` replaces the
+    /// first, and two values of one underlying type need newtypes
+    /// (`GithubToken(String)`, `OpenAiToken(String)`). The bound is the token
+    /// bound minus `Debug` — deliberately, since a parameter may be a secret
+    /// and nothing in the engine ever prints one — plus `Clone`, because
+    /// every firing gets a copy.
+    ///
+    /// Registering a parameter no transition declares is allowed: it is a
+    /// value the net carries, readable with
+    /// [`Net::param`](crate::Net::param) and usable from a
+    /// [guard](crate::TransitionBuilder::guard). The other way round is not:
+    /// a declared `Param::<T>` with no value is a
+    /// [`BuildError::MissingParam`].
+    pub fn param<T: Clone + Send + Sync + 'static>(&mut self, value: T) {
+        let entry = self.param_entry::<T>();
+        entry.value = Some((Box::new(value) as ErasedToken, clone_of::<T> as CloneFn));
+    }
+
+    /// Records how to convert this parameter type to and from JSON, and the
+    /// name it travels under, enabling `JsonCommand::SetParam` for it.
+    ///
+    /// The name is a wire key chosen by a human, exactly as a place's name
+    /// is: `std::any::type_name::<T>()` is a compiler detail that changes
+    /// when a type moves module, so it is no basis for a saved file or a UI.
+    ///
+    /// ```
+    /// # #[cfg(feature = "serde")] {
+    /// # use petritype::{JsonCommand, NetBuilder, Param, TakeEdge};
+    /// # use petritype::serde_json::json;
+    /// #[derive(Clone, serde::Serialize, serde::Deserialize)]
+    /// struct ApiToken(String);
+    ///
+    /// let mut b = NetBuilder::new();
+    /// # let inbox = b.place::<u32>("Inbox");
+    /// b.param(ApiToken("old".into()));
+    /// b.serializable_param::<ApiToken>("api_token");
+    /// # b.transition("Use", (TakeEdge(inbox), Param::<ApiToken>::new()), (), |_: u32, _: ApiToken| {});
+    /// let mut net = b.build()?;
+    ///
+    /// net.apply_json(JsonCommand::SetParam {
+    ///     param: "api_token".into(),
+    ///     value: json!("new"),
+    /// })?;
+    /// assert_eq!(net.param::<ApiToken>().map(|t| t.0.as_str()), Some("new"));
+    /// # }
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    ///
+    /// Order-independent: marking a type may come before or after the
+    /// [`param`](NetBuilder::param) that gives it a value, and a marking with
+    /// no value is reported exactly as a missing value is — as a
+    /// [`BuildError::MissingParam`] if a transition declared that type, and
+    /// as nothing at all if none did. Two parameter types marked with one
+    /// name are a [`BuildError::DuplicateParamName`].
+    #[cfg(feature = "serde")]
+    pub fn serializable_param<T>(&mut self, name: impl Into<String>)
+    where
+        T: serde::Serialize + serde::de::DeserializeOwned + Clone + Send + Sync + 'static,
+    {
+        let name = name.into();
+        let entry = self.param_entry::<T>();
+        entry.wire = Some(ParamWire {
+            name,
+            to_json: crate::place::to_json_of::<T> as crate::place::ToJsonFn,
+            from_json: crate::place::from_json_of::<T> as crate::place::FromJsonFn,
+        });
+    }
+
     /// Declares a transition: what it reads, what it writes, and the
     /// ordinary Rust closure that turns the first into the second.
     ///
@@ -283,8 +426,10 @@ impl NetBuilder {
     ///
     /// The three type-checked relationships are:
     ///
-    /// - one body parameter per input edge, of the type that edge kind
-    ///   produces ([`InputEdge`](crate::InputEdge));
+    /// - one body parameter per input, of the type that input produces
+    ///   ([`InputEdge`](crate::InputEdge)) — which for the four edge kinds
+    ///   depends on how they read their place, and for a
+    ///   [`Param<T>`](crate::Param), which reads no place at all, is `T`;
     /// - one returned slot per output place, holding one token, zero or one,
     ///   or many ([`IntoTokens`](crate::IntoTokens)) — unless the body
     ///   returns a value that is not a tuple, which is
@@ -326,13 +471,27 @@ impl NetBuilder {
         let mut described = Vec::new();
         EdgeTupleSealed::describe(&inputs, &mut described);
         let mut edges = Vec::with_capacity(described.len());
+        let mut params = Vec::new();
+        // The tuple is the body's parameter list, so its order has to
+        // survive the split into edges and parameters.
+        let mut args = Vec::with_capacity(described.len());
         // Detachable until proven otherwise: one mutating edge is enough to
-        // tie the firing to the net.
+        // tie the firing to the net. A parameter is a clone taken at launch
+        // and borrows nothing, so it never ties one down.
         let mut detachable = true;
-        for (place, kind, net) in described {
-            self.index_of_erased(place, net, "transition");
-            detachable &= kind != EdgeKind::Mutate;
-            edges.push((place, kind));
+        for spec in described {
+            match spec {
+                InputSpec::Edge { place, kind, net } => {
+                    self.index_of_erased(place, net, "transition");
+                    detachable &= kind != EdgeKind::Mutate;
+                    args.push(ArgSource::Edge(edges.len()));
+                    edges.push((place, kind));
+                }
+                InputSpec::Param { type_id, type_name } => {
+                    args.push(ArgSource::Param { type_id, type_name });
+                    params.push(type_name);
+                }
+            }
         }
 
         let mut described = Vec::new();
@@ -351,6 +510,8 @@ impl NetBuilder {
         self.transitions.push(TransitionSlot {
             name: name.into(),
             inputs: edges,
+            params,
+            args,
             outputs: targets,
             // The one place where both the typed body and the erased engine
             // are in scope, so the one place the wrapper can be built.
@@ -488,6 +649,14 @@ impl NetBuilder {
     /// [`BuildError::UnroutableOutput`], [`BuildError::AmbiguousOutput`] or
     /// [`BuildError::UnreachableOutput`].
     ///
+    /// Between the two, the parameters: with the `serde` feature,
+    /// `BuildError::DuplicateParamName` if two parameter types were marked
+    /// serialisable with `NetBuilder::serializable_param` under one wire
+    /// name, and [`BuildError::MissingParam`] if a transition declared a
+    /// [`Param<T>`](crate::Param) and no [`param`](NetBuilder::param) value
+    /// of that type was registered — the first offender in transition order,
+    /// then in the order the inputs were written.
+    ///
     /// Then, only if they were asked for,
     /// [`BuildError::SourceTransition`] from
     /// [`assert_no_source_transitions`](NetBuilder::assert_no_source_transitions)
@@ -550,6 +719,45 @@ impl NetBuilder {
             }
         }
 
+        // The parameters, in the same spirit: a wire name two types share is
+        // a naming mistake like a duplicate place name, and a declared
+        // parameter with no value is this slice's version of a dangling
+        // edge. Both come before routing, which is the subtlest check of
+        // the three.
+        #[cfg(feature = "serde")]
+        {
+            let mut seen = HashSet::with_capacity(self.params.len());
+            for entry in &self.params {
+                let Some(wire) = &entry.wire else {
+                    continue;
+                };
+                if !seen.insert(wire.name.as_str()) {
+                    return Err(BuildError::DuplicateParamName {
+                        name: wire.name.clone(),
+                    });
+                }
+            }
+        }
+        for slot in &self.transitions {
+            for arg in &slot.args {
+                let ArgSource::Param { type_id, type_name } = *arg else {
+                    continue;
+                };
+                // A marked-but-valueless parameter is not a value, so it is
+                // reported here like one that was never mentioned at all.
+                if !self
+                    .params
+                    .iter()
+                    .any(|entry| entry.type_id == type_id && entry.value.is_some())
+                {
+                    return Err(BuildError::MissingParam {
+                        transition: slot.name.clone(),
+                        type_name,
+                    });
+                }
+            }
+        }
+
         // Routing last: a net whose transitions are not yet distinct or
         // whose edges are wrong has a more basic problem to report first.
         // Each transition resolved its own table when it was declared; this
@@ -599,10 +807,35 @@ impl NetBuilder {
             return Err(BuildError::Cycle { path });
         }
 
+        // The two halves of each parameter meet here. An entry with no value
+        // has already been answered for: no transition declared it, or the
+        // check above would have refused the net, so it is dropped with the
+        // builder.
+        let params: Vec<ParamSlot> = self
+            .params
+            .into_iter()
+            .filter_map(|entry| {
+                let (value, clone) = entry.value?;
+                Some(ParamSlot {
+                    type_id: entry.type_id,
+                    type_name: entry.type_name,
+                    value,
+                    clone,
+                    #[cfg(feature = "serde")]
+                    name: entry.wire.as_ref().map(|wire| wire.name.clone()),
+                    #[cfg(feature = "serde")]
+                    to_json: entry.wire.as_ref().map(|wire| wire.to_json),
+                    #[cfg(feature = "serde")]
+                    from_json: entry.wire.as_ref().map(|wire| wire.from_json),
+                })
+            })
+            .collect();
+
         let mut net = Net {
             id: self.net,
             places: self.places,
             transitions: self.transitions,
+            params,
             next_token_id: 0,
             topology_counter: 0,
             state_counter: 0,
@@ -728,6 +961,35 @@ impl NetBuilder {
         }
     }
 
+    /// The entry for the parameter type `T`, appended if this is the first
+    /// mention of it.
+    ///
+    /// Both [`param`](NetBuilder::param) and
+    /// [`serializable_param`](NetBuilder::serializable_param) fill in one
+    /// half of an entry, in either order, which is why the lookup is written
+    /// once here rather than in each of them.
+    fn param_entry<T: 'static>(&mut self) -> &mut BuilderParam {
+        let type_id = TypeId::of::<T>();
+        let index = match self
+            .params
+            .iter()
+            .position(|entry| entry.type_id == type_id)
+        {
+            Some(index) => index,
+            None => {
+                self.params.push(BuilderParam {
+                    type_id,
+                    type_name: type_name::<T>(),
+                    value: None,
+                    #[cfg(feature = "serde")]
+                    wire: None,
+                });
+                self.params.len() - 1
+            }
+        };
+        &mut self.params[index]
+    }
+
     /// Appends a place with its vtable filled in for `T`.
     fn insert<T>(&mut self, name: String, clone: Option<CloneFn>) -> PlaceRef<T>
     where
@@ -806,6 +1068,16 @@ impl fmt::Debug for NetBuilder {
             .field("places", &self.places)
             .field("transitions", &self.transitions)
             .field("seeded", &self.seeds.iter().map(Vec::len).sum::<usize>())
+            // Type names only: a parameter value is never printed, having no
+            // `Debug` bound to print it with (DESIGN §10).
+            .field(
+                "params",
+                &self
+                    .params
+                    .iter()
+                    .map(|entry| entry.type_name)
+                    .collect::<Vec<_>>(),
+            )
             .field(
                 "routing problems",
                 &self.routing.iter().filter(|p| p.is_some()).count(),

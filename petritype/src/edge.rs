@@ -15,7 +15,14 @@
 //! and one transition may read one place through one edge only: two edges
 //! into the same place are a
 //! [`BuildError::DuplicateInputPlace`](crate::BuildError::DuplicateInputPlace).
+//!
+//! A fifth kind of input is not an edge at all: [`Param<T>`](crate::Param)
+//! reads a value off the net rather than out of a place (DESIGN §10). It
+//! implements the same [`InputEdge`] trait, because that trait is really "one
+//! input position of a transition", and it is the only implementor that names
+//! no place.
 
+use std::any::TypeId;
 use std::fmt;
 
 use crate::arity::for_each_arity;
@@ -49,6 +56,48 @@ impl EdgeKind {
     pub fn consumes(self) -> bool {
         matches!(self, EdgeKind::Take | EdgeKind::TakeAll)
     }
+}
+
+/// What one input position of a transition is, as the tuple of inputs
+/// describes itself to the builder.
+///
+/// Two variants because a transition's inputs are two different things
+/// (DESIGN §10): edges, which read places and are what a diagram draws, and
+/// [parameters](crate::Param), which read a value off the net and are not
+/// nodes at all. The builder splits them — the edges become
+/// [`TransitionInfo::inputs`](crate::TransitionInfo::inputs), the parameters
+/// [`TransitionInfo::params`](crate::TransitionInfo::params) — and keeps the
+/// tuple order beside them so that the body's arguments can be rebuilt in it.
+///
+/// [`EdgeKind`] deliberately gains no variant for a parameter: a parameter is
+/// not a *kind of edge*, and everything that reads edges — fireability,
+/// [`Net::edges`](crate::Net::edges), the acyclicity and source checks — must
+/// go on seeing places only.
+///
+/// Nameable only inside the crate: it is the argument of a sealed trait's
+/// method, like [`ErasedInput`] and the rest of the erased plumbing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InputSpec {
+    /// An input edge: which place, how it is read, and the net the handle
+    /// carried, which the builder checks before recording anything.
+    Edge {
+        /// The place this edge reads.
+        place: PlaceId,
+        /// How it reads it.
+        kind: EdgeKind,
+        /// The net the place handle belongs to.
+        net: NetId,
+    },
+    /// A [`Param<T>`](crate::Param): no place, no net, just the type whose
+    /// value the body is handed a clone of.
+    Param {
+        /// `TypeId::of::<T>()`, the key the value is stored under.
+        type_id: TypeId,
+        /// `std::any::type_name::<T>()`, for
+        /// [`TransitionInfo::params`](crate::TransitionInfo::params) and for
+        /// [`BuildError::MissingParam`](crate::BuildError::MissingParam).
+        type_name: &'static str,
+    },
 }
 
 /// One edge of the net, as a diagram draws it.
@@ -153,35 +202,29 @@ pub struct MutateEdge<T>(
     pub PlaceRef<T>,
 );
 
-/// One of the four input edge kinds.
+/// One input position of a transition.
 ///
-/// Sealed: the four structs in this module are the only implementors, and the
-/// bound exists so that a transition's inputs are checked at compile time.
-/// The associated parameter type each kind produces is the table at the top
-/// of this module.
+/// The name says "edge" because that is what an input almost always is: one
+/// of the four kinds in this module, reading one place. The fifth implementor
+/// is [`Param<T>`](crate::Param), which reads a value off the net instead
+/// (DESIGN §10) — no place, no node in the diagram — and is here because the
+/// tuple of inputs is also the list of the body's parameters, and a parameter
+/// occupies one of those positions like anything else.
+///
+/// Sealed: the five structs are the only implementors, and the bound exists
+/// so that a transition's inputs are checked at compile time. What each one
+/// hands the body is the table at the top of this module, plus `T` for a
+/// `Param<T>`. The engine half — how an input describes itself to the builder
+/// and how its argument is taken out — is `EdgeSealed`, so that this trait
+/// carries nothing a place edge and a parameter cannot both answer.
 #[diagnostic::on_unimplemented(
     message = "`{Self}` is not an input edge",
     label = "not an input edge",
     note = "an input must say how it reads its place: `TakeEdge(p)`, `TakeAllEdge(p)`, \
-            `SnapshotEdge(p)` or `MutateEdge(p)`"
+            `SnapshotEdge(p)` or `MutateEdge(p)`; `Param::<T>::new()` is the input that \
+            reads no place"
 )]
-pub trait InputEdge: EdgeSealed {
-    /// This edge's kind, as the net records it.
-    const KIND: EdgeKind;
-
-    /// The place this edge reads.
-    fn place(self) -> PlaceId;
-
-    /// The net the place belongs to, checked by the builder before the edge
-    /// is recorded.
-    fn net(self) -> NetId;
-
-    /// [`KIND`](InputEdge::KIND) as a value, for code that has an edge rather
-    /// than a type.
-    fn kind(self) -> EdgeKind {
-        Self::KIND
-    }
-}
+pub trait InputEdge: EdgeSealed {}
 
 /// Moves the token out of an input, leaving [`ErasedInput::Taken`] behind.
 ///
@@ -190,7 +233,7 @@ pub trait InputEdge: EdgeSealed {
 /// edge. (The runtime type check in
 /// [`NetError::TypeMismatch`](crate::NetError::TypeMismatch) is for the
 /// erased outside-the-net route, not for this one.)
-fn owned_token<T: 'static>(input: &mut ErasedInput<'_>) -> T {
+pub(crate) fn owned_token<T: 'static>(input: &mut ErasedInput<'_>) -> T {
     match std::mem::replace(input, ErasedInput::Taken) {
         ErasedInput::Token(token) => *token
             .downcast::<T>()
@@ -199,25 +242,31 @@ fn owned_token<T: 'static>(input: &mut ErasedInput<'_>) -> T {
     }
 }
 
+/// The `spec` of a place edge, written once: the handle's place and net, and
+/// the kind this edge type stands for.
+macro_rules! edge_spec {
+    ($kind:expr) => {
+        fn spec(self) -> InputSpec {
+            InputSpec::Edge {
+                place: self.0.id(),
+                kind: $kind,
+                net: self.0.net(),
+            }
+        }
+    };
+}
+
 impl<T: Send + Sync + 'static> EdgeSealed for TakeEdge<T> {
     type Arg<'a> = T;
 
     fn extract(input: &mut ErasedInput<'_>) -> T {
         owned_token::<T>(input)
     }
+
+    edge_spec!(EdgeKind::Take);
 }
 
-impl<T: Send + Sync + 'static> InputEdge for TakeEdge<T> {
-    const KIND: EdgeKind = EdgeKind::Take;
-
-    fn place(self) -> PlaceId {
-        self.0.id()
-    }
-
-    fn net(self) -> NetId {
-        self.0.net()
-    }
-}
+impl<T: Send + Sync + 'static> InputEdge for TakeEdge<T> {}
 
 impl<T: Send + Sync + 'static> EdgeSealed for TakeAllEdge<T> {
     type Arg<'a> = Vec<T>;
@@ -235,19 +284,11 @@ impl<T: Send + Sync + 'static> EdgeSealed for TakeAllEdge<T> {
             other => panic!("expected every token for this edge, got {other:?}"),
         }
     }
+
+    edge_spec!(EdgeKind::TakeAll);
 }
 
-impl<T: Send + Sync + 'static> InputEdge for TakeAllEdge<T> {
-    const KIND: EdgeKind = EdgeKind::TakeAll;
-
-    fn place(self) -> PlaceId {
-        self.0.id()
-    }
-
-    fn net(self) -> NetId {
-        self.0.net()
-    }
-}
+impl<T: Send + Sync + 'static> InputEdge for TakeAllEdge<T> {}
 
 /// The `Clone` bound is the compile-time half of what a snapshot needs; the
 /// other half — that the *place* recorded a cloner — is checked at
@@ -260,19 +301,11 @@ impl<T: Clone + Send + Sync + 'static> EdgeSealed for SnapshotEdge<T> {
     fn extract(input: &mut ErasedInput<'_>) -> T {
         owned_token::<T>(input)
     }
+
+    edge_spec!(EdgeKind::Snapshot);
 }
 
-impl<T: Clone + Send + Sync + 'static> InputEdge for SnapshotEdge<T> {
-    const KIND: EdgeKind = EdgeKind::Snapshot;
-
-    fn place(self) -> PlaceId {
-        self.0.id()
-    }
-
-    fn net(self) -> NetId {
-        self.0.net()
-    }
-}
+impl<T: Clone + Send + Sync + 'static> InputEdge for SnapshotEdge<T> {}
 
 impl<T: Send + Sync + 'static> EdgeSealed for MutateEdge<T> {
     /// The one kind whose parameter borrows: the token stays in its place and
@@ -287,26 +320,19 @@ impl<T: Send + Sync + 'static> EdgeSealed for MutateEdge<T> {
             other => panic!("expected a borrowed token for this edge, got {other:?}"),
         }
     }
+
+    edge_spec!(EdgeKind::Mutate);
 }
 
-impl<T: Send + Sync + 'static> InputEdge for MutateEdge<T> {
-    const KIND: EdgeKind = EdgeKind::Mutate;
-
-    fn place(self) -> PlaceId {
-        self.0.id()
-    }
-
-    fn net(self) -> NetId {
-        self.0.net()
-    }
-}
+impl<T: Send + Sync + 'static> InputEdge for MutateEdge<T> {}
 
 /// A tuple of input edges, `()` to twelve of them.
 ///
 /// This is the type of the `inputs` argument of
 /// [`NetBuilder::transition`](crate::NetBuilder::transition). A single edge
 /// still goes in a tuple — `(TakeEdge(inbox),)` — because the tuple is what
-/// carries the arity.
+/// carries the arity, and a [`Param<T>`](crate::Param) may stand anywhere in
+/// it: the tuple is the body's parameter list, in order.
 #[diagnostic::on_unimplemented(
     message = "a transition's inputs must be a tuple of input edges",
     label = "not a tuple of input edges",
@@ -315,15 +341,15 @@ impl<T: Send + Sync + 'static> InputEdge for MutateEdge<T> {
 )]
 pub trait InputEdges: EdgeTupleSealed {}
 
-/// The handles are `Copy`, so the tuple is read by reference and the edges
+/// The handles are `Copy`, so the tuple is read by reference and the inputs
 /// are copied out of it.
 macro_rules! impl_edges {
     ($(($t:ident, $r:ident, $i:tt)),*) => {
         impl<$($t: InputEdge,)*> EdgeTupleSealed for ($($t,)*) {
             #[allow(unused_variables, non_snake_case)]
-            fn describe(&self, out: &mut Vec<(PlaceId, EdgeKind, NetId)>) {
+            fn describe(&self, out: &mut Vec<InputSpec>) {
                 let ($($t,)*) = self;
-                $(out.push((InputEdge::place(*$t), InputEdge::kind(*$t), InputEdge::net(*$t)));)*
+                $(out.push(EdgeSealed::spec(*$t));)*
             }
         }
 
@@ -393,10 +419,44 @@ mod tests {
         assert_eq!(
             out,
             [
-                (PlaceId(0), EdgeKind::Take, net),
-                (PlaceId(1), EdgeKind::Snapshot, net),
-                (PlaceId(0), EdgeKind::Mutate, net),
+                InputSpec::Edge {
+                    place: PlaceId(0),
+                    kind: EdgeKind::Take,
+                    net
+                },
+                InputSpec::Edge {
+                    place: PlaceId(1),
+                    kind: EdgeKind::Snapshot,
+                    net
+                },
+                InputSpec::Edge {
+                    place: PlaceId(0),
+                    kind: EdgeKind::Mutate,
+                    net
+                },
             ]
         );
+    }
+
+    /// A tuple may mix the two kinds of input, and it describes them in the
+    /// order they were written — which is the order the body's parameters
+    /// are in.
+    #[test]
+    fn a_tuple_may_mix_edges_and_parameters() {
+        #[derive(Clone)]
+        struct Config;
+
+        let net = NetId(4);
+        let a = PlaceRef::<u32>::new(net, PlaceId(0));
+        let mut out = Vec::new();
+        EdgeTupleSealed::describe(&(crate::Param::<Config>::new(), TakeEdge(a)), &mut out);
+        assert!(matches!(out[0], InputSpec::Param { .. }));
+        assert!(matches!(
+            out[1],
+            InputSpec::Edge {
+                kind: EdgeKind::Take,
+                ..
+            }
+        ));
     }
 }

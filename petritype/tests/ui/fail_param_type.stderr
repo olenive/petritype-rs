@@ -1,0 +1,20 @@
+error[E0631]: type mismatch in closure arguments
+  --> tests/ui/fail_param_type.rs:20:7
+   |
+20 |     b.transition(
+   |       ^^^^^^^^^^ expected due to this
+...
+24 |         |n: u32, scale: Scale| (n * scale.0,),
+   |         ---------------------- found signature defined here
+   |
+   = note: expected closure signature `fn(u32, ApiToken) -> _`
+              found closure signature `fn(u32, Scale) -> _`
+   = note: required for `{closure@$DIR/tests/ui/fail_param_type.rs:24:9: 24:31}` to implement `TransitionBody<(TakeEdge<u32>, Param<ApiToken>), (PlaceRef<u32>,), (_, _)>`
+note: required by a bound in `NetBuilder::transition`
+  --> src/builder.rs
+   |
+   |     pub fn transition<Edges, Outputs, Body, Marker>(
+   |            ---------- required by a bound in this associated function
+...
+   |         Body: TransitionBody<Edges, Outputs, Marker>,
+   |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `NetBuilder::transition`

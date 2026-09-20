@@ -201,6 +201,24 @@
 //!   instruction addressed by name and carrying `serde_json` values, which
 //!   `Command::from_json`, `Command::to_json` and `Net::apply_json`
 //!   translate.
+//! - [`Param<T>`](Param) is an input that reads no place: a run-varying value
+//!   — a secret, a tuning constant, this run's configuration — declared
+//!   beside the edges as `Param::<T>::new()` and handed to the body as a
+//!   clone. [`NetBuilder::param`] gives the net its value, a declared
+//!   parameter without one is a [`BuildError::MissingParam`],
+//!   [`Net::set_param`] replaces it between steps (an
+//!   [`Event::ParamChanged`], and never a surprise for a
+//!   firing already in flight) and [`Net::param`] reads it, which is what
+//!   lets a guard depend on one. Parameters are not nodes: they are in no
+//!   [`EdgeInfo`], change no fireability, and appear in a diagram only as the
+//!   type names on [`TransitionInfo::params`].
+//! - [`Net::snapshot`] is the net's state, owned and independent: the
+//!   marking, the switches, the in-flight set, the parameters and the
+//!   counters, for a renderer on another thread or a test comparing two
+//!   moments. It is a [`Snapshot`] and not a `Net` because bodies cannot be
+//!   cloned — a what-if copy is a second `build()` — and it is a `Result`
+//!   because a [`place_no_clone`](NetBuilder::place_no_clone) place cannot
+//!   copy its tokens ([`NetError::NoClonePlace`]).
 //! - **fireable** and **enabled** are two different questions:
 //!   [`Net::enable`] / [`Net::disable`] work the author's on/off switch,
 //!   while *fireable* means "could fire right now" — switched on, input
@@ -241,10 +259,13 @@
 //!
 //! # Features
 //!
-//! - `serde`: adds `NetBuilder::serializable` and `Net::json`, for inspectors
+//! - `serde`: adds `NetBuilder::serializable`, `Net::json` and
+//!   `Snapshot::json`, for inspectors
 //!   that want structure rather than a `Debug` string, and `JsonCommand`
 //!   with `Command::from_json`, `Command::to_json` and `Net::apply_json`, for
-//!   input that arrives as JSON rather than as Rust values. [`PlaceId`],
+//!   input that arrives as JSON rather than as Rust values —
+//!   `NetBuilder::serializable_param` is the parameter half of that, giving a
+//!   parameter type the wire name a `set_param` command addresses it by. [`PlaceId`],
 //!   [`TransitionId`] and [`TokenId`] become `Serialize`/`Deserialize` as
 //!   bare numbers; [`NetId`] does not, being meaningless outside the process
 //!   that minted it. (All of these are hidden from this page unless the
@@ -266,9 +287,11 @@ mod event;
 mod firing;
 mod ids;
 mod net;
+mod param;
 mod place;
 pub mod routing;
 mod sealed;
+mod snapshot;
 mod transition;
 
 pub use body::{IntoOutcome, IntoTokens, OutputPlaces, PositionalOutputs, TransitionBody, marker};
@@ -287,7 +310,9 @@ pub use event::Event;
 pub use firing::{Completed, Firing, Selector};
 pub use ids::{NetId, PlaceId, PlaceRef, TokenId, TransitionId};
 pub use net::{Net, PlaceInfo};
+pub use param::Param;
 pub use routing::{Either, RoutedOutput};
+pub use snapshot::Snapshot;
 pub use transition::{TransitionBuilder, TransitionInfo};
 
 /// Routes a returned value to the output place of its type; see

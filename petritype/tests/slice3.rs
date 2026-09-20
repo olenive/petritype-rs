@@ -616,7 +616,7 @@ fn firing_a_transition_that_cannot_fire_is_an_error() {
     // Empty input place.
     assert!(matches!(
         net.fire(copy),
-        Err(NetError::NotFireable { transition }) if transition == copy
+        Err(NetError::NotFireable { transition, .. }) if transition == copy
     ));
 
     // Switched off, with a token waiting.
@@ -624,7 +624,7 @@ fn firing_a_transition_that_cannot_fire_is_an_error() {
     net.disable(copy).unwrap();
     assert!(matches!(
         net.fire(copy),
-        Err(NetError::NotFireable { transition }) if transition == copy
+        Err(NetError::NotFireable { transition, .. }) if transition == copy
     ));
     assert_eq!(net.count(inbox.id()), 1, "nothing was consumed");
 }

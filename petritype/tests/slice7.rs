@@ -444,7 +444,7 @@ fn restoring_undoes_a_firing_that_named_a_place_it_may_not_write_to() {
     );
     assert!(matches!(
         failure.error.downcast_ref::<DistributionError>(),
-        Some(DistributionError::NotAnOutput { transition, place })
+        Some(DistributionError::NotAnOutput { transition, place, .. })
             if *transition == make && *place == elsewhere.id()
     ));
     assert_eq!(

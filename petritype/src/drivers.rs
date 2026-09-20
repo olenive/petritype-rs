@@ -269,6 +269,16 @@ pub struct RunSummary {
 /// Both variants carry the [`RunSummary`] of the interrupted call, because
 /// what the run managed to do before it stopped is exactly as interesting as
 /// why it stopped. Neither leaves anything in flight.
+///
+/// # Names and ids
+///
+/// A driver error escapes the scope the net lives in even more readily than
+/// the rest: `drivers::run(&mut net, ..)?` in `main` prints the message and
+/// exits the process, and by then `TransitionId(2)` says nothing to the
+/// person reading the log. So the transition is named as well as numbered —
+/// here in [`TooManyFirings`](DriverError::TooManyFirings), and inside the
+/// [`FiringFailed`] that [`FiringFailed`](DriverError::FiringFailed) carries.
+/// The ids stay as the fields a program matches on.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum DriverError {
@@ -279,13 +289,17 @@ pub enum DriverError {
     /// did not fire and the marking still holds its inputs. The net is
     /// otherwise exactly as the firings that did happen left it.
     #[error(
-        "the fuse of {limit} firings is spent, and transition {transition:?} attempted another"
+        "the fuse of {limit} firings is spent, and transition {name:?} ({transition:?}) \
+         attempted another"
     )]
     TooManyFirings {
         /// The limit that was set.
         limit: u64,
         /// The transition that was about to be launched, and was not.
         transition: TransitionId,
+        /// That transition's name, for the message; the id is the field to
+        /// match on.
+        name: String,
         /// What the interrupted call had done by then.
         summary: RunSummary,
     },
@@ -492,6 +506,7 @@ fn run_sequential(
             return Err(DriverError::TooManyFirings {
                 limit,
                 transition,
+                name: net.transition_name(transition),
                 summary: tally.summary(net, false),
             });
         }
@@ -622,6 +637,7 @@ fn run_concurrent(
             return Err(DriverError::TooManyFirings {
                 limit,
                 transition,
+                name: net.transition_name(transition),
                 summary: tally.summary(net, false),
             });
         }

@@ -50,9 +50,15 @@ impl Net {
     pub fn snapshot(&self) -> Result<Snapshot, NetError> {
         // Checked first, all of it, so that a net with a `no_clone` place in
         // the middle does not pay for copying the places before it.
-        if let Some(slot) = self.places.iter().find(|slot| slot.meta.clone.is_none()) {
+        if let Some((index, slot)) = self
+            .places
+            .iter()
+            .enumerate()
+            .find(|(_, slot)| slot.meta.clone.is_none())
+        {
             return Err(NetError::NoClonePlace {
-                place: slot.meta.name.clone(),
+                place: PlaceId(index as u32),
+                name: slot.meta.name.clone(),
             });
         }
 

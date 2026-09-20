@@ -230,6 +230,7 @@ fn replace_keeps_the_id_and_refuses_the_wrong_type() {
             place,
             expected,
             found,
+            ..
         })) => {
             assert_eq!(place, inbox.id());
             assert_eq!(expected, "u32");
@@ -626,7 +627,7 @@ mod json {
             },
         );
         match rejected {
-            Err(CommandError::NotSerializable { place }) => assert_eq!(place, notes.id()),
+            Err(CommandError::NotSerializable { place, .. }) => assert_eq!(place, notes.id()),
             other => panic!("expected NotSerializable, got {other:?}"),
         }
 
@@ -710,7 +711,7 @@ mod json {
         // A place with no encoder cannot be put on a wire either.
         let rejected = Command::put(notes, String::from("hi")).to_json(&net);
         match rejected {
-            Err(CommandError::NotSerializable { place }) => assert_eq!(place, notes.id()),
+            Err(CommandError::NotSerializable { place, .. }) => assert_eq!(place, notes.id()),
             other => panic!("expected NotSerializable, got {other:?}"),
         }
     }

@@ -205,11 +205,26 @@ pub enum BuildError {
 /// exception of [`FiringFailed`](NetError::FiringFailed), where the net is
 /// consistent but the firing's inputs are gone (unless the transition asked
 /// to [restore](crate::TransitionBuilder::restore_tokens_on_failure) them).
+///
+/// # Names and ids
+///
+/// An error escapes the scope the net lives in: a `?` in `main` prints the
+/// message and exits the process, and by then an id alone is useless to the
+/// person reading the log. These messages are read by humans far more often
+/// than they are matched on by programs — ids are the programs' side, and
+/// [`Event`](crate::Event)s already serve it while the net is alive. So a
+/// variant about a thing that *exists* carries both its id and its `name`:
+/// the name goes in the `Display` message, and the id stays as the field a
+/// program matches on. A not-found variant carries the id alone, because
+/// there is no name to carry.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum NetError {
     /// No place with this id exists in this net. Usually a handle from a
     /// different net.
+    ///
+    /// The id alone: a place that does not exist has no name to report, and
+    /// the id is the only thing the caller handed over.
     #[error("no such place: {place:?}")]
     NoSuchPlace {
         /// The offending id.
@@ -217,6 +232,8 @@ pub enum NetError {
     },
     /// No transition with this id exists in this net. Usually an id from a
     /// different net, since ids are never reused within one.
+    ///
+    /// The id alone: a transition that does not exist has no name to report.
     #[error("no such transition: {transition:?}")]
     NoSuchTransition {
         /// The offending id.
@@ -226,27 +243,37 @@ pub enum NetError {
     /// cannot fire: it is switched off, one of its input places is empty, or
     /// its guard says no. [`Net::fireable`](crate::Net::fireable) lists the
     /// ones that can.
-    #[error("transition {transition:?} is not fireable")]
+    #[error("transition {name:?} ({transition:?}) is not fireable")]
     NotFireable {
         /// The transition that was asked to fire.
         transition: TransitionId,
+        /// The transition's name, for the message; the id is the field to
+        /// match on.
+        name: String,
     },
     /// The place exists but holds no token with this id. The token may have
     /// been consumed, removed, or never have belonged to this place.
-    #[error("place {place:?} holds no token {token:?}")]
+    #[error("place {name:?} ({place:?}) holds no token {token:?}")]
     NoSuchToken {
         /// The place that was searched.
         place: PlaceId,
+        /// The place's name, for the message; the id is the field to match
+        /// on. The place exists — only the token is missing — so there is a
+        /// name to give.
+        name: String,
         /// The token that was not found.
         token: TokenId,
     },
     /// A value of the wrong type was offered to a place. Only reachable
     /// through a handle from another net or, later, through an erased
     /// command: the typed API makes this a compile error.
-    #[error("place {place:?} holds {expected}, not {found}")]
+    #[error("place {name:?} ({place:?}) holds {expected}, not {found}")]
     TypeMismatch {
         /// The place that was written to.
         place: PlaceId,
+        /// The place's name, for the message; the id is the field to match
+        /// on.
+        name: String,
         /// The type the place holds.
         expected: &'static str,
         /// The type that was offered.
@@ -261,6 +288,9 @@ pub enum NetError {
     /// transition happens to sit at that index here. The net is untouched —
     /// and so is the net that launched the firing, whose transition stays in
     /// flight, since the `Completed` was consumed by the call.
+    ///
+    /// The ids alone, unlike the other runtime errors: the transition belongs
+    /// to the *other* net, whose names this one cannot reach.
     #[error("transition {transition:?} was launched by net {from:?}, not this one")]
     ForeignFiring {
         /// The transition the firing belongs to, in the net that launched it.
@@ -279,10 +309,13 @@ pub enum NetError {
     /// API gives no way to distribute one twice. This is the guard that keeps
     /// it that way: nothing is written, and the outputs of the rejected
     /// firing are dropped with it.
-    #[error("transition {transition:?} is not in flight")]
+    #[error("transition {name:?} ({transition:?}) is not in flight")]
     NotInFlight {
         /// The transition that was not airborne.
         transition: TransitionId,
+        /// The transition's name, for the message; the id is the field to
+        /// match on.
+        name: String,
     },
     /// [`Net::set_param`](crate::Net::set_param), or an erased
     /// [`Command::SetParam`](crate::Command::SetParam), named a parameter
@@ -299,6 +332,9 @@ pub enum NetError {
     /// `TypeId` cannot be turned back into a name. `type_name` is
     /// `"<erased>"` there, exactly as [`TypeMismatch`](NetError::TypeMismatch)
     /// blames `"<erased>"` for a token that arrived the same way.
+    ///
+    /// No name is added: a parameter is addressed by its type, and
+    /// `type_name` already is the human-readable half.
     #[error("no parameter of type {type_name} in this net")]
     NoSuchParam {
         /// The parameter type that has no value, or `"<erased>"` when the
@@ -314,11 +350,15 @@ pub enum NetError {
     /// resource, not a value. Nothing is copied at all: the snapshot is
     /// refused before any place is walked, so a caller never holds half a
     /// state.
-    #[error("place {place:?} cannot clone its tokens")]
+    #[error("place {name:?} ({place:?}) cannot clone its tokens")]
     NoClonePlace {
-        /// The place's name, which is what a caller has to go and change in
-        /// the builder.
-        place: String,
+        /// The place whose tokens cannot be copied — the first such place, in
+        /// id order.
+        place: PlaceId,
+        /// The place's name, for the message; the id is the field to match
+        /// on. The name is also what a caller has to go and change in the
+        /// builder.
+        name: String,
     },
     /// A firing this call started failed. [`Net::fire`](crate::Net::fire)
     /// reports a body's failure this way; [`Net::step`](crate::Net::step)
@@ -338,6 +378,18 @@ pub enum NetError {
 /// where places and transitions travel by name and tokens as
 /// `serde_json::Value`, so there are two more ways to be wrong before the net
 /// is ever asked.
+///
+/// # Names and ids
+///
+/// An error escapes the scope the net lives in: a `?` in `main` prints the
+/// message and exits the process, and by then an id alone is useless to the
+/// person reading the log. These messages are read by humans far more often
+/// than they are matched on by programs — ids are the programs' side, and
+/// [`Event`](crate::Event)s already serve it while the net is alive. So a
+/// variant about a thing that *exists* carries both its id and its `name`:
+/// the name goes in the `Display` message, and the id stays as the field a
+/// program matches on. A not-found variant carries the id alone, because
+/// there is no name to carry.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum CommandError {
@@ -352,10 +404,13 @@ pub enum CommandError {
     ///
     /// Serialisation is opt-in per place; mark the place in the builder.
     #[cfg(feature = "serde")]
-    #[error("place {place:?} is not marked serializable")]
+    #[error("place {name:?} ({place:?}) is not marked serializable")]
     NotSerializable {
         /// The place whose tokens cannot cross a wire.
         place: PlaceId,
+        /// The place's name, for the message; the id is the field to match
+        /// on.
+        name: String,
     },
     /// A token in a JSON command did not parse as the place's type.
     ///
@@ -363,10 +418,13 @@ pub enum CommandError {
     /// `u32`. Nothing is applied: the command is rejected at the first token
     /// that fails, before the net is touched.
     #[cfg(feature = "serde")]
-    #[error("place {place:?}: token does not parse as {expected}: {source}")]
+    #[error("place {name:?} ({place:?}): token does not parse as {expected}: {source}")]
     InvalidToken {
         /// The place the token was meant for.
         place: PlaceId,
+        /// The place's name, for the message; the id is the field to match
+        /// on.
+        name: String,
         /// The type that place holds, `std::any::type_name::<T>()`.
         expected: &'static str,
         /// What `serde_json` made of it.
@@ -378,6 +436,9 @@ pub enum CommandError {
     /// The JSON form addresses places by name rather than by
     /// [`PlaceId`], because a name is what an author or a saved file knows
     /// and it survives a change in declaration order.
+    ///
+    /// The name alone, and no id: the place does not exist, so there is no id
+    /// to report, and the name is what the sender said.
     #[cfg(feature = "serde")]
     #[error("no place named {name:?}")]
     NoSuchPlaceName {
@@ -385,6 +446,10 @@ pub enum CommandError {
         name: String,
     },
     /// A JSON command named a transition that does not exist.
+    ///
+    /// The name alone, as for
+    /// [`NoSuchPlaceName`](CommandError::NoSuchPlaceName): nothing exists to
+    /// have an id.
     #[cfg(feature = "serde")]
     #[error("no transition named {name:?}")]
     NoSuchTransitionName {
@@ -399,6 +464,9 @@ pub enum CommandError {
     /// parameter with no name cannot be addressed from JSON at all — so this
     /// is both "no such parameter" and "that parameter was never marked" on
     /// the way in.
+    ///
+    /// The name alone: a parameter has no id at all, and this one has no
+    /// value either.
     #[cfg(feature = "serde")]
     #[error("no parameter named {name:?}")]
     NoSuchParamName {
@@ -454,15 +522,19 @@ pub enum CommandError {
 /// [`BodyPanicked`] as the [`error`](FiringFailed::error) — downcast it to
 /// tell the two apart.
 ///
-/// The transition's name is not carried: an error is read next to the net
-/// that produced it, and
-/// [`Net::transitions`](crate::Net::transitions) turns the id into a name.
+/// The transition's name travels with its id. A failure is the error most
+/// likely to leave the net behind — a `?` in `main` prints it and exits — and
+/// by then `TransitionId(2)` says nothing to the person reading the log. The
+/// id is still the field to match on; the name is for the message.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
-#[error("transition {transition:?} failed: {error}")]
+#[error("transition {name:?} ({transition:?}) failed: {error}")]
 pub struct FiringFailed {
     /// The transition whose body failed.
     pub transition: TransitionId,
+    /// The transition's name, for the message; the id is the field to match
+    /// on.
+    pub name: String,
     /// What the body returned, erased at the edge of the typed API so that
     /// the engine speaks one error type whatever bodies return. It is also
     /// this error's [`source`](std::error::Error::source).

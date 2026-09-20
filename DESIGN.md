@@ -513,6 +513,19 @@ Error types (`thiserror`, all `#[non_exhaustive]`):
   nothing and emits nothing.
 - `TooManyFirings` — the driver fuse, carrying a `RunSummary`.
 
+**Names in errors (decided 2026-09-20).** An error escapes the scope where
+the net lives: a `?` in `main` prints the message and exits, and by then an
+id is useless to the person reading the log. So a runtime error about a
+thing that *exists* carries both its id and its `name`; the name goes in
+the `Display` message (`place "Uploads" (PlaceId(3)) cannot clone its
+tokens`), the id stays as the field a program matches on. A not-found
+error (`NoSuchPlace`, `NoSuchTransition`, `ForeignFiring`, the by-name
+`CommandError`s) carries the id alone, since there is no name; an error
+naming two things (`DistributionError`: the transition and the place) carries
+both names, and a place from another net is named `"<another net>"`.
+`BuildError` carries names only, as before. Events carry ids only: they are for
+programs, and the net is alive when they are read.
+
 ## 8. Observation
 
 Two channels with different jobs.

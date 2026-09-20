@@ -86,7 +86,7 @@
 use std::fmt;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
-use crate::distribution::DistributionError;
+use crate::distribution::{DistributionError, FOREIGN_PLACE};
 use crate::edge::EdgeKind;
 use crate::erased::{ErasedBody, ErasedInput, ErasedInputs, ErasedOutcome, OutputTarget};
 use crate::error::{BodyPanicked, FiringFailed, NetError};
@@ -401,7 +401,10 @@ impl Net {
             .get(transition.0 as usize)
             .ok_or(NetError::NoSuchTransition { transition })?;
         if !self.slot_is_fireable(slot) {
-            return Err(NetError::NotFireable { transition });
+            return Err(NetError::NotFireable {
+                transition,
+                name: slot.name.clone(),
+            });
         }
         self.fire_now(transition)?;
         Ok(())
@@ -470,7 +473,10 @@ impl Net {
             .get(transition.0 as usize)
             .ok_or(NetError::NoSuchTransition { transition })?;
         if !self.slot_is_fireable(slot) {
-            return Err(NetError::NotFireable { transition });
+            return Err(NetError::NotFireable {
+                transition,
+                name: slot.name.clone(),
+            });
         }
         Ok(self.launch_now(transition, Report::Staged))
     }
@@ -517,6 +523,7 @@ impl Net {
         if !self.is_in_flight(completed.transition) {
             return Err(NetError::NotInFlight {
                 transition: completed.transition,
+                name: self.transition_name(completed.transition),
             });
         }
         self.distribute_completed(completed)?;
@@ -661,6 +668,7 @@ impl Net {
                 });
                 return Err(FiringFailed {
                     transition,
+                    name: self.transitions[transition.0 as usize].name.clone(),
                     error,
                     restored,
                 });
@@ -706,6 +714,7 @@ impl Net {
                             });
                             return Err(FiringFailed {
                                 transition,
+                                name: self.transitions[transition.0 as usize].name.clone(),
                                 error: Box::new(error),
                                 restored,
                             });
@@ -768,9 +777,21 @@ impl Net {
         net: NetId,
         token: &ErasedToken,
     ) -> Result<PlaceId, DistributionError> {
-        let outputs = &self.transitions[transition.0 as usize].outputs;
-        if net != self.id || !outputs.contains(&place) {
-            return Err(DistributionError::NotAnOutput { transition, place });
+        let slot = &self.transitions[transition.0 as usize];
+        if net != self.id || !slot.outputs.contains(&place) {
+            return Err(DistributionError::NotAnOutput {
+                transition,
+                transition_name: slot.name.clone(),
+                place,
+                // A handle stamped with another net names nothing here, and
+                // this net's place at that index is a different place
+                // entirely, so it is not named.
+                name: if net == self.id {
+                    self.place_name(place)
+                } else {
+                    String::from(FOREIGN_PLACE)
+                },
+            });
         }
         let meta = &self.places[place.0 as usize].meta;
         // `(**token)` and not `token`: a `Box<dyn Any + ..>` is itself `Any`,
@@ -778,7 +799,9 @@ impl Net {
         if (**token).type_id() != meta.type_id {
             return Err(DistributionError::WrongType {
                 transition,
+                transition_name: slot.name.clone(),
                 place,
+                name: meta.name.clone(),
                 expected: meta.type_name,
             });
         }
@@ -1373,10 +1396,18 @@ mod tests {
             body: Box::new(|_: ErasedInputs<'_>| ErasedOutcome::Ok(Vec::new())),
             outcome: ErasedOutcome::Ok(Vec::new()),
         };
-        assert!(matches!(
-            net.distribute(ghost),
-            Err(NetError::NotInFlight { transition }) if transition == copy
-        ));
+        let error = net
+            .distribute(ghost)
+            .expect_err("the body is home, so nothing is in flight");
+        assert!(
+            matches!(error, NetError::NotInFlight { transition, .. } if transition == copy),
+            "{error:?}",
+        );
+        assert_eq!(
+            error.to_string(),
+            format!("transition \"Copy\" ({copy:?}) is not in flight"),
+            "the name is what a reader needs once the error has left the net",
+        );
 
         assert_eq!(net.fired_count(), 1, "the rejected firing changed nothing");
         assert_eq!(net.count(out.id()), 1);
@@ -1388,5 +1419,67 @@ mod tests {
             ),
             "the one firing that did happen, and nothing since: {events:?}"
         );
+    }
+
+    /// The pair of [`DistributionError`] messages, taken straight from the
+    /// check that produces them.
+    ///
+    /// [`WrongType`](DistributionError::WrongType) cannot be reached through
+    /// the safe API at all — [`Distribution::to`](crate::Distribution::to)
+    /// takes a `PlaceRef<T>` and a `T` — and the foreign half of
+    /// [`NotAnOutput`](DistributionError::NotAnOutput) needs a second net's
+    /// handle, so both are asked of `distributed_target` directly.
+    #[test]
+    fn a_refused_distribution_names_the_transition_and_the_place() {
+        let mut b = NetBuilder::new();
+        let inbox = b.place::<u32>("Inbox");
+        let uploads = b.place::<u32>("Uploads");
+        let elsewhere = b.place::<u32>("Elsewhere");
+        b.seed(inbox, [1]);
+        let weigh = b
+            .transition("Weigh", (TakeEdge(inbox),), (uploads,), |n: u32| (n,))
+            .id();
+        let net = b.build().expect("a one-transition net");
+
+        // A place of this net that this transition may not write to.
+        let error = net
+            .distributed_target(weigh, elsewhere.id(), net.id(), &erased(1u32))
+            .expect_err("Elsewhere is not an output of Weigh");
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "transition \"Weigh\" ({weigh:?}) distributed a token to place \"Elsewhere\" \
+                 ({:?}), which is not one of its outputs",
+                elsewhere.id(),
+            ),
+        );
+
+        // A handle from another net, whose places this one cannot name.
+        let error = net
+            .distributed_target(weigh, uploads.id(), NetId(u32::MAX), &erased(1u32))
+            .expect_err("the stamp is checked before the index is used");
+        assert!(
+            error.to_string().contains(FOREIGN_PLACE),
+            "this net's place at that index is a different place: {error}",
+        );
+
+        // An output place of this transition, and a token it cannot hold.
+        let error = net
+            .distributed_target(weigh, uploads.id(), net.id(), &erased(String::from("x")))
+            .expect_err("Uploads holds u32");
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "transition \"Weigh\" ({weigh:?}) distributed a token to place \"Uploads\" \
+                 ({:?}), which holds u32",
+                uploads.id(),
+            ),
+        );
+    }
+
+    /// One token with its type forgotten, as a firing's outputs reach
+    /// [`Net::distributed_target`].
+    fn erased<T: Send + Sync + 'static>(token: T) -> ErasedToken {
+        Box::new(token)
     }
 }

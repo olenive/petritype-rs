@@ -189,11 +189,11 @@ fn launching_a_transition_that_cannot_fire_is_an_error() {
     let firing = net.launch(double).expect("fireable");
     assert!(matches!(
         net.launch(double),
-        Err(NetError::NotFireable { transition }) if transition == double
+        Err(NetError::NotFireable { transition, .. }) if transition == double
     ));
     assert!(matches!(
         net.fire(double),
-        Err(NetError::NotFireable { transition }) if transition == double
+        Err(NetError::NotFireable { transition, .. }) if transition == double
     ));
     net.distribute(firing.run()).unwrap();
 
@@ -501,7 +501,7 @@ fn taking_the_tokens_at_launch_is_what_resolves_a_conflict() {
     assert!(!net.is_fireable(second));
     assert!(matches!(
         net.launch(second),
-        Err(NetError::NotFireable { transition }) if transition == second
+        Err(NetError::NotFireable { transition, .. }) if transition == second
     ));
 
     net.distribute(firing.run()).unwrap();

@@ -147,11 +147,6 @@ pub trait DotSource {
     /// One token rendered with its type's `Debug`, already truncated:
     /// [`Net::label`].
     fn label(&self, place: PlaceId, token: TokenId) -> Option<String>;
-
-    /// The limit [`label`](DotSource::label) was truncated to:
-    /// [`Net::label_limit`]. Reported so that a caller sizing a layout, or
-    /// writing a legend, can say how much of a token it is showing.
-    fn label_limit(&self) -> usize;
 }
 
 impl DotSource for Net {
@@ -173,10 +168,6 @@ impl DotSource for Net {
 
     fn label(&self, place: PlaceId, token: TokenId) -> Option<String> {
         Net::label(self, place, token)
-    }
-
-    fn label_limit(&self) -> usize {
-        Net::label_limit(self)
     }
 }
 
@@ -220,10 +211,6 @@ impl DotSource for Snapshot {
 
     fn label(&self, place: PlaceId, token: TokenId) -> Option<String> {
         Snapshot::label(self, place, token)
-    }
-
-    fn label_limit(&self) -> usize {
-        Snapshot::label_limit(self)
     }
 }
 

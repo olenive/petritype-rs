@@ -602,12 +602,16 @@ fn a_place_that_cannot_clone_refuses_the_snapshot() {
 
     let error = net.snapshot().expect_err("Handles cannot clone its tokens");
     assert!(
-        matches!(error, NetError::NoClonePlace { ref place } if place == "Handles"),
+        matches!(error, NetError::NoClonePlace { place, .. } if place == handles.id()),
         "{error:?}",
     );
     assert_eq!(
         error.to_string(),
-        "place \"Handles\" cannot clone its tokens",
+        format!(
+            "place \"Handles\" ({:?}) cannot clone its tokens",
+            handles.id()
+        ),
+        "the name is for the reader, the id for a program",
     );
 }
 

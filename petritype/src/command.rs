@@ -742,12 +742,16 @@ fn decode_all(
     let from_json = slot
         .meta
         .from_json
-        .ok_or(CommandError::NotSerializable { place })?;
+        .ok_or_else(|| CommandError::NotSerializable {
+            place,
+            name: slot.meta.name.clone(),
+        })?;
     values
         .into_iter()
         .map(|value| {
             from_json(value).map_err(|source| CommandError::InvalidToken {
                 place,
+                name: slot.meta.name.clone(),
                 expected: slot.meta.type_name,
                 source,
             })
@@ -774,7 +778,10 @@ fn encode_all(
     let to_json = slot
         .meta
         .to_json
-        .ok_or(CommandError::NotSerializable { place })?;
+        .ok_or_else(|| CommandError::NotSerializable {
+            place,
+            name: slot.meta.name.clone(),
+        })?;
     tokens
         .iter()
         .map(|token| {
@@ -783,6 +790,7 @@ fn encode_all(
             } else {
                 Err(CommandError::from(crate::NetError::TypeMismatch {
                     place,
+                    name: slot.meta.name.clone(),
                     expected: slot.meta.type_name,
                     found: ERASED,
                 }))

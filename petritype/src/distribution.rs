@@ -348,6 +348,16 @@ impl<F, G> fmt::Debug for WithOutputDistribution<F, G> {
 /// Neither can be a compile error, which is the price of this form: the pairs
 /// are built from data, so which places a firing names is not known until it
 /// has run.
+///
+/// # Names and ids
+///
+/// An error escapes the scope the net lives in: a `?` in `main` prints the
+/// message and exits the process, and by then an id alone is useless to the
+/// person reading the log. These messages are read by humans far more often
+/// than they are matched on by programs — ids are the programs' side, and
+/// [`Event`](crate::Event)s already serve it while the net is alive. So both
+/// variants carry a name beside each id: the names go in the `Display`
+/// message, and the ids stay as the fields a program matches on.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum DistributionError {
@@ -359,14 +369,22 @@ pub enum DistributionError {
     /// somewhere the declaration already allows. The output tuple is what a
     /// diagram draws, so a firing is not allowed to write outside it.
     #[error(
-        "transition {transition:?} distributed a token to place {place:?}, \
-         which is not one of its outputs"
+        "transition {transition_name:?} ({transition:?}) distributed a token to place \
+         {name:?} ({place:?}), which is not one of its outputs"
     )]
     NotAnOutput {
         /// The transition whose firing it was.
         transition: TransitionId,
+        /// The transition's name, for the message; the id is the field to
+        /// match on.
+        transition_name: String,
         /// The place the token was addressed to.
         place: PlaceId,
+        /// The place's name, for the message; the id is the field to match
+        /// on. `"<another net>"` when the handle was stamped with another
+        /// net, whose places this net cannot name — the id is then that
+        /// net's, and means nothing here either.
+        name: String,
     },
     /// A token of the wrong type was addressed to one of the transition's own
     /// output places.
@@ -376,17 +394,35 @@ pub enum DistributionError {
     /// engine's defence against a handle built for another net that happens
     /// to share an index with a place of this one.
     #[error(
-        "transition {transition:?} distributed a token to place {place:?}, which holds {expected}"
+        "transition {transition_name:?} ({transition:?}) distributed a token to place \
+         {name:?} ({place:?}), which holds {expected}"
     )]
     WrongType {
         /// The transition whose firing it was.
         transition: TransitionId,
+        /// The transition's name, for the message; the id is the field to
+        /// match on.
+        transition_name: String,
         /// The place the token was addressed to.
         place: PlaceId,
+        /// The place's name, for the message; the id is the field to match
+        /// on. Always a real name here: this check is reached only for a
+        /// place the transition declared as an output.
+        name: String,
         /// The type that place holds.
         expected: &'static str,
     },
 }
+
+/// The stand-in name in a [`NotAnOutput`](DistributionError::NotAnOutput) for
+/// a place of another net.
+///
+/// A [`PlaceRef`] stamped with a different [`NetId`] names nothing here, and
+/// the place at that index in *this* net is a different place entirely, so
+/// naming it would be a lie. Written like the engine's other stand-ins —
+/// `"<erased>"` for a type a `dyn Any` cannot name — so that a reader can see
+/// at a glance that it is not a name the author wrote.
+pub(crate) const FOREIGN_PLACE: &str = "<another net>";
 
 #[cfg(test)]
 mod tests {

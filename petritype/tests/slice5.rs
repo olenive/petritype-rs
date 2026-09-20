@@ -425,7 +425,7 @@ fn a_place_that_is_not_an_output_fails_the_whole_firing() {
     assert!(!failure.restored);
     assert!(matches!(
         failure.error.downcast_ref::<DistributionError>(),
-        Some(DistributionError::NotAnOutput { transition, place })
+        Some(DistributionError::NotAnOutput { transition, place, .. })
             if *transition == make && *place == elsewhere.id()
     ));
 
@@ -439,8 +439,8 @@ fn a_place_that_is_not_an_output_fails_the_whole_firing() {
             consumed,
             restored: false,
             error: format!(
-                "transition {make:?} distributed a token to place {:?}, \
-                 which is not one of its outputs",
+                "transition \"Make\" ({make:?}) distributed a token to place \"Elsewhere\" \
+                 ({:?}), which is not one of its outputs",
                 elsewhere.id()
             ),
         }]

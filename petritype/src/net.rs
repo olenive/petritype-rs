@@ -59,6 +59,16 @@ pub struct Net {
     pub(crate) events: Vec<Event>,
 }
 
+/// The stand-in name for an id that indexes nothing, in the message of an
+/// error that carries both a name and an id.
+///
+/// Unreachable in practice — an id only reaches an error message after the
+/// net has established that it is one of its own — and written like the
+/// engine's other stand-ins (`"<erased>"` for a type a `dyn Any` cannot name)
+/// so that a reader can tell at a glance that it is not a name an author
+/// wrote.
+pub(crate) const UNKNOWN_NAME: &str = "<unknown>";
+
 /// A view of one place, for building and refreshing a diagram.
 ///
 /// Returned by value from [`Net::places`]: the net stores the pieces (a name,
@@ -439,9 +449,11 @@ impl Net {
                 .places
                 .get_mut(place.0 as usize)
                 .ok_or(NetError::NoSuchPlace { place })?;
-            let index = slot
-                .position(token)
-                .ok_or(NetError::NoSuchToken { place, token })?;
+            let index = slot.position(token).ok_or_else(|| NetError::NoSuchToken {
+                place,
+                name: slot.meta.name.clone(),
+                token,
+            })?;
             slot.tokens.remove(index);
         }
         self.emit(Event::Removed { place, token });
@@ -550,6 +562,28 @@ impl Net {
         self.state_counter += 1;
     }
 
+    /// The name of one of this net's places, for the message of an error
+    /// that also carries its id.
+    ///
+    /// An id that indexes no place cannot reach this: every caller has
+    /// already established that the place is one of this net's. But an error
+    /// path is the wrong place to panic, so an unknown id gets
+    /// [`UNKNOWN_NAME`] rather than an index out of bounds.
+    pub(crate) fn place_name(&self, place: PlaceId) -> String {
+        self.places
+            .get(place.0 as usize)
+            .map_or_else(|| String::from(UNKNOWN_NAME), |slot| slot.meta.name.clone())
+    }
+
+    /// The name of one of this net's transitions, for the message of an
+    /// error that also carries its id. As [`place_name`](Net::place_name),
+    /// stand-in included.
+    pub(crate) fn transition_name(&self, transition: TransitionId) -> String {
+        self.transitions
+            .get(transition.0 as usize)
+            .map_or_else(|| String::from(UNKNOWN_NAME), |slot| slot.name.clone())
+    }
+
     /// The one insertion path: mint an id, check the type, push the token.
     ///
     /// Everything that adds a token — the typed methods here, the seeds in
@@ -580,6 +614,7 @@ impl Net {
         if (*value).type_id() != slot.meta.type_id {
             return Err(NetError::TypeMismatch {
                 place,
+                name: slot.meta.name.clone(),
                 expected: slot.meta.type_name,
                 found,
             });
@@ -643,6 +678,7 @@ impl Net {
             if (**token).type_id() != slot.meta.type_id {
                 return Err(NetError::TypeMismatch {
                     place,
+                    name: slot.meta.name.clone(),
                     expected: slot.meta.type_name,
                     found,
                 });
@@ -705,13 +741,16 @@ impl Net {
             if (*value).type_id() != slot.meta.type_id {
                 return Err(NetError::TypeMismatch {
                     place,
+                    name: slot.meta.name.clone(),
                     expected: slot.meta.type_name,
                     found,
                 });
             }
-            let index = slot
-                .position(token)
-                .ok_or(NetError::NoSuchToken { place, token })?;
+            let index = slot.position(token).ok_or_else(|| NetError::NoSuchToken {
+                place,
+                name: slot.meta.name.clone(),
+                token,
+            })?;
             slot.tokens[index].1 = value;
         }
         self.emit(Event::Mutated { place, token });

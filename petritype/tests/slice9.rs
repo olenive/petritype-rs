@@ -189,6 +189,7 @@ fn fuse_trips_before_consuming_anything() {
             limit,
             transition,
             summary,
+            ..
         } => {
             assert_eq!(limit, 0);
             assert_eq!(transition, double);
@@ -680,6 +681,7 @@ fn concurrent_fuse_trips_in_the_launch_sweep() {
         limit,
         transition,
         summary,
+        ..
     } = error
     else {
         panic!("expected TooManyFirings");

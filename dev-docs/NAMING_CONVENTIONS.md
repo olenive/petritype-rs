@@ -94,6 +94,11 @@ rename backlog.
   (`BuildError`, `NetError`, `CommandError`). `FiringFailed` and
   `TooManyFirings` are variants.
 - Ids: `PlaceId`, `TransitionId`, `TokenId`. Typed handle: `PlaceRef<T>`.
+- A runtime error about an existing place or transition carries its id *and*
+  a `name: String`; the name is for the message, the id is what a program
+  matches on (`DistributionError` names both its transition and its place).
+  Not-found errors carry the id only; `BuildError` names only; events ids
+  only.
 - Events are past tense: `Fired`, `Launched`, `Distributed`, `Failed`, `Added`,
   `Removed`, `Mutated`, `Toggled`.
 - Output forms: *positional* (tuple), *routed* (by type), *distribution*

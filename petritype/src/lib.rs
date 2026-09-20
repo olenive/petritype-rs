@@ -208,10 +208,20 @@
 //!   [`Net::is_in_flight`] naming the transitions whose bodies are out.
 //!   Dropping a [`Firing`] or a [`Completed`] instead of distributing it
 //!   strands its transition in flight for good.
+//! - [`drivers::run`] drives a net until it has nothing left to fire, and
+//!   [`drivers::run_indefinitely`] drives it on a clock until a flag says
+//!   stop. [`Mode`](drivers::Mode) picks the loop — sequential, where the
+//!   selector chooses one transition at a time, or concurrent, where
+//!   everything fireable is launched at once on threads of its own;
+//!   [`Limits`](drivers::Limits) paces a run or blows a fuse on one that will
+//!   not stop; [`OnFailure`](drivers::OnFailure) says whether a failed firing
+//!   ends the run, switches its transition off, or is merely counted; and
+//!   [`RunSummary`](drivers::RunSummary) reports what the call did.
 //! - [`TransitionBuilder::guard`] and [`TransitionBuilder::priority`] decide
 //!   what is fireable and which of the fireable ones the default
-//!   [`Selector`] picks; [`Net::set_selector`] replaces that choice, and
-//!   [`Net::enable`] / [`Net::disable`] switch a transition off and on.
+//!   [`Selector`] picks; [`Net::set_selector`] replaces that choice and
+//!   [`Net::clear_selector`] puts it back, and [`Net::enable`] /
+//!   [`Net::disable`] switch a transition off and on.
 //! - [`NetBuilder::assert_acyclic`] and
 //!   [`NetBuilder::assert_no_source_transitions`] are the two opt-in checks
 //!   [`NetBuilder::build`] makes: no loop in the token flow, and every
@@ -233,6 +243,7 @@ mod arity;
 mod body;
 mod builder;
 mod distribution;
+pub mod drivers;
 mod edge;
 mod erased;
 mod error;

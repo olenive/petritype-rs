@@ -6,9 +6,11 @@ Typed, executable, observable Petri nets in Rust. A port of
 *Work in progress: declaring a net, all three output forms, and firing either
 inline (`step`, `fire`) or in three stages (`launch`, `run`, `distribute`, so
 bodies may run on other threads) work, and failures (an `Err`, a panic) are caught with optional restoring of
-the consumed tokens (slices 1–8 of `DESIGN.md` §18, including the opt-in
-`assert_acyclic` / `assert_no_source_transitions` checks); drivers, external
-commands, snapshots, parameters and the visualiser are still to come. See `DESIGN.md` for the design and
+the consumed tokens, and the `drivers` module runs a net to quiescence or on
+a clock, sequentially or with bodies on threads (slices 1–9 of `DESIGN.md`
+§18, including the opt-in `assert_acyclic` / `assert_no_source_transitions`
+checks); external commands, snapshots, parameters and the visualiser are
+still to come. See `DESIGN.md` for the design and
 `dev-docs/NAMING_CONVENTIONS.md` for vocabulary shared with the Python library.*
 
 ## Core Idea

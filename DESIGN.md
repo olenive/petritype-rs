@@ -682,27 +682,57 @@ types, `Distribution::to` argument types.
 Thin functions over the stages, in `petritype::drivers`:
 
 ```rust
-pub enum Mode { Sequential, Concurrent }
+pub enum Mode { Sequential, Concurrent }                       // Default: Sequential
 pub struct Limits { pub stop_after_n_firings: Option<u64>, pub error_after_n_firings: Option<u64> }
-pub enum OnFailure { Stop, Disable, Continue }
-pub struct RunSummary { pub quiesced: bool, pub fired_count: u64 }
+pub enum OnFailure { Stop, Disable, Continue }                 // Default: Stop
+pub struct RunSummary { pub quiesced: bool, pub fired_count: u64, pub failed_count: u64 }
+pub enum DriverError {
+    TooManyFirings { limit: u64, transition: TransitionId, summary: RunSummary },
+    FiringFailed   { summary: RunSummary, error: FiringFailed },
+}
 
 drivers::run(&mut net, mode, limits, on_failure) -> Result<RunSummary, DriverError>
-drivers::run_indefinitely(&mut net, mode, tick: Duration, stop: &AtomicBool, inbox: Option<Receiver<Command>>, on_failure)
+drivers::run_indefinitely(&mut net, mode, tick: Duration, stop: &AtomicBool, on_failure,
+                          each_tick: impl FnMut(&mut Net)) -> Result<RunSummary, DriverError>
 ```
+
+**Done, slice 9.**
 
 - `run`: until quiescent or `stop_after_n_firings`. `quiesced == false` means
   a limit stopped the run and work may remain; call again to continue. The
   fuse (`error_after_n_firings`) raises `TooManyFirings` before the offending
   firing consumes anything. Subsumes Python's `execute_graph`, `Runner.run`
   and `run_to_completion`, which differed only in limits and return type.
+- Both limits are **per call** and count **launches** (attempts, failures
+  included); `fired_count` counts successes and `failed_count` failures, so
+  a caller running under `Disable` or `Continue` need not scan the event log
+  to learn that something failed. Python's fuse lived on a `RunContext`
+  shared between calls; `Limits` is a plain `Copy` argument, so there is no
+  hidden state to carry a half-spent fuse from one call to the next.
+- `OnFailure::Stop` returns `DriverError::FiringFailed` carrying the *first*
+  failure; `Disable` calls `net.disable(t)` (a `Toggled` event) and goes on;
+  `Continue` only counts. `Continue` with `restore_tokens_on_failure` retries
+  for ever, which is what the fuse is for.
 - `run_indefinitely`: the real-time regime. Never stops because nothing is
-  enabled; sleeps `tick` between sweeps, drains the inbox each tick, ends when
-  `stop` is set. A Bevy system per frame is this loop with the frame as the
-  tick.
-- `Mode::Concurrent` uses `std::thread::scope` and an `mpsc` channel of
-  `Completed`. Non-detachable firings run inline.
-- `step` (one firing) is on `Net` itself.
+  fireable; ends when `stop` is set, checked before every launch. `each_tick`
+  runs at the start of every tick with `&mut Net`, and is where the caller
+  drains its own input channel or applies `Command`s: the driver stays
+  channel-agnostic (§9), which is why there is no `inbox` parameter. In
+  sequential mode a tick is one `step` then a sleep (one firing per frame, as
+  Python's `_tick_sequential`); in concurrent mode it is one launch sweep,
+  and the wait on the completion channel *is* the sleep, so a completion is
+  distributed the moment it lands. A Bevy system per frame is this loop with
+  the frame as the tick. No `Limits`: an indefinite run has no firing budget.
+- `Mode::Concurrent` uses `std::thread::scope`, one thread per launch, and an
+  `mpsc` channel of `Completed`. It launches *everything* fireable in
+  declaration order, so the selector and `priority` shape sequential runs
+  only. Non-detachable firings run inline and trigger another sweep.
+- A driver never returns with anything in flight, on the error path
+  included: it stops launching, then distributes every completion it is
+  still owed. So `in_flight()` is empty whenever a driver returns, and a
+  driver never strands a transition (§17).
+- `step` (one firing) is on `Net` itself; `clear_selector` undoes
+  `set_selector`.
 
 ## 14. Crate layout
 
@@ -776,9 +806,10 @@ Check that the name `petritype` is free on crates.io before publishing.
 - Stranded in-flight transitions: a `Firing`/`Completed` dropped without
   being distributed, or a rejected `distribute` (`ForeignFiring`,
   `NotInFlight`, which consume their argument), loses the body for good.
-  Panics no longer strand (caught since slice 7). The misuse rejections could
-  hand the value back (`Err((NetError, Completed))`). Decide when a driver
-  needs it.
+  Panics no longer strand (caught since slice 7), and the drivers (slice 9)
+  never drop one: they drain everything airborne before returning, on the
+  error path too. The misuse rejections could hand the value back
+  (`Err((NetError, Completed))`); still open, no caller needs it yet.
 
 ## 18. Implementation plan
 

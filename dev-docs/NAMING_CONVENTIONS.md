@@ -40,7 +40,9 @@ rename backlog.
 | one execution of a transition | firing | firing | — |
 | number of completed firings | `fired_count` | `step_count` | rename |
 | a firing's body raised / returned `Err` | `FiringFailed` | `TransitionFailedError` | rename |
-| fuse spent | `TooManyFirings` | `TooManyFiringsError` | — |
+| fuse spent | `DriverError::TooManyFirings { limit, transition, summary }` | `TooManyFiringsError` (summary attached) | — |
+| a run stopped on a failed firing | `DriverError::FiringFailed { summary, error }` | `TransitionFailedError` propagating out of `Runner.run` | — |
+| what a driver does about a failed firing | `OnFailure::{Stop, Disable, Continue}` | raise (the only behaviour) | — |
 | put consumed tokens back on failure | `restore_tokens_on_failure` | `restore_tokens_on_failure` | — |
 | a body panicked | `BodyPanicked` (inside `FiringFailed`) | the exception inside `TransitionFailedError` | — |
 | the tokens a failed firing took | `Event::Failed { consumed, restored }` (same word as `Fired`/`Launched`) | `TransitionFailedError(consumed, restored)` | — |
@@ -57,7 +59,9 @@ rename backlog.
 | run on a clock until stopped | `run_indefinitely` | `Runner.run_indefinitely` | — |
 | stop-without-error limit | `stop_after_n_firings` | `stop_after_n_firings` | — |
 | raise-past-this limit | `error_after_n_firings` | `error_after_n_firings` | — |
-| summary of a run | `RunSummary { quiesced, fired_count }` | `RunSummary { quiesced, n_fired, fired }` | rename `n_fired` |
+| summary of a run | `RunSummary { quiesced, fired_count, failed_count }` | `RunSummary { quiesced, n_fired, fired }` | rename `n_fired`; add `failed_count` |
+| run limits (per call, count launches) | `Limits { stop_after_n_firings, error_after_n_firings }` | `stop_after_n_firings` kwarg (per call), `RunContext.error_after_n_firings` (per context) | — |
+| per-tick hook for input | `each_tick: FnMut(&mut Net)` on `run_indefinitely` | `RunContext.inbox`, `drain_inbox` | — |
 | transitions whose bodies are running | `in_flight`, `is_in_flight` | `in_flight` | — |
 | stage-1 result, owns tokens + body | `Firing` (`transition`, `is_pending`, `run`) | the tuple `stage_1_…` returns | — |
 | stage-2 result, carries the body home | `Completed` (`transition`, `succeeded`) | — | — |
@@ -72,7 +76,7 @@ rename backlog.
 | enabling predicate | `guard` | `guard` | — |
 | can fire now: switched on, inputs present, guard passes | `fireable`, `is_fireable` | — | — |
 | selection hint | `priority` | `priority` | — |
-| custom chooser | `set_selector`, type `Selector` | `transition_selector` | — |
+| custom chooser | `set_selector`, type `Selector`; `clear_selector` restores the default | `transition_selector` | — |
 | per-run value a transition declares it needs | `Param::<T>`, `b.param(v)`, `net.set_param(v)` | `kwargs`, `SetParam` | — |
 
 ## Rust-specific conventions

@@ -262,6 +262,37 @@ impl Net {
         self.selector = Some(Box::new(selector));
     }
 
+    /// Puts the default selector back: highest
+    /// [`priority`](crate::TransitionBuilder::priority) first, ties to the
+    /// transition declared first.
+    ///
+    /// The undo of [`set_selector`](Net::set_selector), and the way back to a
+    /// deterministic sequential run after a phase that wanted a different
+    /// choice — a round-robin for a demo, a selector that declines while a
+    /// user is dragging something. A net that never had one is unchanged.
+    ///
+    /// ```
+    /// # use petritype::{NetBuilder, TakeEdge};
+    /// # let mut b = NetBuilder::new();
+    /// # let inbox = b.place::<u32>("Inbox");
+    /// # let out = b.place::<u32>("Out");
+    /// let double = b
+    ///     .transition("Double", (TakeEdge(inbox),), (out,), |n: u32| (n * 2,))
+    ///     .id();
+    /// let mut net = b.build()?;
+    /// net.put(inbox, 21);
+    ///
+    /// net.set_selector(|_net, _fireable| None);
+    /// assert_eq!(net.step()?, None, "fireable, but the selector declined");
+    ///
+    /// net.clear_selector();
+    /// assert_eq!(net.step()?, Some(double), "the default is back");
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn clear_selector(&mut self) {
+        self.selector = None;
+    }
+
     // ----- firing ---------------------------------------------------------
 
     /// Fires one transition: scan, select, consume, run, distribute.

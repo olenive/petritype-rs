@@ -879,6 +879,19 @@ and the repository name already tells the two projects apart. `petritype`,
   - `Fired`/`Distributed` → spawn token entities for `produced`, despawn or
     animate `consumed`; `HashMap<TokenId, Entity>`.
   - `Mutated` → refresh the cached label via `net.label()`.
+**Decided 2026-09-20.** `petritype-bevy` is a separate repository
+(`../petritype-bevy`, github.com/olenive/petritype-bevy), not a workspace
+member: Bevy compiles in minutes and releases every few months, and the
+core must not pay for either. It pins the released Bevy (0.19.1; 0.20 when
+final) and depends on `petritype` by path until `petritype` is published,
+then by version. First cut is layers (a) and (b) below — the resource, a
+per-frame stepping system, and the event mirror — with a plain grid
+layout, split as a headless `MirrorPlugin` (testable under
+`MinimalPlugins`) and a `RenderPlugin`. Layout, hover and the inspector
+follow once the demo moves. **2026-10-02:** the demo moved: the layered
+layout, hover tooltips, the Step / Repeat Step / Activate run modes, the
+theme and Reset landed in the same repository.
+
   - `Toggled`, `Launched` → restyle the transition entity.
 - Hover/click → `net.token::<T>()` or `net.json()` for a detail panel.
 - Edits from an inspector → `net.apply(Command)` → `Mutated` → view refresh.
@@ -953,4 +966,7 @@ Slices, each with tests, in order:
 10. `Command` / `apply`; `serde` feature: `json()`, serialisable commands.
 11. `snapshot()`; `Param::<T>`, `b.param`, `set_param`, `ParamChanged`.
 12. `petritype-dot`; port the Python examples as integration tests.
-13. `petritype-bevy`.
+13. `petritype-bevy` — first cut done 2026-09-20 in its own repository
+    (§15): `MirrorPlugin` (headless) + `RenderPlugin` + the parcel demo;
+    run modes, animation, layered layout, hover, theme and reset added
+    2026-10-02 (26 headless tests).

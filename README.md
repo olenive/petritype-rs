@@ -13,8 +13,8 @@ declare per-run `Param::<T>` values that never appear in the diagram, and
 `net.snapshot()` hands another thread an owned copy of the state, and
 `petritype-dot` draws a net or a snapshot as Graphviz DOT (slices 1–12 of
 `DESIGN.md` §18, including the opt-in `assert_acyclic` /
-`assert_no_source_transitions` checks); the Bevy visualiser is still to
-come. See `DESIGN.md` for the design and
+`assert_no_source_transitions` checks). The Bevy visualiser lives in its own
+repository, `petritype-bevy`, and depends on this crate. See `DESIGN.md` for the design and
 `dev-docs/NAMING_CONVENTIONS.md` for vocabulary shared with the Python library.*
 
 ## Quickstart
@@ -57,6 +57,7 @@ a test.
 | `petritype` | the builder, `Net`, events, checks, drivers, commands, snapshots |
 | `petritype-derive` | `#[derive(Routed)]`, re-exported as `petritype::Routed` |
 | `petritype-dot` | Graphviz DOT text of a `Net` or a `Snapshot` |
+| `petritype-bevy` | separate repository: a Bevy visualiser that mirrors a running net into entities |
 
 ## Core Idea
 

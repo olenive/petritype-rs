@@ -839,6 +839,7 @@ Cargo workspace, edition 2024, MSRV = current stable minus two (must be
 | `petritype-dot` | Graphviz DOT text of a net and its marking (**done, slice 12**) | `petritype` only |
 | `petritype-bevy` | `NetRes`, mirror systems, token entities, in-flight highlighting, task-pool driver | pins one Bevy version |
 | `petritype-tokio` | only if a need appears | |
+| `petritype-runner` | planned (§19): turns a user's binary into a net process speaking the shared protocol | `petritype` with `serde`, `serde_json` |
 
 Examples (each also an integration test), mirroring the Python acceptance set:
 quickstart, parcel distribution, caching (union return → routed enum),
@@ -890,7 +891,9 @@ layout, split as a headless `MirrorPlugin` (testable under
 `MinimalPlugins`) and a `RenderPlugin`. Layout, hover and the inspector
 follow once the demo moves. **2026-10-02:** the demo moved: the layered
 layout, hover tooltips, the Step / Repeat Step / Activate run modes, the
-theme and Reset landed in the same repository.
+theme and Reset landed in the same repository. **2026-10-02:** mouse pan
+and zoom and a read-only inspector panel landed too; a menu of options
+registered by the net's author is deferred.
 
 - `NetRes(Net)` newtype `Resource` (orphan rule; the newtype lives in the
   adapter).
@@ -949,6 +952,12 @@ theme and Reset landed in the same repository.
   beside the plain `distribute`, so net authors and ordinary drivers keep
   the simple shape and a hand-written driver that juggles several nets opts
   in. Add it when the Bevy adapter or a user asks.
+- Interop follow-ups (§19), all deferred until a user asks: explicit
+  `PlaceId`/`TransitionId`/`TokenId` constructors for a remote mirror,
+  instead of going through their `serde` form; parameter lists for
+  `describe` derived from a schema crate rather than written by hand;
+  running a net process's bodies with `Mode::Concurrent` (`start` launches
+  one firing at a time in v1); a non-Unix answer to the stdout guard.
 
 ## 18. Implementation plan
 
@@ -979,3 +988,153 @@ Slices, each with tests, in order:
     (§15): `MirrorPlugin` (headless) + `RenderPlugin` + the parcel demo;
     run modes, animation, layered layout, hover, theme and reset added
     2026-10-02 (26 headless tests).
+14. Interop (§19): `PlaceInfo::serializable`, the owned `Topology`,
+    `Serialize` on `Event`, `EdgeInfo` and `EdgeKind`; then the
+    `petritype-runner` crate (function-table registry, `--describe`, the
+    stdout guard, the owner loop), tested against the shared protocol
+    transcripts in `../petritype/tests/protocol/`. Not started.
+
+## 19. Interop: one protocol, two runtimes, two viewers
+
+**Decided 2026-10-03.** A net can run on the Python library or on this
+crate, behind the same server, and be watched in the Svelte frontend
+(petrivelte) or in the Bevy visualiser. A net is written in one language, its
+bodies are code, so "mix and match" means choosing the runtime per net and
+the viewer per session; a net never moves between languages. What makes it
+work is one protocol, specified once in the Python repository:
+[`../petritype/PROTOCOL.md`](../petritype/PROTOCOL.md)
+(<https://github.com/olenive/petritype/blob/main/PROTOCOL.md>). A net process
+speaks it as newline-delimited JSON on stdin and stdout; the server relays
+the same shapes over HTTP and server-sent events. This section is the Rust
+side only and does not restate the shapes. Design proposal, not yet
+implemented.
+
+The decisions that shape it, all of 2026-10-03:
+
+- **The protocol lives in the Python library**, as its optional
+  `petritype.runner` module, because any viewer can then host a Python net
+  by spawning it, with no server. This crate conforms to that spec; the
+  shared transcripts (`PROTOCOL.md` §11) are its acceptance tests.
+- **Layout belongs to the viewer.** The protocol carries topology and
+  optional position hints. No runner computes coordinates, so nothing here
+  grows a layout; `petritype-dot` is unaffected and stays a rendering of
+  its own.
+- **Rust nets reach petritype-server as a built Linux binary**: the server's
+  build pipeline gains a cargo step and the worker spawns the artifact. No
+  Rust toolchain on the worker. Details in
+  `../petritype-server/dev-docs/RUNTIMES_AND_PROTOCOL.md`.
+- **Python adopts this crate's model of identity**: monotonic token ids that
+  are never reused, and consumed/produced per firing. Nothing in §4.1 or
+  §8.1 changes; the protocol's `fired`, `launched`, `distributed`, `failed`,
+  `added`, `removed`, `mutated` and `toggled` are `Event`'s variants with
+  names in place of ids.
+
+### 19.1 Mapping onto §8 and §9
+
+| protocol | Rust |
+|---|---|
+| `topology.places` | `net.places()`: `name`, `type_name`, and `serializable` (new field, §19.2) |
+| `topology.transitions[].detail` | `TransitionInfo::params` (type names) and `detachable` |
+| `topology.edges` | `net.edges()`: `EdgeKind::{Take, TakeAll, Snapshot, Mutate}` as `"take"`, `"take_all"`, `"snapshot"`, `"mutate"`; `Output { slot }` as `slot` |
+| `transitions[name]` | `is_enabled`, `is_in_flight`, membership of `fireable()`, `priority_of` |
+| `marking` | `tokens(place)` ids with `label(place, token)` |
+| token id `"17"` | `TokenId` printed with its `Display` (the bare number) |
+| `progress.step_count` | `fired_count()` |
+| `progress.last_fired`, `fired_counts`, `last_progress_at` | kept by the runner from the events: the core dropped them on purpose (§2) and does not get them back |
+| `marking_version` | the runner's own counter, one per state notification. Not `state_counter`, which starts at 0 again when `reset` rebuilds the net |
+| `generation` | the runner's counter of loads and resets; a rebuilt `Net` numbers its tokens from the start again, which is why the protocol has generations at all |
+| state notifications | `Event` variants, ids resolved to names through the read API, produced tokens labelled with `label()`; `ParamChanged { type_name }` reported under the parameter's wire name from `serializable_param` when it has one |
+| `fireable` notification | the runner compares `net.fireable()` after each batch of events |
+| `step`, `start` | `select()`, `launch`, the body on a thread of its own, `distribute`; one firing at a time, so `Launched` then `Distributed` |
+| `inject {place, token}` | `apply_json` of `JsonCommand::Extend` with one token; the new id is read off the `Added` event. Needs a `serializable` place, else `not_serializable` |
+| `enable`, `disable` | `net.enable(t)`, `net.disable(t)` (`Toggled`) |
+| `set_param {param, value}` | `JsonCommand::SetParam`; `transition` ignored; `unsupported` if the net registers no parameter by name |
+| `get_token {id}` | `net.json()` gives `kind: "json"`; otherwise `label()` gives `kind: "text"` |
+| `reset` | rebuild from the same factory and parameters |
+
+The runner owns the `Net` on one thread and is its only writer, which is
+§9's single-writer rule unchanged. A detached body holds no borrow of the
+net (§6.2), so `get_state` and `stop` are answered from the live net while a
+body runs, without `snapshot()`.
+
+### 19.2 Additive work in the core
+
+All behind the existing `serde` feature except the first item:
+
+- `PlaceInfo::serializable: bool`. `PlaceInfo` is `#[non_exhaustive]`, so
+  adding a field breaks nothing. Always present, `false` without `serde`.
+- An owned `Topology` (`net.topology()`, and the same on `Snapshot`): places,
+  transitions and edges as owned values, `Serialize` with `serde`. A render
+  thread or a runner can then hold the shape of the net without a borrow.
+- `Serialize` (not `Deserialize`) on `Event`, `EdgeInfo` and `EdgeKind`, in
+  their id form, for logs and tests.
+
+The protocol's own shapes, keyed by names with string token ids, live in
+`petritype-runner`, not in the core: the core's types must not be frozen by
+a wire format they do not own. `Snapshot` stays unserialisable; tokens are
+`dyn Any` and have JSON only on `serializable` places.
+
+### 19.3 The `petritype-runner` crate
+
+A library crate in this workspace, plus an example binary. A net's bodies
+are the user's code, so the binary is always the user's own: it lists its
+nets and hands over to the crate.
+
+```rust
+use petritype_runner::{Hosting, NetEntry, ParamSpec};
+
+fn main() -> std::process::ExitCode {
+    petritype_runner::main(&[
+        NetEntry::new("parcel-distribution", parcel::build)
+            .description("Sort and dispatch parcels")
+            .param(ParamSpec::new("trucks", "u32").default(2)),
+        NetEntry::new("feed-watcher", feeds::build).hosting(Hosting::Continuous),
+    ])
+}
+
+// A factory takes the load parameters as JSON and returns a built net.
+fn build(params: &serde_json::Map<String, serde_json::Value>) -> Result<petritype::Net, String>;
+// NetEntry::typed::<P: serde::de::DeserializeOwned>(name, fn(P) -> Result<Net, BuildError>)
+// decodes the parameters first and reports a bad one as `invalid_params`.
+```
+
+- **Registry: a plain function table**, passed to `main`. Chosen over a
+  `register!` macro collecting entries at link time (`inventory`-style):
+  no extra dependency, no linker behaviour to explain, and the list of nets
+  is visible where the binary starts.
+- `Hosting::{Manual, Continuous, Batch, Cron(&str)}` becomes `describe`'s
+  `mode` (`"manual"`, `"24/7"`, `"batch"`, `"cron"`) and `schedule`, the
+  same hints Python's `@petri_net` declares.
+- `--describe` prints the `describe` answer as one line and exits. That is
+  how the server's build stage discovers what a binary carries, and how a
+  viewer offers a choice of nets.
+- **The owner loop.** One thread owns the `Net`. A reader thread parses
+  stdin lines into requests; body threads send their `Completed` back; both
+  feed one `mpsc` channel the owner drains with `recv_timeout`, the timeout
+  doubling as the heartbeat tick. After each request or completion the owner
+  drains the event log, translates and writes the notifications, compares
+  the fireable set, and only then writes the response. While `running` and
+  nothing is in flight it selects and launches the next firing. A failed
+  body stops the run with `execution_stopped`, as the Python runner does.
+- **The stdout guard.** On Unix, at start, the runner duplicates file
+  descriptor 1 for its own writes and points descriptor 1 at stderr
+  (`rustix`), so a `println!` in a body cannot corrupt the protocol. Python
+  does the same by swapping `sys.stdout`.
+- Panics in bodies are already `Failed` (slice 7); a panicking factory is
+  `load_failed`.
+
+### 19.4 Who spawns it
+
+- **petritype-server**: the user's repository is a cargo package whose
+  binary calls `petritype_runner::main`; the build stage compiles it to a
+  static Linux binary, runs `--describe`, and stores both; the worker
+  downloads the binary and spawns it like `python -m petritype.runner`.
+- **petritype-bevy**: spawns the binary (or `python -m petritype.runner`)
+  itself and mirrors it as a remote source, beside today's in-process
+  `NetRes` (`../petritype-bevy/DESIGN.md`, building on §15).
+
+### 19.5 Out of scope
+
+Moving a net between languages; composing across languages (a transition
+body in one language running a net in the other) beyond the fact that such
+a body could speak the same protocol; WASM.

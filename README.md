@@ -94,3 +94,7 @@ distribution function if there is one:
 The output distribution function exists so domain functions stay unchanged when
 the net's connectivity changes: the routing decision lives beside the net, not
 inside the function that computes the result.
+
+## Licence
+
+MIT. See [LICENSE-MIT](LICENSE-MIT).

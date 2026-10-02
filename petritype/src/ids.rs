@@ -78,6 +78,20 @@ pub struct TransitionId(pub(crate) u32);
 #[cfg_attr(feature = "serde", serde(transparent))]
 pub struct TokenId(pub(crate) u64);
 
+/// The ids print as their bare number, the spelling the `serde` feature
+/// uses, so a visualiser or a log can say `#7` without going through
+/// `Debug`.
+macro_rules! display_as_number {
+    ($($id:ident),*) => {$(
+        impl fmt::Display for $id {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                fmt::Display::fmt(&self.0, f)
+            }
+        }
+    )*};
+}
+display_as_number!(PlaceId, TransitionId, TokenId);
+
 /// A typed handle to a place, returned by
 /// [`NetBuilder::place`](crate::NetBuilder::place).
 ///
@@ -218,5 +232,12 @@ mod tests {
         let a = NetId::mint();
         let b = NetId::mint();
         assert_ne!(a, b);
+    }
+
+    #[test]
+    fn ids_display_as_their_bare_number() {
+        assert_eq!(PlaceId(3).to_string(), "3");
+        assert_eq!(TransitionId(4).to_string(), "4");
+        assert_eq!(format!("#{}", TokenId(7)), "#7");
     }
 }

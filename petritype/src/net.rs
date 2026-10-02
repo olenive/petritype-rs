@@ -10,7 +10,7 @@ use crate::command::ERASED;
 use crate::edge::EdgeInfo;
 use crate::error::NetError;
 use crate::event::Event;
-use crate::firing::Selector;
+use crate::firing::{Selector, TieBreak};
 use crate::ids::{NetId, PlaceId, PlaceRef, TokenId, TransitionId, foreign_place};
 use crate::param::{ParamSlot, param_of, param_slot_index};
 use crate::place::{ErasedToken, PlaceSlot, erase_all};
@@ -50,9 +50,15 @@ pub struct Net {
     /// Completed firings. A statistic, not a change counter.
     pub(crate) fired_count: u64,
     /// How [`step`](Net::step) chooses among the fireable transitions, or
-    /// `None` for the default (highest priority, ties to the transition
-    /// declared first). Set by [`set_selector`](Net::set_selector).
+    /// `None` for the default (highest priority, ties by `tie_break`). Set by
+    /// [`set_selector`](Net::set_selector).
     pub(crate) selector: Option<Selector>,
+    /// How the default selector breaks ties. Set by the builder or by
+    /// [`set_tie_break`](Net::set_tie_break).
+    pub(crate) tie_break: TieBreak,
+    /// Whether the author declared the net safe to rebuild as a reset. See
+    /// [`is_resettable`](Net::is_resettable).
+    pub(crate) resettable: bool,
     /// Maximum number of characters in a [`label`](Net::label).
     pub(crate) label_limit: usize,
     /// Appended to by the net, drained by the driver.
@@ -346,6 +352,22 @@ impl Net {
     /// [`NetBuilder::label_limit`](crate::NetBuilder::label_limit).
     pub fn label_limit(&self) -> usize {
         self.label_limit
+    }
+
+    /// Whether the author declared, with
+    /// [`NetBuilder::resettable`](crate::NetBuilder::resettable), that this
+    /// net may be reset.
+    ///
+    /// A net cannot be cloned — its bodies are closures — so "reset" can
+    /// only mean building it again from the function that built it. Whether
+    /// that really gives back an equivalent starting state is something only
+    /// the author knows: a body may write files, call a network service,
+    /// draw random numbers or touch global state, and none of that is undone
+    /// by building a new net. So the author says so, and a tool that offers
+    /// a reset — the Bevy visualiser's Reset button — refuses for a net
+    /// that does not. False unless declared.
+    pub fn is_resettable(&self) -> bool {
+        self.resettable
     }
 
     // ----- events ---------------------------------------------------------
@@ -837,6 +859,8 @@ impl fmt::Debug for Net {
             // A selector is a closure: all a reader can be told is whether
             // the net has one of its own.
             .field("custom_selector", &self.selector.is_some())
+            .field("tie_break", &self.tie_break)
+            .field("resettable", &self.resettable)
             .field("pending_events", &self.events.len())
             .finish()
     }

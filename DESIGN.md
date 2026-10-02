@@ -390,6 +390,15 @@ ties broken by declaration order. Custom selector via `net.set_selector(f)`,
 `f: Fn(&Net, &[TransitionId]) -> Option<TransitionId>`, offered the fireable
 list in declaration order; returning `None` fires nothing this step.
 
+**Added 2026-10-02.** The tie-break is a setting, `TieBreak::FirstDeclared`
+(default, the Python rule) or `TieBreak::LastDeclared`, set with
+`NetBuilder::tie_break` or `Net::set_tie_break`. With FIFO places the first
+drains a pipeline in batches and the second lets each token flow through
+before the next enters; a custom selector ignores it. `Net::select()` reports
+the choice without firing, and `NetBuilder::resettable()` /
+`Net::is_resettable()` record the author's promise that rebuilding the net is
+a true reset.
+
 ### 6.2 Three stages
 
 ```rust
@@ -870,15 +879,6 @@ and the repository name already tells the two projects apart. `petritype`,
 
 ## 15. Bevy adapter sketch
 
-- `NetRes(Net)` newtype `Resource` (orphan rule; the newtype lives in the
-  adapter).
-- Startup: `net.places()`, `net.transitions()`, `net.edges()` → spawn view
-  entities, lay out. Re-run when `topology_counter` changes.
-- Each frame: step with a budget (or poll `Task<Completed>` from
-  `AsyncComputeTaskPool` and distribute), then `drain_events()`:
-  - `Fired`/`Distributed` → spawn token entities for `produced`, despawn or
-    animate `consumed`; `HashMap<TokenId, Entity>`.
-  - `Mutated` → refresh the cached label via `net.label()`.
 **Decided 2026-09-20.** `petritype-bevy` is a separate repository
 (`../petritype-bevy`, github.com/olenive/petritype-bevy), not a workspace
 member: Bevy compiles in minutes and releases every few months, and the
@@ -892,6 +892,15 @@ follow once the demo moves. **2026-10-02:** the demo moved: the layered
 layout, hover tooltips, the Step / Repeat Step / Activate run modes, the
 theme and Reset landed in the same repository.
 
+- `NetRes(Net)` newtype `Resource` (orphan rule; the newtype lives in the
+  adapter).
+- Startup: `net.places()`, `net.transitions()`, `net.edges()` → spawn view
+  entities, lay out. Re-run when `topology_counter` changes.
+- Each frame: step with a budget (or poll `Task<Completed>` from
+  `AsyncComputeTaskPool` and distribute), then `drain_events()`:
+  - `Fired`/`Distributed` → spawn token entities for `produced`, despawn or
+    animate `consumed`; `HashMap<TokenId, Entity>`.
+  - `Mutated` → refresh the cached label via `net.label()`.
   - `Toggled`, `Launched` → restyle the transition entity.
 - Hover/click → `net.token::<T>()` or `net.json()` for a detail panel.
 - Edits from an inspector → `net.apply(Command)` → `Mutated` → view refresh.

@@ -42,6 +42,7 @@ use crate::body::{OutputPlaces, TransitionBody};
 use crate::edge::{EdgeKind, InputEdges, InputSpec};
 use crate::erased::RoutingProblem;
 use crate::error::BuildError;
+use crate::firing::TieBreak;
 use crate::ids::{NetId, PlaceId, PlaceRef, TransitionId, foreign_place};
 use crate::net::Net;
 use crate::param::ParamSlot;
@@ -189,6 +190,12 @@ pub struct NetBuilder {
     /// [`assert_no_source_transitions`](NetBuilder::assert_no_source_transitions).
     /// Off by default: a generator is a perfectly good transition.
     assert_no_source_transitions: bool,
+    /// How the built net's default selector breaks ties, as set by
+    /// [`tie_break`](NetBuilder::tie_break).
+    tie_break: TieBreak,
+    /// Whether the author declared the net resettable, with
+    /// [`resettable`](NetBuilder::resettable).
+    resettable: bool,
 }
 
 impl NetBuilder {
@@ -205,6 +212,8 @@ impl NetBuilder {
             label_limit: DEFAULT_LABEL_LIMIT,
             assert_acyclic: false,
             assert_no_source_transitions: false,
+            tie_break: TieBreak::FirstDeclared,
+            resettable: false,
         }
     }
 
@@ -531,6 +540,31 @@ impl NetBuilder {
         self.label_limit = limit;
     }
 
+    /// Sets how the built net's default selector breaks ties between
+    /// fireable transitions of equal priority: batch order
+    /// ([`TieBreak::FirstDeclared`], the default) or flow order
+    /// ([`TieBreak::LastDeclared`]). See [`TieBreak`] for why it is a
+    /// choice, and [`Net::set_tie_break`] to change it later.
+    pub fn tie_break(&mut self, tie_break: TieBreak) -> &mut Self {
+        self.tie_break = tie_break;
+        self
+    }
+
+    /// Declares that rebuilding this net with the code that built it gives
+    /// back an equivalent starting state, so a tool may offer to reset it.
+    ///
+    /// A [`Net`] cannot be cloned, so a reset can only be a rebuild, and
+    /// only the author knows whether a rebuild is a true reset: bodies that
+    /// write files, call out over a network, draw random numbers or keep
+    /// global state are not undone by building a new net. Tools that reset
+    /// — the Bevy visualiser's Reset button — check
+    /// [`Net::is_resettable`] and refuse a net that was not declared. Off by
+    /// default.
+    pub fn resettable(&mut self) -> &mut Self {
+        self.resettable = true;
+        self
+    }
+
     /// Asks [`build`](NetBuilder::build) to refuse a net whose token flow
     /// has a cycle.
     ///
@@ -841,6 +875,8 @@ impl NetBuilder {
             state_counter: 0,
             fired_count: 0,
             selector: None,
+            tie_break: self.tie_break,
+            resettable: self.resettable,
             label_limit: self.label_limit,
             events: Vec::new(),
         };
@@ -1084,6 +1120,8 @@ impl fmt::Debug for NetBuilder {
             )
             .field("label_limit", &self.label_limit)
             .field("assert_acyclic", &self.assert_acyclic)
+            .field("tie_break", &self.tie_break)
+            .field("resettable", &self.resettable)
             .field(
                 "assert_no_source_transitions",
                 &self.assert_no_source_transitions,
@@ -1095,6 +1133,19 @@ impl fmt::Debug for NetBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Resetting is the author's promise, so nothing makes it but the
+    /// builder call.
+    #[test]
+    fn a_net_is_resettable_only_when_declared() {
+        let plain = NetBuilder::new().build().expect("an empty net builds");
+        assert!(!plain.is_resettable(), "off by default");
+
+        let mut b = NetBuilder::new();
+        b.resettable();
+        let declared = b.build().expect("an empty net builds");
+        assert!(declared.is_resettable());
+    }
 
     #[test]
     fn duplicate_names_are_rejected() {

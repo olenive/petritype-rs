@@ -246,8 +246,11 @@
 //!   [`RunSummary`](drivers::RunSummary) reports what the call did.
 //! - [`TransitionBuilder::guard`] and [`TransitionBuilder::priority`] decide
 //!   what is fireable and which of the fireable ones the default
-//!   [`Selector`] picks; [`Net::set_selector`] replaces that choice and
-//!   [`Net::clear_selector`] puts it back, and [`Net::enable`] /
+//!   [`Selector`] picks, with ties going by the net's [`TieBreak`] (first
+//!   declared, or last declared for flow order);
+//!   [`Net::set_selector`] replaces that choice,
+//!   [`Net::clear_selector`] puts it back, [`Net::select`] reports it
+//!   without firing, and [`Net::enable`] /
 //!   [`Net::disable`] switch a transition off and on.
 //! - [`NetBuilder::assert_acyclic`] and
 //!   [`NetBuilder::assert_no_source_transitions`] are the two opt-in checks
@@ -307,7 +310,7 @@ pub use edge::{
 };
 pub use error::{BodyPanicked, BuildError, CommandError, FiringFailed, NetError};
 pub use event::Event;
-pub use firing::{Completed, Firing, Selector};
+pub use firing::{Completed, Firing, Selector, TieBreak};
 pub use ids::{NetId, PlaceId, PlaceRef, TokenId, TransitionId};
 pub use net::{Net, PlaceInfo};
 pub use param::Param;

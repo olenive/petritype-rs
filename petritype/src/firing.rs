@@ -115,6 +115,36 @@ const NON_EMPTY: &str = "a fireable transition's input places all hold a token";
 /// is the usual reason to want one.
 pub type Selector = Box<dyn Fn(&Net, &[TransitionId]) -> Option<TransitionId> + Send + Sync>;
 
+/// How the default selector breaks a tie between fireable transitions of
+/// equal [`priority`](crate::TransitionBuilder::priority).
+///
+/// The choice shapes how a pipeline drains, and neither shape is more
+/// correct than the other. Places are FIFO, so in a chain
+/// `A -> First -> B -> Second -> C` with several tokens in `A`:
+///
+/// - [`FirstDeclared`](TieBreak::FirstDeclared) keeps choosing `First` while
+///   `A` has anything in it, so the tokens move in **batches**: every one
+///   through stage one before any reaches stage two.
+/// - [`LastDeclared`](TieBreak::LastDeclared) prefers the stage furthest
+///   along, so each token **flows** all the way through before the next one
+///   enters.
+///
+/// It is a setting rather than a rule for that reason, set with
+/// [`NetBuilder::tie_break`](crate::NetBuilder::tie_break) or
+/// [`Net::set_tie_break`]. The default is `FirstDeclared`, which is the
+/// Python library's definition-order rule and what every net built before
+/// this setting existed already did. A custom selector installed with
+/// [`Net::set_selector`] makes its own choice and ignores it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[non_exhaustive]
+pub enum TieBreak {
+    /// Ties go to the transition declared first: batch order.
+    #[default]
+    FirstDeclared,
+    /// Ties go to the transition declared last: flow order.
+    LastDeclared,
+}
+
 impl Net {
     // ----- fireability ----------------------------------------------------
 
@@ -264,8 +294,9 @@ impl Net {
     }
 
     /// Puts the default selector back: highest
-    /// [`priority`](crate::TransitionBuilder::priority) first, ties to the
-    /// transition declared first.
+    /// [`priority`](crate::TransitionBuilder::priority) first, ties broken by
+    /// the net's [`TieBreak`] (the transition declared first, unless set
+    /// otherwise).
     ///
     /// The undo of [`set_selector`](Net::set_selector), and the way back to a
     /// deterministic sequential run after a phase that wanted a different
@@ -352,17 +383,9 @@ impl Net {
             return Ok(None);
         }
 
-        // Selection reads the net and nothing more, so it is a block of
-        // shared borrows that ends before the firing takes `&mut self`.
-        let chosen = {
-            let net: &Net = self;
-            match &net.selector {
-                Some(selector) => selector(net, &fireable),
-                None => default_selector(net, &fireable),
-            }
-        };
-
-        let Some(chosen) = chosen else {
+        // Selection reads the net and nothing more, so it ends before the
+        // firing takes `&mut self`.
+        let Some(chosen) = self.select_from(&fireable) else {
             return Ok(None);
         };
         debug_assert!(
@@ -375,6 +398,74 @@ impl Net {
 
         self.fire_now(chosen)?;
         Ok(Some(chosen))
+    }
+
+    /// Changes how the default selector breaks ties between transitions of
+    /// equal priority; see [`TieBreak`] for what each choice does to a
+    /// pipeline. Takes effect from the next choice. A custom selector
+    /// installed with [`set_selector`](Net::set_selector) ignores it.
+    pub fn set_tie_break(&mut self, tie_break: TieBreak) {
+        self.tie_break = tie_break;
+    }
+
+    /// How the default selector breaks ties: as built, or as last set with
+    /// [`set_tie_break`](Net::set_tie_break).
+    pub fn tie_break(&self) -> TieBreak {
+        self.tie_break
+    }
+
+    /// The transition [`step`](Net::step) would fire right now, without
+    /// firing it: the installed selector's choice from
+    /// [`fireable`](Net::fireable), or the default rule's if none is
+    /// installed.
+    ///
+    /// This is the net's own choice, offered to whoever needs it before the
+    /// firing rather than after: a visualiser that highlights the next
+    /// transition, or a driver that stages the firing itself with
+    /// `launch(net.select()?)` so its body can run elsewhere. Either would
+    /// otherwise have to re-implement the rule — and a custom selector,
+    /// being a closure inside the net, cannot be re-implemented at all.
+    ///
+    /// `None` when nothing is fireable, or when the selector declines. Guards
+    /// and the selector run, exactly as for `step`; nothing in the net is
+    /// changed. A selector that keeps state of its own, such as a
+    /// round-robin, counts every call as a choice, so ask once per firing.
+    ///
+    /// ```
+    /// # use petritype::{NetBuilder, TakeEdge};
+    /// # let mut b = NetBuilder::new();
+    /// # let inbox = b.place::<u32>("Inbox");
+    /// # let out = b.place::<u32>("Out");
+    /// let double = b
+    ///     .transition("Double", (TakeEdge(inbox),), (out,), |n: u32| (n * 2,))
+    ///     .id();
+    /// let mut net = b.build()?;
+    /// assert_eq!(net.select(), None, "nothing to fire");
+    ///
+    /// net.put(inbox, 21);
+    /// let chosen = net.select().expect("Double is fireable");
+    /// assert_eq!(chosen, double);
+    /// assert_eq!(net.fired_count(), 0, "choosing fires nothing");
+    ///
+    /// let firing = net.launch(chosen)?;
+    /// net.distribute(firing.run())?;
+    /// assert_eq!(net.fired_count(), 1);
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn select(&self) -> Option<TransitionId> {
+        self.select_from(&self.fireable())
+    }
+
+    /// The choice itself, written once: the installed selector, or the
+    /// default rule, over a fireable list the caller already has.
+    fn select_from(&self, fireable: &[TransitionId]) -> Option<TransitionId> {
+        if fireable.is_empty() {
+            return None;
+        }
+        match &self.selector {
+            Some(selector) => selector(self, fireable),
+            None => default_selector(self, fireable),
+        }
     }
 
     /// Fires one named transition, whatever the selector would have chosen.
@@ -1153,15 +1244,17 @@ impl fmt::Debug for Completed {
 }
 
 /// The selector a net uses until [`Net::set_selector`] replaces it: highest
-/// priority wins, ties go to the transition declared first.
+/// priority wins, ties go by the net's [`TieBreak`].
 ///
-/// `fireable` is in declaration order, and the comparison is strict, so the
-/// first transition with the top score is the one kept.
+/// `fireable` is in declaration order. A strict comparison keeps the first
+/// transition with the top score, and a non-strict one keeps the last, so
+/// the tie-break is nothing more than which comparison is used.
 pub(crate) fn default_selector(net: &Net, fireable: &[TransitionId]) -> Option<TransitionId> {
+    let last = net.tie_break == TieBreak::LastDeclared;
     let mut best: Option<(TransitionId, f64)> = None;
     for &transition in fireable {
         let score = net.priority_of(transition);
-        if best.is_none_or(|(_, top)| score > top) {
+        if best.is_none_or(|(_, top)| score > top || (last && score == top)) {
             best = Some((transition, score));
         }
     }
@@ -1364,6 +1457,113 @@ mod tests {
     use crate::edge::TakeEdge;
     use crate::erased::ErasedInputs;
     use crate::{Event, NetBuilder};
+
+    /// A chain `A -> First -> B -> Second -> C` holding three tokens, with
+    /// both transitions at the default priority.
+    fn pipeline(tie_break: Option<TieBreak>) -> (Net, TransitionId, TransitionId) {
+        let mut b = NetBuilder::new();
+        let a = b.place::<u32>("A");
+        let mid = b.place::<u32>("B");
+        let c = b.place::<u32>("C");
+        b.seed(a, [1, 2, 3]);
+        let first = b
+            .transition("First", (TakeEdge(a),), (mid,), |n: u32| (n,))
+            .id();
+        let second = b
+            .transition("Second", (TakeEdge(mid),), (c,), |n: u32| (n,))
+            .id();
+        if let Some(tie_break) = tie_break {
+            b.tie_break(tie_break);
+        }
+        (b.build().expect("a two-stage pipeline"), first, second)
+    }
+
+    /// Every firing `step` makes until the net is quiescent, in order.
+    fn run_order(net: &mut Net) -> Vec<TransitionId> {
+        std::iter::from_fn(|| net.step().expect("nothing fails")).collect()
+    }
+
+    #[test]
+    fn the_default_tie_break_drains_a_pipeline_in_batches() {
+        let (mut net, first, second) = pipeline(None);
+        assert_eq!(net.tie_break(), TieBreak::FirstDeclared);
+        assert_eq!(
+            run_order(&mut net),
+            [first, first, first, second, second, second],
+            "every token through stage one before any reaches stage two"
+        );
+    }
+
+    #[test]
+    fn last_declared_lets_each_token_flow_through() {
+        let (mut net, first, second) = pipeline(Some(TieBreak::LastDeclared));
+        assert_eq!(net.tie_break(), TieBreak::LastDeclared);
+        assert_eq!(
+            run_order(&mut net),
+            [first, second, first, second, first, second],
+            "one token all the way through before the next enters"
+        );
+
+        // Set on the net, it takes effect from the next choice; and a tie is
+        // only a tie between equal priorities.
+        let (mut net, first, _) = pipeline(None);
+        net.step().expect("First fires");
+        net.set_tie_break(TieBreak::LastDeclared);
+        assert_ne!(net.select(), Some(first), "Second is now preferred");
+        let (mut net, first, _) = pipeline(Some(TieBreak::LastDeclared));
+        net.step().expect("First fires");
+        net.transitions[first.0 as usize].priority = Some(Box::new(|_: &Net| 1.0));
+        assert_eq!(net.select(), Some(first), "priority beats the tie-break");
+    }
+
+    #[test]
+    fn a_custom_selector_ignores_the_tie_break() {
+        let (mut net, first, _) = pipeline(Some(TieBreak::LastDeclared));
+        net.step().expect("First fires, B now has a token");
+        net.set_selector(|_net, fireable| fireable.first().copied());
+        assert_eq!(net.select(), Some(first), "the selector's own rule");
+    }
+
+    /// [`Net::select`] asks the *installed* selector, so a custom rule that
+    /// no caller could copy — here a round-robin with state of its own — is
+    /// what it reports, one choice per firing.
+    #[test]
+    fn select_honours_a_custom_selector_and_is_none_when_quiescent() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let mut b = NetBuilder::new();
+        let inbox = b.place::<u32>("Inbox");
+        let out = b.place::<u32>("Out");
+        b.seed(inbox, [1, 2, 3, 4]);
+        let first = b
+            .transition("First", (TakeEdge(inbox),), (out,), |n: u32| (n,))
+            .id();
+        let second = b
+            .transition("Second", (TakeEdge(inbox),), (out,), |n: u32| (n,))
+            .id();
+        let mut net = b.build().expect("a two-transition net");
+
+        assert_eq!(net.select(), Some(first), "the default: declared first");
+
+        let turn = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&turn);
+        net.set_selector(move |_net, fireable| {
+            let i = counter.load(Ordering::SeqCst);
+            fireable.get(i % fireable.len()).copied()
+        });
+
+        let mut chosen = Vec::new();
+        while let Some(next) = net.select() {
+            assert_eq!(net.select(), Some(next), "asking twice changes nothing");
+            net.fire(next).expect("the selector chose a fireable one");
+            turn.fetch_add(1, Ordering::SeqCst);
+            chosen.push(next);
+        }
+        assert_eq!(chosen, [first, second, first, second], "round-robin");
+        assert_eq!(net.count(out.id()), 4);
+        assert_eq!(net.select(), None, "quiescent");
+    }
 
     /// [`NetError::NotInFlight`] is a guard the safe API cannot reach: a
     /// [`Completed`] is minted only by [`Net::launch`], which leaves its

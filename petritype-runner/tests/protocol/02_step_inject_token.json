@@ -1,0 +1,97 @@
+{
+  "net": "parcel-distribution",
+  "params": {},
+  "exchanges": [
+    {
+      "send": {"method": "load", "params": {"net": "parcel-distribution"}},
+      "expect": [
+        {"method": "load_progress", "params": {"step": "build", "message": "<label>", "marking_version": 0, "running": false}},
+        {"method": "reloaded", "params": {"generation": 1, "reason": "load", "marking_version": 0, "running": false}},
+        {"id": "1", "result": {"status": "loaded", "generation": 1, "marking_version": 0}}
+      ]
+    },
+    {
+      "send": {"method": "step"},
+      "expect": [
+        {"method": "fired", "params": {"transition": "Sort", "consumed": [["Receiving", "0"]],
+          "produced": [["Sorted", "3", "Parcel { id: 1, weight: 5 }"]], "duration_ms": "<ms>",
+          "marking_version": 2, "running": false}},
+        {"method": "fireable", "params": {"transitions": ["Sort", "Dispatch"], "marking_version": 2, "running": false}},
+        {"id": "2", "result": {"fired": true, "transition": "Sort", "marking_version": 2, "running": false}}
+      ]
+    },
+    {
+      "send": {"method": "step"},
+      "expect": [
+        {"method": "fired", "params": {"transition": "Sort", "consumed": [["Receiving", "1"]],
+          "produced": [["Sorted", "4", "Parcel { id: 2, weight: 12 }"]], "duration_ms": "<ms>",
+          "marking_version": 4, "running": false}},
+        {"method": "fireable", "params": {"transitions": ["Dispatch"], "marking_version": 4, "running": false}},
+        {"id": "3", "result": {"fired": true, "transition": "Sort", "marking_version": 4, "running": false}}
+      ]
+    },
+    {
+      "send": {"method": "step"},
+      "expect": [
+        {"method": "mutated", "params": {"place": "Fleet", "id": "2",
+          "label": "Fleet { trucks: 2, next_truck: 2, loads: 1 }", "marking_version": 5, "running": false}},
+        {"method": "fired", "params": {"transition": "Dispatch", "consumed": [["Sorted", "3"]],
+          "produced": [["Dispatched", "5", "Parcel { id: 1, weight: 5 }"]], "duration_ms": "<ms>",
+          "marking_version": 6, "running": false}},
+        {"id": "4", "result": {"fired": true, "transition": "Dispatch", "marking_version": 6, "running": false}}
+      ]
+    },
+    {
+      "send": {"method": "inject", "params": {"place": "Receiving", "token": {"id": 7, "weight": 9}}},
+      "expect": [
+        {"method": "added", "params": {"place": "Receiving", "id": "6",
+          "label": "Parcel { id: 7, weight: 9 }", "marking_version": 7, "running": false}},
+        {"method": "fireable", "params": {"transitions": ["Sort", "Dispatch"], "marking_version": 7, "running": false}},
+        {"id": "5", "result": {"status": "injected", "id": "6", "marking_version": 7}}
+      ]
+    },
+    {
+      "send": {"method": "get_token", "params": {"id": "6"}},
+      "expect": [
+        {"id": "6", "result": {"id": "6", "place": "Receiving", "type_name": "parcel_runner::nets::Parcel",
+          "kind": "json", "value": {"id": 7, "weight": 9}}}
+      ]
+    },
+    {
+      "send": {"method": "get_token", "params": {"id": "2"}},
+      "expect": [
+        {"id": "7", "result": {"id": "2", "place": "Fleet", "type_name": "parcel_runner::nets::Fleet",
+          "kind": "text", "text": "Fleet { trucks: 2, next_truck: 2, loads: 1 }"}}
+      ]
+    },
+    {
+      "send": {"method": "get_token", "params": {"id": "0"}},
+      "expect": [
+        {"id": "8", "error": {"code": "unknown_token", "message": "<label>"}}
+      ]
+    },
+    {
+      "send": {"method": "inject", "params": {"place": "Sorted", "token": {"id": 8, "weight": 1}}},
+      "expect": [
+        {"id": "9", "error": {"code": "not_serializable", "message": "<label>"}}
+      ]
+    },
+    {
+      "send": {"method": "inject", "params": {"place": "Receiving", "token": "a parcel"}},
+      "expect": [
+        {"id": "10", "error": {"code": "invalid_token", "message": "<label>"}}
+      ]
+    },
+    {
+      "send": {"method": "get_log", "params": {"after": 1}},
+      "expect": [
+        {"id": "11", "result": {"entries": [
+          {"seq": 2, "transition": "Sort", "started_at": "<time>", "duration_ms": "<ms>", "outcome": "fired",
+           "consumed": [["Receiving", "1"]], "produced": [["Sorted", "4"]]},
+          {"seq": 3, "transition": "Dispatch", "started_at": "<time>", "duration_ms": "<ms>", "outcome": "fired",
+           "consumed": [["Sorted", "3"]], "produced": [["Dispatched", "5"]]}
+        ]}}
+      ]
+    }
+  ]
+}

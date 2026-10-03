@@ -1,0 +1,124 @@
+{
+  "net": "parcel-distribution",
+  "params": {"trucks": 1},
+  "exchanges": [
+    {
+      "send": {"method": "load", "params": {"net": "parcel-distribution", "params": {"trucks": 1}}},
+      "expect": [
+        {"method": "load_progress", "params": {"step": "build", "message": "<label>", "marking_version": 0, "running": false}},
+        {"method": "reloaded", "params": {"generation": 1, "reason": "load", "marking_version": 0, "running": false}},
+        {"id": "1", "result": {"status": "loaded", "generation": 1, "marking_version": 0}}
+      ]
+    },
+    {
+      "send": {"method": "disable", "params": {"transition": "Sort"}},
+      "expect": [
+        {"method": "toggled", "params": {"transition": "Sort", "enabled": false, "marking_version": 1, "running": false}},
+        {"method": "fireable", "params": {"transitions": [], "marking_version": 1, "running": false}},
+        {"id": "2", "result": {"marking_version": 1}}
+      ]
+    },
+    {
+      "send": {"method": "disable", "params": {"transition": "Sort"}},
+      "expect": [
+        {"id": "3", "result": {"marking_version": 1}}
+      ]
+    },
+    {
+      "send": {"method": "disable", "params": {"transition": "Unload"}},
+      "expect": [
+        {"id": "4", "error": {"code": "unknown_transition", "message": "<label>"}}
+      ]
+    },
+    {
+      "send": {"method": "inject", "params": {"place": "Inspection", "token": {"id": 9, "weight": 150}}},
+      "expect": [
+        {"method": "added", "params": {"place": "Inspection", "id": "3",
+          "label": "Parcel { id: 9, weight: 150 }", "marking_version": 2, "running": false}},
+        {"method": "fireable", "params": {"transitions": ["Inspect"], "marking_version": 2, "running": false}},
+        {"id": "5", "result": {"status": "injected", "id": "3", "marking_version": 2}}
+      ]
+    },
+    {
+      "send": {"method": "step"},
+      "expect": [
+        {"method": "launched", "params": {"transition": "Inspect", "consumed": [["Inspection", "3"]],
+          "marking_version": 3, "running": false}},
+        {"method": "failed", "params": {"transition": "Inspect", "error": "parcel 9 is too heavy: 150 kg",
+          "restored": false, "consumed": [["Inspection", "3"]], "marking_version": 4, "running": false}},
+        {"method": "fireable", "params": {"transitions": [], "marking_version": 4, "running": false}},
+        {"id": "6", "result": {"fired": true, "transition": "Inspect", "marking_version": 4, "running": false}}
+      ]
+    },
+    {
+      "send": {"method": "set_param", "params": {"param": "paused", "value": true}},
+      "expect": [
+        {"method": "param_changed", "params": {"param": "paused", "marking_version": 5, "running": false}},
+        {"id": "7", "result": {"marking_version": 5}}
+      ]
+    },
+    {
+      "send": {"method": "enable", "params": {"transition": "Sort"}},
+      "expect": [
+        {"method": "toggled", "params": {"transition": "Sort", "enabled": true, "marking_version": 6, "running": false}},
+        {"id": "8", "result": {"marking_version": 6}}
+      ]
+    },
+    {
+      "send": {"method": "set_param", "params": {"param": "paused", "value": false}},
+      "expect": [
+        {"method": "param_changed", "params": {"param": "paused", "marking_version": 7, "running": false}},
+        {"method": "fireable", "params": {"transitions": ["Sort"], "marking_version": 7, "running": false}},
+        {"id": "9", "result": {"marking_version": 7}}
+      ]
+    },
+    {
+      "send": {"method": "set_param", "params": {"param": "speed", "value": 2}},
+      "expect": [
+        {"id": "10", "error": {"code": "unsupported", "message": "<label>"}}
+      ]
+    },
+    {
+      "send": {"method": "get_log"},
+      "expect": [
+        {"id": "11", "result": {"entries": [
+          {"seq": 1, "transition": "Inspect", "started_at": "<time>", "duration_ms": "<ms>", "outcome": "failed",
+           "consumed": [["Inspection", "3"]], "produced": [],
+           "error": "parcel 9 is too heavy: 150 kg", "restored": false}
+        ]}}
+      ]
+    },
+    {
+      "send": {"method": "reset"},
+      "expect": [
+        {"method": "reloaded", "params": {"generation": 2, "reason": "reset", "marking_version": 7, "running": false}},
+        {"id": "12", "result": {"status": "reset", "generation": 2, "marking_version": 7}}
+      ]
+    },
+    {
+      "send": {"method": "get_place_tokens", "params": {"place": "Receiving"}},
+      "expect": [
+        {"id": "13", "result": {
+          "place": "Receiving", "marking_version": 7, "count": 2, "offset": 0, "limit": 200,
+          "tokens": [
+            {"id": "0", "label": "Parcel { id: 1, weight: 5 }"},
+            {"id": "1", "label": "Parcel { id: 2, weight: 12 }"}
+          ],
+          "has_more": false
+        }}
+      ]
+    },
+    {
+      "send": {"method": "get_log"},
+      "expect": [
+        {"id": "14", "result": {"entries": []}}
+      ]
+    },
+    {
+      "send": {"method": "shutdown"},
+      "expect": [
+        {"id": "15", "result": {"status": "ok"}}
+      ]
+    }
+  ]
+}

@@ -1,0 +1,67 @@
+{
+  "net": "parcel-intake",
+  "params": {},
+  "exchanges": [
+    {
+      "send": {"method": "load", "params": {"net": "parcel-intake"}},
+      "expect": [
+        {"method": "load_progress", "params": {"step": "build", "message": "<label>", "marking_version": 0, "running": false}},
+        {"method": "reloaded", "params": {"generation": 1, "reason": "load", "marking_version": 0, "running": false}},
+        {"id": "1", "result": {"status": "loaded", "generation": 1, "marking_version": 0}}
+      ]
+    },
+    {
+      "send": {"method": "start"},
+      "expect": [
+        {"id": "2", "result": {"status": "started", "marking_version": 0, "running": true}},
+        {"method": "idle", "params": {"idle_since": "<time>", "marking_version": 0, "running": true}}
+      ]
+    },
+    {
+      "send": {"method": "inject", "params": {"place": "Inbox", "token": {"id": 3, "weight": 2}}},
+      "expect": [
+        {"method": "added", "params": {"place": "Inbox", "id": "0",
+          "label": "Parcel { id: 3, weight: 2 }", "marking_version": 1, "running": true}},
+        {"method": "fireable", "params": {"transitions": ["Shelve"], "marking_version": 1, "running": true}},
+        {"id": "3", "result": {"status": "injected", "id": "0", "marking_version": 1}},
+        {"method": "fired", "params": {"transition": "Shelve", "consumed": [["Inbox", "0"]],
+          "produced": [["Shelf", "1", "Parcel { id: 3, weight: 2 }"]], "duration_ms": "<ms>",
+          "marking_version": 3, "running": true}},
+        {"method": "fireable", "params": {"transitions": [], "marking_version": 3, "running": true}},
+        {"method": "idle", "params": {"idle_since": "<time>", "marking_version": 3, "running": true}}
+      ]
+    },
+    {
+      "send": {"method": "stop"},
+      "expect": [
+        {"id": "4", "result": {"status": "stopped", "marking_version": 3, "running": false}}
+      ]
+    },
+    {
+      "send": {"method": "get_state", "params": {"token_limit": 1}},
+      "expect": [
+        {"id": "5", "result": {
+          "protocol_version": 1, "runtime": "rust", "net": "parcel-intake",
+          "generation": 1, "marking_version": 3, "running": false,
+          "topology": {
+            "places": [
+              {"name": "Inbox", "type_name": "parcel_runner::nets::Parcel", "serializable": true},
+              {"name": "Shelf", "type_name": "parcel_runner::nets::Parcel", "serializable": false}
+            ],
+            "transitions": [{"name": "Shelve", "detail": {"params": [], "detachable": true}}],
+            "edges": [
+              {"place": "Inbox", "transition": "Shelve", "direction": "in", "kind": "take"},
+              {"place": "Shelf", "transition": "Shelve", "direction": "out"}
+            ]
+          },
+          "transitions": {"Shelve": {"enabled": true, "fireable": false, "in_flight": false, "priority": 0}},
+          "marking": {"places": {
+            "Inbox": {"count": 0, "tokens": []},
+            "Shelf": {"count": 1, "tokens": [{"id": "1", "label": "Parcel { id: 3, weight: 2 }"}]}
+          }},
+          "progress": {"step_count": 1, "last_fired": "Shelve", "fired_counts": {"Shelve": 1}, "last_progress_at": "<time>"}
+        }}
+      ]
+    }
+  ]
+}

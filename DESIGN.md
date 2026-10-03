@@ -841,7 +841,7 @@ Cargo workspace, edition 2024, MSRV = current stable minus two (must be
 | `petritype-dot` | Graphviz DOT text of a net and its marking (**done, slice 12**) | `petritype` only |
 | `petritype-bevy` | `NetRes`, mirror systems, token entities, in-flight highlighting, task-pool driver | pins one Bevy version |
 | `petritype-tokio` | only if a need appears | |
-| `petritype-runner` | planned (§19): turns a user's binary into a net process speaking the shared protocol | `petritype` with `serde`, `serde_json` |
+| `petritype-runner` | turns a user's binary into a net process speaking the shared protocol (**done, slice 14**, §19.3) | `petritype` with `serde`, `serde_json`, `rustix` on Unix |
 
 Examples (each also an integration test), mirroring the Python acceptance set:
 quickstart, parcel distribution, caching (union return → routed enum),
@@ -993,9 +993,10 @@ Slices, each with tests, in order:
 14. Interop (§19): `PlaceInfo::serializable`, the owned `Topology`,
     `Serialize` on `Event`, `EdgeInfo` and `EdgeKind`; then the
     `petritype-runner` crate (function-table registry, `--describe`, the
-    stdout guard, the owner loop), tested against the shared protocol
-    transcripts in `../petritype/tests/protocol/`. The core part landed
-    2026-10-03 (with `Net::debug`); the runner crate is not started.
+    stdout guard, the owner loop), tested against protocol transcripts.
+    Core part and runner crate landed 2026-10-03; the transcripts and
+    their format live in `petritype-runner/tests/protocol/` until the
+    Python repository adopts them (§19.3.8, §19.3.10).
 
 ## 19. Interop: one protocol, two runtimes, two viewers
 
@@ -1093,7 +1094,7 @@ a wire format they do not own. `Snapshot` stays unserialisable; tokens are
 
 ### 19.3 The `petritype-runner` crate
 
-**Design pass 2026-10-03, not yet implemented.** A library crate in this
+**Designed and built 2026-10-03**; as-built notes in §19.3.10. A library crate in this
 workspace plus an example binary. A net's bodies are the user's code, so the
 binary is always the user's own: it lists its nets and hands over to the
 crate. Dependencies: `petritype` with `serde`, `serde`, `serde_json`, and
@@ -1106,7 +1107,7 @@ is one line in, some lines out, and a body runs on a thread of its own.
 use petritype_runner::{Hosting, LoadError, NetEntry, ParamSpec, Params};
 
 fn main() -> std::process::ExitCode {
-    petritype_runner::main(&[
+    petritype_runner::main([
         NetEntry::new("parcel-distribution", parcel::build)
             .description("Sort and dispatch parcels")
             .param(ParamSpec::new("trucks", "u32").default(2)),
@@ -1119,6 +1120,10 @@ fn main() -> std::process::ExitCode {
 fn build(params: &Params) -> Result<petritype::Net, LoadError>;
 ```
 
+- `main` takes any `IntoIterator<Item = NetEntry>`. Factories are stored
+  boxed (`Box<dyn Fn(&Params) -> Result<Net, LoadError> + Send + Sync>`),
+  so `NetEntry::new` and `NetEntry::typed` take `impl Fn` and a plain `fn`
+  works.
 - `LoadError::{InvalidParams(String), Build(BuildError), Other(String)}`
   maps to `invalid_params`, `load_failed`, `load_failed`. A factory that
   panics is `load_failed` with the panic message (`catch_unwind`, as bodies
@@ -1319,6 +1324,53 @@ HTTP and server-sent events (the host relays); protocol version 0; token
 colours and position hints (nothing in the core produces them); `get_state
 {token_limit}` beyond the default 200 and `get_place_tokens` paging are in,
 but no complete-snapshot cache, because reads are answered from the live net.
+
+#### 19.3.10 As built, 2026-10-03
+
+Where the implementation settled something the design left open, or chose
+differently, with the reason:
+
+- **Inline firings** still log `Launched` then `Distributed` in the core;
+  the runner folds the pair into one `fired`, `duration_ms: 0`, since the
+  owner has one `now` for the whole `handle`.
+- **`fireable` is not compared after a detached launch**, only after the
+  landing, so no `fireable` line falls between `launched` and
+  `distributed`. At `load` and `reset` the set is recorded silently; the
+  `reloaded` already means "refetch".
+- **Inline runs stay interruptible.** A running net whose next firing is
+  inline fires one per `handle` and `Owner::wants_tick()` asks the loop to
+  queue a `Tick`, so a `stop` between firings is heard.
+- **Answered during a body**: the five reads and `stop`, plus `describe`
+  and `shutdown`.
+- **Heartbeat** carries `marking_version` and `running` like every
+  notification, read from atomics the owner mirrors; sent only while a net
+  is loaded. Period from `PETRITYPE_RUNNER_HEARTBEAT_MS` when set, for
+  tests.
+- **Load parameters**: `ParamSpec` defaults are filled in before the
+  factory runs; a missing required parameter is `invalid_params`.
+- **`set_param`**: a value that does not decode is `invalid_params`; a
+  parameter the net knows but did not register for the wire is
+  `unsupported`.
+- **`describe`** omits `schedule` and `description` when absent (protocol
+  §2 says omit; its §6.1 example shows `null`, flagged upstream).
+  `runtime_version` is the runner crate's own version; the core exports no
+  version constant.
+- **A failed `step`** answers `{fired: true, transition}` after its
+  `failed`: a transition was chosen and its firing landed. `progress`
+  counts successful firings only. The protocol does not say which is
+  right; flagged upstream.
+- **Future `Event` variants** the runner does not know become `reloaded
+  {reason: "resync"}`. `load_progress` is sent for `load` only.
+- **Token ids start at 0** in Rust and at 1 in Python, and after the
+  `launched`+`distributed` fold a Rust `fired` has still moved the version
+  by two. Cross-runtime transcripts therefore mask `<id>` and `<version>`;
+  a shared rule belongs in the protocol, flagged upstream.
+- **Four transcripts** in `petritype-runner/tests/protocol/`: describe and
+  load and state; steps with inject and `get_token`; toggles, a failing
+  body, `set_param` and reset; a continuous net going idle and waking.
+- The crate is `#![forbid(unsafe_code)]`; the fd swap is `rustix`'s
+  `fcntl_dupfd_cloexec` and `dup2_stdout`. The non-Unix path compiles and
+  is untested.
 
 ### 19.4 Who spawns it
 

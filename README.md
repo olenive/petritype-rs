@@ -57,6 +57,7 @@ a test.
 | `petritype` | the builder, `Net`, events, checks, drivers, commands, snapshots |
 | `petritype-derive` | `#[derive(Routed)]`, re-exported as `petritype::Routed` |
 | `petritype-dot` | Graphviz DOT text of a `Net` or a `Snapshot` |
+| `petritype-runner` | turns your binary into a net process speaking the shared [net protocol](https://github.com/olenive/petritype/blob/main/PROTOCOL.md) on stdin and stdout, for petritype-server and the Bevy visualiser |
 | `petritype-bevy` | separate repository: a Bevy visualiser that mirrors a running net into entities |
 
 ## Core Idea

@@ -1,0 +1,109 @@
+{
+  "net": "parcel-distribution",
+  "params": {"trucks": 3},
+  "exchanges": [
+    {
+      "send": {"method": "describe", "params": {}},
+      "expect": [
+        {"id": "1", "result": {
+          "protocol_version": 1, "runtime": "rust", "runtime_version": "0.1.0",
+          "nets": [
+            {"name": "parcel-distribution", "description": "Sort and dispatch parcels", "mode": "manual",
+             "params": [{"name": "trucks", "type_name": "u32", "required": false, "default": 2}]},
+            {"name": "parcel-intake", "description": "Shelve parcels as they are injected", "mode": "24/7",
+             "params": []}
+          ]
+        }}
+      ]
+    },
+    {
+      "send": {"method": "get_state", "params": {}},
+      "expect": [
+        {"id": "2", "error": {"code": "not_loaded", "message": "<label>"}}
+      ]
+    },
+    {
+      "send": {"method": "load", "params": {"net": "nowhere"}},
+      "expect": [
+        {"id": "3", "error": {"code": "unknown_net", "message": "<label>"}}
+      ]
+    },
+    {
+      "send": {"method": "load", "params": {"net": "parcel-distribution", "params": {"trucks": 3}}},
+      "expect": [
+        {"method": "load_progress", "params": {"step": "build", "message": "<label>", "marking_version": 0, "running": false}},
+        {"method": "reloaded", "params": {"generation": 1, "reason": "load", "marking_version": 0, "running": false}},
+        {"id": "4", "result": {"status": "loaded", "generation": 1, "marking_version": 0}}
+      ]
+    },
+    {
+      "send": {"method": "get_state", "params": {}},
+      "expect": [
+        {"id": "5", "result": {
+          "protocol_version": 1, "runtime": "rust", "net": "parcel-distribution",
+          "generation": 1, "marking_version": 0, "running": false,
+          "topology": {
+            "places": [
+              {"name": "Receiving", "type_name": "parcel_runner::nets::Parcel", "serializable": true},
+              {"name": "Sorted", "type_name": "parcel_runner::nets::Parcel", "serializable": false},
+              {"name": "Fleet", "type_name": "parcel_runner::nets::Fleet", "serializable": false},
+              {"name": "Dispatched", "type_name": "parcel_runner::nets::Parcel", "serializable": false},
+              {"name": "Inspection", "type_name": "parcel_runner::nets::Parcel", "serializable": true}
+            ],
+            "transitions": [
+              {"name": "Sort", "detail": {"params": [], "detachable": true}},
+              {"name": "Dispatch", "detail": {"params": [], "detachable": false}},
+              {"name": "Inspect", "detail": {"params": [], "detachable": true}}
+            ],
+            "edges": [
+              {"place": "Receiving", "transition": "Sort", "direction": "in", "kind": "take"},
+              {"place": "Sorted", "transition": "Sort", "direction": "out"},
+              {"place": "Sorted", "transition": "Dispatch", "direction": "in", "kind": "take"},
+              {"place": "Fleet", "transition": "Dispatch", "direction": "in", "kind": "mutate"},
+              {"place": "Dispatched", "transition": "Dispatch", "direction": "out"},
+              {"place": "Inspection", "transition": "Inspect", "direction": "in", "kind": "take"},
+              {"place": "Receiving", "transition": "Inspect", "direction": "out"}
+            ]
+          },
+          "transitions": {
+            "Sort": {"enabled": true, "fireable": true, "in_flight": false, "priority": 0},
+            "Dispatch": {"enabled": true, "fireable": false, "in_flight": false, "priority": 0},
+            "Inspect": {"enabled": true, "fireable": false, "in_flight": false, "priority": 0}
+          },
+          "marking": {"places": {
+            "Receiving": {"count": 2, "tokens": [
+              {"id": "0", "label": "Parcel { id: 1, weight: 5 }"},
+              {"id": "1", "label": "Parcel { id: 2, weight: 12 }"}
+            ]},
+            "Sorted": {"count": 0, "tokens": []},
+            "Fleet": {"count": 1, "tokens": [{"id": "2", "label": "Fleet { trucks: 3, next_truck: 1, loads: 0 }"}]},
+            "Dispatched": {"count": 0, "tokens": []},
+            "Inspection": {"count": 0, "tokens": []}
+          }},
+          "progress": {"step_count": 0, "last_fired": null, "fired_counts": {}, "last_progress_at": null}
+        }}
+      ]
+    },
+    {
+      "send": {"method": "get_place_tokens", "params": {"place": "Receiving", "limit": 1}},
+      "expect": [
+        {"id": "6", "result": {
+          "place": "Receiving", "marking_version": 0, "count": 2, "offset": 0, "limit": 1,
+          "tokens": [{"id": "0", "label": "Parcel { id: 1, weight: 5 }"}], "has_more": true
+        }}
+      ]
+    },
+    {
+      "send": {"method": "get_place_tokens", "params": {"place": "Loading Bay"}},
+      "expect": [
+        {"id": "7", "error": {"code": "unknown_place", "message": "<label>"}}
+      ]
+    },
+    {
+      "send": {"method": "teleport"},
+      "expect": [
+        {"id": "8", "error": {"code": "unknown_method", "message": "<label>"}}
+      ]
+    }
+  ]
+}

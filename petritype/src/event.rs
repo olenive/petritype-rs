@@ -21,7 +21,17 @@ use crate::ids::{PlaceId, TokenId, TransitionId};
 /// because time passes in between. Either way a firing's
 /// [`Mutated`](Event::Mutated) events come immediately before the event that
 /// ends it, and a failure ends it with [`Failed`](Event::Failed) instead.
+///
+/// With the `serde` feature it is `Serialize` (never `Deserialize`) in the
+/// core's id form, for logs and tests: tagged by variant under `"event"`,
+/// ids as bare numbers, so a [`Fired`](Event::Fired) reads
+/// `{"event":"fired","transition":0,"consumed":[[0,17]],"produced":[[1,18]]}`
+/// and a [`ParamChanged`](Event::ParamChanged)
+/// `{"event":"param_changed","type_name":"..."}`. Shapes keyed by name, for a
+/// wire protocol, live outside this crate.
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(tag = "event", rename_all = "snake_case"))]
 #[non_exhaustive]
 pub enum Event {
     /// One complete firing, consumed and produced together. Emitted by the

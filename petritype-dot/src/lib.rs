@@ -112,18 +112,10 @@ use petritype::{
 /// Anything the renderer can draw: a live [`Net`] or an owned [`Snapshot`].
 ///
 /// The methods are the read API of DESIGN §8.2, narrowed to what a diagram
-/// needs, and they carry the names [`Net`] gives them. Two deliberate
-/// differences:
-///
-/// - [`token_ids`](DotSource::token_ids) yields ids alone, because a diagram
-///   draws [`label`](DotSource::label)s rather than values, and the erased
-///   `&dyn Any` of `Net::tokens` would only be thrown away;
-/// - [`edges`](DotSource::edges) exists on both, although [`Snapshot`] has no
-///   `edges()` of its own: the implementation walks
-///   [`transitions`](DotSource::transitions) and rebuilds exactly the
-///   sequence [`Net::edges`] reports — every transition in id order, its
-///   inputs and then its outputs — so that the two sources render
-///   identically.
+/// needs, and they carry the names [`Net`] gives them. One deliberate
+/// difference: [`token_ids`](DotSource::token_ids) yields ids alone, because
+/// a diagram draws [`label`](DotSource::label)s rather than values, and the
+/// erased `&dyn Any` of `Net::tokens` would only be thrown away.
 ///
 /// Every method takes `&self`. A renderer never writes to the net, and never
 /// drains its events.
@@ -180,29 +172,8 @@ impl DotSource for Snapshot {
         Snapshot::transitions(self)
     }
 
-    /// The sequence [`Net::edges`] would give, rebuilt from the transitions a
-    /// snapshot carries: inputs then outputs, transition by transition.
     fn edges(&self) -> impl Iterator<Item = EdgeInfo> {
-        Snapshot::transitions(self).flat_map(|(transition, info)| {
-            let inputs = info
-                .inputs
-                .iter()
-                .map(move |&(place, kind)| EdgeInfo::Input {
-                    place,
-                    transition,
-                    kind,
-                });
-            let outputs =
-                info.outputs
-                    .iter()
-                    .enumerate()
-                    .map(move |(slot, &place)| EdgeInfo::Output {
-                        transition,
-                        place,
-                        slot,
-                    });
-            inputs.chain(outputs)
-        })
+        Snapshot::edges(self)
     }
 
     fn token_ids(&self, place: PlaceId) -> impl Iterator<Item = TokenId> {

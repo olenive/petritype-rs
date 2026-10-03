@@ -3,15 +3,18 @@
 use std::any::Any;
 use std::fmt;
 
+use crate::edge::EdgeInfo;
 use crate::error::NetError;
 use crate::ids::{NetId, PlaceId, TokenId, TransitionId};
 #[cfg(feature = "serde")]
 use crate::net::json_in;
 use crate::net::{
-    Net, PlaceInfo, count_in, debug_in, label_in, place_named_in, places_of, token_in, tokens_in,
+    Net, PlaceInfo, count_in, debug_in, edges_of, label_in, place_named_in, places_of, token_in,
+    tokens_in,
 };
 use crate::param::{ParamSlot, param_of};
 use crate::place::PlaceSlot;
+use crate::topology::Topology;
 use crate::transition::TransitionInfo;
 
 impl Net {
@@ -205,6 +208,23 @@ impl Snapshot {
             };
             (id, info)
         })
+    }
+
+    /// Every edge, as it was: [`Net::edges`], in the same order —
+    /// transition by transition, inputs and then outputs.
+    pub fn edges(&self) -> impl Iterator<Item = EdgeInfo> {
+        edges_of(self.transitions())
+    }
+
+    /// The shape of the net, owned: [`Net::topology`], and equal to it for
+    /// the same net.
+    pub fn topology(&self) -> Topology {
+        Topology::from_read_api(
+            self.places(),
+            self.transitions(),
+            self.edges(),
+            self.topology_counter,
+        )
     }
 
     /// The id of the place with this name: [`Net::place_named`].

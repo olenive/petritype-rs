@@ -569,9 +569,10 @@ inline one.
 ### 8.2 Read API
 
 ```rust
-net.places()      -> impl Iterator<Item = (PlaceId, PlaceInfo<'_>)>    // by value: name, type_name, count (count is live, never stored)
+net.places()      -> impl Iterator<Item = (PlaceId, PlaceInfo<'_>)>    // by value: name, type_name, serializable, count (count is live, never stored)
 net.transitions() -> impl Iterator<Item = (TransitionId, TransitionInfo<'_>)>  // by value: name, inputs, outputs, enabled, in_flight, detachable
 net.edges()       -> impl Iterator<Item = EdgeInfo>   // Input { place, transition, kind } | Output { transition, place, slot }; transition order, inputs then outputs
+net.topology()    -> Topology   // places, transitions, edges and topology_counter as owned values; shape only, no counts or switches (slice 14)
 net.place_named(&str) -> Option<PlaceId>;  net.transition_named(&str) -> Option<TransitionId>
 net.fireable() -> Vec<TransitionId>;  net.is_fireable(t) -> bool;  net.is_enabled(t) -> bool;  net.priority_of(t) -> f64
 net.count(place)  -> usize
@@ -588,8 +589,8 @@ net.topology_counter(), net.state_counter(), net.fired_count()
 `Snapshot` (slice 11) is the marking, the switches, the in-flight set, the
 parameters and the counters, cloned through the `PlaceMeta` vtables into an
 owned `Send + Sync + Clone` value with the same read API names as `Net`
-(`places`, `transitions`, `count`, `tokens`, `token`, `label`, `json`,
-`is_enabled`, `in_flight`, `param`, the counters). It is *not* a `Net`, and
+(`places`, `transitions`, `edges`, `topology`, `count`, `tokens`, `token`,
+`label`, `debug`, `json`, `is_enabled`, `in_flight`, `param`, the counters). It is *not* a `Net`, and
 cannot be: bodies are `Box<dyn FnMut>` and cannot be cloned, and an in-flight
 transition has no body in the net at all; a what-if copy is a rebuild from
 the builder. What it is for: a renderer or inspector on another thread owns
@@ -993,7 +994,8 @@ Slices, each with tests, in order:
     `Serialize` on `Event`, `EdgeInfo` and `EdgeKind`; then the
     `petritype-runner` crate (function-table registry, `--describe`, the
     stdout guard, the owner loop), tested against the shared protocol
-    transcripts in `../petritype/tests/protocol/`. Not started.
+    transcripts in `../petritype/tests/protocol/`. The core part landed
+    2026-10-03 (with `Net::debug`); the runner crate is not started.
 
 ## 19. Interop: one protocol, two runtimes, two viewers
 
@@ -1060,7 +1062,8 @@ body runs, without `snapshot()`.
 
 ### 19.2 Additive work in the core
 
-All behind the existing `serde` feature except the first two:
+All landed 2026-10-03, the core part of slice 14. All behind the existing
+`serde` feature except the first two:
 
 - `PlaceInfo::serializable: bool`. `PlaceInfo` is `#[non_exhaustive]`, so
   adding a field breaks nothing. Always present, `false` without `serde`.
@@ -1071,8 +1074,17 @@ All behind the existing `serde` feature except the first two:
 - An owned `Topology` (`net.topology()`, and the same on `Snapshot`): places,
   transitions and edges as owned values, `Serialize` with `serde`. A render
   thread or a runner can then hold the shape of the net without a borrow.
+  As built: `Topology { places: Vec<TopologyPlace>, transitions:
+  Vec<TopologyTransition>, edges: Vec<EdgeInfo>, topology_counter }`, shape
+  only (no counts, no switches), each entry carrying its id although index
+  and id agree, and no `NetId` because that is process-local. One
+  crate-private constructor builds it from the read API, and `Snapshot`
+  gained `edges()` so both sides derive edges through the same helper.
 - `Serialize` (not `Deserialize`) on `Event`, `EdgeInfo` and `EdgeKind`, in
-  their id form, for logs and tests.
+  their id form, for logs and tests. Shapes: `EdgeKind` is a snake_case
+  string (`"take_all"`); `EdgeInfo` is tagged under `"edge"`, because
+  `"kind"` is the input edge's `EdgeKind`; `Event` is tagged under `"event"`
+  with variant names in snake_case (`"param_changed"`).
 
 The protocol's own shapes, keyed by names with string token ids, live in
 `petritype-runner`, not in the core: the core's types must not be frozen by

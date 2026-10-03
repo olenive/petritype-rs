@@ -14,6 +14,7 @@ use crate::firing::{Selector, TieBreak};
 use crate::ids::{NetId, PlaceId, PlaceRef, TokenId, TransitionId, foreign_place};
 use crate::param::{ParamSlot, param_of, param_slot_index};
 use crate::place::{ErasedToken, PlaceSlot, erase_all};
+use crate::topology::Topology;
 use crate::transition::{TransitionInfo, TransitionSlot};
 
 /// A built net: places, their tokens, and the log of what has changed.
@@ -91,6 +92,16 @@ pub struct PlaceInfo<'a> {
     pub type_name: &'static str,
     /// How many tokens the place holds right now.
     pub count: usize,
+    /// Whether the place was marked serializable in the builder, with
+    /// `NetBuilder::serializable` (a `serde` feature method, so not linked
+    /// here: the link would dangle without the feature).
+    ///
+    /// That mark is what decides whether the place's tokens have a JSON view
+    /// (`Net::json`) and can be injected from JSON (`Command::from_json`).
+    /// The field is always present, so a reader need not be feature-gated
+    /// itself, and it is always `false` without the `serde` feature, which is
+    /// the only way to mark a place.
+    pub serializable: bool,
 }
 
 impl Net {
@@ -200,31 +211,32 @@ impl Net {
     /// A place nothing reads or writes appears in no edge; it is still a
     /// node, and [`places`](Net::places) is where a diagram gets its nodes.
     pub fn edges(&self) -> impl Iterator<Item = EdgeInfo> {
-        self.transitions
-            .iter()
-            .enumerate()
-            .flat_map(|(index, slot)| {
-                // The index is where the id came from in the first place.
-                let transition = TransitionId(index as u32);
-                let inputs = slot
-                    .inputs
-                    .iter()
-                    .map(move |&(place, kind)| EdgeInfo::Input {
-                        place,
-                        transition,
-                        kind,
-                    });
-                let outputs =
-                    slot.outputs
-                        .iter()
-                        .enumerate()
-                        .map(move |(slot, &place)| EdgeInfo::Output {
-                            transition,
-                            place,
-                            slot,
-                        });
-                inputs.chain(outputs)
-            })
+        edges_of(self.transitions())
+    }
+
+    /// The shape of the net, owned: its places, transitions and edges, with
+    /// no tokens and no switches. See [`Topology`].
+    ///
+    /// ```
+    /// # use petritype::{NetBuilder, TakeEdge};
+    /// # let mut b = NetBuilder::new();
+    /// # let inbox = b.place::<u32>("Inbox");
+    /// # let out = b.place::<u32>("Out");
+    /// # b.transition("Double", (TakeEdge(inbox),), (out,), |n: u32| (n * 2,));
+    /// # let mut net = b.build()?;
+    /// let shape = net.topology();
+    /// net.put(inbox, 7);
+    /// assert_eq!(net.topology(), shape, "tokens are state, not shape");
+    /// assert_eq!(shape.places[1].name, "Out");
+    /// # Ok::<(), petritype::BuildError>(())
+    /// ```
+    pub fn topology(&self) -> Topology {
+        Topology::from_read_api(
+            self.places(),
+            self.transitions(),
+            self.edges(),
+            self.topology_counter,
+        )
     }
 
     /// The id of the transition with this name, if the net has one. Names are
@@ -894,8 +906,43 @@ pub(crate) fn places_of(places: &[PlaceSlot]) -> impl Iterator<Item = (PlaceId, 
             name: &slot.meta.name,
             type_name: slot.meta.type_name,
             count: slot.tokens.len(),
+            #[cfg(feature = "serde")]
+            serializable: slot.meta.to_json.is_some(),
+            #[cfg(not(feature = "serde"))]
+            serializable: false,
         };
         (id, info)
+    })
+}
+
+/// Every edge of a net, given its transitions in id order: inputs then
+/// outputs, transition by transition.
+///
+/// Written once so that [`Net::edges`] and
+/// [`Snapshot::edges`](crate::Snapshot::edges) cannot disagree: both hand it
+/// their own read API.
+pub(crate) fn edges_of<'a>(
+    transitions: impl Iterator<Item = (TransitionId, TransitionInfo<'a>)>,
+) -> impl Iterator<Item = EdgeInfo> {
+    transitions.flat_map(|(transition, info)| {
+        let inputs = info
+            .inputs
+            .iter()
+            .map(move |&(place, kind)| EdgeInfo::Input {
+                place,
+                transition,
+                kind,
+            });
+        let outputs = info
+            .outputs
+            .iter()
+            .enumerate()
+            .map(move |(slot, &place)| EdgeInfo::Output {
+                transition,
+                place,
+                slot,
+            });
+        inputs.chain(outputs)
     })
 }
 

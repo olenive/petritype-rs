@@ -219,6 +219,10 @@
 //!   cloned — a what-if copy is a second `build()` — and it is a `Result`
 //!   because a [`place_no_clone`](NetBuilder::place_no_clone) place cannot
 //!   copy its tokens ([`NetError::NoClonePlace`]).
+//! - [`Net::topology`] (and [`Snapshot::topology`]) is the net's *shape*,
+//!   owned: places, transitions and edges with no tokens and no switches, as
+//!   a [`Topology`] that a render thread or a runner can hold without a
+//!   borrow. [`Snapshot::edges`] is [`Net::edges`] on a snapshot.
 //! - **fireable** and **enabled** are two different questions:
 //!   [`Net::enable`] / [`Net::disable`] work the author's on/off switch,
 //!   while *fireable* means "could fire right now" — switched on, input
@@ -271,7 +275,9 @@
 //!   parameter type the wire name a `set_param` command addresses it by. [`PlaceId`],
 //!   [`TransitionId`] and [`TokenId`] become `Serialize`/`Deserialize` as
 //!   bare numbers; [`NetId`] does not, being meaningless outside the process
-//!   that minted it. (All of these are hidden from this page unless the
+//!   that minted it. [`Event`], [`EdgeInfo`], [`EdgeKind`] and [`Topology`]
+//!   become `Serialize` (never `Deserialize`) in that id form, for logs and
+//!   tests; [`PlaceInfo::serializable`] says which places were marked. (All of these are hidden from this page unless the
 //!   feature is on.)
 
 #![warn(missing_docs, missing_debug_implementations, unreachable_pub)]
@@ -295,6 +301,7 @@ mod place;
 pub mod routing;
 mod sealed;
 mod snapshot;
+mod topology;
 mod transition;
 
 pub use body::{IntoOutcome, IntoTokens, OutputPlaces, PositionalOutputs, TransitionBody, marker};
@@ -316,6 +323,7 @@ pub use net::{Net, PlaceInfo};
 pub use param::Param;
 pub use routing::{Either, RoutedOutput};
 pub use snapshot::Snapshot;
+pub use topology::{Topology, TopologyPlace, TopologyTransition};
 pub use transition::{TransitionBuilder, TransitionInfo};
 
 /// Routes a returned value to the output place of its type; see

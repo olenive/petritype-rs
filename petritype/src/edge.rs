@@ -35,7 +35,13 @@ use crate::sealed::{EdgeSealed, EdgeTupleSealed};
 /// This is the form the net stores and the read API reports
 /// ([`TransitionInfo::inputs`](crate::TransitionInfo::inputs)); the typed
 /// form is [`TakeEdge`] and the other three structs.
+///
+/// With the `serde` feature it is `Serialize` (never `Deserialize`) as a
+/// snake_case string — `"take"`, `"take_all"`, `"snapshot"`, `"mutate"` —
+/// for logs and tests.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 pub enum EdgeKind {
     /// [`TakeEdge`]: consumes the front token.
     Take,
@@ -112,7 +118,16 @@ pub enum InputSpec {
 /// [kind](EdgeKind) saying *how* the transition reads the place, and an
 /// output edge carries the position of its slot among the transition's
 /// outputs, which is what a positional body returns into.
+///
+/// With the `serde` feature it is `Serialize` (never `Deserialize`) in the
+/// core's id form, for logs and tests, tagged by direction under `"edge"`
+/// (`"kind"` is taken by the input edge's [`EdgeKind`]):
+/// `{"edge":"input","place":0,"transition":1,"kind":"take"}` and
+/// `{"edge":"output","transition":1,"place":2,"slot":0}`. Shapes keyed by
+/// name, for a wire protocol, live outside this crate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(tag = "edge", rename_all = "snake_case"))]
 #[non_exhaustive]
 pub enum EdgeInfo {
     /// place → transition, with how the transition reads it.

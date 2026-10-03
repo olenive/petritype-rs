@@ -909,19 +909,21 @@ impl Owner {
         }
 
         if let Some(step_id) = flight.step_id {
+            let failed = matches!(result, Err(NetError::FiringFailed(_)));
             match result {
                 Ok(()) | Err(NetError::FiringFailed(_)) => {
                     let running = self.loaded_ref().running;
-                    respond(
-                        out,
-                        &step_id,
-                        json!({
-                            "fired": true,
-                            "transition": flight.name,
-                            "marking_version": self.marking_version,
-                            "running": running,
-                        }),
-                    );
+                    let mut answer = json!({
+                        "fired": true,
+                        "transition": flight.name,
+                        "marking_version": self.marking_version,
+                        "running": running,
+                    });
+                    // PROTOCOL.md §6.3: a step whose body failed says so.
+                    if failed {
+                        answer["failed"] = json!(true);
+                    }
+                    respond(out, &step_id, answer);
                 }
                 Err(other) => respond_error(out, &step_id, ErrorCode::Internal, other.to_string()),
             }

@@ -47,7 +47,7 @@
         {"method": "failed", "params": {"transition": "Inspect", "error": "parcel 9 is too heavy: 150 kg",
           "restored": false, "consumed": [["Inspection", "3"]], "marking_version": 4, "running": false}},
         {"method": "fireable", "params": {"transitions": [], "marking_version": 4, "running": false}},
-        {"id": "6", "result": {"fired": true, "transition": "Inspect", "marking_version": 4, "running": false}}
+        {"id": "6", "result": {"fired": true, "transition": "Inspect", "failed": true, "marking_version": 4, "running": false}}
       ]
     },
     {

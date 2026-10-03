@@ -1359,20 +1359,22 @@ differently, with the reason:
 - **`set_param`**: a value that does not decode is `invalid_params`; a
   parameter the net knows but did not register for the wire is
   `unsupported`.
-- **`describe`** omits `schedule` and `description` when absent (protocol
-  §2 says omit; its §6.1 example shows `null`, flagged upstream).
+- **`describe`** omits `schedule` and `description` when absent; the
+  protocol's example was corrected to match the same day.
   `runtime_version` is the runner crate's own version; the core exports no
   version constant.
-- **A failed `step`** answers `{fired: true, transition}` after its
-  `failed`: a transition was chosen and its firing landed. `progress`
-  counts successful firings only. The protocol does not say which is
-  right; flagged upstream.
+- **A failed `step`** answers `{fired: true, transition, failed: true}`
+  after its `failed`: a transition was chosen and its firing landed.
+  `progress` counts successful firings only. Now specified in PROTOCOL.md
+  §6.3, amended the same day.
 - **Future `Event` variants** the runner does not know become `reloaded
   {reason: "resync"}`. `load_progress` is sent for `load` only.
 - **Token ids start at 0** in Rust and at 1 in Python, and after the
   `launched`+`distributed` fold a Rust `fired` has still moved the version
-  by two. Cross-runtime transcripts therefore mask `<id>` and `<version>`;
-  a shared rule belongs in the protocol, flagged upstream.
+  by two. PROTOCOL.md §2 and §4 now say both are the runtime's business and
+  §11 has shared transcripts mask `<id>` and `<version>`. The wire label cap
+  of 1000 characters includes the `...` marker (§5.3), which the runner
+  honours.
 - **Four transcripts** in `petritype-runner/tests/protocol/`: describe and
   load and state; steps with inject and `get_token`; toggles, a failing
   body, `set_param` and reset; a continuous net going idle and waking.

@@ -9,19 +9,21 @@ use crate::protocol;
 /// The protocol's cap on a label, in characters (PROTOCOL.md §5.3).
 pub(crate) const LABEL_LIMIT: usize = 1000;
 
-/// `text` cut to [`LABEL_LIMIT`] characters on a character boundary, with
-/// `"..."` appended when anything was cut. Whatever the net's own
+/// `text` cut so that it fits [`LABEL_LIMIT`] characters *including* the
+/// `"..."` appended when anything was cut (PROTOCOL.md §5.3: the cap counts
+/// the marker). On a character boundary. Whatever the net's own
 /// `label_limit`: the wire's cap is the protocol's, not the author's.
 pub(crate) fn cut(text: String) -> String {
-    match text.char_indices().nth(LABEL_LIMIT) {
-        None => text,
-        Some((end, _)) => {
-            let mut text = text;
-            text.truncate(end);
-            text.push_str("...");
-            text
-        }
+    const MARKER: &str = "...";
+    if text.chars().count() <= LABEL_LIMIT {
+        return text;
     }
+    let keep = LABEL_LIMIT - MARKER.chars().count();
+    let end = text.char_indices().nth(keep).map_or(text.len(), |(i, _)| i);
+    let mut text = text;
+    text.truncate(end);
+    text.push_str(MARKER);
+    text
 }
 
 /// A token's wire label: its `Debug`, cut. Empty for a token that is gone.
@@ -196,11 +198,15 @@ mod tests {
     }
 
     #[test]
-    fn a_long_label_is_cut_at_1000_characters_with_an_ellipsis() {
+    fn a_long_label_is_cut_to_1000_characters_including_the_ellipsis() {
         let long = "y".repeat(LABEL_LIMIT + 1);
-        let cut = cut(long);
-        assert_eq!(cut.chars().count(), LABEL_LIMIT + 3);
-        assert!(cut.ends_with("y..."));
+        let short = cut(long);
+        assert_eq!(short.chars().count(), LABEL_LIMIT);
+        assert!(short.ends_with("y..."));
+        // Exactly at the cap nothing is cut.
+        let exact = cut("y".repeat(LABEL_LIMIT));
+        assert_eq!(exact.chars().count(), LABEL_LIMIT);
+        assert!(!exact.ends_with("..."));
     }
 
     #[test]
@@ -208,7 +214,7 @@ mod tests {
         // Two bytes per character: a byte-based cut would split one.
         let long = "é".repeat(LABEL_LIMIT + 5);
         let cut = cut(long);
-        assert_eq!(cut.chars().count(), LABEL_LIMIT + 3);
-        assert_eq!(cut.chars().filter(|c| *c == 'é').count(), LABEL_LIMIT);
+        assert_eq!(cut.chars().count(), LABEL_LIMIT);
+        assert_eq!(cut.chars().filter(|c| *c == 'é').count(), LABEL_LIMIT - 3);
     }
 }

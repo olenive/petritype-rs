@@ -512,7 +512,7 @@ fn a_label_is_cut_at_1000_characters() {
     let label = s["marking"]["places"]["Notes"]["tokens"][0]["label"]
         .as_str()
         .unwrap();
-    assert_eq!(label.chars().count(), 1003);
+    assert_eq!(label.chars().count(), 1000, "the cap includes the marker");
     assert!(label.starts_with("\"zzz"));
     assert!(label.ends_with("z..."));
     // get_token's text is the whole thing.

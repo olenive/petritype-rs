@@ -902,7 +902,11 @@ follow once the demo moves. **2026-10-02:** the demo moved: the layered
 layout, hover tooltips, the Step / Repeat Step / Activate run modes, the
 theme and Reset landed in the same repository. **2026-10-02:** mouse pan
 and zoom and a read-only inspector panel landed too; a menu of options
-registered by the net's author is deferred.
+registered by the net's author is deferred. **2026-10-03:** the remote
+net source (a net process watched over the protocol, §19.4) was designed
+in `../petritype-bevy/DESIGN.md` and its first slice landed: every system
+reads the net through a `NetReader` over whichever source is present,
+`NetRes` being the in-process one.
 
 - `NetRes(Net)` newtype `Resource` (orphan rule; the newtype lives in the
   adapter).
@@ -997,7 +1001,8 @@ Slices, each with tests, in order:
 13. `petritype-bevy` — first cut done 2026-09-20 in its own repository
     (§15): `MirrorPlugin` (headless) + `RenderPlugin` + the parcel demo;
     run modes, animation, layered layout, hover, theme and reset added
-    2026-10-02 (26 headless tests).
+    2026-10-02 (26 headless tests). Remote source designed 2026-10-03,
+    slice 1 of 5 (the `NetReader`) landed the same day (35 tests).
 14. Interop (§19): `PlaceInfo::serializable`, the owned `Topology`,
     `Serialize` on `Event`, `EdgeInfo` and `EdgeKind`; then the
     `petritype-runner` crate (function-table registry, `--describe`, the

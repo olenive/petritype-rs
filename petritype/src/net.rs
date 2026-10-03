@@ -276,6 +276,16 @@ impl Net {
         label_in(&self.places, place, token, self.label_limit)
     }
 
+    /// A token rendered with its type's `Debug`, untruncated: the text
+    /// [`label`](Net::label) is cut from.
+    ///
+    /// For a reader that applies a limit of its own, such as a wire format
+    /// with a cap the net's author never chose, or an inspector showing one
+    /// token in full. `None` if the place or the token does not exist.
+    pub fn debug(&self, place: PlaceId, token: TokenId) -> Option<String> {
+        debug_in(&self.places, place, token)
+    }
+
     /// A token rendered as JSON, for an inspector that wants structure rather
     /// than a `Debug` string.
     ///
@@ -937,10 +947,14 @@ pub(crate) fn label_in(
     token: TokenId,
     limit: usize,
 ) -> Option<String> {
+    debug_in(places, place, token).map(|text| truncate_label(text, limit))
+}
+
+/// One token's full `Debug` rendering, the text a label is cut from.
+pub(crate) fn debug_in(places: &[PlaceSlot], place: PlaceId, token: TokenId) -> Option<String> {
     let slot = places.get(place.0 as usize)?;
     let index = slot.position(token)?;
-    let text = (slot.meta.debug)(&*slot.tokens[index].1);
-    Some(truncate_label(text, limit))
+    Some((slot.meta.debug)(&*slot.tokens[index].1))
 }
 
 /// One token as JSON, for a place that recorded an encoder.

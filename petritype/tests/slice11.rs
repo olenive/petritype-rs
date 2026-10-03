@@ -669,6 +669,24 @@ fn a_snapshot_labels_tokens_as_its_net_would() {
 }
 
 #[test]
+fn a_snapshot_renders_debug_as_its_net_would() {
+    let mut b = NetBuilder::new();
+    b.label_limit(4);
+    let notes = b.place::<String>("Notes");
+    b.seed(notes, [String::from("a long enough note")]);
+    let net = b.build().expect("a well-formed net");
+    let token = net.tokens(notes.id()).next().expect("one token").0;
+
+    let taken = net.snapshot().expect("every place can clone");
+    assert_eq!(taken.debug(notes.id(), token), net.debug(notes.id(), token));
+    assert_eq!(
+        taken.debug(notes.id(), token),
+        Some(String::from("\"a long enough note\"")),
+        "the full rendering, no limit applied",
+    );
+}
+
+#[test]
 fn a_snapshot_reports_the_same_transitions() {
     let mut b = NetBuilder::new();
     let urls = b.place::<String>("Urls");

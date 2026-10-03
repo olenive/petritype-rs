@@ -577,6 +577,7 @@ net.fireable() -> Vec<TransitionId>;  net.is_fireable(t) -> bool;  net.is_enable
 net.count(place)  -> usize
 net.tokens(place) -> impl Iterator<Item = (TokenId, &dyn Any)>
 net.label(place, token) -> Option<String>            // via PlaceMeta.debug; truncated to label_limit (default 100) + "..."
+net.debug(place, token) -> Option<String>            // the same Debug text untruncated: what label is cut from
 net.token::<T>(place, token) -> Option<&T>           // typed downcast for custom widgets
 #[cfg(feature = "serde")]
 net.json(place, token) -> Option<serde_json::Value>  // structured view, serializable places only
@@ -1037,7 +1038,7 @@ The decisions that shape it, all of 2026-10-03:
 | `topology.transitions[].detail` | `TransitionInfo::params` (type names) and `detachable` |
 | `topology.edges` | `net.edges()`: `EdgeKind::{Take, TakeAll, Snapshot, Mutate}` as `"take"`, `"take_all"`, `"snapshot"`, `"mutate"`; `Output { slot }` as `slot` |
 | `transitions[name]` | `is_enabled`, `is_in_flight`, membership of `fireable()`, `priority_of` |
-| `marking` | `tokens(place)` ids with `label(place, token)` |
+| `marking` | `tokens(place)` ids; the wire `label` is `debug(place, token)` cut by the runner at the protocol's 1000 characters, whatever the net's own `label_limit` |
 | token id `"17"` | `TokenId` printed with its `Display` (the bare number) |
 | `progress.step_count` | `fired_count()` |
 | `progress.last_fired`, `fired_counts`, `last_progress_at` | kept by the runner from the events: the core dropped them on purpose (§2) and does not get them back |
@@ -1049,7 +1050,7 @@ The decisions that shape it, all of 2026-10-03:
 | `inject {place, token}` | `apply_json` of `JsonCommand::Extend` with one token; the new id is read off the `Added` event. Needs a `serializable` place, else `not_serializable` |
 | `enable`, `disable` | `net.enable(t)`, `net.disable(t)` (`Toggled`) |
 | `set_param {param, value}` | `JsonCommand::SetParam`; `transition` ignored; `unsupported` if the net registers no parameter by name |
-| `get_token {id}` | `net.json()` gives `kind: "json"`; otherwise `label()` gives `kind: "text"` |
+| `get_token {id}` | `net.json()` gives `kind: "json"`; otherwise `debug()` gives `kind: "text"`, untruncated |
 | `reset` | rebuild from the same factory and parameters |
 
 The runner owns the `Net` on one thread and is its only writer, which is
@@ -1059,10 +1060,14 @@ body runs, without `snapshot()`.
 
 ### 19.2 Additive work in the core
 
-All behind the existing `serde` feature except the first item:
+All behind the existing `serde` feature except the first two:
 
 - `PlaceInfo::serializable: bool`. `PlaceInfo` is `#[non_exhaustive]`, so
   adding a field breaks nothing. Always present, `false` without `serde`.
+- `Net::debug` and `Snapshot::debug`, the `Debug` rendering before
+  `label_limit` is applied. Done 2026-10-03. Without it a non-serializable
+  token's "full value" on the wire would have been the net's 100-character
+  label.
 - An owned `Topology` (`net.topology()`, and the same on `Snapshot`): places,
   transitions and edges as owned values, `Serialize` with `serde`. A render
   thread or a runner can then hold the shape of the net without a borrow.

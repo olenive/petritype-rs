@@ -8,7 +8,7 @@ use crate::ids::{NetId, PlaceId, TokenId, TransitionId};
 #[cfg(feature = "serde")]
 use crate::net::json_in;
 use crate::net::{
-    Net, PlaceInfo, count_in, label_in, place_named_in, places_of, token_in, tokens_in,
+    Net, PlaceInfo, count_in, debug_in, label_in, place_named_in, places_of, token_in, tokens_in,
 };
 use crate::param::{ParamSlot, param_of};
 use crate::place::PlaceSlot;
@@ -242,6 +242,11 @@ impl Snapshot {
     /// that a label reads the same either side of the copy.
     pub fn label(&self, place: PlaceId, token: TokenId) -> Option<String> {
         label_in(&self.places, place, token, self.label_limit)
+    }
+
+    /// One token rendered with its type's `Debug`, untruncated: [`Net::debug`].
+    pub fn debug(&self, place: PlaceId, token: TokenId) -> Option<String> {
+        debug_in(&self.places, place, token)
     }
 
     /// One token as JSON: [`Net::json`], for a place marked

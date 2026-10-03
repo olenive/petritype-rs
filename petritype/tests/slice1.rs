@@ -257,6 +257,19 @@ fn labels_are_truncated_on_a_character_boundary() {
 }
 
 #[test]
+fn debug_is_the_text_a_label_is_cut_from() {
+    let mut b = NetBuilder::new();
+    let notes = b.place::<String>("Notes");
+    b.label_limit(5);
+    let mut net = b.build().unwrap();
+    let token = net.put(notes, String::from("日本語のメモ"));
+
+    assert_eq!(net.debug(notes.id(), token).unwrap(), "\"日本語のメモ\"");
+    assert_eq!(net.label(notes.id(), token).unwrap(), "\"日本語の...");
+    assert!(net.debug(notes.id(), token).unwrap().chars().count() > net.label_limit());
+}
+
+#[test]
 fn typed_reads_reject_the_wrong_type() {
     let mut b = NetBuilder::new();
     let inbox = b.place::<u32>("Inbox");

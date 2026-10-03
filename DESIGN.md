@@ -110,6 +110,13 @@ pub struct PlaceRef<T> { place: PlaceId, net: NetId, _t: PhantomData<fn() -> T> 
   transitions (future) leave tombstone slots so other indices don't shift.
 - `PlaceRef<T>` is `Copy`, `Send`, `Sync` regardless of `T` (the `fn() -> T`
   phantom is deliberate). `.id()` gives the erased `PlaceId`.
+- The three erased ids have explicit constructors (`PlaceId::new(index)`,
+  `TransitionId::new(index)`, `TokenId::new(number)`), accessors
+  (`index()`, `get()`) and `FromStr` as the inverse of `Display`, added
+  2026-10-03 for a mirror of a remote net (§19) that numbers places in
+  topology order and reads token ids off the wire. A hand-made id the net
+  never issued is answered with `None` or `false`; it cannot become a
+  `PlaceRef`.
 - `Net` carries two change counters, plain `u64`s that increment by one:
   - `topology_counter`: connectivity changes only (place, transition, edge
     added or removed). v1 never bumps it.
@@ -954,9 +961,10 @@ registered by the net's author is deferred.
   beside the plain `distribute`, so net authors and ordinary drivers keep
   the simple shape and a hand-written driver that juggles several nets opts
   in. Add it when the Bevy adapter or a user asks.
-- Interop follow-ups (§19), all deferred until a user asks: explicit
-  `PlaceId`/`TransitionId`/`TokenId` constructors for a remote mirror,
-  instead of going through their `serde` form; parameter lists for
+- Interop follow-ups (§19), deferred until a user asks, except the first,
+  **done 2026-10-03**: explicit `PlaceId`/`TransitionId`/`TokenId`
+  constructors for a remote mirror (§4.1), instead of going through their
+  `serde` form; parameter lists for
   `describe` derived from a schema crate rather than written by hand;
   running a net process's bodies with `Mode::Concurrent` (`start` launches
   one firing at a time in v1); a non-Unix answer to the stdout guard.

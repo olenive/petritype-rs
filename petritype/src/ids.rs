@@ -92,6 +92,68 @@ macro_rules! display_as_number {
 }
 display_as_number!(PlaceId, TransitionId, TokenId);
 
+/// The ids parse from their bare number, the inverse of `Display` and the
+/// spelling a wire protocol uses for a token id (`"17"`).
+macro_rules! parse_as_number {
+    ($($id:ident : $int:ty),*) => {$(
+        impl std::str::FromStr for $id {
+            type Err = std::num::ParseIntError;
+            fn from_str(s: &str) -> Result<Self, Self::Err> {
+                s.parse::<$int>().map($id)
+            }
+        }
+    )*};
+}
+parse_as_number!(PlaceId: u32, TransitionId: u32, TokenId: u64);
+
+impl PlaceId {
+    /// A place id from its index in the net's place list: the number
+    /// `Display` prints and a [`Topology`](crate::Topology) entry carries.
+    ///
+    /// For a mirror of a net in another process, which numbers places in
+    /// topology order (DESIGN §19). An id the net never issued is harmless:
+    /// the read API answers `None`, `false` or nothing for it, and no typed
+    /// [`PlaceRef`] can be made from one.
+    pub const fn new(index: u32) -> PlaceId {
+        PlaceId(index)
+    }
+
+    /// The index this id is.
+    pub const fn index(self) -> u32 {
+        self.0
+    }
+}
+
+impl TransitionId {
+    /// A transition id from its index in the net's transition list, as
+    /// [`PlaceId::new`].
+    pub const fn new(index: u32) -> TransitionId {
+        TransitionId(index)
+    }
+
+    /// The index this id is.
+    pub const fn index(self) -> u32 {
+        self.0
+    }
+}
+
+impl TokenId {
+    /// A token id from its number: what `Display` prints, what the event log
+    /// and a wire protocol carry.
+    ///
+    /// For a mirror that reads ids off the wire (DESIGN §19). A number the
+    /// net never issued, or has retired, is harmless: the read API answers
+    /// `None` for it.
+    pub const fn new(number: u64) -> TokenId {
+        TokenId(number)
+    }
+
+    /// The number this id is.
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+}
+
 /// A typed handle to a place, returned by
 /// [`NetBuilder::place`](crate::NetBuilder::place).
 ///

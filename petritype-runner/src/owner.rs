@@ -736,8 +736,7 @@ impl Owner {
     fn token(&self, wanted: &str) -> Result<TokenValue, (ErrorCode, String)> {
         let loaded = self.loaded_ref();
         let unknown = || (ErrorCode::UnknownToken, format!("no live token {wanted:?}"));
-        let number: u64 = wanted.parse().map_err(|_| unknown())?;
-        let token: TokenId = serde_json::from_value(Value::from(number)).map_err(|_| unknown())?;
+        let token: TokenId = wanted.parse().map_err(|_| unknown())?;
         let net = &loaded.net;
         let place = loaded
             .topology

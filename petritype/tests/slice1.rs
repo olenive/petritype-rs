@@ -381,3 +381,34 @@ fn json_is_available_only_for_places_marked_serializable() {
     assert_eq!(net.json(notes.id(), noted), None, "not marked serializable");
     assert_eq!(net.json(counts.id(), noted), None, "no such token here");
 }
+
+#[test]
+fn ids_can_be_made_from_their_numbers_and_parsed_from_their_text() {
+    use petritype::{PlaceId, TokenId, TransitionId};
+
+    let mut b = NetBuilder::new();
+    let notes = b.place::<String>("Notes");
+    let mut net = b.build().unwrap();
+    let token = net.put(notes, String::from("a"));
+
+    // The first place is index 0; the number round-trips through Display.
+    assert_eq!(PlaceId::new(0), notes.id());
+    assert_eq!(PlaceId::new(0).index(), 0);
+    assert_eq!(
+        notes.id().to_string().parse::<PlaceId>().unwrap(),
+        notes.id()
+    );
+    assert_eq!(TransitionId::new(3).index(), 3);
+    assert_eq!("3".parse::<TransitionId>().unwrap(), TransitionId::new(3));
+    assert_eq!(TokenId::new(token.get()), token);
+    assert_eq!(token.to_string().parse::<TokenId>().unwrap(), token);
+    assert!("x".parse::<TokenId>().is_err());
+
+    // The topology carries the same numbers.
+    assert_eq!(net.topology().places[0].id, PlaceId::new(0));
+
+    // An id the net never issued is answered with nothing, not a panic.
+    assert_eq!(net.label(PlaceId::new(99), token), None);
+    assert_eq!(net.label(notes.id(), TokenId::new(99)), None);
+    assert!(!net.is_enabled(TransitionId::new(99)));
+}

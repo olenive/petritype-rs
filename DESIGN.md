@@ -1002,9 +1002,17 @@ Slices, each with tests, in order:
     `Serialize` on `Event`, `EdgeInfo` and `EdgeKind`; then the
     `petritype-runner` crate (function-table registry, `--describe`, the
     stdout guard, the owner loop), tested against protocol transcripts.
-    Core part and runner crate landed 2026-10-03; the transcripts and
-    their format live in `petritype-runner/tests/protocol/` until the
-    Python repository adopts them (§19.3.8, §19.3.10).
+    Core part and runner crate landed 2026-10-03. The Python repository
+    adopted the transcript format the same day and holds the shared set
+    (`../petritype/tests/protocol/`, four files over the conformance net
+    `../petritype/tests/protocol_nets/parcel_distribution.py`, a copy of
+    our `parcel_distribution` example). **Still to do here**: register
+    that net in the runner example under the name `parcel-distribution`
+    with the description "Sort, stage and dispatch parcels" (rename the
+    demo net that holds the name now), mark its four places serializable
+    with `Serialize`/`Deserialize` on `Parcel`, and run the shared files
+    through our harness, which also needs the `<any>`, `<unordered>` and
+    `<id:NAME>` masks of PROTOCOL.md §11.
 
 ## 19. Interop: one protocol, two runtimes, two viewers
 

@@ -1093,12 +1093,17 @@ a wire format they do not own. `Snapshot` stays unserialisable; tokens are
 
 ### 19.3 The `petritype-runner` crate
 
-A library crate in this workspace, plus an example binary. A net's bodies
-are the user's code, so the binary is always the user's own: it lists its
-nets and hands over to the crate.
+**Design pass 2026-10-03, not yet implemented.** A library crate in this
+workspace plus an example binary. A net's bodies are the user's code, so the
+binary is always the user's own: it lists its nets and hands over to the
+crate. Dependencies: `petritype` with `serde`, `serde`, `serde_json`, and
+`rustix` (Unix only, for the stdout guard). No async runtime: the protocol
+is one line in, some lines out, and a body runs on a thread of its own.
+
+#### 19.3.1 What the user writes
 
 ```rust
-use petritype_runner::{Hosting, NetEntry, ParamSpec};
+use petritype_runner::{Hosting, LoadError, NetEntry, ParamSpec, Params};
 
 fn main() -> std::process::ExitCode {
     petritype_runner::main(&[
@@ -1110,35 +1115,210 @@ fn main() -> std::process::ExitCode {
 }
 
 // A factory takes the load parameters as JSON and returns a built net.
-fn build(params: &serde_json::Map<String, serde_json::Value>) -> Result<petritype::Net, String>;
-// NetEntry::typed::<P: serde::de::DeserializeOwned>(name, fn(P) -> Result<Net, BuildError>)
-// decodes the parameters first and reports a bad one as `invalid_params`.
+// `Params` is `serde_json::Map<String, serde_json::Value>`.
+fn build(params: &Params) -> Result<petritype::Net, LoadError>;
 ```
 
+- `LoadError::{InvalidParams(String), Build(BuildError), Other(String)}`
+  maps to `invalid_params`, `load_failed`, `load_failed`. A factory that
+  panics is `load_failed` with the panic message (`catch_unwind`, as bodies
+  already get in slice 7).
+- `NetEntry::typed::<P: DeserializeOwned>(name, fn(P) -> Result<Net, LoadError>)`
+  decodes the parameters first and reports a bad one as `invalid_params`.
 - **Registry: a plain function table**, passed to `main`. Chosen over a
   `register!` macro collecting entries at link time (`inventory`-style):
   no extra dependency, no linker behaviour to explain, and the list of nets
   is visible where the binary starts.
-- `Hosting::{Manual, Continuous, Batch, Cron(&str)}` becomes `describe`'s
-  `mode` (`"manual"`, `"24/7"`, `"batch"`, `"cron"`) and `schedule`, the
-  same hints Python's `@petri_net` declares.
-- `--describe` prints the `describe` answer as one line and exits. That is
-  how the server's build stage discovers what a binary carries, and how a
-  viewer offers a choice of nets.
-- **The owner loop.** One thread owns the `Net`. A reader thread parses
-  stdin lines into requests; body threads send their `Completed` back; both
-  feed one `mpsc` channel the owner drains with `recv_timeout`, the timeout
-  doubling as the heartbeat tick. After each request or completion the owner
-  drains the event log, translates and writes the notifications, compares
-  the fireable set, and only then writes the response. While `running` and
-  nothing is in flight it selects and launches the next firing. A failed
-  body stops the run with `execution_stopped`, as the Python runner does.
-- **The stdout guard.** On Unix, at start, the runner duplicates file
-  descriptor 1 for its own writes and points descriptor 1 at stderr
-  (`rustix`), so a `println!` in a body cannot corrupt the protocol. Python
-  does the same by swapping `sys.stdout`.
-- Panics in bodies are already `Failed` (slice 7); a panicking factory is
-  `load_failed`.
+- `Hosting::{Manual, Continuous, Batch, Cron(&'static str)}` becomes
+  `describe`'s `mode` (`"manual"`, `"24/7"`, `"batch"`, `"cron"`) and
+  `schedule`, the same hints Python's `@petri_net` declares. `Manual` is the
+  default.
+- `main` handles `--describe` (print the `describe` answer as one line, exit
+  0), no arguments (serve stdin), and anything else (usage on stderr, exit
+  2). `runtime` is `"rust"`, `runtime_version` the `petritype` crate
+  version.
+
+#### 19.3.2 Three layers, and only the outer one does I/O
+
+1. **`protocol`**: the wire shapes as serde types, keyed by names with
+   string token ids, and the closed set of error codes. Nothing here knows
+   about a `Net`. This is where PROTOCOL.md's JSON lives in Rust, and it is
+   deliberately not in the core (§19.2).
+2. **`Owner`**: the state machine. It owns the registry and `Option<Loaded>`
+   and exposes one method, `handle(&mut self, Input) -> Vec<Outgoing>`:
+
+   ```rust
+   enum Input    { Request(Request), Completed(Completed), Tick(Instant) }
+   enum Outgoing { Line(String), Launch(Firing), Exit }
+   ```
+
+   `Line` is a notification or a response, already serialised, in the order
+   it must be written. `Launch` is a detachable firing the caller must run
+   on some thread and feed back as `Input::Completed`. `Owner` creates no
+   threads, reads no clock it is not handed, and writes nothing, which is
+   what makes every behaviour below testable by feeding inputs and reading
+   lines, and what the transcript tests (§19.3.8) drive.
+3. **`main`**: the stdout guard, a reader thread that parses stdin into
+   `Input::Request` (a malformed line becomes an `invalid_params` error
+   response carrying the line's `id` if one could be read, else `""`); a
+   writer thread that owns the duplicated stdout and takes whole batches of
+   lines, so nothing ever splits a request's notifications from its
+   response; a heartbeat thread (§19.3.5); one `mpsc` channel that the
+   reader, the body threads and a ticker feed; and the loop: `recv`,
+   `handle`, hand the batch to the writer, spawn a thread for each `Launch`
+   whose body sends `Completed` back, stop on `Exit` or when the reader
+   reports end of file.
+
+#### 19.3.3 What `Loaded` holds besides the net
+
+The core dropped these on purpose (§2); the runner keeps them:
+
+| field | why |
+|---|---|
+| `topology: Topology` | the name tables, taken once per generation (§19.2); every id in an event is resolved through it |
+| `generation`, `marking_version`, `running` | §4 of the protocol; `marking_version` continues across `load` and `reset` and never decreases, which is our reading of a spec that says both "sets a new value" and "does not move it" (flagged upstream) |
+| `in_flight: Option<{transition, started_at, step_id: Option<String>}>` | the one firing airborne, for `heartbeat`, `duration_ms`, and the deferred `step` response |
+| `deferred: VecDeque<Request>` | requests that must wait for the firing to land (§19.3.5) |
+| `last_fireable: Vec<String>` | the last `fireable` notification sent, compared after every batch |
+| `log: VecDeque<LogEntry>` (1000) | `get_log` |
+| `progress: {step_count, last_fired, fired_counts, last_progress_at}` | `progress` |
+| `idle: bool` | one `idle` per idle spell |
+| `factory`, `params` | `reset` rebuilds from them |
+
+#### 19.3.4 Translating events
+
+After every core call that can log events, the owner drains the log and
+writes one notification per event, in order, each stamped with the
+`marking_version` it raised to, and then compares `net.fireable()` to the
+last set sent. Only then does it write the response, which is the protocol's
+"notifications before the response" rule.
+
+| `Event` | notification |
+|---|---|
+| `Fired` | `fired` (inline bodies only, §19.3.5) |
+| `Launched` | `launched` |
+| `Distributed` | `distributed` with `duration_ms` from `in_flight.started_at` |
+| `Failed` | `failed`; the log gets a `"failed"` entry |
+| `Added` / `Removed` / `Mutated` | `added` / `removed` / `mutated` |
+| `Toggled` | `toggled` |
+| `ParamChanged` | `param_changed {param}`, the name taken from the `set_param` request being served, because the owner is the only writer and the event carries only a type name |
+
+A token on the wire is `{id, label}`: the id is `TokenId`'s `Display`, the
+label `debug()` cut at 1000 characters on a character boundary with `"..."`
+(§19.1). Rust places are monomorphic and tokens have no colour, so
+`type_name` and `color` are never sent. A transition's `detail` is
+`{params, detachable}`; `priority` is `priority_of` behind `catch_unwind`
+and omitted if the closure panicked.
+
+#### 19.3.5 The firing cycle
+
+```
+step / start tick:   select() -> launch(t)
+   detachable:       Launched written; Outgoing::Launch(firing); in_flight set
+   inline (MutateEdge): launch already ran the body; distribute at once; Fired written
+Input::Completed:    distribute(done) -> Distributed or Failed written;
+                     log entry; progress; fireable compared;
+                     the pending step answered; deferred requests served in order;
+                     if running: select the next
+```
+
+- `step` answers `{fired: true, transition}` after the firing has landed,
+  `{fired: false}` when `select()` returns nothing. It is the one request
+  answered out of order.
+- **While a firing is airborne**, `get_state`, `get_place_tokens`,
+  `get_token`, `get_log` and `stop` are answered at once from the live net:
+  a detached body holds no borrow (§6.2), so no snapshot is needed. Every
+  other request is queued in `deferred` and served, in arrival order, after
+  the landing. A second `step` therefore waits for the first.
+- **An inline body blocks the owner.** A transition with a `MutateEdge`
+  runs its body inside `launch` (§6.2), so for that long nothing is
+  answered, `get_state` included. This is a documented deviation from the
+  protocol's "never waits for a running body", confined to mutate-edge
+  transitions, whose bodies are expected to be short; the alternative, a
+  snapshot before every inline firing, is O(state) per firing and refused
+  for `no_clone` places. The whole net is unavailable for that time, not
+  just the mutated place: the body holds `&mut` into a token inside the
+  net, and the net is one value under one borrow (§6.2, §9). The heartbeat
+  still goes out, see below.
+- `start` sets `running`, answers, and the owner launches whenever it is
+  free: after each landing and on each `Tick`. Quiescence (`select()` is
+  `None` and nothing is airborne): a `Continuous` net emits `idle` once and
+  keeps checking on every tick and after every request; any other net
+  clears `running` and emits `execution_stopped {reason:
+  "no_fireable_transitions"}`.
+- A `Failed` landing while `running` clears it and emits
+  `execution_stopped {reason: "transition_failed", error_type, message}`,
+  as the Python runner does. One firing at a time, so a run never has two
+  bodies airborne.
+- `stop` clears `running` and answers at once; the airborne body lands
+  normally and is reported normally.
+- `heartbeat` (default every 30 s) is written by a thread of its own, not
+  by `Owner`, so it keeps going while an inline body has the owner blocked,
+  which is exactly when a host most wants it. The owner records the
+  airborne or inline transition and its start time in a shared status cell
+  before any launch and clears it on landing; the heartbeat thread reads
+  the cell and sends `{step_started_at, executing_transition}` or two
+  nulls. `Tick` is the ticker's input to `Owner` (same period) and only
+  drives the run loop: a `Continuous` net re-checks `select()` on it.
+
+#### 19.3.6 Load, reset, shutdown
+
+- `load {net, params}`: unknown name is `unknown_net`; the factory runs on
+  the owner thread under `catch_unwind`; on success the previous net, if
+  any, is dropped (a run in progress is stopped first, with no
+  `execution_stopped`: the response says `running: false`), `generation`
+  rises, `topology` is retaken, `reloaded {reason: "load"}` precedes the
+  response. `load_progress` is emitted once, before the factory runs.
+- `reset`: the same factory and parameters; `reloaded {reason: "reset"}`.
+  Both wait in `deferred` if a firing is airborne, like any mutating request.
+- `inject {place, token}`: `apply_json(JsonCommand::Extend)` with one
+  token; the id is read off the `Added` event. A place without `from_json`
+  is `not_serializable`; a value that does not decode is `invalid_token`.
+- `set_param {param, value}`: `JsonCommand::SetParam`; `transition` is
+  ignored; a name the net did not register is `unsupported`.
+- `enable` / `disable`: `net.enable` / `net.disable`; `toggled` only if the
+  switch moved.
+- `shutdown`: answer `{status: "ok"}`, then `Exit`. An airborne body is
+  abandoned with the process; the host asked for that.
+- End of file on stdin is `Exit` without a response.
+
+#### 19.3.7 Error mapping
+
+`CommandError` and `NetError` variants map onto the protocol's closed set:
+unknown place or transition names and ids to `unknown_place`,
+`unknown_transition`, `unknown_token`; a place without a JSON form to
+`not_serializable`; a decode failure to `invalid_token`; a parameter the net
+does not know to `unsupported`; a request before `load` to `not_loaded`;
+malformed params to `invalid_params`; anything else to `internal` with the
+error's `Display` as the message. The mapping is one function with a test
+per arm.
+
+#### 19.3.8 Tests
+
+- **Unit**: `Owner` driven directly. Each method has a test feeding a
+  request and asserting the exact lines out, including the order of
+  notifications before responses, the deferred `step`, the out-of-order
+  reads, quiescence and `idle`, failure stopping a run, generation and
+  version arithmetic, and the error mapping.
+- **Transcripts**: `tests/protocol/*.json`, the format this crate defines
+  and the Python repository will adopt (§11 of the protocol): `{net, params,
+  exchanges: [{send: request, expect: [line, ...]}]}` where an expected line
+  may use the masks `"<label>"`, `"<time>"`, `"<ms>"` and `"<id>"` in any
+  string position. A harness runs the example binary's nets through `Owner`
+  (no process), feeding each `Launch` back synchronously, and compares. The
+  Rust-only shape `launched` + `distributed` is normalised to `fired` by the
+  harness before comparing, so one transcript serves both runtimes; that
+  rule goes upstream with the format.
+- **Process**: one test spawns the example binary, sends `describe`, `load`,
+  `step`, `shutdown` over real pipes, and checks that a `println!` in a body
+  arrived on stderr, not stdout.
+
+#### 19.3.9 Not in this slice
+
+HTTP and server-sent events (the host relays); protocol version 0; token
+colours and position hints (nothing in the core produces them); `get_state
+{token_limit}` beyond the default 200 and `get_place_tokens` paging are in,
+but no complete-snapshot cache, because reads are answered from the live net.
 
 ### 19.4 Who spawns it
 

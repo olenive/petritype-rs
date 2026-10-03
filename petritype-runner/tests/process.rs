@@ -108,7 +108,7 @@ fn a_session_over_real_pipes() {
     let load = s.call(
         "2",
         "load",
-        json!({"net": "parcel-distribution", "params": {"trucks": 2}}),
+        json!({"net": "parcel-fleet", "params": {"trucks": 2}}),
     );
     assert_eq!(load["result"]["status"], "loaded");
 
@@ -205,8 +205,13 @@ fn describe_flag_prints_one_line() {
     assert_eq!(text.lines().count(), 1);
     let describe: Value = serde_json::from_str(text.trim()).unwrap();
     assert_eq!(describe["protocol_version"], 1);
-    assert_eq!(describe["nets"][0]["name"], "parcel-distribution");
-    assert_eq!(describe["nets"][1]["mode"], "24/7");
+    assert_eq!(describe["nets"][0]["name"], "parcel-fleet");
+    assert_eq!(describe["nets"][1]["name"], "parcel-distribution");
+    assert_eq!(
+        describe["nets"][1]["description"],
+        "Sort, stage and dispatch parcels"
+    );
+    assert_eq!(describe["nets"][2]["mode"], "24/7");
 }
 
 #[test]

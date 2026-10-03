@@ -1006,13 +1006,10 @@ Slices, each with tests, in order:
     adopted the transcript format the same day and holds the shared set
     (`../petritype/tests/protocol/`, four files over the conformance net
     `../petritype/tests/protocol_nets/parcel_distribution.py`, a copy of
-    our `parcel_distribution` example). **Still to do here**: register
-    that net in the runner example under the name `parcel-distribution`
-    with the description "Sort, stage and dispatch parcels" (rename the
-    demo net that holds the name now), mark its four places serializable
-    with `Serialize`/`Deserialize` on `Parcel`, and run the shared files
-    through our harness, which also needs the `<any>`, `<unordered>` and
-    `<id:NAME>` masks of PROTOCOL.md §11.
+    our `parcel_distribution` example). Done 2026-10-03: the runner
+    example carries that net under the shared name (the demo net became
+    `parcel-fleet`), the harness has the §11 masks, and all four shared
+    files hold against this runner (§19.3.10).
 
 ## 19. Interop: one protocol, two runtimes, two viewers
 
@@ -1386,6 +1383,15 @@ differently, with the reason:
 - **Four transcripts** in `petritype-runner/tests/protocol/`: describe and
   load and state; steps with inject and `get_token`; toggles, a failing
   body, `set_param` and reset; a continuous net going idle and waking.
+- **Shared transcripts** (2026-10-03): the harness gained `<any>`,
+  `{"<unordered>": [...]}` (with backtracking) and `<id:NAME>`, reads the
+  shared set from `../petritype/tests/protocol/` or
+  `PETRITYPE_PROTOCOL_TRANSCRIPTS` and skips with a message when neither is
+  there, and replays it against the conformance net alone, the §11 rule
+  settled when the first meeting of the two runtimes showed `describe` as
+  the only difference. Everything else matched first time: `fireable`
+  timing, `load_progress`, progress, log entries, `execution_stopped`,
+  slots, `reloaded`, `get_token`.
 - The crate is `#![forbid(unsafe_code)]`; the fd swap is `rustix`'s
   `fcntl_dupfd_cloexec` and `dup2_stdout`. The non-Unix path compiles and
   is untested.

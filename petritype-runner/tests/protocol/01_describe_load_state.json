@@ -1,5 +1,5 @@
 {
-  "net": "parcel-distribution",
+  "net": "parcel-fleet",
   "params": {"trucks": 3},
   "exchanges": [
     {
@@ -8,8 +8,10 @@
         {"id": "1", "result": {
           "protocol_version": 1, "runtime": "rust", "runtime_version": "0.1.0",
           "nets": [
-            {"name": "parcel-distribution", "description": "Sort and dispatch parcels", "mode": "manual",
+            {"name": "parcel-fleet", "description": "Sort and dispatch parcels", "mode": "manual",
              "params": [{"name": "trucks", "type_name": "u32", "required": false, "default": 2}]},
+            {"name": "parcel-distribution", "description": "Sort, stage and dispatch parcels", "mode": "manual",
+             "params": []},
             {"name": "parcel-intake", "description": "Shelve parcels as they are injected", "mode": "24/7",
              "params": []}
           ]
@@ -29,7 +31,7 @@
       ]
     },
     {
-      "send": {"method": "load", "params": {"net": "parcel-distribution", "params": {"trucks": 3}}},
+      "send": {"method": "load", "params": {"net": "parcel-fleet", "params": {"trucks": 3}}},
       "expect": [
         {"method": "load_progress", "params": {"step": "build", "message": "<label>", "marking_version": 0, "running": false}},
         {"method": "reloaded", "params": {"generation": 1, "reason": "load", "marking_version": 0, "running": false}},
@@ -40,7 +42,7 @@
       "send": {"method": "get_state", "params": {}},
       "expect": [
         {"id": "5", "result": {
-          "protocol_version": 1, "runtime": "rust", "net": "parcel-distribution",
+          "protocol_version": 1, "runtime": "rust", "net": "parcel-fleet",
           "generation": 1, "marking_version": 0, "running": false,
           "topology": {
             "places": [

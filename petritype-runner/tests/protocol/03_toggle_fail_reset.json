@@ -1,9 +1,9 @@
 {
-  "net": "parcel-distribution",
+  "net": "parcel-fleet",
   "params": {"trucks": 1},
   "exchanges": [
     {
-      "send": {"method": "load", "params": {"net": "parcel-distribution", "params": {"trucks": 1}}},
+      "send": {"method": "load", "params": {"net": "parcel-fleet", "params": {"trucks": 1}}},
       "expect": [
         {"method": "load_progress", "params": {"step": "build", "message": "<label>", "marking_version": 0, "running": false}},
         {"method": "reloaded", "params": {"generation": 1, "reason": "load", "marking_version": 0, "running": false}},

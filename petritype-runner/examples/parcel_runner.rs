@@ -3,7 +3,7 @@
 //! ```text
 //! cargo run -p petritype-runner --example parcel_runner -- --describe
 //! cargo run -p petritype-runner --example parcel_runner
-//! {"id":"1","method":"load","params":{"net":"parcel-distribution","params":{"trucks":3}}}
+//! {"id":"1","method":"load","params":{"net":"parcel-fleet","params":{"trucks":3}}}
 //! {"id":"2","method":"step","params":{}}
 //! {"id":"3","method":"get_state","params":{}}
 //! {"id":"4","method":"shutdown","params":{}}

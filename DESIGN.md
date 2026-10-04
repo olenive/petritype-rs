@@ -911,7 +911,10 @@ reads the net through a `NetReader` over whichever source is present,
 same controls, and `RemoteNet::spawn` starts either runner; the `remote`
 example shows the conformance net under Python or under this
 workspace's `parcel_runner`, and its process tests run against both.
-HTTP through petritype-server is the one transport still to come.
+HTTP through petritype-server is the one transport still to come. The
+first run on screen, the same day, found one glitch, fixed as slice 4a: a
+token is hidden while its tween waits, so a one-piece firing's output no
+longer shows at the transition before its input has arrived.
 
 - `NetRes(Net)` newtype `Resource` (orphan rule; the newtype lives in the
   adapter).
@@ -1339,7 +1342,13 @@ per arm.
   (no process), feeding each `Launch` back synchronously, and compares. The
   Rust-only shape `launched` + `distributed` is normalised to `fired` by the
   harness before comparing, so one transcript serves both runtimes; that
-  rule goes upstream with the format.
+  rule goes upstream with the format. **2026-10-04:** no longer Rust-only.
+  The first slow Python body watched from Bevy showed nothing until it
+  landed, while the Python owner already knew the transition was in flight
+  and had taken its inputs. Decided: the Python runner reports two pieces
+  too, always; `fired` stays legal in version 1 for a runtime that cannot
+  observe a body part-way; mid-body reads show the taken inputs gone. The
+  fold stays, now for such a runtime.
 - **Process**: one test spawns the example binary, sends `describe`, `load`,
   `step`, `shutdown` over real pipes, and checks that a `println!` in a body
   arrived on stderr, not stdout.

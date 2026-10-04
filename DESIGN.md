@@ -906,7 +906,12 @@ registered by the net's author is deferred. **2026-10-03:** the remote
 net source (a net process watched over the protocol, §19.4) was designed
 in `../petritype-bevy/DESIGN.md` and its first slice landed: every system
 reads the net through a `NetReader` over whichever source is present,
-`NetRes` being the in-process one.
+`NetRes` being the in-process one. **2026-10-04:** slices 2 to 4 landed:
+`RemoteNet` mirrors a net process over the protocol, is driven from the
+same controls, and `RemoteNet::spawn` starts either runner; the `remote`
+example shows the conformance net under Python or under this
+workspace's `parcel_runner`, and its process tests run against both.
+HTTP through petritype-server is the one transport still to come.
 
 - `NetRes(Net)` newtype `Resource` (orphan rule; the newtype lives in the
   adapter).
@@ -1001,8 +1006,11 @@ Slices, each with tests, in order:
 13. `petritype-bevy` — first cut done 2026-09-20 in its own repository
     (§15): `MirrorPlugin` (headless) + `RenderPlugin` + the parcel demo;
     run modes, animation, layered layout, hover, theme and reset added
-    2026-10-02 (26 headless tests). Remote source designed 2026-10-03,
-    slice 1 of 5 (the `NetReader`) landed the same day (35 tests).
+    2026-10-02 (26 headless tests). Remote source designed 2026-10-03;
+    slices 1 to 4 of 5 landed by 2026-10-04 (the `NetReader`, the
+    remote mirror, driving, the child process; 98 tests, five of them
+    run against each real runner). Slice 5, HTTP through the server,
+    waits on the server speaking version 1.
 14. Interop (§19): `PlaceInfo::serializable`, the owned `Topology`,
     `Serialize` on `Event`, `EdgeInfo` and `EdgeKind`; then the
     `petritype-runner` crate (function-table registry, `--describe`, the

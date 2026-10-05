@@ -911,10 +911,18 @@ reads the net through a `NetReader` over whichever source is present,
 same controls, and `RemoteNet::spawn` starts either runner; the `remote`
 example shows the conformance net under Python or under this
 workspace's `parcel_runner`, and its process tests run against both.
-HTTP through petritype-server is the one transport still to come. The
+The
 first run on screen, the same day, found one glitch, fixed as slice 4a: a
 token is hidden while its tween waits, so a one-piece firing's output no
 longer shows at the transition before its input has arrived.
+**2026-10-05:** slice 5 landed, the last transport: `HttpTransport`
+behind the `http` feature reaches a net already loaded on a
+petritype-server worker, requests as the server's routes and
+notifications as server-sent events, with no `describe` or `load`. The
+relay does not keep the pipe's order between an answer and the
+notifications its request caused, so the transport holds a state-changing
+answer until the stream reaches its version, and the mirror ignores a
+version it already holds instead of calling it a gap (protocol §9).
 
 - `NetRes(Net)` newtype `Resource` (orphan rule; the newtype lives in the
   adapter).
@@ -1013,7 +1021,8 @@ Slices, each with tests, in order:
     slices 1 to 4 of 5 landed by 2026-10-04 (the `NetReader`, the
     remote mirror, driving, the child process; 98 tests, five of them
     run against each real runner). Slice 5, HTTP through the server,
-    waits on the server speaking version 1.
+    landed 2026-10-05 behind the `http` feature (122 tests with it, 13
+    of them against a fake control plane on a local socket).
 14. Interop (§19): `PlaceInfo::serializable`, the owned `Topology`,
     `Serialize` on `Event`, `EdgeInfo` and `EdgeKind`; then the
     `petritype-runner` crate (function-table registry, `--describe`, the

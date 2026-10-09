@@ -143,6 +143,33 @@ pub enum BuildError {
         /// The place that was marked.
         place: String,
     },
+    /// One [`keys`](crate::NetBuilder::keys) declaration names the same key
+    /// twice.
+    ///
+    /// A token has one value per key, and a filter asks for a key by name,
+    /// so two keys of one name would make a clause ambiguous. Rename one, or
+    /// drop it. Reported for the first such declaration, with the first name
+    /// repeated in it.
+    #[error("place {place:?} declares the key {name:?} more than once")]
+    DuplicateKeyName {
+        /// The place the keys were declared on.
+        place: String,
+        /// The name given more than once.
+        name: String,
+    },
+    /// [`keys`](crate::NetBuilder::keys) was called twice for one place.
+    ///
+    /// A place's keys are one declaration — the names and the one extractor
+    /// that gives their values in that order — so a second would either
+    /// replace the first or have to be merged with it, and neither is what a
+    /// second call plainly says. Declare every key in one call. Reported for
+    /// the first such place; the first declaration is the one kept until
+    /// then.
+    #[error("place {place:?} declares its keys more than once")]
+    KeysAlreadyDeclared {
+        /// The place whose keys were declared again.
+        place: String,
+    },
     /// A transition declared a [`Param<T>`](crate::Param) and no value of
     /// that type was registered with
     /// [`NetBuilder::param`](crate::NetBuilder::param).

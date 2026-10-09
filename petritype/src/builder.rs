@@ -44,6 +44,8 @@ use crate::erased::RoutingProblem;
 use crate::error::BuildError;
 use crate::firing::TieBreak;
 use crate::ids::{NetId, PlaceId, PlaceRef, TransitionId, foreign_place};
+use crate::index::KeyIndex;
+use crate::keys::{KeyValue, KeysVtable};
 use crate::nested::{Nested, NestedVtable, forget_inner_events};
 use crate::net::Net;
 use crate::param::ParamSlot;
@@ -110,6 +112,18 @@ struct ParamWire {
     name: String,
     to_json: crate::place::ToJsonFn,
     from_json: crate::place::FromJsonFn,
+}
+
+/// What was wrong with a [`keys`](NetBuilder::keys) declaration, kept until
+/// [`build`](NetBuilder::build) reports it: the per-place options are
+/// infallible.
+#[derive(Debug, Clone, Copy)]
+enum KeysProblem {
+    /// One declaration named a key twice: [`BuildError::DuplicateKeyName`].
+    Duplicate { place: PlaceId, name: &'static str },
+    /// A second declaration for one place:
+    /// [`BuildError::KeysAlreadyDeclared`].
+    Again { place: PlaceId },
 }
 
 /// The colour of a node, from the two vectors the walk keeps.
@@ -202,6 +216,9 @@ pub struct NetBuilder {
     /// kept until [`build`](NetBuilder::build) reports it as
     /// [`BuildError::NotNested`]: the per-place options are infallible.
     not_nested: Option<PlaceId>,
+    /// The first thing wrong with a [`keys`](NetBuilder::keys) declaration,
+    /// kept until [`build`](NetBuilder::build) reports it.
+    keys_problem: Option<KeysProblem>,
     /// The registry the net will restore its nested tokens from, as given
     /// to [`template`](NetBuilder::template) and
     /// [`templates`](NetBuilder::templates).
@@ -226,6 +243,7 @@ impl NetBuilder {
             tie_break: TieBreak::FirstDeclared,
             resettable: false,
             not_nested: None,
+            keys_problem: None,
             #[cfg(feature = "serde")]
             templates: crate::template::Templates::new(),
         }
@@ -365,6 +383,87 @@ impl NetBuilder {
         } else {
             self.not_nested.get_or_insert(place.id());
         }
+    }
+
+    /// Declares the keys of a place's tokens: named attributes, derived from
+    /// each token's value by `extractor`, that a query filters on (DESIGN
+    /// §8.3).
+    ///
+    /// The names are given here, before any token exists, because a reader
+    /// needs them first — a viewer building a filter bar, the protocol's
+    /// `key_names` (PROTOCOL.md §13.1) — and the extractor returns exactly as
+    /// many values, in the same order, so the two cannot drift apart. A
+    /// value is a string, an integer or a boolean ([`KeyValue`]).
+    ///
+    /// ```
+    /// use petritype::{Filter, KeyValue, NetBuilder};
+    ///
+    /// #[derive(Debug, Clone)]
+    /// struct Species { name: String, class: &'static str, population: u32 }
+    ///
+    /// let mut b = NetBuilder::new();
+    /// let forest = b.place::<Species>("Forest");
+    /// b.keys(forest, ["species", "class"], |s: &Species| [s.name.as_str().into(), s.class.into()]);
+    /// b.seed(forest, [Species { name: "Robin".into(), class: "Bird", population: 120 }]);
+    /// let net = b.build()?;
+    ///
+    /// let (robin, _) = net.tokens(forest.id()).next().unwrap();
+    /// let keys = net.keys(forest.id(), robin).expect("Forest declares keys");
+    /// assert_eq!(keys.get("class"), Some(&KeyValue::from("Bird")));
+    /// assert_eq!(net.query(&Filter::new().key_in("species", ["Robin"]))?.len(), 1);
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    ///
+    /// Keys are derived, never stored on the token, and the token type needs
+    /// no trait for them. A [`MutateEdge`](crate::MutateEdge) body or a
+    /// [`Net::replace`] that changes what the extractor reads changes the
+    /// token's keys, and the net's index follows. The extractor should be a
+    /// pure function of the token: it is called whenever the net needs a
+    /// token's keys, including to find a token's old entries in the index
+    /// before a change, and a key that changed behind the net's back — by
+    /// interior mutability, say — is one the index does not see. Nor should
+    /// it panic: it runs inside the net's own bookkeeping, when a token is
+    /// put in or taken out, where a panic is not caught as a body's is — the
+    /// footing a token's `Debug` and `Clone` are on already.
+    ///
+    /// # Errors
+    ///
+    /// [`BuildError::DuplicateKeyName`] from [`build`](NetBuilder::build) if
+    /// `names` repeats a name, and [`BuildError::KeysAlreadyDeclared`] if the
+    /// place already has keys; the first declaration stands until then. The
+    /// call itself is infallible, as the other per-place options are.
+    ///
+    /// # Panics
+    ///
+    /// If `place` came from a different builder.
+    pub fn keys<T, const N: usize>(
+        &mut self,
+        place: PlaceRef<T>,
+        names: [&'static str; N],
+        extractor: impl Fn(&T) -> [KeyValue; N] + Send + Sync + 'static,
+    ) where
+        T: 'static,
+    {
+        let index = self.index_of(place, "keys");
+        // The first name that repeats one before it.
+        if let Some((_, &name)) = names
+            .iter()
+            .enumerate()
+            .find(|&(position, name)| names[..position].contains(name))
+        {
+            self.keys_problem.get_or_insert(KeysProblem::Duplicate {
+                place: place.id(),
+                name,
+            });
+            return;
+        }
+        let meta = &mut self.places[index].meta;
+        if meta.keys.is_some() {
+            self.keys_problem
+                .get_or_insert(KeysProblem::Again { place: place.id() });
+            return;
+        }
+        meta.keys = Some(KeysVtable::of(names, extractor));
     }
 
     /// Gives a place its initial tokens. Repeated calls append.
@@ -831,6 +930,10 @@ impl NetBuilder {
     /// [`BuildError::NotNested`] if a place marked
     /// [`passive`](NetBuilder::passive) was not declared with
     /// [`place_nested`](NetBuilder::place_nested);
+    /// [`BuildError::DuplicateKeyName`] or
+    /// [`BuildError::KeysAlreadyDeclared`] for the first
+    /// [`keys`](NetBuilder::keys) declaration that repeats a name or a
+    /// place;
     /// [`BuildError::SnapshotOfNoClonePlace`] if a snapshot edge reads a
     /// place that cannot clone its tokens;
     /// [`BuildError::RestoreOfNoClonePlace`] if a transition that
@@ -868,6 +971,20 @@ impl NetBuilder {
             return Err(BuildError::NotNested {
                 place: self.places[place.0 as usize].meta.name.clone(),
             });
+        }
+        match self.keys_problem {
+            Some(KeysProblem::Duplicate { place, name }) => {
+                return Err(BuildError::DuplicateKeyName {
+                    place: self.places[place.0 as usize].meta.name.clone(),
+                    name: name.to_owned(),
+                });
+            }
+            Some(KeysProblem::Again { place }) => {
+                return Err(BuildError::KeysAlreadyDeclared {
+                    place: self.places[place.0 as usize].meta.name.clone(),
+                });
+            }
+            None => {}
         }
 
         let mut seen = HashSet::with_capacity(self.transitions.len());
@@ -1043,6 +1160,9 @@ impl NetBuilder {
             resettable: self.resettable,
             label_limit: self.label_limit,
             events: Vec::new(),
+            // Filled by the seeds below, which go in through the one
+            // insertion path like every other token.
+            index: KeyIndex::new(),
             #[cfg(feature = "serde")]
             stamp: None,
             #[cfg(feature = "serde")]
@@ -1221,6 +1341,7 @@ impl NetBuilder {
                 from_json: None,
                 nested: None,
                 passive: false,
+                keys: None,
             },
             tokens: VecDeque::new(),
         });
@@ -1298,7 +1419,8 @@ impl fmt::Debug for NetBuilder {
             .field("assert_acyclic", &self.assert_acyclic)
             .field("tie_break", &self.tie_break)
             .field("resettable", &self.resettable)
-            .field("not_nested", &self.not_nested);
+            .field("not_nested", &self.not_nested)
+            .field("keys_problem", &self.keys_problem);
         #[cfg(feature = "serde")]
         out.field("templates", &self.templates);
         out.field(

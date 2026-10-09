@@ -70,5 +70,14 @@ name = "transit"
 test = true
 required-features = ["serde"]
 
+# Token keys, filters and queries (DESIGN §8.3): species across habitats, and
+# the proposal's five questions as tests. The net itself is
+# `examples/wildlife/net.rs`, the protocol's conformance net `wildlife`, whose
+# species are JSON and whose `season` is a wire parameter: hence the feature.
+[[example]]
+name = "wildlife"
+test = true
+required-features = ["serde"]
+
 [package.metadata.docs.rs]
 all-features = true

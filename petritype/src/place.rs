@@ -5,6 +5,7 @@ use std::collections::VecDeque;
 use std::fmt;
 
 use crate::ids::TokenId;
+use crate::keys::KeysVtable;
 use crate::nested::NestedVtable;
 
 /// A token as the net stores it: owned, type-erased, and safe to move to
@@ -95,6 +96,11 @@ pub(crate) struct PlaceMeta {
     /// place's inner nets alone, as asked for by
     /// [`passive`](crate::NetBuilder::passive). Never true without `nested`.
     pub(crate) passive: bool,
+    /// The key names and the extractor declared with
+    /// [`NetBuilder::keys`](crate::NetBuilder::keys), or `None` for a place
+    /// whose tokens have no keys (DESIGN §8.3). Unlike the entries above it
+    /// holds a closure, in an `Arc`, so cloning the metadata shares it.
+    pub(crate) keys: Option<KeysVtable>,
 }
 
 impl fmt::Debug for PlaceMeta {
@@ -102,6 +108,14 @@ impl fmt::Debug for PlaceMeta {
         f.debug_struct("PlaceMeta")
             .field("name", &self.name)
             .field("type_name", &self.type_name)
+            .field(
+                "keys",
+                &self
+                    .keys
+                    .as_ref()
+                    .map(|keys| &keys.names[..])
+                    .unwrap_or(&[]),
+            )
             .finish_non_exhaustive()
     }
 }

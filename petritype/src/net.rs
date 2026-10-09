@@ -13,6 +13,7 @@ use crate::error::NetError;
 use crate::event::Event;
 use crate::firing::{Selector, TieBreak};
 use crate::ids::{NetId, PlaceId, PlaceRef, TokenId, TransitionId, foreign_place};
+use crate::index::KeyIndex;
 use crate::nested::lift_from;
 use crate::param::{ParamSlot, param_of, param_slot_index};
 use crate::place::{ErasedToken, PlaceSlot, erase_all};
@@ -66,6 +67,10 @@ pub struct Net {
     pub(crate) label_limit: usize,
     /// Appended to by the net, drained by the driver.
     pub(crate) events: Vec<Event>,
+    /// Per key name, per value, the tokens that hold it: what
+    /// [`query`](Net::query) starts from (DESIGN §8.3). Kept in step by every
+    /// method that moves or changes a token, never saved.
+    pub(crate) index: KeyIndex,
     /// The template that built this net, if one did: what lets it be saved
     /// and [forked](Net::fork) (DESIGN §6.6). Set by
     /// [`Templates::build`](crate::Templates::build), never by the builder.
@@ -124,6 +129,12 @@ pub struct PlaceInfo<'a> {
     /// fire only when an outer body steps them. Never true unless `nested`
     /// is.
     pub passive: bool,
+    /// The keys the place derives from each of its tokens, in the order
+    /// [`NetBuilder::keys`](crate::NetBuilder::keys) declared them; empty for
+    /// a place without keys (DESIGN §8.3). What a viewer lists in a filter
+    /// bar, before any token is there to ask. Borrowed from the net, so that
+    /// `PlaceInfo` stays `Copy`.
+    pub key_names: &'a [&'static str],
 }
 
 impl Net {
@@ -593,6 +604,10 @@ impl Net {
                 .tokens
                 .remove(index)
                 .expect("the position was just found");
+            self.index.leave(&slot.meta, place, token, &*value);
+            if slot.tokens.is_empty() {
+                self.index.emptied(place);
+            }
             // A nested token's last words, before it is reported gone
             // (DESIGN §6.6, rule 5).
             match slot.meta.nested {
@@ -765,7 +780,9 @@ impl Net {
             });
         }
         let token = self.mint_token_id();
-        self.places[index].tokens.push_back((token, value));
+        let slot = &mut self.places[index];
+        self.index.enter(&slot.meta, place, token, &*value);
+        slot.tokens.push_back((token, value));
         Ok(token)
     }
 
@@ -905,6 +922,11 @@ impl Net {
                 Some(nested) => lift_from(nested, &mut slot.tokens[index].1, place, token),
                 None => Vec::new(),
             };
+            // Same token, same id, same place in the queue: only its keys
+            // may have changed.
+            self.index
+                .leave(&slot.meta, place, token, &*slot.tokens[index].1);
+            self.index.enter(&slot.meta, place, token, &*value);
             slot.tokens[index].1 = value;
             outgoing
         };
@@ -975,10 +997,12 @@ impl Net {
             return;
         };
         let nested = slot.meta.nested;
+        let (meta, index) = (&slot.meta, &mut self.index);
         let removed: Vec<(TokenId, Vec<Event>)> = slot
             .tokens
             .drain(..)
             .map(|(token, mut value)| {
+                index.leave(meta, place, token, &*value);
                 let lifted = match nested {
                     Some(nested) => lift_from(nested, &mut value, place, token),
                     None => Vec::new(),
@@ -986,6 +1010,7 @@ impl Net {
                 (token, lifted)
             })
             .collect();
+        self.index.emptied(place);
         for (token, lifted) in removed {
             self.emit_all(lifted);
             self.emit(Event::Removed { place, token });
@@ -1010,7 +1035,8 @@ impl fmt::Debug for Net {
             .field("custom_selector", &self.selector.is_some())
             .field("tie_break", &self.tie_break)
             .field("resettable", &self.resettable)
-            .field("pending_events", &self.events.len());
+            .field("pending_events", &self.events.len())
+            .field("index", &self.index);
         #[cfg(feature = "serde")]
         out.field("template", &self.template())
             .field("templates", &self.templates);
@@ -1045,6 +1071,7 @@ pub(crate) fn places_of(
             serializable: false,
             nested: slot.meta.nested.is_some(),
             passive: slot.meta.passive,
+            key_names: slot.meta.keys.as_ref().map_or(&[], |keys| &keys.names[..]),
         };
         (id, info)
     })
@@ -1165,7 +1192,7 @@ pub(crate) fn json_in(
 /// `char_indices().nth(limit)` is both the test and the cut point: it yields
 /// `Some` exactly when there is a `limit + 1`-th character, and its byte
 /// offset is where the first `limit` characters end.
-fn truncate_label(mut text: String, limit: usize) -> String {
+pub(crate) fn truncate_label(mut text: String, limit: usize) -> String {
     if let Some((byte, _)) = text.char_indices().nth(limit) {
         text.truncate(byte);
         text.push_str("...");

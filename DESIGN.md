@@ -59,6 +59,7 @@ Kept, with the same meaning:
 | `step`, `run`, `run_indefinitely` | same |
 | tokens in places are the single source of truth; UI never mutates directly | enforced by `&mut Net` |
 | `kwargs`, `SetParam` | `Param::<T>` declared on the transition, `b.param`, `net.set_param` (§10) |
+| `ListPlaceNode(keys={..})`, `Filter`, `Query.matches`, `Query.distinct` | `b.keys(place, names, extractor)`, `Filter`, `net.query`, `net.distinct_values` (§8.3; with an index, which Python does without) |
 
 Dropped, and why:
 
@@ -95,6 +96,10 @@ Dropped, and why:
 - **Inner net**: a net carried by a token, in a *nested* place; the net
   holding the token is the **outer net** (§6.6, slice 15). *Quiescent deep*:
   quiescent here and in every inner net that is not passive.
+- **Key**: a named attribute of a token — a string, an integer or a
+  boolean — that its place derives from the token's value with an extractor
+  the author declared (§8.3, slice 18). A **filter** keeps the tokens whose
+  keys pass its clauses; a **query** asks a net for them.
 - **Template**: a function registered by name that builds a net; a net
   built through one is **stamped** with it, and can then be saved, restored
   and **forked** (copied by building it again), §6.6, slice 16.
@@ -171,6 +176,12 @@ struct PlaceMeta {
     from_json: Option<fn(serde_json::Value) -> Result<Box<dyn Any + Send + Sync>, _>>,
     nested: Option<NestedVtable>,   // Some iff place_nested (§6.6)
     passive: bool,                  // step_deep leaves its inner nets alone; never true without nested
+    keys: Option<KeysVtable>,       // Some iff b.keys (§8.3, slice 18)
+}
+
+struct KeysVtable {                 // slice 18: the declared names and the author's extractor
+    names: Arc<[&'static str]>,
+    extract: Arc<dyn Fn(&dyn Any) -> Vec<KeyValue> + Send + Sync>,   // a closure, so not a fn pointer
 }
 
 struct NestedVtable {               // slice 15: T::nets and T::nets_mut of the token's Nested impl
@@ -191,7 +202,10 @@ ordinary place's `clone` would be (§4.3, §6.6).
 `PlaceMeta` is a hand-rolled vtable: monomorphised generic functions
 (`debug_of::<T>`, `clone_of::<T>`) coerced to plain `fn` pointers when the
 builder knows `T`. Zero per-token overhead, no trait bound on the token beyond
-what the builder method requires.
+what the builder method requires. The one entry that is not a `fn` pointer
+is the key extractor (slice 18): it is the author's closure, wrapped where
+`T` is known to take an erased token and kept in an `Arc`, so that
+`PlaceMeta` stays `Clone` and a snapshot shares it.
 
 ### 4.3 Token bounds
 
@@ -896,7 +910,7 @@ slice 17 maps it so by name, inside an inner net as `nested` around it.
 ### 8.2 Read API
 
 ```rust
-net.places()      -> impl Iterator<Item = (PlaceId, PlaceInfo<'_>)>    // by value: name, type_name, serializable, nested, passive, count (count is live, never stored)
+net.places()      -> impl Iterator<Item = (PlaceId, PlaceInfo<'_>)>    // by value: name, type_name, serializable, nested, passive, key_names (slice 18), count (count is live, never stored)
 net.transitions() -> impl Iterator<Item = (TransitionId, TransitionInfo<'_>)>  // by value: name, inputs, outputs, positional (slice 17), enabled, in_flight, detachable
 net.edges()       -> impl Iterator<Item = EdgeInfo>   // Input { place, transition, kind } | Output { transition, place, slot }; transition order, inputs then outputs
 net.topology()    -> Topology   // places, transitions, edges and topology_counter as owned values; shape only, no counts or switches (slice 14)
@@ -923,6 +937,10 @@ net.fork() -> Result<Net, NetError>                  // slice 16: rebuilt from i
 #[cfg(feature = "serde")]
 net.template() -> Option<&str>;  net.templates() -> &Templates   // slice 16: the stamp's name; the registry nested tokens are rebuilt from
 net.snapshot() -> Result<Snapshot, NetError>         // owned copy of the *state*, not the net (see below); Err if any no_clone place
+net.keys(place, token) -> Option<Keys>               // slice 18: the token's keys, derived now (§8.3)
+net.query(&Filter) -> Result<Vec<Match>, NetError>   // slice 18: every token a filter lets through, from the index (§8.3)
+net.distinct_values(key, places) -> Vec<KeyValue>    // slice 18: a key's values in order of first appearance
+net.matches(&Filter, place, token) -> bool           // slice 18: one token against a filter, parameters read from the net
 net.topology_counter(), net.state_counter(), net.fired_count()
 ```
 
@@ -930,7 +948,8 @@ net.topology_counter(), net.state_counter(), net.fired_count()
 parameters and the counters, cloned through the `PlaceMeta` vtables into an
 owned `Send + Sync + Clone` value with the same read API names as `Net`
 (`places`, `transitions`, `edges`, `topology`, `count`, `tokens`, `token`,
-`label`, `debug`, `json`, `is_enabled`, `in_flight`, `param`, `nested` since slice 16, the counters). It is *not* a `Net`, and
+`label`, `debug`, `json`, `is_enabled`, `in_flight`, `param`, `nested` since slice 16, `keys`, `query`,
+`distinct_values` and `matches` since slice 18, by scanning, the counters). It is *not* a `Net`, and
 cannot be: bodies are `Box<dyn FnMut>` and cannot be cloned, and an in-flight
 transition has no body in the net at all; a what-if copy is a rebuild from
 the builder. What it is for: a renderer or inspector on another thread owns
@@ -944,6 +963,163 @@ live token ids.
 
 There is no observer callback. The driver holds `&mut Net` between steps and
 is the observer.
+
+### 8.3 Keys, queries and the index
+
+**Built 2026-10-09, slice 18.** Phase 1 of
+`Cyberpunk2020-Simulation/dev-docs/TOKEN_QUERYING_AND_FILTERING.md` (its
+R1 and R2; the Rust track's first item). A token may carry **keys**: named
+attributes a place derives from each of its tokens by an extractor the
+net's author writes. With keys, "every bird" is a question the net can
+answer: a process asks for the tokens a filter lets through and gets each
+one's place, id, keys, label and JSON; a viewer filters what it draws by
+them, and makes its tabs from the values one key takes. The example is
+`petritype/examples/wildlife.rs`, species across habitats, which is also
+the protocol's conformance net `wildlife` (PROTOCOL.md §11).
+
+```rust
+pub enum KeyValue { Str(String), Int(i64), Bool(bool) }    // Clone, Eq, Hash, Ord; From<&str | String | i64 | bool>; Display
+pub struct Keys;                                           // (name, value) pairs in declaration order: get, iter, names, len, is_empty
+b.keys(place: PlaceRef<T>, names: [&'static str; N], extractor: impl Fn(&T) -> [KeyValue; N] + Send + Sync + 'static)
+
+pub struct Filter { pub clauses: Vec<Clause>, pub places: Option<Vec<PlaceId>>, pub prefix: Option<String> }
+#[non_exhaustive] pub enum Clause { In { key, values: Vec<KeyValue> }, IsParam { key, param } }
+Filter::new().key_in(key, values).key_is_param(key, param).in_places(places).with_prefix(prefix)
+filter.matches(&keys) -> bool;  filter.matches_with(&keys, |param| ..) -> bool
+
+#[non_exhaustive] pub struct Match { pub place, pub token, pub keys: Keys, pub label: String, #[cfg(serde)] pub json: Option<Value> }
+net.keys(place, token) -> Option<Keys>
+net.query(&filter) -> Result<Vec<Match>, NetError>             // NoSuchPlace for a place `places` names that is not there
+net.distinct_values(key, places: Option<&[PlaceId]>) -> Vec<KeyValue>
+net.matches(&filter, place, token) -> bool
+snapshot.{keys, query, distinct_values, matches}             // the same answers, by scanning
+PlaceInfo::key_names: &[&'static str];  TopologyPlace::key_names: Vec<&'static str>
+```
+
+- **Declaring.** `b.keys(place, ["species", "class", "diet"], |s: &Species|
+  [..])`. The names are given statically, before any token exists, because
+  a reader needs them first — a viewer's filter bar, the protocol's
+  `key_names` (PROTOCOL.md §13.1) — and the extractor returns an array of
+  exactly as many values, in the same order, so the two cannot drift. The
+  token type needs no trait: the closure form is the one the proposal asked
+  for at least, and the only one built (Python likewise built only its
+  closure form). One declaration per place; a name repeated in one
+  declaration is `BuildError::DuplicateKeyName { place, name }` and a second
+  declaration for one place `BuildError::KeysAlreadyDeclared { place }`,
+  both reported from `build()` like `NotNested`, the call itself staying
+  infallible. Any place may declare keys, a nested one included.
+- **Values** are strings, integers and booleans, nothing else (the
+  proposal's §7), and compare by kind and then by value: `Int(1)`,
+  `Str("1")` and `Bool(true)` are three values, as `1`, `"1"` and `true` are
+  on the wire. With `serde`, `KeyValue` is untagged, the bare JSON value,
+  and `Keys` serialises as an object in declaration order. `Ord` exists for
+  sorted containers and is arbitrary across kinds.
+- **The vtable** (§4.2) gains `keys: Option<KeysVtable>`: the names, and
+  the extractor wrapped for an erased token. The extractor is the author's
+  closure, so unlike `debug` and `clone` it cannot be a `fn` pointer; it is
+  an `Arc<dyn Fn(&dyn Any) -> Vec<KeyValue> + Send + Sync>`, so that
+  `PlaceMeta` stays `Clone` and a `Snapshot` shares it.
+- **Keys are derived, never stored.** `Net::keys` computes them from the
+  token each time it is asked, which is why it returns `Keys` by value
+  where the proposal wrote `Option<&Keys>`. A `MutateEdge` body or a
+  `replace` that changes what the extractor reads changes the token's keys;
+  a decline that changes only `population` changes none. The extractor
+  should be pure: a key that changes behind the net's back (by interior
+  mutability, say) is one the index does not see. Nor should it panic: it
+  runs inside the net's bookkeeping, where a panic is not caught as a
+  body's is (§7), the footing a token's `Debug` and `Clone` are on already.
+- **Reading the names.** `PlaceInfo::key_names` is a slice borrowed from
+  the net rather than the `Vec` first planned, so that `PlaceInfo` stays
+  `Copy` (the Bevy reader takes it by value); `TopologyPlace::key_names` is
+  owned, and with `serde` written only when non-empty, as `nested` and
+  `passive` are, so a net without keys has the topology it always had.
+- **Filters.** A token passes when it passes every clause (AND across) and
+  lies in a place the filter covers; a clause accepts one of its values (OR
+  within), compared by kind and value. A token of a place that does not
+  declare a clause's key passes no such clause, so a filter with a clause
+  never keeps a token of a keyless place, while a filter with no clauses
+  keeps every token of the places it covers. The restriction is by place
+  only — `places` by id, `prefix` by the start of a place's *name*, the
+  protocol's §13.2 and the Python as-built — and never by transition, which
+  holds no tokens. A place in `places` that the net does not have makes
+  `query` fail with `NetError::NoSuchPlace` (the wire's `unknown_place`); a
+  key no place declares finds nothing and is not an error. `Filter` and
+  `Clause` are plain Rust: the runner has a wire shape of its own, keyed by
+  place names.
+- **A clause on a parameter.** `Clause::IsParam { key, param }` accepts one
+  value: the current value of the net parameter registered under the wire
+  name `param` with `serializable_param`, its JSON read as a `KeyValue`. A
+  parameter whose JSON is not a string, an integer or a boolean, or a name
+  the net has none under, accepts nothing. Wire names are a `serde`
+  facility, so without the feature such a clause accepts nothing at all.
+  A filter alone knows no parameters: `Filter::matches(&keys)` passes no
+  such clause, `matches_with` takes a lookup, and `Net::query` and
+  `Net::matches` read the net's own. The variant is `IsParam` and not the
+  `Param` of the brief: a variant of that name beside `petritype::Param`
+  makes rustc print `petritype::Param<T>` in full in every diagnostic that
+  names a parameter input (the `trybuild` expectations caught it), the
+  same trimmed-paths effect that kept `positional` a flag in §4.5.
+- **Queries.** `Net::query` returns `Match`es in place order and then
+  token order, the order `tokens` gives (oldest first); `label` is
+  `Net::label`, `json` is `Net::json` for a serializable place. `Net::matches`
+  asks the same question of one token, for a reader that has just been told
+  of a token by an event. `Net::distinct_values(key, places)` lists the
+  values in order of first appearance, place order then token order (the
+  proposal's `Bird, Mammal, Reptile, Fish`; `Omnivore, Herbivore` for
+  `Tundra`), and is empty for a key no place declares.
+- **The index** is what lets a query cost what it finds. Per key name, per
+  value, the ordered set of `(PlaceId, TokenId)` holding it
+  (`HashMap<&'static str, HashMap<KeyValue, BTreeSet<..>>>`, values no token
+  holds removed). A query with clauses resolves its parameters once, asks
+  the index how many tokens hold each clause's values, starts from the
+  clause with the fewest, and reads only those tokens — found in their place
+  by binary search, since a place's queue is in id order — checking the
+  other clauses against their keys. A query without clauses reads the
+  places it covers in full; it keeps every token in them anyway.
+  `distinct_values` reads the index alone. It is kept by the net at every
+  point a token enters a place, leaves one or changes in it: the one
+  insertion path `insert_erased` (seeds, `put`, `extend`, `set_tokens`,
+  `apply`, a firing's outputs, an import), a failed firing restoring what it
+  took, the consuming edges at launch, `remove`, the clearing in
+  `set_tokens`, `replace`, and a `MutateEdge` body, whose tokens' keys are
+  taken before the body runs and again after it (a panicking body included).
+  No token's keys are stored: the extractor is pure, so a token's old
+  entries are found by extracting from the value about to leave, or from the
+  value before the body changed it. The one change the net learns of only
+  afterwards is inside a nested token — an inner firing of `step_deep`, a
+  `nested_scope` closure — where a key may read the inner nets; there the
+  token's entries are found by looking through its keys' values, and it is
+  indexed afresh. `import_marking` empties the index and refills it as it
+  refills the places; nothing of it is ever saved (the proposal's R7). A
+  `Net`'s `Debug` prints how many values each key has, never the values.
+- **Token order.** The index's sets are in place order then id order, and
+  a place's queue is in id order too, except after two restoring firings of
+  one place land out of order behind a token put in meanwhile (§7). Such a
+  place is marked unordered until it next empties, and a query or a
+  `distinct_values` reads it in queue order instead. Correctness first: the
+  crate's own tests compare the kept index with one rebuilt from the
+  marking after every kind of change, and `tests/slice18.rs` compares the
+  net's answers with a snapshot's and with the read API by hand.
+- **A snapshot** has no index of its own: `Snapshot::query`,
+  `distinct_values`, `keys` and `matches` scan, and give the net's answers
+  for the same moment, parameters included.
+- **What Python does differently** (its "As built"). No index: keys are
+  derived on demand and a query scans, the index being this side's
+  performance measure; the spelling is `ListPlaceNode(keys={..})`,
+  `Keys.of`, `Filter.where(class_="Bird")`, `Query.matches` and
+  `Query.distinct`; a clause holds `values` or `param`, as here, and a
+  filter names places by name, which the runner will translate to ids.
+- **Next: keyed edges** (the proposal's R5, its own branch).
+  `TakeWhere(place, Filter)` and `MutateWhere(place, Filter)` take or
+  mutate the oldest token a filter lets through, leaving the others where
+  they are with their ids. They plug into what is here: the filter is
+  resolved against the net's parameters (`Filter::resolve`, crate-private)
+  and asked of one token's keys at a time, and the index says at once
+  whether the place holds a match and which is first. `Migrate Forest
+  Wetland` in the example is written the way a net has to without them —
+  take all of `Forest`, keep the oldest bird, put the rest back (the
+  game's pattern P2), every one of them coming back under a new id — and is
+  marked `// phase 2: one TakeWhere edge`.
 
 ## 9. External input
 
@@ -1114,6 +1290,10 @@ Always:
 - `passive` on a place not declared with `place_nested` (`NotNested`, the
   first one marked; slice 15). `passive` itself stays infallible, as the
   other per-place options are.
+- A `keys` declaration that names a key twice (`DuplicateKeyName { place,
+  name }`), or a second `keys` declaration for one place
+  (`KeysAlreadyDeclared { place }`); the first offender, after `NotNested`
+  (slice 18, §8.3). `keys` itself is infallible.
 - One input edge per place per transition (`DuplicateInputPlace`).
 - `SnapshotEdge` from a `no_clone` place.
 - `restore_tokens_on_failure` on a transition with a consuming (`TakeEdge`,
@@ -1248,6 +1428,11 @@ conformance net `transit`, in two files (`examples/transit.rs` for the
 script and its tests, `examples/transit/net.rs` for the net, which a
 runner's example can include), and needs the `serde` feature
 (`required-features`), since its vehicles save their cabins as JSON.
+A tenth, wildlife (slice 18), is the token-keys proposal's example and the
+protocol's conformance net `wildlife`, split the same way
+(`examples/wildlife.rs` for the proposal's questions and their answers as
+tests, `examples/wildlife/net.rs` for the net) and needing `serde` for the
+same reason: its species are JSON and its `season` is a wire parameter.
 
 **Done, slice 12.**
 
@@ -1353,6 +1538,9 @@ version it already holds instead of calling it a gap (protocol §9).
 | surviving user panics | `std::panic::catch_unwind` + `AssertUnwindSafe` |
 | finding the nets inside a token whose type the net has forgotten | trait `Nested`; `T::nets` / `T::nets_mut` monomorphised into `PlaceMeta` as `fn` pointers, as `debug` and `clone` are (slice 15) |
 | an event inside an event inside an event | `Box<Event>` in `Event::Nested`: one level per box, depth unbounded |
+| key names and values that cannot drift apart | const generics: `names: [&'static str; N]` and an extractor returning `[KeyValue; N]` (slice 18) |
+| a per-place closure in a vtable that must stay `Clone` | `Arc<dyn Fn(&dyn Any) -> Vec<KeyValue> + Send + Sync>` beside the `fn` pointers (slice 18) |
+| a query that costs what it finds, in place then token order | an index of `HashMap<KeyValue, BTreeSet<(PlaceId, TokenId)>>` per key name, kept by the net (slice 18) |
 | FIFO places | `VecDeque` |
 
 ## 17. Open questions
@@ -1468,6 +1656,17 @@ Slices, each with tests, in order:
     `05_nested_nets.json` replays unchanged. The core gained
     `Net::step_inside`, `Net::param_name` and `TransitionInfo::positional`;
     `tests/slice17.rs`.
+18. Token keys, phase 1 (§8.3), 2026-10-09, R1 and R2 of
+    `Cyberpunk2020-Simulation/dev-docs/TOKEN_QUERYING_AND_FILTERING.md`:
+    `KeyValue`, `Keys`, `NetBuilder::keys` with `BuildError::DuplicateKeyName`
+    and `KeysAlreadyDeclared`, the vtable's `keys`, `PlaceInfo::key_names`
+    and `TopologyPlace::key_names`; `Filter`, `Clause`, `Match`,
+    `Net::keys`, `Net::query`, `Net::distinct_values` and `Net::matches`,
+    the same four on `Snapshot` by scanning; the key index and every point
+    that keeps it. The example `wildlife`, the protocol's conformance net of
+    that name with `Migrate` in its before-keyed-edges form, holds the
+    proposal's §6 answers; `tests/slice18.rs`. Next: the runner (PROTOCOL.md
+    §13, the proposal's R3), then keyed edges (R5) on a branch of their own.
 
 ## 19. Interop: one protocol, two runtimes, two viewers
 
@@ -1517,6 +1716,7 @@ The decisions that shape it, all of 2026-10-03:
 | `nested` notification (§12.4) | `Event::Nested`, unwrapped to the event the innermost net logged: one wrapper with the full path, the inner notification built with that net's names and version |
 | inner `marking_version` (§12.3) | the runner's counter per inner net, one per state notification of that net; the outer one does not move |
 | `step` or a running net, inside (§12.3) | `select()`; when it picks nothing, `step_inside()`, inline: `nested` around `fired` |
+| `topology.places[].key_names`, a token's `keys`, `query`, `distinct` (§13; not served yet) | `TopologyPlace::key_names`, `Net::keys`, `Net::query` with place names resolved to ids, `Net::distinct_values` (slice 18, §8.3) |
 | `transitions[name]` | `is_enabled`, `is_in_flight`, membership of `fireable()`, `priority_of` |
 | `marking` | `tokens(place)` ids; the wire `label` is `debug(place, token)` cut by the runner at the protocol's 1000 characters, whatever the net's own `label_limit` |
 | token id `"17"` | `TokenId` printed with its `Display` (the bare number) |
@@ -1705,8 +1905,12 @@ last set sent. Only then does it write the response, which is the protocol's
 
 A token on the wire is `{id, label}`: the id is `TokenId`'s `Display`, the
 label `debug()` cut at 1000 characters on a character boundary with `"..."`
-(§19.1). Rust places are monomorphic and tokens have no colour, so
-`type_name` and `color` are never sent. A transition's `detail` is
+(§19.1). Rust places are monomorphic, so `type_name` is never sent, and
+`color` is not either. What a token has instead, since slice 18, is keys
+(§8.3): named values its place derives from it, which the protocol's §13
+puts on a token entry as `keys: {name: value}` (from `Net::keys`) and on a
+place as `key_names` (from `TopologyPlace::key_names`). The runner does not
+write them yet; that is the next phase. A transition's `detail` is
 `{params, detachable}`; `priority` is `priority_of` behind `catch_unwind`
 and omitted if the closure panicked.
 
@@ -2020,8 +2224,9 @@ copy in `tests/protocol/`.
   example binary carries it, and 03 has `invalid_params` for the unknown
   parameter.
 - **Deferred.** Keys, queries and filters (§13 of the protocol; the shared
-  `06_keys_query_filter.json` fails at its `load` until they are built);
-  inner firings on threads of their own; an id-preserving import.
+  `06_keys_query_filter.json` fails at its `load` until they are built) —
+  the core half landed as slice 18 (§8.3), and the runner's is next; inner
+  firings on threads of their own; an id-preserving import.
 
 ### 19.4 Who spawns it
 

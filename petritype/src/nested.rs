@@ -412,6 +412,13 @@ impl Net {
             let index = slot.position(token)?;
             let value = &mut slot.tokens[index].1;
             let result = f(&mut (nested.nets_mut)(&mut **value));
+            // A key may read the inner nets: the token is indexed again as
+            // it is now (DESIGN §8.3).
+            if slot.meta.keys.is_some() {
+                self.index
+                    .forget(&slot.meta, place, token, &*slot.tokens[index].1);
+            }
+            let value = &mut slot.tokens[index].1;
             (result, lift_from(nested, value, place, token))
         };
         self.emit_all(lifted);
@@ -572,6 +579,13 @@ impl Net {
                 let Some((name, nested_id, events, result)) = found else {
                     continue;
                 };
+                // An inner net fired, and a key may read it: the token is
+                // indexed again as it is now (DESIGN §8.3).
+                let slot = &self.places[index];
+                if slot.meta.keys.is_some() {
+                    self.index
+                        .forget(&slot.meta, place, token, &*slot.tokens[position].1);
+                }
                 // Rule 1: lifted right after the inner firing, under the
                 // place and token the token sits in.
                 for event in events {

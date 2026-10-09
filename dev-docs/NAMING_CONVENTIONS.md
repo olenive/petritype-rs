@@ -112,6 +112,15 @@ rename backlog.
 | one inner firing, without asking this net's own selector | `net.step_inside()` (the second half of `step_deep`) | `_select_inner` in the runner | — |
 | the wire name behind a `ParamChanged` | `net.param_name(type_name)` | — (Python's events carry the name) | — |
 | whether a body returns its outputs by position (and so what a `slot` is) | `TransitionInfo::positional`, `TopologyTransition::positional` | a return edge's `return_index` being set | — |
+| a named attribute a place derives from each of its tokens | **key** (DESIGN §8.3); the place's names `PlaceInfo::key_names`, `TopologyPlace::key_names`; `key_names` on the wire | key, `place.key_names` | — |
+| the value of one key: a string, an integer or a boolean, compared by kind | `KeyValue::{Str, Int, Bool}` (`1`, `"1"` and `true` differ) | `KeyValue` (a `Union`), `same_value` | — |
+| one token's keys, in declaration order | `Keys` (`get`, `iter`, `names`), `net.keys(place, token)` by value | `Keys.of(place, token)` (a `dict`) | — |
+| declaring a place's keys | `b.keys(place, names, extractor)`: names static, the extractor returning as many values → `BuildError::{DuplicateKeyName, KeysAlreadyDeclared}` | `ListPlaceNode(..., keys={name: fn})` or `keys=(attr, ..)` | — |
+| which tokens to keep | `Filter { clauses, places, prefix }`: `Filter::new().key_in(..).key_is_param(..).in_places(..).with_prefix(..)`, `filter.matches(&keys)`, `net.matches(&filter, place, token)` | `Filter(clauses, places, prefix)`, `Filter.where(class_=..)`, `in_places`, `with_prefix` | — |
+| one condition on one key | `Clause::In { key, values }` (OR within), `Clause::IsParam { key, param }` (a net parameter's current value, by wire name) | `Clause(key, values)`, `Clause(key, param=name)` | — |
+| every token a filter keeps, in place then token order | `net.query(&filter)` → `Vec<Match { place, token, keys, label, json }>` | `Query.matches(graph, filter)` → `Match` | — |
+| a key's values in order of first appearance | `net.distinct_values(key, places)` | `Query.distinct(graph, key)` | — |
+| per key, per value, the tokens holding it, kept by the net | the **index** (crate-private; never saved, rebuilt on import) | — (Python scans) | — |
 
 ## Rust-specific conventions
 

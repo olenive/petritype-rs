@@ -90,6 +90,11 @@ pub struct TopologyPlace {
     /// body. Written only when true, like `nested`.
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "std::ops::Not::not"))]
     pub passive: bool,
+    /// [`PlaceInfo::key_names`]: the keys the place derives from its tokens,
+    /// in declaration order, empty for none (DESIGN §8.3). With `serde`,
+    /// written only when there are some, like `nested`.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Vec::is_empty"))]
+    pub key_names: Vec<&'static str>,
 }
 
 /// One transition of a [`Topology`]: what [`TransitionInfo`] reports, owned,
@@ -143,6 +148,7 @@ impl Topology {
                     serializable: info.serializable,
                     nested: info.nested,
                     passive: info.passive,
+                    key_names: info.key_names.to_vec(),
                 })
                 .collect(),
             transitions: transitions

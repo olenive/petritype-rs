@@ -243,7 +243,10 @@ impl Net {
         // Everything decoded: only now does anything change. The tokens
         // going out are dropped without a word, nested ones included: the
         // six lifting rules leave nothing in an inner log between calls, so
-        // there is nothing of theirs to lose.
+        // there is nothing of theirs to lose. Every place is refilled, so
+        // the key index is rebuilt from nothing as the tokens go in (DESIGN
+        // §8.3).
+        self.index.clear();
         for (index, tokens) in decoded.into_iter().enumerate() {
             self.places[index].tokens.clear();
             let place = PlaceId(index as u32);

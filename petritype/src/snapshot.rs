@@ -7,6 +7,7 @@ use std::sync::Arc;
 use crate::edge::EdgeInfo;
 use crate::error::NetError;
 use crate::ids::{NetId, PlaceId, TokenId, TransitionId};
+use crate::keys::{Filter, KeyValue, Keys, Match, distinct_scan, keys_in, matches_in, query_scan};
 use crate::nested::nested_in;
 #[cfg(feature = "serde")]
 use crate::net::json_in;
@@ -368,6 +369,37 @@ impl Snapshot {
     /// always `None`.
     pub fn nested(&self, place: PlaceId, token: TokenId) -> Option<Vec<(&str, &Net)>> {
         nested_in(&self.places, place, token)
+    }
+
+    /// One token's keys, as they were: [`Net::keys`].
+    pub fn keys(&self, place: PlaceId, token: TokenId) -> Option<Keys> {
+        keys_in(&self.places, place, token)
+    }
+
+    /// Every token `filter` let through, in place order then token order:
+    /// [`Net::query`], and the same answer for the same moment.
+    ///
+    /// A snapshot carries no index, so this reads every place the filter
+    /// covers; a [`Clause::IsParam`](crate::Clause::IsParam) reads the
+    /// parameter's value as it was.
+    ///
+    /// # Errors
+    ///
+    /// [`NetError::NoSuchPlace`] if [`Filter::places`] names a place the net
+    /// does not have.
+    pub fn query(&self, filter: &Filter) -> Result<Vec<Match>, NetError> {
+        query_scan(&self.places, &self.params, self.label_limit, filter)
+    }
+
+    /// The distinct values of a key, in order of first appearance:
+    /// [`Net::distinct_values`], by reading every place asked about.
+    pub fn distinct_values(&self, key: &str, places: Option<&[PlaceId]>) -> Vec<KeyValue> {
+        distinct_scan(&self.places, key, places)
+    }
+
+    /// Whether one token passed `filter`: [`Net::matches`].
+    pub fn matches(&self, filter: &Filter, place: PlaceId, token: TokenId) -> bool {
+        matches_in(&self.places, &self.params, filter, place, token)
     }
 
     /// The maximum number of characters [`label`](Snapshot::label) returns:

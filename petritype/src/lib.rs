@@ -219,6 +219,16 @@
 //!   cloned — a what-if copy is a second `build()` — and it is a `Result`
 //!   because a [`place_no_clone`](NetBuilder::place_no_clone) place cannot
 //!   copy its tokens ([`NetError::NoClonePlace`]).
+//! - [`NetBuilder::keys`] declares the *keys* of a place's tokens: named
+//!   attributes — a string, an integer or a boolean each, a [`KeyValue`] —
+//!   that an extractor the author writes derives from every token, so the
+//!   token type needs nothing for them. [`Net::keys`] reads one token's
+//!   [`Keys`]; [`Net::query`] finds every token a [`Filter`] of [`Clause`]s
+//!   lets through, as [`Match`]es in place order then token order, from an
+//!   index the net keeps up to date as tokens come, go and change; and
+//!   [`Net::distinct_values`] lists the values a key takes, in order of
+//!   first appearance, which is what a viewer makes its tabs of (DESIGN
+//!   §8.3). A [`Snapshot`] answers the same questions by scanning.
 //! - [`Net::topology`] (and [`Snapshot::topology`]) is the net's *shape*,
 //!   owned: places, transitions and edges with no tokens and no switches, as
 //!   a [`Topology`] that a render thread or a runner can hold without a
@@ -301,8 +311,12 @@
 //!   "enabled"}` — and `Deserialize`, rebuilt from the registry in
 //!   `Templates::scope`, and `Net::fork` copies one: which is how a token
 //!   that carries a net is saved, loaded, and snapshotted
-//!   ([`Nested`] gains `fork`). (All of these are hidden from this page
-//!   unless the feature is on.)
+//!   ([`Nested`] gains `fork`). [`KeyValue`] becomes `Serialize` and
+//!   `Deserialize` as the bare JSON string, integer or boolean it is, and
+//!   [`Keys`] `Serialize` as an object; a [`Clause::IsParam`] compares a key
+//!   with a parameter by the wire name `serializable_param` gave it, and so
+//!   accepts nothing without the feature. (All of these are hidden from this
+//!   page unless the feature is on.)
 
 #![warn(missing_docs, missing_debug_implementations, unreachable_pub)]
 #![forbid(unsafe_code)]
@@ -319,6 +333,8 @@ mod error;
 mod event;
 mod firing;
 mod ids;
+mod index;
+mod keys;
 #[cfg(feature = "serde")]
 mod marking;
 mod nested;
@@ -350,6 +366,7 @@ pub use error::{BodyPanicked, BuildError, CommandError, FiringFailed, NetError};
 pub use event::Event;
 pub use firing::{Completed, Firing, Selector, TieBreak};
 pub use ids::{NetId, PlaceId, PlaceRef, TokenId, TransitionId};
+pub use keys::{Clause, Filter, KeyValue, Keys, Match};
 #[cfg(feature = "serde")]
 pub use marking::Marking;
 pub use nested::{DeepStep, Nested};

@@ -92,6 +92,8 @@ use crate::erased::{ErasedBody, ErasedInput, ErasedInputs, ErasedOutcome, Output
 use crate::error::{BodyPanicked, FiringFailed, NetError};
 use crate::event::Event;
 use crate::ids::{NetId, PlaceId, TokenId, TransitionId};
+use crate::index::KeyIndex;
+use crate::keys::KeyValue;
 use crate::nested::lift_from;
 use crate::net::Net;
 use crate::param::{ParamSlot, param_slot};
@@ -668,6 +670,7 @@ impl Net {
                 places,
                 transitions,
                 params,
+                index: key_index,
                 ..
             } = &mut *self;
             let inputs = &transitions[index].inputs;
@@ -675,6 +678,7 @@ impl Net {
             let args = consume(
                 places,
                 params,
+                key_index,
                 sources,
                 inputs,
                 &mut consumed,
@@ -685,11 +689,22 @@ impl Net {
             if transitions[index].detachable {
                 Stage::Airborne { body, args }
             } else {
+                // The keys of the tokens the body is about to change, while
+                // they are still the old ones: the index finds a token's
+                // entries by them (DESIGN §8.3).
+                let before = keys_before(places, &mutated);
                 // Stage two, here and now: a `MutateEdge` hands the body a
                 // borrow into a place, which may neither travel with the
                 // `Firing` nor still be alive when stage three writes.
                 let args = borrow_mutated(places, sources, inputs, args);
                 let outcome = call_body(&mut body, args);
+                // Whatever the body did, done or half done before a panic,
+                // is in the place now, and the index follows it there.
+                for ((place, token), before) in mutated.iter().zip(before) {
+                    let slot = &places[place.0 as usize];
+                    let (_, value) = slot.tokens.front().expect(NON_EMPTY);
+                    key_index.changed(&slot.meta, *place, *token, before, &**value);
+                }
                 Stage::Ran { body, outcome }
             }
         };
@@ -947,9 +962,11 @@ impl Net {
             return false;
         };
         for (place, token, value) in restore.into_iter().rev() {
-            self.places[place.0 as usize]
-                .tokens
-                .push_front((token, value));
+            let slot = &mut self.places[place.0 as usize];
+            let front = slot.tokens.front().map(|(front, _)| *front);
+            self.index.pushed_front(place, token, front);
+            self.index.enter(&slot.meta, place, token, &*value);
+            slot.tokens.push_front((token, value));
         }
         true
     }
@@ -1330,6 +1347,7 @@ pub(crate) fn default_selector(net: &Net, fireable: &[TransitionId]) -> Option<T
 fn consume(
     places: &mut [PlaceSlot],
     params: &[ParamSlot],
+    index: &mut KeyIndex,
     sources: &[ArgSource],
     inputs: &[(PlaceId, EdgeKind)],
     consumed: &mut Vec<(PlaceId, TokenId)>,
@@ -1349,11 +1367,15 @@ fn consume(
                 continue;
             }
         };
-        let index = place.0 as usize;
+        let position = place.0 as usize;
         match kind {
             EdgeKind::Take => {
-                let slot = &mut places[index];
+                let slot = &mut places[position];
                 let (token, mut value) = slot.tokens.pop_front().expect(NON_EMPTY);
+                index.leave(&slot.meta, place, token, &*value);
+                if slot.tokens.is_empty() {
+                    index.emptied(place);
+                }
                 if let Some(restore) = restore.as_deref_mut() {
                     restore.push((place, token, restore_clone(&slot.meta, &value)));
                 }
@@ -1364,10 +1386,11 @@ fn consume(
                 args.push(ErasedInput::Token(value));
             }
             EdgeKind::TakeAll => {
-                let slot = &mut places[index];
+                let slot = &mut places[position];
                 let nested = slot.meta.nested;
                 let mut values = Vec::with_capacity(slot.tokens.len());
                 for (token, mut value) in slot.tokens.drain(..) {
+                    index.leave(&slot.meta, place, token, &*value);
                     if let Some(restore) = restore.as_deref_mut() {
                         restore.push((place, token, restore_clone(&slot.meta, &value)));
                     }
@@ -1377,10 +1400,11 @@ fn consume(
                     consumed.push((place, token));
                     values.push(value);
                 }
+                index.emptied(place);
                 args.push(ErasedInput::Tokens(values));
             }
             EdgeKind::Snapshot => {
-                let slot = &places[index];
+                let slot = &places[position];
                 let clone = slot
                     .meta
                     .clone
@@ -1391,7 +1415,7 @@ fn consume(
                 args.push(ErasedInput::Token(clone(&**value)));
             }
             EdgeKind::Mutate => {
-                let (token, _) = places[index].tokens.front().expect(NON_EMPTY);
+                let (token, _) = places[position].tokens.front().expect(NON_EMPTY);
                 mutated.push((place, *token));
                 // Overwritten by `borrow_mutated`, which is the only caller
                 // allowed to hold the borrow; a body never sees this.
@@ -1401,6 +1425,20 @@ fn consume(
     }
 
     args
+}
+
+/// The key values of each token a mutating edge is about to hand its body,
+/// in edge order, while they are still the old ones; `None` for a token of a
+/// place without keys. See [`KeyIndex::changed`].
+fn keys_before(places: &[PlaceSlot], mutated: &[(PlaceId, TokenId)]) -> Vec<Option<Vec<KeyValue>>> {
+    mutated
+        .iter()
+        .map(|(place, _)| {
+            let slot = &places[place.0 as usize];
+            let (_, value) = slot.tokens.front().expect(NON_EMPTY);
+            KeyIndex::before(&slot.meta, &**value)
+        })
+        .collect()
 }
 
 /// The clone a restoring transition takes of one token it consumes, with that

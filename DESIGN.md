@@ -60,6 +60,7 @@ Kept, with the same meaning:
 | tokens in places are the single source of truth; UI never mutates directly | enforced by `&mut Net` |
 | `kwargs`, `SetParam` | `Param::<T>` declared on the transition, `b.param`, `net.set_param` (§10) |
 | `ListPlaceNode(keys={..})`, `Filter`, `Query.matches`, `Query.distinct` | `b.keys(place, names, extractor)`, `Filter`, `net.query`, `net.distinct_values` (§8.3; with an index, which Python does without) |
+| `TakeWhereEdge`, `MutateWhereEdge` (subclasses of the plain edges) | same names, their own structs `TakeWhereEdge(place, filter)`, `MutateWhereEdge(place, filter)` (§8.3, slice 19) |
 
 Dropped, and why:
 
@@ -90,7 +91,8 @@ Dropped, and why:
 - **Enabled**: the author's on/off switch on a transition (`enable`,
   `disable`, `Toggled`).
 - **Fireable**: a transition that is enabled, not in flight, whose every
-  input place is non-empty and whose guard passes.
+  input place is non-empty (holds a token the filter accepts, for a keyed
+  edge) and whose guard passes.
 - **Firing**: consume inputs, run body, distribute outputs.
 - **Quiescent**: nothing fireable and nothing in flight.
 - **Inner net**: a net carried by a token, in a *nested* place; the net
@@ -99,7 +101,9 @@ Dropped, and why:
 - **Key**: a named attribute of a token — a string, an integer or a
   boolean — that its place derives from the token's value with an extractor
   the author declared (§8.3, slice 18). A **filter** keeps the tokens whose
-  keys pass its clauses; a **query** asks a net for them.
+  keys pass its clauses; a **query** asks a net for them; a **keyed edge**
+  (`TakeWhereEdge`, `MutateWhereEdge`, slice 19) takes or mutates the oldest
+  token its filter accepts instead of the front one.
 - **Template**: a function registered by name that builds a net; a net
   built through one is **stamped** with it, and can then be saved, restored
   and **forked** (copied by building it again), §6.6, slice 16.
@@ -138,7 +142,8 @@ pub struct PlaceRef<T> { place: PlaceId, net: NetId, _t: PhantomData<fn() -> T> 
   - `fired_count`: number of completed firings. A statistic, not a counter of
     changes.
   - `emit` bumps `state_counter` once per event: a firing bumps it by one
-    (`Fired`) plus one per `MutateEdge` (`Mutated`); a failed firing likewise
+    (`Fired`) plus one per mutating edge, `MutateEdge` or `MutateWhereEdge`
+    (`Mutated`); a failed firing likewise
     (`Mutated`s then `Failed`); a toggle by one.
 - `PlaceRef` is stamped with its net's `NetId` (an `AtomicU32` counter, one
   per process; not stable across runs). Every method that
@@ -242,7 +247,8 @@ in the place's type.
 ```rust
 struct TransitionSlot {
     name: String,
-    inputs: Vec<(PlaceId, EdgeKind)>,      // EdgeKind::{Take, TakeAll, Snapshot, Mutate}
+    inputs: Vec<(PlaceId, EdgeKind)>,      // EdgeKind::{Take, TakeAll, Snapshot, Mutate, TakeWhere, MutateWhere}
+    filters: Vec<Option<Filter>>,          // beside inputs: Some exactly for the two keyed kinds (slice 19)
     outputs: Vec<PlaceId>,                 // positional; also the target set for routed / Distribution
     // no routing field: a routed body's TypeId -> output index table is resolved from types when the
     // body is wrapped (transition()) and captured by the erased closure; problems surface at build()
@@ -251,7 +257,7 @@ struct TransitionSlot {
     priority: Option<Box<dyn Fn(&Net) -> f64 + Send + Sync>>,
     enabled: bool,
     restore_tokens_on_failure: bool,
-    detachable: bool,                      // false iff any input is a MutateEdge
+    detachable: bool,                      // false iff any input is a MutateEdge or a MutateWhereEdge
 }
 ```
 
@@ -263,10 +269,14 @@ Input edge kinds and the body parameter each produces:
 | `TakeAllEdge(p)` | every token | `Vec<T>` | yes |
 | `SnapshotEdge(p)` | no | `T` (clone of the front token) | yes |
 | `MutateEdge(p)` | no | `&mut T` (front token, in place) | yes |
+| `TakeWhereEdge(p, filter)` | one token, the oldest the filter accepts | `T` | a token the filter accepts |
+| `MutateWhereEdge(p, filter)` | no | `&mut T` (the oldest token the filter accepts, in place) | a token the filter accepts |
 
 A transition reads each place through at most one input edge
 (`DuplicateInputPlace` at build), so fireability is exactly "every input
-place non-empty" and `MutateEdge` borrows are disjoint by construction.
+place non-empty" (for a keyed edge, "holding a token the filter accepts")
+and the borrows of the mutating edges are disjoint by construction. The two
+keyed edges (slice 19) are §8.3's.
 
 Bodies are `FnMut`: they may hold private mutable state (counters, RNGs).
 Anything captured must be `Send + Sync`; use `move`, `Arc`, `Mutex`, atomics.
@@ -445,8 +455,9 @@ Conventions:
 ### 6.1 Fireability and selection
 
 A transition is **fireable** iff its `enabled` switch is on, its body is in
-its slot (not in flight), every input place is non-empty (all four edge
-kinds need a token present) and its guard, if any, returns true. Guards run
+its slot (not in flight), every input place is non-empty (all four plain
+edge kinds need a token present, and a keyed edge one its filter accepts,
+§8.3) and its guard, if any, returns true. Guards run
 during the scan, after the cheaper checks. `Net::fireable()` lists the
 fireable transitions in declaration order; `Net::is_fireable(t)` asks about
 one. The scan is linear each step; incremental tracking is a later
@@ -488,9 +499,9 @@ net.in_flight() -> Vec<TransitionId>; net.is_in_flight(t)   // slots whose body 
   anything. Dropping a `Firing` or `Completed` instead of distributing it
   strands the transition in flight for good (the body never comes home);
   both types are `#[must_use]`. See §17.
-- If the transition has a `MutateEdge` input, `launch` runs the body inline
-  and returns an already-`Completed` firing. Derived from edge kinds, no user
-  flag.
+- If the transition has a `MutateEdge` or `MutateWhereEdge` input, `launch`
+  runs the body inline and returns an already-`Completed` firing. Derived
+  from edge kinds, no user flag.
 - `distribute` is atomic: every target place is checked before any token is
   written.
 - `distribute` on a failed `Completed` restores inputs if configured, emits
@@ -615,12 +626,13 @@ pub enum DeepStep {
   The rules, each under the place and token id the token has at that moment:
   1. an inner firing made by `step_deep`: straight after it, where the token
      sits;
-  2. a `MutateEdge` body on a nested token: before the firing's `Mutated`
-     for that token, so `Nested`*, `Mutated`, then `Fired`, `Distributed`
-     or `Failed`;
-  3. a consuming edge (`TakeEdge`, `TakeAllEdge`) from a nested place: at
-     launch, before `Launched` or `Fired`, under the source place and the
-     old id, so nothing logged inside a token that is never put back is lost;
+  2. a `MutateEdge` (or, since slice 19, `MutateWhereEdge`) body on a
+     nested token: before the firing's `Mutated` for that token, so
+     `Nested`*, `Mutated`, then `Fired`, `Distributed` or `Failed`;
+  3. a consuming edge (`TakeEdge`, `TakeAllEdge`, since slice 19
+     `TakeWhereEdge`) from a nested place: at launch, before `Launched` or
+     `Fired`, under the source place and the old id, so nothing logged
+     inside a token that is never put back is lost;
   4. a token produced into a nested place: after `Fired` or `Distributed`,
      under the destination and the *new* id, which the reader has then seen;
   5. external input: `put`, `extend`, `set_tokens`, `replace` into a nested
@@ -797,11 +809,14 @@ outer net should see it.
 - **Consumed tokens are lost by default.** `Failed { transition, consumed, restored, error }`
   records their ids and places; with `restored == true` they are back.
 - **`restore_tokens_on_failure(t)`** clones the consumed tokens (`TakeEdge`,
-  `TakeAllEdge`) at launch; the clones travel with the firing, and on any
-  failure in stage three (body `Err`, panic, bad `Distribution`) go back to
-  the front of their places in original order **with their original
-  `TokenId`s**, before the `Failed` event and without events of their own.
-  Snapshot and mutate edges consume nothing, so nothing is restored for them.
+  `TakeAllEdge`, `TakeWhereEdge`) at launch; the clones travel with the
+  firing, and on any failure in stage three (body `Err`, panic, bad
+  `Distribution`) go back to the front of their places in original order
+  **with their original `TokenId`s**, before the `Failed` event and without
+  events of their own. A `TakeWhereEdge`'s token may have come from the
+  middle of its place and goes back to the front all the same: the id is
+  kept, the position is not (§8.3). Snapshot and mutate edges consume
+  nothing, so nothing is restored for them.
   Cost: one clone per consumed token per fire of that transition. Build error
   (`RestoreOfNoClonePlace`) if a consuming input place is `no_clone`.
 - **The net stays consistent** after any failure: body returned to its slot,
@@ -877,7 +892,7 @@ pub enum Event {
     Failed      { transition: TransitionId, consumed: Vec<(PlaceId, TokenId)>, restored: bool, error: String },
     Added       { place: PlaceId, token: TokenId },      // external extend / put (not seeds: builder seeding is setup, emits nothing)
     Removed     { place: PlaceId, token: TokenId },      // external remove / set_tokens
-    Mutated     { place: PlaceId, token: TokenId },      // MutateEdge, or replace()
+    Mutated     { place: PlaceId, token: TokenId },      // MutateEdge or MutateWhereEdge, or replace()
     Toggled     { transition: TransitionId, enabled: bool },
     ParamChanged { type_name: &'static str },
     Nested      { place: PlaceId, token: TokenId, net: String, nested_id: NetId, event: Box<Event> },  // slice 15
@@ -911,8 +926,8 @@ slice 17 maps it so by name, inside an inner net as `nested` around it.
 
 ```rust
 net.places()      -> impl Iterator<Item = (PlaceId, PlaceInfo<'_>)>    // by value: name, type_name, serializable, nested, passive, key_names (slice 18), count (count is live, never stored)
-net.transitions() -> impl Iterator<Item = (TransitionId, TransitionInfo<'_>)>  // by value: name, inputs, outputs, positional (slice 17), enabled, in_flight, detachable
-net.edges()       -> impl Iterator<Item = EdgeInfo>   // Input { place, transition, kind } | Output { transition, place, slot }; transition order, inputs then outputs
+net.transitions() -> impl Iterator<Item = (TransitionId, TransitionInfo<'_>)>  // by value: name, inputs, filters (slice 19), outputs, positional (slice 17), enabled, in_flight, detachable
+net.edges()       -> impl Iterator<Item = EdgeInfo>   // Input { place, transition, kind, filter (slice 19) } | Output { transition, place, slot }; transition order, inputs then outputs
 net.topology()    -> Topology   // places, transitions, edges and topology_counter as owned values; shape only, no counts or switches (slice 14)
 net.place_named(&str) -> Option<PlaceId>;  net.transition_named(&str) -> Option<TransitionId>
 net.place_ref::<T>(&str) -> Option<PlaceRef<T>>   // slice 15: a typed handle by name, checked by TypeId
@@ -941,6 +956,7 @@ net.keys(place, token) -> Option<Keys>               // slice 18: the token's ke
 net.query(&Filter) -> Result<Vec<Match>, NetError>   // slice 18: every token a filter lets through, from the index (§8.3)
 net.distinct_values(key, places) -> Vec<KeyValue>    // slice 18: a key's values in order of first appearance
 net.matches(&Filter, place, token) -> bool           // slice 18: one token against a filter, parameters read from the net
+net.first_match(place, &Filter) -> Option<TokenId>   // slice 19: the token a keyed edge with this filter would choose now
 net.topology_counter(), net.state_counter(), net.fired_count()
 ```
 
@@ -1044,8 +1060,10 @@ PlaceInfo::key_names: &[&'static str];  TopologyPlace::key_names: Vec<&'static s
   holds no tokens. A place in `places` that the net does not have makes
   `query` fail with `NetError::NoSuchPlace` (the wire's `unknown_place`); a
   key no place declares finds nothing and is not an error. `Filter` and
-  `Clause` are plain Rust: the runner has a wire shape of its own, keyed by
-  place names.
+  `Clause` are plain Rust; since slice 19, with `serde`, they are also
+  `Serialize` and `Deserialize` in the protocol's shape with places by id
+  (below), and the runner keeps a wire shape of its own, keyed by place
+  names.
 - **A clause on a parameter.** `Clause::IsParam { key, param }` accepts one
   value: the current value of the net parameter registered under the wire
   name `param` with `serializable_param`, its JSON read as a `KeyValue`. A
@@ -1109,17 +1127,127 @@ PlaceInfo::key_names: &[&'static str];  TopologyPlace::key_names: Vec<&'static s
   `Keys.of`, `Filter.where(class_="Bird")`, `Query.matches` and
   `Query.distinct`; a clause holds `values` or `param`, as here, and a
   filter names places by name, which the runner will translate to ids.
-- **Next: keyed edges** (the proposal's R5, its own branch).
-  `TakeWhere(place, Filter)` and `MutateWhere(place, Filter)` take or
-  mutate the oldest token a filter lets through, leaving the others where
-  they are with their ids. They plug into what is here: the filter is
-  resolved against the net's parameters (`Filter::resolve`, crate-private)
-  and asked of one token's keys at a time, and the index says at once
-  whether the place holds a match and which is first. `Migrate Forest
-  Wetland` in the example is written the way a net has to without them —
-  take all of `Forest`, keep the oldest bird, put the rest back (the
-  game's pattern P2), every one of them coming back under a new id — and is
-  marked `// phase 2: one TakeWhere edge`.
+
+**Keyed input edges, 2026-10-09** (slice 19). Phase 2 of the same proposal:
+its R5, the Rust track's fourth item. Two input edges choose their token by
+its keys instead of taking the front one, so that "the oldest bird in
+`Forest`" is one edge rather than a transition that takes the whole place
+and puts most of it back. Python built the same edges (its "As built"),
+under the same names.
+
+```rust
+pub struct TakeWhereEdge<T>(pub PlaceRef<T>, pub Filter);     // body parameter T
+pub struct MutateWhereEdge<T>(pub PlaceRef<T>, pub Filter);   // body parameter &mut T
+#[non_exhaustive] pub enum EdgeKind { .., TakeWhere, MutateWhere }   // "take_where", "mutate_where"
+kind.is_keyed() -> bool;  EdgeKind::TakeWhere.consumes() == true
+TransitionInfo::filters: &[Option<Filter>]     // beside `inputs`, Some exactly for a keyed edge
+TopologyTransition::filters: Vec<Option<Filter>>
+EdgeInfo::Input { place, transition, kind, filter: Option<Filter> }   // no longer Copy
+net.first_match(place, &filter) -> Option<TokenId>
+BuildError::KeyedEdgeOnUnkeyedPlace { transition, place }
+#[cfg(serde)] Filter, Clause: Serialize + Deserialize   // the protocol's shape, places by id
+```
+
+- **Fireable** when, besides the usual conditions, the edge's place holds
+  a token whose keys pass every clause of the filter. The filter is asked
+  of that one place: its `places` and `prefix` are not consulted, by the
+  edge or by `first_match` (a query still consults them). A
+  `Clause::IsParam` reads the parameter's value whenever fireability is
+  asked, so a `set_param` can make a keyed transition fireable or not
+  without a token moving. The guard runs after, as it always has, and so
+  only when there is a token to be had; it reads that token with
+  `Net::first_match`, as a guard on a plain edge reads the front one. A
+  filter without clauses accepts every token, and the edge behaves as its
+  plain counterpart; a clause on a key the place does not declare accepts
+  none, and the edge never fires.
+- **Which token.** The first in queue order whose keys pass: the oldest,
+  unless a restoring firing has put a younger one in front (token order,
+  above). A `TakeWhereEdge` takes it from wherever it stands and the body
+  is handed it as a `TakeEdge`'s would be; a `MutateWhereEdge` lends it to
+  the body where it stands, as a `MutateEdge` lends the front one, and like
+  that edge makes the transition non-detachable and reports the token in a
+  `Mutated`. Every other token stays where it was, under its id: the
+  firing's `Fired` (or `Launched`) names the one token consumed, and no
+  `Removed` or `Added` is emitted for the rest.
+- **Asked of the index**, without extracting a key. Per clause, the
+  postings of each value it accepts; a key or a clause no token holds
+  answers "none" at once. The clause holding the fewest tokens gives the
+  candidates, each of its values' sets walked in id order within the
+  place until a token is also in some posting of every other clause; the
+  earliest of those is the token, and a binary search finds its position.
+  An unordered place is walked in queue order instead. So a keyed edge on
+  a long place whose matches are rare costs the matches it tries, not the
+  place's length, and fireability is asked at every scan. The crate's
+  tests compare it with a front-to-back scan after every kind of change.
+- **The index kept right** at the same points as before: a token taken
+  from the middle leaves it as one taken from the front does (removal from
+  the middle keeps a place in id order), and a mutated token's keys are
+  taken before the body and again after, found by its position in the
+  place, which the body cannot change. The mutating path no longer assumes
+  the front: stage one records, per mutating edge, the argument it fills
+  and where its token stands (`Lent`), and the borrow, the reindexing and
+  the event are all made from that.
+- **Restore.** `restore_tokens_on_failure` puts a `TakeWhereEdge`'s token
+  back at the **front** of its place, as every restore does, with its id:
+  the id is kept, the position is not. It is then the first token the
+  filter accepts, so a retry takes it again; a place it re-entered ahead
+  of an older token is marked unordered, as before.
+- **Checks.** A keyed edge reads its place like any other
+  (`DuplicateInputPlace`). `TakeWhereEdge` consumes (`EdgeKind::consumes`),
+  so it counts in `assert_acyclic`, in `assert_no_source_transitions` and
+  in `RestoreOfNoClonePlace`; `MutateWhereEdge` consumes nothing and counts
+  in none of them. A keyed edge on a place that declares no keys is
+  `BuildError::KeyedEdgeOnUnkeyedPlace { transition, place }`: no token
+  there could ever pass, and a transition that can never fire is cheaper
+  refused at build than found by watching a net that does not move. (There
+  is no warning channel to say it more gently.) A wrong body parameter is
+  a compile error, as for every edge (`tests/ui/fail_take_where_vec.rs`,
+  `fail_mutate_where_by_value.rs`).
+- **What it cost the types.** The filter is not `Copy`, so it lives
+  *beside* the kind: `EdgeKind` stays `Copy` and `TransitionInfo` keeps its
+  `inputs` slice, gaining a parallel `filters` slice (still `Copy`, being
+  borrowed). `EdgeInfo::Input` carries the filter and lost `Copy`, which is
+  the one change a reader of the old shape must make (a `filter: None` where
+  it builds one, `..` where it matches one, a borrow where it copied one).
+  The sealed `EdgeSealed` lost its `Copy` bound, and `spec` takes `&self`.
+  `EdgeKind` became `#[non_exhaustive]` with the new variants: a matcher had
+  to change for them anyway, and will not have to for the next.
+- **On the wire** (PROTOCOL.md §5.1, §13.5) a keyed edge is `kind:
+  "take_where"` or `"mutate_where"` with `filter` as declared, a `{key,
+  param}` clause unevaluated. The core's `Serialize` for `EdgeInfo` and
+  `Topology` writes that shape in its id form —
+  `{"edge":"input",..,"kind":"take_where","filter":{"clauses":[{"key":"class","values":["Bird"]}]}}`,
+  `places` as `PlaceId`s, `filter` and `filters` written only where there
+  is one — because a `Filter` alone knows no names: the protocol's shapes
+  keyed by name live in the runner (§19.2), which maps the ids. Until the
+  runner's half of keys lands (PROTOCOL.md §13, the next branch), the
+  runner sends a keyed edge without `kind`, which a reader draws as a plain
+  edge; `petritype-dot` draws one as its plain counterpart labelled with
+  the filter (`class in {Bird}`).
+- **The example.** `Migrate Forest Wetland` is one
+  `TakeWhereEdge(forest, class in {Bird})` into `Migrating`, PROTOCOL.md
+  §11's `take_where`; its guard keeps the test on `season`, which is a
+  parameter and not a key, so not a clause. The proposal's done-when is
+  its test: on a `Forest` of a robin and a fox, one `Fired`, one token
+  consumed and one produced, the fox under its old id, the five questions
+  answered by the index after it; and with the fox in front and an owl
+  behind it, the owl is taken.
+
+**Pattern notes.** The game's pattern P2
+(`Cyberpunk2020-Simulation/docs/world-net-design.md` §8.1, "select by
+key": take the whole place, a guard that scans it, a body that splits it,
+the rest returned through a `Distribution`) is one keyed edge now. Its cost
+was per firing, in the size *n* of the place: *n* tokens consumed and *n*
+produced (a remove and an add per token, as the proposal counts them),
+*n* − 1 of them tokens nothing happened to, back where they were under
+fresh ids, and a viewer re-animating every one; and the choice was made
+twice, by a scan in the guard and another in the body.
+A keyed edge costs one token out and, if the body says so, one in; the
+others are not mentioned and keep their ids; and the choice is one question
+to the index, asked at fireability and again at launch. `wildlife`'s
+`Migrate` was P2 until this slice. P1 (a guard comparing the *front*
+token's key) stays right where only the front may go, since FIFO order is
+the point there; P2 is the pattern this replaces.
 
 ## 9. External input
 
@@ -1297,10 +1425,14 @@ Always:
 - One input edge per place per transition (`DuplicateInputPlace`).
 - `SnapshotEdge` from a `no_clone` place.
 - `restore_tokens_on_failure` on a transition with a consuming (`TakeEdge`,
-  `TakeAllEdge`) input from a `no_clone` place.
+  `TakeAllEdge`, `TakeWhereEdge`) input from a `no_clone` place.
   (A nested place counts as `no_clone` for both, with `serde` too: its
   tokens are copied by a fork, which can fail, and these two copy on the
   launch path, where nothing may; §4.3, §6.6.)
+- A keyed edge (`TakeWhereEdge`, `MutateWhereEdge`) on a place that declares
+  no keys (`KeyedEdgeOnUnkeyedPlace { transition, place }`, slice 19,
+  §8.3): it could never fire. Checked edge by edge with the three above, the
+  first offender in transition order.
 - A declared `Param::<T>` with no `param(value)` of that type
   (`MissingParam`); with `serde`, two parameter types sharing a wire name
   (`DuplicateParamName`). Both before routing.
@@ -1311,13 +1443,15 @@ Always:
 
 Opt-in:
 - `b.assert_acyclic()`: iterative three-colour DFS over consuming input edges
-  and output edges; read edges excluded (they move no tokens). Roots are
+  (`TakeWhereEdge` among them) and output edges; read edges excluded (they
+  move no tokens). Roots are
   transitions in declaration order; the first cycle found is reported as
   `BuildError::Cycle { path }`, node names from the repeated node round to
   itself (first == last, so it normally starts at a transition), joined with
   `" -> "` in the message.
 - `b.assert_no_source_transitions()`: every transition has at least one
-  `TakeEdge` or `TakeAllEdge` input; a transition with only read edges fails.
+  `TakeEdge`, `TakeAllEdge` or `TakeWhereEdge` input; a transition with
+  only read edges (`MutateWhereEdge` among them) fails.
   First offender in declaration order → `BuildError::SourceTransition`.
 - Both run after the always-on checks, source transitions before cycles.
 - The pair is a static termination proof; each alone proves less, and the
@@ -1433,6 +1567,7 @@ protocol's conformance net `wildlife`, split the same way
 (`examples/wildlife.rs` for the proposal's questions and their answers as
 tests, `examples/wildlife/net.rs` for the net) and needing `serde` for the
 same reason: its species are JSON and its `season` is a wire parameter.
+Since slice 19 its `Migrate` is a keyed edge (§8.3).
 
 **Done, slice 12.**
 
@@ -1541,6 +1676,8 @@ version it already holds instead of calling it a gap (protocol §9).
 | key names and values that cannot drift apart | const generics: `names: [&'static str; N]` and an extractor returning `[KeyValue; N]` (slice 18) |
 | a per-place closure in a vtable that must stay `Clone` | `Arc<dyn Fn(&dyn Any) -> Vec<KeyValue> + Send + Sync>` beside the `fn` pointers (slice 18) |
 | a query that costs what it finds, in place then token order | an index of `HashMap<KeyValue, BTreeSet<(PlaceId, TokenId)>>` per key name, kept by the net (slice 18) |
+| an edge that chooses its token by keys, without extracting any | the same index: a `range` over one place of the smallest clause's sets, membership in the others' (slice 19) |
+| a filter on an edge without losing `Copy` on the edge kind | the filter beside the kind (`TransitionInfo::filters`, a parallel slice), and on `EdgeInfo`, which gave up `Copy` (slice 19) |
 | FIFO places | `VecDeque` |
 
 ## 17. Open questions
@@ -1665,8 +1802,23 @@ Slices, each with tests, in order:
     the same four on `Snapshot` by scanning; the key index and every point
     that keeps it. The example `wildlife`, the protocol's conformance net of
     that name with `Migrate` in its before-keyed-edges form, holds the
-    proposal's §6 answers; `tests/slice18.rs`. Next: the runner (PROTOCOL.md
-    §13, the proposal's R3), then keyed edges (R5) on a branch of their own.
+    proposal's §6 answers; `tests/slice18.rs`. Next, as it turned out: keyed
+    edges (R5, slice 19), then the runner (PROTOCOL.md §13, the proposal's
+    R3), each on a branch of its own.
+19. Token keys, phase 2 (§8.3, "Keyed input edges"), 2026-10-09, R5 of the
+    same proposal: `TakeWhereEdge` and `MutateWhereEdge`, `EdgeKind::
+    {TakeWhere, MutateWhere}` (and `EdgeKind` `#[non_exhaustive]`),
+    `EdgeKind::is_keyed`, `TransitionInfo::filters`,
+    `TopologyTransition::filters`, the filter on `EdgeInfo::Input` (which
+    lost `Copy`), `Net::first_match`, `BuildError::KeyedEdgeOnUnkeyedPlace`,
+    and with `serde` `Filter` and `Clause` in the protocol's shape (places by
+    id). Fireability and the token chosen are asked of the key index; the
+    mutating path finds its token by position rather than at the front.
+    `Migrate Forest Wetland` in `wildlife` is one `TakeWhereEdge`, and the
+    proposal's done-when is its test; the game's pattern P2 is one edge
+    (§8.3, "Pattern notes"). `petritype-dot` labels a keyed edge with its
+    filter; the runner sends one without `kind` until its own half of keys.
+    `tests/slice19.rs`, two `trybuild` cases.
 
 ## 19. Interop: one protocol, two runtimes, two viewers
 
@@ -1710,6 +1862,7 @@ The decisions that shape it, all of 2026-10-03:
 | `topology.places` | `net.places()`: `name`, `type_name`, and `serializable` (new field, §19.2) |
 | `topology.transitions[].detail` | `TransitionInfo::params` (type names) and `detachable` |
 | `topology.edges` | `net.edges()`: `EdgeKind::{Take, TakeAll, Snapshot, Mutate}` as `"take"`, `"take_all"`, `"snapshot"`, `"mutate"`; `Output { slot }` as `slot` where the transition has more than one output and `TransitionInfo::positional` (slice 17; a routed or distributing body has no slots to speak of) |
+| keyed edges, `kind: "take_where"` / `"mutate_where"` with `filter` (§5.1, §13.5) | `EdgeKind::{TakeWhere, MutateWhere}` and `EdgeInfo::Input::filter` (slice 19), the filter's `places` mapped from ids to names by the runner; until the runner's half of keys, sent without `kind` |
 | `topology.places[].nested`, `passive` (§12.2) | `TopologyPlace::nested`, `passive`, written only when true |
 | `path`, `nested_id` (§12.1) | a path walked through `net.nested(place, token)` level by level; a nested id is the inner net's `NetId` printed with its `Display`, found by walking every nested place at every depth; mutable reach (`inject`) through `nested_scope` at each level |
 | a token's `nets` (§12.2) | `net.nested(place, token)`: each net's name, `id()`, its path, `template()`, and the sum of its places' counts |
@@ -1763,6 +1916,12 @@ All landed 2026-10-03, the core part of slice 14. All behind the existing
   string (`"take_all"`); `EdgeInfo` is tagged under `"edge"`, because
   `"kind"` is the input edge's `EdgeKind`; `Event` is tagged under `"event"`
   with variant names in snake_case (`"param_changed"`).
+- Slice 19: `Serialize` and `Deserialize` on `Filter` and `Clause`, in the
+  protocol's shape (§13.2) but the core's id form: `places` are
+  `PlaceId`s, since a filter alone knows no names, and the runner maps them
+  as it maps every edge and event. A keyed edge's filter is written on its
+  `EdgeInfo` and in `TopologyTransition::filters`, each only where there is
+  one.
 
 The protocol's own shapes, keyed by names with string token ids, live in
 `petritype-runner`, not in the core: the core's types must not be frozen by

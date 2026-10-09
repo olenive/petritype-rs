@@ -31,15 +31,18 @@ use crate::place::ErasedToken;
 /// is filled in — after the other places have been drained — for inline
 /// firings alone.
 pub enum ErasedInput<'a> {
-    /// One owned token: a [`TakeEdge`](crate::TakeEdge), or the clone a
+    /// One owned token: a [`TakeEdge`](crate::TakeEdge) or
+    /// [`TakeWhereEdge`](crate::TakeWhereEdge), or the clone a
     /// [`SnapshotEdge`](crate::SnapshotEdge) took of the front token.
     Token(ErasedToken),
     /// Every token of a place, oldest first: a
     /// [`TakeAllEdge`](crate::TakeAllEdge).
     Tokens(Vec<ErasedToken>),
-    /// The front token of a place, borrowed where it lies: a
-    /// [`MutateEdge`](crate::MutateEdge). The borrow is why a transition
-    /// with such an edge runs inline instead of being handed to a worker.
+    /// A token of a place, borrowed where it lies: the front one for a
+    /// [`MutateEdge`](crate::MutateEdge), the one its filter chose for a
+    /// [`MutateWhereEdge`](crate::MutateWhereEdge). The borrow is why a
+    /// transition with such an edge runs inline instead of being handed to
+    /// a worker.
     Borrowed(&'a mut ErasedToken),
     /// What an extractor leaves behind when it has moved the value out. An
     /// input is extracted exactly once, so this is never seen by a body.

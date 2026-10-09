@@ -18,7 +18,8 @@ own, which the net runs after its own transitions and reports on in its event
 log (slice 15, nets as tokens). With `serde`, such a net is saved and loaded
 as JSON, its tokens' inner nets rebuilt from templates registered by name,
 and copied with `fork`, which is what lets it be snapshotted (slice 16). Tokens may carry keys, named values
-their place derives from them, and a net answers queries by them from an index it keeps (slice 18). The Bevy visualiser lives in its own
+their place derives from them, and a net answers queries by them from an index it keeps (slice 18); a keyed edge takes
+or mutates the oldest token a filter accepts, leaving the others where they are (slice 19). The Bevy visualiser lives in its own
 repository, `petritype-bevy`, and depends on this crate. See `DESIGN.md` for the design and
 `dev-docs/NAMING_CONVENTIONS.md` for vocabulary shared with the Python library.*
 
@@ -91,8 +92,14 @@ let tabs = net.distinct_values("class", None);                      // Bird, Mam
 A filter's clauses are ANDed and each accepts any of its values; it may be restricted to some places or to the
 places whose name starts with a prefix, and a clause may compare a key with a net parameter. Keys are derived,
 never stored, so a mutation changes them; the net keeps an index of them, so a query costs what it finds.
-`petritype/examples/wildlife.rs` asks the token-keys proposal's five questions of species across habitats
-(`cargo run -p petritype --example wildlife --features serde`); `DESIGN.md` §8.3 has the rules.
+
+A *keyed edge* chooses its token by them: `TakeWhereEdge(forest, Filter::new().key_in("class", ["Bird"]))` takes
+the oldest bird, wherever it stands, and `MutateWhereEdge` lends it to the body in place. Every other token stays
+where it is under its id, so taking one token out of a crowd no longer means taking the crowd and putting it back.
+
+`petritype/examples/wildlife.rs` asks the token-keys proposal's five questions of species across habitats and
+migrates its birds through a keyed edge (`cargo run -p petritype --example wildlife --features serde`);
+`DESIGN.md` §8.3 has the rules.
 
 ## Crates
 

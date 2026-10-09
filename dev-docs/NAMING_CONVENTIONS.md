@@ -33,6 +33,8 @@ rename backlog.
 | consuming input, all tokens | `TakeAllEdge(place)` | `ArgumentEdgeToTransition` + `list[T]` annotation | — |
 | non-consuming read, cloned | `SnapshotEdge(place)` | `SnapshotEdge` | — |
 | non-consuming read, live `&mut` | `MutateEdge(place)` | `MutateEdge` | — |
+| consuming input, the oldest token a filter accepts | `TakeWhereEdge(place, filter)` (the spec's `TakeWhere`, with the crate's `Edge` suffix), `EdgeKind::TakeWhere`, `"take_where"` | `TakeWhereEdge` | — |
+| non-consuming read, live `&mut` of the oldest token a filter accepts | `MutateWhereEdge(place, filter)`, `EdgeKind::MutateWhere`, `"mutate_where"` | `MutateWhereEdge` | — |
 | output connection | output edge (positional in the builder tuple) | `ReturnedEdgeFromTransition` | — |
 | author-written router after the body | output distribution function; body method `body.output_distribution(f)` (extension trait `OutputDistribution`, wrapper `WithOutputDistribution`) | `output_distribution_function` field | rename `output_distribution` (alias kept); `guard` / `priority` already omit `_function` |
 | value returned by an output distribution function | `Distribution` (`Distribution::new().to(place, token)`, chainable; `push` for loops; one constructor only) | the `{name: token}` dict | — |
@@ -47,7 +49,7 @@ rename backlog.
 | a body panicked | `BodyPanicked` (inside `FiringFailed`) | the exception inside `TransitionFailedError` | — |
 | the tokens a failed firing took | `Event::Failed { consumed, restored }` (same word as `Fired`/`Launched`) | `TransitionFailedError(consumed, restored)` | — |
 | static check: no cycles | `assert_acyclic` → `BuildError::Cycle { path }` (first cycle, `" -> "`) | `assert_acyclic` (all cycles, `" → "`) | — |
-| one edge, as a diagram draws it | `EdgeInfo::{Input { place, transition, kind }, Output { transition, place, slot }}`, `net.edges()` | plotting-layer edge structs (`return_index` = `slot`) | — |
+| one edge, as a diagram draws it | `EdgeInfo::{Input { place, transition, kind, filter }, Output { transition, place, slot }}`, `net.edges()` | plotting-layer edge structs (`return_index` = `slot`) | — |
 | DOT text of a net | `petritype_dot::{dot, dot_with, Style, RankDir, Highlight::from_event, DotSource}` | `RustworkxToGraphviz.activation_coloured_attr_functions`, `SimpleGraphvizVisualization` | — |
 | static check: every transition consumes | `assert_no_source_transitions` → `BuildError::SourceTransition` (first offender) | `assert_no_source_transitions` (all offenders) | — |
 | lookup by name | `place_named`, `transition_named` | `place_named` | add `transition_named` |
@@ -121,6 +123,9 @@ rename backlog.
 | every token a filter keeps, in place then token order | `net.query(&filter)` → `Vec<Match { place, token, keys, label, json }>` | `Query.matches(graph, filter)` → `Match` | — |
 | a key's values in order of first appearance | `net.distinct_values(key, places)` | `Query.distinct(graph, key)` | — |
 | per key, per value, the tokens holding it, kept by the net | the **index** (crate-private; never saved, rebuilt on import) | — (Python scans) | — |
+| an input edge that chooses its token with a filter | **keyed edge**; `EdgeKind::is_keyed`, its filter in `TransitionInfo::filters` and on `EdgeInfo::Input` | keyed edge | — |
+| the token a keyed edge would choose now | `net.first_match(place, &filter)` (the first in queue order whose keys pass; places and prefix not consulted) | — | — |
+| a keyed edge on a place that declares no keys | `BuildError::KeyedEdgeOnUnkeyedPlace { transition, place }` | — | — |
 
 ## Rust-specific conventions
 

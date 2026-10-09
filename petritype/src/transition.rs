@@ -7,6 +7,7 @@ use std::fmt;
 use crate::edge::EdgeKind;
 use crate::erased::ErasedBody;
 use crate::ids::{PlaceId, TransitionId};
+use crate::keys::Filter;
 use crate::net::Net;
 
 /// A transition's guard: may this transition fire, given the whole net?
@@ -70,6 +71,11 @@ pub(crate) struct TransitionSlot {
     /// [`args`](TransitionSlot::args) is what remembers where the parameters
     /// stood among them.
     pub(crate) inputs: Vec<(PlaceId, EdgeKind)>,
+    /// One entry per input edge, beside [`inputs`](TransitionSlot::inputs):
+    /// the filter of a [keyed](EdgeKind::is_keyed) edge, `None` for every
+    /// other. Apart rather than inside the kind so that the kind stays
+    /// `Copy` and everything that reads only places reads on unchanged.
+    pub(crate) filters: Vec<Option<Filter>>,
     /// The declared parameter types by name, in declaration order — what
     /// [`TransitionInfo::params`](TransitionInfo::params) reports so that a
     /// renderer can badge the transition (DESIGN §10).
@@ -112,7 +118,8 @@ pub(crate) struct TransitionSlot {
     /// puts them back at the front of their places
     /// ([`Net::distribute`](crate::Net::distribute)).
     pub(crate) restore_tokens_on_failure: bool,
-    /// True unless some input is a [`MutateEdge`](crate::MutateEdge).
+    /// True unless some input is a [`MutateEdge`](crate::MutateEdge) or a
+    /// [`MutateWhereEdge`](crate::MutateWhereEdge).
     ///
     /// A mutating edge means the body borrows a token where it lies, so the
     /// firing cannot leave the net and cannot be handed to a worker. Derived
@@ -125,6 +132,7 @@ impl fmt::Debug for TransitionSlot {
         f.debug_struct("TransitionSlot")
             .field("name", &self.name)
             .field("inputs", &self.inputs)
+            .field("filters", &self.filters)
             // The type names only: a parameter's value is never printed
             // anywhere (DESIGN §10).
             .field("params", &self.params)
@@ -161,6 +169,17 @@ pub struct TransitionInfo<'a> {
     /// node in a diagram — so it appears in [`params`](TransitionInfo::params)
     /// instead, and never in [`Net::edges`](crate::Net::edges).
     pub inputs: &'a [(PlaceId, EdgeKind)],
+    /// One entry per input edge, in the order of
+    /// [`inputs`](TransitionInfo::inputs): the [`Filter`] of a
+    /// [keyed](EdgeKind::is_keyed) edge
+    /// ([`TakeWhereEdge`](crate::TakeWhereEdge),
+    /// [`MutateWhereEdge`](crate::MutateWhereEdge)), as declared, and `None`
+    /// for every other kind (slice 19).
+    ///
+    /// Beside `inputs` rather than inside it, so that the edge list keeps its
+    /// shape and [`EdgeKind`] stays `Copy`; `filters[i]` belongs to
+    /// `inputs[i]`.
+    pub filters: &'a [Option<Filter>],
     /// The [parameter](crate::Param) types this transition declared, by
     /// name, in declaration order (DESIGN §10).
     ///
@@ -206,8 +225,9 @@ pub struct TransitionInfo<'a> {
     /// Whether a firing of this transition can leave the net.
     ///
     /// False exactly when some input is a
-    /// [`MutateEdge`](crate::MutateEdge), whose body parameter borrows a
-    /// token where it lies: such a firing runs inline inside
+    /// [`MutateEdge`](crate::MutateEdge) or a
+    /// [`MutateWhereEdge`](crate::MutateWhereEdge), whose body parameter
+    /// borrows a token where it lies: such a firing runs inline inside
     /// [`launch`](crate::Net::launch) instead of being handed to a worker.
     /// Derived from the edge kinds, never asked of the author.
     pub detachable: bool,
@@ -304,19 +324,27 @@ impl TransitionBuilder<'_> {
     /// A failed firing loses its inputs by default: the body owns them by the
     /// time it fails, and may have changed or dropped them. This flag buys
     /// them back with a clone. Stage one clones every token a consuming edge
-    /// takes — [`TakeEdge`](crate::TakeEdge) and
-    /// [`TakeAllEdge`](crate::TakeAllEdge) — before the body sees anything,
-    /// the clones travel with the firing, and any failure of it (an `Err`, a
-    /// panic, or a [`Distribution`](crate::Distribution) naming a place the
-    /// transition may not write to) puts them back at the **front** of their
-    /// places, in the order they were taken and with the ids they had. The
-    /// firing is undone rather than recorded, so the transition can simply
-    /// fire again — which is what lets a driver retry one.
+    /// takes — [`TakeEdge`](crate::TakeEdge),
+    /// [`TakeAllEdge`](crate::TakeAllEdge) and
+    /// [`TakeWhereEdge`](crate::TakeWhereEdge) — before the body sees
+    /// anything, the clones travel with the firing, and any failure of it (an
+    /// `Err`, a panic, or a [`Distribution`](crate::Distribution) naming a
+    /// place the transition may not write to) puts them back at the **front**
+    /// of their places, in the order they were taken and with the ids they
+    /// had. The firing is undone rather than recorded, so the transition can
+    /// simply fire again — which is what lets a driver retry one.
     ///
-    /// [`SnapshotEdge`](crate::SnapshotEdge) and
-    /// [`MutateEdge`](crate::MutateEdge) consume nothing, so there is nothing
-    /// to restore for them: a snapshot's clone was never in a place, and a
-    /// mutation was made where the token lies and stands, failure or not.
+    /// For a `TakeWhereEdge` the front is not where the token was: it may
+    /// have been taken from the middle of its place. The id is kept and the
+    /// position is not; the token is still the first its filter accepts, so
+    /// the next firing takes it again.
+    ///
+    /// [`SnapshotEdge`](crate::SnapshotEdge),
+    /// [`MutateEdge`](crate::MutateEdge) and
+    /// [`MutateWhereEdge`](crate::MutateWhereEdge) consume nothing, so there
+    /// is nothing to restore for them: a snapshot's clone was never in a
+    /// place, and a mutation was made where the token lies and stands,
+    /// failure or not.
     ///
     /// The cost is one clone per consumed token per firing of *this*
     /// transition, taken whether or not the firing goes on to fail.

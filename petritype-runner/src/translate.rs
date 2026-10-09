@@ -143,11 +143,12 @@ pub(crate) fn topology(topology: &Topology, names: &Names) -> protocol::Topology
                     place,
                     transition,
                     kind,
+                    ..
                 } => Some(protocol::Edge {
                     place: names.place(place),
                     transition: names.transition(transition),
                     direction: protocol::Direction::In,
-                    kind: Some(edge_kind(kind)),
+                    kind: edge_kind(kind),
                     slot: None,
                 }),
                 EdgeInfo::Output {
@@ -173,12 +174,18 @@ pub(crate) fn topology(topology: &Topology, names: &Names) -> protocol::Topology
     }
 }
 
-fn edge_kind(kind: petritype::EdgeKind) -> protocol::EdgeKind {
+/// The wire's name for an input edge's kind, or `None` for a kind this
+/// runner does not serve yet, which goes out without `kind` and is drawn as
+/// a plain edge (PROTOCOL.md §5.1). The keyed kinds are such for now: on the
+/// wire they carry their filter with places by name (§13.5), which is the
+/// runner's half of keys and not done yet.
+fn edge_kind(kind: petritype::EdgeKind) -> Option<protocol::EdgeKind> {
     match kind {
-        petritype::EdgeKind::Take => protocol::EdgeKind::Take,
-        petritype::EdgeKind::TakeAll => protocol::EdgeKind::TakeAll,
-        petritype::EdgeKind::Snapshot => protocol::EdgeKind::Snapshot,
-        petritype::EdgeKind::Mutate => protocol::EdgeKind::Mutate,
+        petritype::EdgeKind::Take => Some(protocol::EdgeKind::Take),
+        petritype::EdgeKind::TakeAll => Some(protocol::EdgeKind::TakeAll),
+        petritype::EdgeKind::Snapshot => Some(protocol::EdgeKind::Snapshot),
+        petritype::EdgeKind::Mutate => Some(protocol::EdgeKind::Mutate),
+        _ => None,
     }
 }
 

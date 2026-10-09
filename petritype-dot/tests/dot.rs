@@ -11,8 +11,8 @@ use std::error::Error;
 use std::fmt;
 
 use petritype::{
-    Event, MutateEdge, Net, NetBuilder, Param, PlaceRef, SnapshotEdge, TakeAllEdge, TakeEdge,
-    TransitionId,
+    Event, Filter, MutateEdge, MutateWhereEdge, Net, NetBuilder, Param, PlaceRef, SnapshotEdge,
+    TakeAllEdge, TakeEdge, TakeWhereEdge, TransitionId,
 };
 use petritype_dot::{Highlight, RankDir, Style, dot, dot_with};
 
@@ -352,6 +352,51 @@ fn every_edge_kind_has_its_own_attributes() {
     // One output needs no number: there is nothing to tell it apart from.
     let (single, _double) = chain();
     assert!(dot(&single).contains("  t0 -> p1 [color=black, penwidth=1];\n"));
+}
+
+/// A keyed edge is drawn as its plain counterpart, labelled with its filter:
+/// clauses joined by `and`, a parameter clause as `$name`, and `any` for no
+/// clauses at all.
+#[test]
+fn a_keyed_edge_is_labelled_with_its_filter() {
+    let mut b = NetBuilder::new();
+    let birds = b.place::<(String, i64)>("Birds");
+    let nests = b.place::<(String, i64)>("Nests");
+    let out = b.place::<(String, i64)>("Out");
+    for place in [birds, nests] {
+        b.keys(place, ["class", "legs"], |(class, legs): &(String, i64)| {
+            [class.as_str().into(), (*legs).into()]
+        });
+    }
+    b.transition(
+        "Fly",
+        (
+            TakeWhereEdge(
+                birds,
+                Filter::new()
+                    .key_in("class", ["Bird", "Bat"])
+                    .key_is_param("legs", "legs"),
+            ),
+            MutateWhereEdge(nests, Filter::new()),
+        ),
+        (out,),
+        |bird: (String, i64), _: &mut (String, i64)| (bird,),
+    );
+    let text = dot(&b.build().unwrap());
+
+    assert!(
+        text.contains(
+            "  p0 -> t0 [color=black, penwidth=1, label=\"class in {Bird, Bat} and legs = $legs\"];\n"
+        ),
+        "{text}"
+    );
+    assert!(
+        text.contains(
+            "  p1 -> t0 [dir=both, arrowhead=dot, arrowtail=dot, color=dimgray, penwidth=2, \
+             label=\"any\"];\n"
+        ),
+        "{text}"
+    );
 }
 
 #[test]

@@ -15,10 +15,12 @@
 //! which is what a viewer would make its tabs of. The tests below hold the
 //! proposal's §6 answers.
 //!
-//! `Migrate` is the "before keyed edges" form: it takes every species out of
-//! `Forest` and puts back all but the oldest bird, so every one of them
-//! leaves and returns under a new id. The test that says so is the one keyed
-//! edges will change.
+//! `Migrate` reads `Forest` through a keyed edge (DESIGN §8.3, slice 19):
+//! `TakeWhereEdge(forest, class in {Bird})` takes the oldest bird and leaves
+//! every other species where it is, under the id it had. Before keyed edges
+//! it took the whole of `Forest` and put back all but the bird, every one of
+//! them under a new id (the game's pattern P2); the tests below hold the
+//! difference: one token consumed, one produced, the fox untouched.
 
 // A crate root's `mod` looks beside it, so the path is spelled out: the net
 // lives in `wildlife/net.rs`, the file a runner's example can include too.
@@ -283,11 +285,23 @@ mod tests {
             [wildlife.migrate, wildlife.spread, wildlife.decline]
         );
 
-        // The topology says which keys each place derives.
+        // The topology says which keys each place derives, and that Migrate
+        // reads Forest through a keyed edge with the filter of PROTOCOL §11,
+        // in the core's id form (a runner names the places).
         let topology = serde_json::to_value(wildlife.net.topology()).unwrap();
         assert_eq!(
             topology["places"][0]["key_names"],
             json!(["species", "class", "diet"])
+        );
+        assert_eq!(
+            topology["edges"][0],
+            json!({"edge": "input", "place": 0, "transition": 0, "kind": "take_where",
+                   "filter": {"clauses": [{"key": "class", "values": ["Bird"]}]}})
+        );
+        assert_eq!(
+            topology["edges"][1],
+            json!({"edge": "output", "transition": 0, "place": 5, "slot": 0}),
+            "into Migrating alone: nothing goes back to Forest"
         );
     }
 
@@ -368,12 +382,25 @@ mod tests {
         );
     }
 
-    /// `Migrate` before keyed edges: its one `Fired` consumes both species
-    /// in Forest and produces both again, the fox back in Forest under a new
-    /// id. This is what a keyed edge will take away: one consumed, one
-    /// produced, the fox untouched.
+    /// The five answers once the Forest robin has set off and not yet
+    /// settled: it is in `Migrating`, the last place.
+    const ON_THE_MOVE: [&str; 5] = [
+        "Wetland: Robin; Migrating: Robin",
+        "Wetland: Robin, Heron; Migrating: Robin",
+        "Forest: Fox; Wetland: Robin, Heron; Savanna: Zebra; Tundra: Fox, Arctic Hare; \
+         Migrating: Robin",
+        "Wetland: Robin; Migrating: Robin",
+        "Forest: Fox; Tundra: Fox, Arctic Hare",
+    ];
+
+    /// The proposal's R5, done when: `Migrate`, one keyed edge, fires on a
+    /// `Forest` holding a fox and a robin, and its one `Fired` names exactly
+    /// one consumed token and one produced; the fox keeps its id and its
+    /// place, and the index still answers the five questions. Then `Settle`
+    /// is one more of each, which is the proposal's §6 "only events": one out
+    /// of Forest, one into Migrating, one out of it, one into Wetland.
     #[test]
-    fn migrate_takes_everything_and_puts_the_rest_back() {
+    fn migrate_takes_the_bird_and_leaves_the_fox_alone() {
         let mut wildlife = build_wildlife().expect("the net builds");
         let forest = wildlife.at(Habitat::Forest).id();
         let seeded: Vec<TokenId> = wildlife.net.tokens(forest).map(|(id, _)| id).collect();
@@ -391,25 +418,81 @@ mod tests {
             },
         ] = &events[..]
         else {
-            panic!("one firing: {events:?}")
+            panic!("one firing and nothing else: {events:?}")
         };
-        assert_eq!(consumed, &[(forest, robin), (forest, fox)], "all of Forest");
-        let [(fox_back, new_fox), (on_the_move, _)] = produced[..] else {
-            panic!("two produced: {produced:?}")
+        assert_eq!(consumed, &[(forest, robin)], "the robin alone");
+        let [(on_the_move, migrant)] = produced[..] else {
+            panic!("one produced: {produced:?}")
         };
-        assert_eq!((fox_back, on_the_move), (forest, wildlife.migrating.id()));
-        assert_ne!(new_fox, fox, "the fox came back under a new id");
-        assert_eq!(species(&wildlife.net, forest, new_fox).name, "Fox");
+        assert_eq!(on_the_move, wildlife.migrating.id());
+        assert_eq!(
+            species(&wildlife.net, on_the_move, migrant).destination,
+            Some("Wetland".to_owned())
+        );
+        let left: Vec<TokenId> = wildlife.net.tokens(forest).map(|(id, _)| id).collect();
+        assert_eq!(left, [fox], "the fox stayed, under its own id");
+        assert_eq!(answers(&wildlife), ON_THE_MOVE);
+        let snapshot = wildlife.net.snapshot().unwrap();
+        for (question, filter) in questions(&wildlife) {
+            assert_eq!(
+                wildlife.net.query(&filter).unwrap(),
+                snapshot.query(&filter).unwrap(),
+                "the index against a scan: {question}"
+            );
+        }
 
         wildlife.net.fire(wildlife.settle).unwrap();
         let events: Vec<Event> = wildlife.net.drain_events().collect();
         assert!(
             matches!(&events[..], [Event::Fired { consumed, produced, .. }]
-                if consumed.len() == 1
+                if consumed == &[(on_the_move, migrant)]
                     && produced.len() == 1
                     && produced[0].0 == wildlife.at(Habitat::Wetland).id()),
             "{events:?}"
         );
+        assert_eq!(
+            wildlife.net.tokens(forest).next().map(|(id, _)| id),
+            Some(fox)
+        );
+        assert!(
+            !wildlife.net.is_fireable(wildlife.migrate),
+            "no bird left in Forest, autumn or not"
+        );
+    }
+
+    /// The bird need not be in front: with the fox first and an owl behind
+    /// it, `Migrate` takes the owl from the back and the fox does not move,
+    /// as PROTOCOL's transcript 06 has it.
+    #[test]
+    fn migrate_takes_the_oldest_bird_wherever_it_stands() {
+        let mut wildlife = migrated();
+        let forest = wildlife.at(Habitat::Forest);
+        let (fox, _) = wildlife.net.tokens(forest.id()).next().unwrap();
+        let gecko = wildlife.net.put(
+            forest,
+            Species::new("Gecko", Class::Reptile, Diet::Insectivore, 5),
+        );
+        let owl = wildlife
+            .net
+            .put(forest, Species::new("Owl", Class::Bird, Diet::Carnivore, 5));
+        assert_eq!(
+            wildlife
+                .net
+                .first_match(forest.id(), &Filter::new().key_in("class", [Class::Bird])),
+            Some(owl),
+            "the token the edge would take"
+        );
+        wildlife.net.drain_events().for_each(drop);
+
+        wildlife.net.fire(wildlife.migrate).unwrap();
+        let events: Vec<Event> = wildlife.net.drain_events().collect();
+        assert!(
+            matches!(&events[..], [Event::Fired { consumed, produced, .. }]
+                if consumed == &[(forest.id(), owl)] && produced.len() == 1),
+            "{events:?}"
+        );
+        let left: Vec<TokenId> = wildlife.net.tokens(forest.id()).map(|(id, _)| id).collect();
+        assert_eq!(left, [fox, gecko]);
     }
 
     #[test]

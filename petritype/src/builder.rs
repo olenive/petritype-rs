@@ -689,7 +689,7 @@ impl NetBuilder {
     /// The three type-checked relationships are:
     ///
     /// - one body parameter per input, of the type that input produces
-    ///   ([`InputEdge`](crate::InputEdge)) — which for the four edge kinds
+    ///   ([`InputEdge`](crate::InputEdge)) — which for the six edge kinds
     ///   depends on how they read their place, and for a
     ///   [`Param<T>`](crate::Param), which reads no place at all, is `T`;
     /// - one returned slot per output place, holding one token, zero or one,
@@ -733,6 +733,7 @@ impl NetBuilder {
         let mut described = Vec::new();
         EdgeTupleSealed::describe(&inputs, &mut described);
         let mut edges = Vec::with_capacity(described.len());
+        let mut filters = Vec::with_capacity(described.len());
         let mut params = Vec::new();
         // The tuple is the body's parameter list, so its order has to
         // survive the split into edges and parameters.
@@ -743,11 +744,17 @@ impl NetBuilder {
         let mut detachable = true;
         for spec in described {
             match spec {
-                InputSpec::Edge { place, kind, net } => {
+                InputSpec::Edge {
+                    place,
+                    kind,
+                    net,
+                    filter,
+                } => {
                     self.index_of_erased(place, net, "transition");
-                    detachable &= kind != EdgeKind::Mutate;
+                    detachable &= !kind.mutates();
                     args.push(ArgSource::Edge(edges.len()));
                     edges.push((place, kind));
+                    filters.push(filter);
                 }
                 InputSpec::Param { type_id, type_name } => {
                     args.push(ArgSource::Param { type_id, type_name });
@@ -773,6 +780,7 @@ impl NetBuilder {
         self.transitions.push(TransitionSlot {
             name: name.into(),
             inputs: edges,
+            filters,
             params,
             args,
             outputs: targets,
@@ -825,13 +833,15 @@ impl NetBuilder {
     ///
     /// The graph walked has both kinds of node, places and transitions, and
     /// two kinds of edge: a **consuming** input edge, from a place to a
-    /// transition that takes from it ([`TakeEdge`](crate::TakeEdge) and
-    /// [`TakeAllEdge`](crate::TakeAllEdge)), and every output edge, from a
-    /// transition to a place it writes. Read edges are left out —
-    /// [`SnapshotEdge`](crate::SnapshotEdge) and
-    /// [`MutateEdge`](crate::MutateEdge) move no tokens, so a loop through
-    /// one cannot feed itself, and a configuration place every transition
-    /// reads is not a cycle.
+    /// transition that takes from it ([`TakeEdge`](crate::TakeEdge),
+    /// [`TakeAllEdge`](crate::TakeAllEdge) and
+    /// [`TakeWhereEdge`](crate::TakeWhereEdge)), and every output edge, from
+    /// a transition to a place it writes. Read edges are left out —
+    /// [`SnapshotEdge`](crate::SnapshotEdge),
+    /// [`MutateEdge`](crate::MutateEdge) and
+    /// [`MutateWhereEdge`](crate::MutateWhereEdge) move no tokens, so a loop
+    /// through one cannot feed itself, and a configuration place every
+    /// transition reads is not a cycle.
     ///
     /// ```
     /// # use petritype::{BuildError, NetBuilder, TakeEdge};
@@ -881,14 +891,16 @@ impl NetBuilder {
     /// that consumes nothing.
     ///
     /// Every transition must have at least one consuming input edge — a
-    /// [`TakeEdge`](crate::TakeEdge) or a
-    /// [`TakeAllEdge`](crate::TakeAllEdge). A transition without one is a
-    /// *source*: it takes no token out of any place, so firing it changes
+    /// [`TakeEdge`](crate::TakeEdge), a
+    /// [`TakeAllEdge`](crate::TakeAllEdge) or a
+    /// [`TakeWhereEdge`](crate::TakeWhereEdge). A transition without one is
+    /// a *source*: it takes no token out of any place, so firing it changes
     /// nothing about whether it can fire again, and it fires for ever. Read
     /// edges do not count, and a transition whose every input is a
-    /// [`SnapshotEdge`](crate::SnapshotEdge) or a
-    /// [`MutateEdge`](crate::MutateEdge) is a source like one with no inputs
-    /// at all: both leave their places as they found them.
+    /// [`SnapshotEdge`](crate::SnapshotEdge), a
+    /// [`MutateEdge`](crate::MutateEdge) or a
+    /// [`MutateWhereEdge`](crate::MutateWhereEdge) is a source like one with
+    /// no inputs at all: they leave their places as they found them.
     ///
     /// ```
     /// # use petritype::{BuildError, NetBuilder};
@@ -940,7 +952,11 @@ impl NetBuilder {
     /// [restores its inputs on failure](crate::TransitionBuilder::restore_tokens_on_failure)
     /// consumes such a place;
     /// [`BuildError::DuplicateInputPlace`] if one transition reads one place
-    /// through two input edges; and, for a transition whose body
+    /// through two input edges;
+    /// [`BuildError::KeyedEdgeOnUnkeyedPlace`] if a
+    /// [`TakeWhereEdge`](crate::TakeWhereEdge) or
+    /// [`MutateWhereEdge`](crate::MutateWhereEdge) reads a place that declares
+    /// no [keys](NetBuilder::keys); and, for a transition whose body
     /// [routes](crate::RoutedOutput) its outputs by type,
     /// [`BuildError::UnroutableOutput`], [`BuildError::AmbiguousOutput`] or
     /// [`BuildError::UnreachableOutput`].
@@ -1023,10 +1039,20 @@ impl NetBuilder {
                 // nothing: a mutating edge has nothing to put back, and a
                 // snapshot of such a place was refused just above.
                 if slot.restore_tokens_on_failure
-                    && matches!(*kind, EdgeKind::Take | EdgeKind::TakeAll)
+                    && kind.consumes()
                     && self.places[place.0 as usize].meta.clone.is_none()
                 {
                     return Err(BuildError::RestoreOfNoClonePlace {
+                        transition: slot.name.clone(),
+                        place: self.places[place.0 as usize].meta.name.clone(),
+                    });
+                }
+                // A keyed edge chooses by keys, and a place that declares
+                // none gives no token a key, so no clause could ever pass:
+                // the transition would never fire, which is cheaper to say
+                // now than to find out by watching it.
+                if kind.is_keyed() && self.places[place.0 as usize].meta.keys.is_none() {
+                    return Err(BuildError::KeyedEdgeOnUnkeyedPlace {
                         transition: slot.name.clone(),
                         place: self.places[place.0 as usize].meta.name.clone(),
                     });

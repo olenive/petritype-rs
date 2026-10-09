@@ -170,7 +170,10 @@
 //!   are the erased ids that events and the read API speak in.
 //! - [`TakeEdge`], [`TakeAllEdge`], [`SnapshotEdge`] and [`MutateEdge`] say
 //!   how a transition reads a place, and so what its body is handed;
-//!   [`EdgeKind`] is the same thing with the type forgotten.
+//!   [`TakeWhereEdge`] and [`MutateWhereEdge`] do what `TakeEdge` and
+//!   `MutateEdge` do to the oldest token a [`Filter`] accepts rather than to
+//!   the front one, leaving every other token where it is (*keyed* edges,
+//!   DESIGN §8.3); [`EdgeKind`] is the same thing with the type forgotten.
 //! - [`IntoTokens`] decides how many tokens one returned slot is worth, and
 //!   [`IntoOutcome`] tells outputs from failure.
 //! - [`RoutedOutput`] is the second output form: a body that returns a value
@@ -228,7 +231,9 @@
 //!   index the net keeps up to date as tokens come, go and change; and
 //!   [`Net::distinct_values`] lists the values a key takes, in order of
 //!   first appearance, which is what a viewer makes its tabs of (DESIGN
-//!   §8.3). A [`Snapshot`] answers the same questions by scanning.
+//!   §8.3). A [`Snapshot`] answers the same questions by scanning. The same
+//!   index lets a keyed edge find its token, and [`Net::first_match`] asks
+//!   which token that is, as a guard may want to know.
 //! - [`Net::topology`] (and [`Snapshot::topology`]) is the net's *shape*,
 //!   owned: places, transitions and edges with no tokens and no switches, as
 //!   a [`Topology`] that a render thread or a runner can hold without a
@@ -236,7 +241,8 @@
 //! - **fireable** and **enabled** are two different questions:
 //!   [`Net::enable`] / [`Net::disable`] work the author's on/off switch,
 //!   while *fireable* means "could fire right now" — switched on, input
-//!   places non-empty, guard saying yes.
+//!   places non-empty (holding a token the filter accepts, for a keyed
+//!   edge), guard saying yes.
 //! - [`Net::fireable`] and [`Net::is_fireable`] say what could fire now;
 //!   [`Net::step`] fires one transition, [`Net::fire`] fires a named one,
 //!   and a body that returns `Err` or panics gives [`FiringFailed`].
@@ -312,11 +318,13 @@
 //!   `Templates::scope`, and `Net::fork` copies one: which is how a token
 //!   that carries a net is saved, loaded, and snapshotted
 //!   ([`Nested`] gains `fork`). [`KeyValue`] becomes `Serialize` and
-//!   `Deserialize` as the bare JSON string, integer or boolean it is, and
-//!   [`Keys`] `Serialize` as an object; a [`Clause::IsParam`] compares a key
-//!   with a parameter by the wire name `serializable_param` gave it, and so
-//!   accepts nothing without the feature. (All of these are hidden from this
-//!   page unless the feature is on.)
+//!   `Deserialize` as the bare JSON string, integer or boolean it is,
+//!   [`Keys`] `Serialize` as an object, and [`Filter`] and [`Clause`]
+//!   `Serialize` and `Deserialize` in the protocol's shape (places by id); a
+//!   keyed edge's filter is then on its [`EdgeInfo`]. A [`Clause::IsParam`]
+//!   compares a key with a parameter by the wire name `serializable_param`
+//!   gave it, and so accepts nothing without the feature. (All of these are
+//!   hidden from this page unless the feature is on.)
 
 #![warn(missing_docs, missing_debug_implementations, unreachable_pub)]
 #![forbid(unsafe_code)]
@@ -358,7 +366,8 @@ pub use distribution::{
     Distribution, DistributionError, OutputDistribution, WithOutputDistribution,
 };
 pub use edge::{
-    EdgeInfo, EdgeKind, InputEdge, InputEdges, MutateEdge, SnapshotEdge, TakeAllEdge, TakeEdge,
+    EdgeInfo, EdgeKind, InputEdge, InputEdges, MutateEdge, MutateWhereEdge, SnapshotEdge,
+    TakeAllEdge, TakeEdge, TakeWhereEdge,
 };
 #[cfg(feature = "serde")]
 pub use error::TemplateError;

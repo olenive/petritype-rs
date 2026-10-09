@@ -24,17 +24,18 @@
 //! guard stops it at zero instead. And `Spread` leaves the original with half
 //! its population, rounded down, and gives the copy the rest.
 //!
-//! `Migrate Forest Wetland` is written the way a net has to before keyed
-//! edges: it takes *every* species in `Forest`, keeps the oldest bird, and
-//! puts the rest back (the game's pattern P2). Each of them leaves and comes
-//! back under a new id, which is what a keyed edge will remove.
+//! `Migrate Forest Wetland` reads `Forest` through one keyed edge, a
+//! `TakeWhereEdge` with the filter `class in {Bird}` (PROTOCOL §11's
+//! `take_where`): it takes the oldest bird and nothing else, and every other
+//! species stays where it is with its id. Its guard tests the `season`
+//! parameter, which is not a key and so not a clause.
 
 use std::error::Error;
 use std::fmt;
 
 use petritype::{
-    BuildError, Distribution, KeyValue, MutateEdge, Net, NetBuilder, PlaceRef, TakeAllEdge,
-    TakeEdge, TransitionId,
+    BuildError, Distribution, Filter, KeyValue, MutateEdge, Net, NetBuilder, PlaceRef, TakeEdge,
+    TakeWhereEdge, TransitionId,
 };
 use serde::{Deserialize, Serialize};
 
@@ -156,9 +157,6 @@ pub struct SpreadThreshold(pub u32);
 /// What a body can find wrong.
 #[derive(Debug)]
 pub enum WildlifeError {
-    /// `Migrate` fired on a habitat with no bird in it, which its guard
-    /// rules out.
-    NothingToMigrate,
     /// A species settling with nowhere to go.
     NowhereToGo { species: String },
     /// A species settling in a habitat that is not one.
@@ -168,7 +166,6 @@ pub enum WildlifeError {
 impl fmt::Display for WildlifeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            WildlifeError::NothingToMigrate => f.write_str("no bird to migrate"),
             WildlifeError::NowhereToGo { species } => {
                 write!(f, "{species} is migrating with no destination")
             }
@@ -265,33 +262,23 @@ pub fn build_wildlife() -> Result<Wildlife, BuildError> {
         ],
     );
 
-    // phase 2: one TakeWhere edge
-    //
-    // Until then, the game's pattern P2: every species leaves Forest, the
-    // oldest bird goes on to Migrating (slot 1), and the rest go back to
-    // Forest (slot 0), each under a new id. The guard asks the key index
-    // whether Forest holds a bird at all.
+    // One keyed edge: the oldest bird in Forest, whoever stands in front of
+    // it. Fireable only while Forest holds a bird; the guard, asked after,
+    // waits for autumn.
     let migrate = b
         .transition(
             "Migrate Forest Wetland",
-            (TakeAllEdge(forest),),
-            (forest, migrating),
-            |mut all: Vec<Species>| -> Result<(Vec<Species>, Species), WildlifeError> {
-                let oldest = all
-                    .iter()
-                    .position(|species| species.class == Class::Bird)
-                    .ok_or(WildlifeError::NothingToMigrate)?;
-                let mut bird = all.remove(oldest);
+            (TakeWhereEdge(
+                forest,
+                Filter::new().key_in("class", [Class::Bird]),
+            ),),
+            (migrating,),
+            |mut bird: Species| {
                 bird.destination = Some(Habitat::Wetland.to_string());
-                Ok((all, bird))
+                (bird,)
             },
         )
-        .guard(move |net| {
-            season(net) == "Autumn"
-                && net
-                    .distinct_values("class", Some(&[forest.id()][..]))
-                    .contains(&Class::Bird.into())
-        })
+        .guard(|net| season(net) == "Autumn")
         .id();
 
     let settle = b

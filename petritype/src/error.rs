@@ -111,8 +111,9 @@ pub enum BuildError {
     /// Restoring works on clones taken before the body runs, because the body
     /// owns the tokens themselves and may have consumed or wrecked them by
     /// the time it fails; a place with no cloner has nothing to take. Only
-    /// the consuming edges are affected — [`TakeEdge`](crate::TakeEdge) and
-    /// [`TakeAllEdge`](crate::TakeAllEdge) — since a
+    /// the consuming edges are affected — [`TakeEdge`](crate::TakeEdge),
+    /// [`TakeAllEdge`](crate::TakeAllEdge) and
+    /// [`TakeWhereEdge`](crate::TakeWhereEdge) — since a
     /// [`MutateEdge`](crate::MutateEdge) takes nothing out of its place and
     /// so has nothing to put back, and a
     /// [`SnapshotEdge`](crate::SnapshotEdge) of such a place is already
@@ -127,6 +128,26 @@ pub enum BuildError {
         /// The transition whose flag it is.
         transition: String,
         /// The place it consumes.
+        place: String,
+    },
+    /// A keyed input edge — a [`TakeWhereEdge`](crate::TakeWhereEdge) or a
+    /// [`MutateWhereEdge`](crate::MutateWhereEdge) — reads a place that
+    /// declares no [keys](crate::NetBuilder::keys).
+    ///
+    /// A keyed edge chooses its token by the keys the place derives, and a
+    /// place without keys derives none, so whatever the filter says the
+    /// transition could never fire. A dead transition is cheaper to refuse
+    /// at build than to discover by watching a net that never moves (DESIGN
+    /// §8.3). Declare keys on the place, or read it through a plain edge.
+    /// Reported for the first such edge, in transition order.
+    #[error(
+        "transition {transition:?} reads place {place:?} through a keyed edge, but the place \
+         declares no keys"
+    )]
+    KeyedEdgeOnUnkeyedPlace {
+        /// The transition whose edge it is.
+        transition: String,
+        /// The place it reads, which declares no keys.
         place: String,
     },
     /// A place was marked [`passive`](crate::NetBuilder::passive) that was
@@ -212,13 +233,15 @@ pub enum BuildError {
     ///
     /// Such a *source* transition takes no token out of any place when it
     /// fires — read edges do not count, since a
-    /// [`SnapshotEdge`](crate::SnapshotEdge) and a
-    /// [`MutateEdge`](crate::MutateEdge) leave their places as they found
-    /// them, and a [`Param<T>`](crate::Param) is not a place at all — so
-    /// having fired changes nothing about whether it can fire
+    /// [`SnapshotEdge`](crate::SnapshotEdge), a
+    /// [`MutateEdge`](crate::MutateEdge) and a
+    /// [`MutateWhereEdge`](crate::MutateWhereEdge) leave their places as
+    /// they found them, and a [`Param<T>`](crate::Param) is not a place at
+    /// all — so having fired changes nothing about whether it can fire
     /// again, and the net never quiesces. Give it a
-    /// [`TakeEdge`](crate::TakeEdge) or a
-    /// [`TakeAllEdge`](crate::TakeAllEdge), or drop the assertion:
+    /// [`TakeEdge`](crate::TakeEdge), a
+    /// [`TakeAllEdge`](crate::TakeAllEdge) or a
+    /// [`TakeWhereEdge`](crate::TakeWhereEdge), or drop the assertion:
     /// generators and transitions fed from outside the net are deliberate
     /// sources, and are bounded while the net runs instead.
     #[error("transition {transition:?} consumes nothing, so it could fire forever")]

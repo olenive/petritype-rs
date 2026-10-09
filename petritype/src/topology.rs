@@ -2,6 +2,7 @@
 
 use crate::edge::{EdgeInfo, EdgeKind};
 use crate::ids::{PlaceId, TransitionId};
+use crate::keys::Filter;
 use crate::net::PlaceInfo;
 use crate::transition::TransitionInfo;
 
@@ -112,6 +113,12 @@ pub struct TopologyTransition {
     /// Input places and how each is read, in declaration order:
     /// [`TransitionInfo::inputs`].
     pub inputs: Vec<(PlaceId, EdgeKind)>,
+    /// The filter of each input edge, `None` for all but the keyed ones:
+    /// [`TransitionInfo::filters`] (slice 19). With `serde`, written only
+    /// when some input is keyed, so that the shape of a net without keyed
+    /// edges is what it always was.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "no_filters"))]
+    pub filters: Vec<Option<Filter>>,
     /// The parameter types it declared, by name:
     /// [`TransitionInfo::params`].
     pub params: Vec<&'static str>,
@@ -156,6 +163,7 @@ impl Topology {
                     id,
                     name: info.name.to_owned(),
                     inputs: info.inputs.to_vec(),
+                    filters: info.filters.to_vec(),
                     params: info.params.to_vec(),
                     outputs: info.outputs.to_vec(),
                     positional: info.positional,
@@ -172,4 +180,10 @@ impl Topology {
 #[cfg(feature = "serde")]
 fn is_true(value: &bool) -> bool {
     *value
+}
+
+/// For `skip_serializing_if`: no input of the transition is keyed.
+#[cfg(feature = "serde")]
+fn no_filters(filters: &[Option<Filter>]) -> bool {
+    filters.iter().all(Option::is_none)
 }

@@ -33,6 +33,19 @@
 //! index is never saved: a marking carries values, and keys follow from
 //! them.
 //!
+//! # Keyed edges
+//!
+//! A [`TakeWhereEdge`](crate::TakeWhereEdge) or
+//! [`MutateWhereEdge`](crate::MutateWhereEdge) asks the index the one
+//! question it was built to answer quickly: does this place hold a token the
+//! filter accepts, and which is the first ([`first_match`])? The clause
+//! whose values the fewest tokens hold gives the candidates, already in id
+//! order, and the first of them that the other clauses' postings also hold
+//! is the answer, found without extracting a single key. What the edge then
+//! does goes through the same points as everything else: a token taken from
+//! the middle of a place leaves it like one taken from the front, and a
+//! token mutated where it stands is re-extracted like a front one.
+//!
 //! # Token order
 //!
 //! Each value's tokens are kept as `(PlaceId, TokenId)` in an ordered set, so
@@ -51,11 +64,10 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt;
 
 use crate::ids::{PlaceId, TokenId};
-use crate::keys::{Filter, KeyValue, Match, keys_or_none, match_of};
+use crate::keys::{Filter, KeyValue, Match, Resolved, keys_or_none, match_of};
 use crate::net::Net;
-use crate::place::PlaceMeta;
-#[cfg(test)]
-use crate::place::PlaceSlot;
+use crate::param::ParamSlot;
+use crate::place::{PlaceMeta, PlaceSlot};
 
 /// The tokens holding one value of one key, in place order then id order.
 type Postings = BTreeSet<(PlaceId, TokenId)>;
@@ -217,6 +229,72 @@ impl KeyIndex {
         }
     }
 
+    /// The first token of `place` in queue order whose keys pass every
+    /// resolved clause, with where it stands: [`first_match`] once the
+    /// place is known to declare keys and the filter to have clauses.
+    ///
+    /// Asked of the postings alone. Per clause, the sets of the values it
+    /// accepts; a key or a clause no token holds ends the question at once.
+    /// In a place in id order the candidates are the tokens of this place
+    /// holding the clause with the fewest tokens, walked in id order per
+    /// value until one is held by every other clause too; the earliest of
+    /// those is the answer, and its position is found by binary search. An
+    /// unordered place is walked in queue order instead.
+    fn first_in(
+        &self,
+        slot: &PlaceSlot,
+        place: PlaceId,
+        resolved: &Resolved<'_>,
+    ) -> Option<(usize, TokenId)> {
+        let mut clauses: Vec<Vec<&Postings>> = Vec::with_capacity(resolved.clauses.len());
+        for clause in &resolved.clauses {
+            let values = self.postings.get(clause.key)?;
+            let sets: Vec<&Postings> = clause
+                .values()
+                .iter()
+                .filter_map(|value| values.get(value))
+                .collect();
+            if sets.is_empty() {
+                return None;
+            }
+            clauses.push(sets);
+        }
+        let passes = |token: TokenId| {
+            clauses.iter().all(|sets| {
+                sets.iter()
+                    .any(|postings| postings.contains(&(place, token)))
+            })
+        };
+
+        if self.unordered.contains(&place) {
+            return slot
+                .tokens
+                .iter()
+                .position(|(token, _)| passes(*token))
+                .map(|at| (at, slot.tokens[at].0));
+        }
+
+        let fewest = clauses
+            .iter()
+            .min_by_key(|sets| sets.iter().map(|postings| postings.len()).sum::<usize>())?;
+        let here = (place, TokenId(0))..=(place, TokenId(u64::MAX));
+        let token = fewest
+            .iter()
+            .filter_map(|postings| {
+                postings
+                    .range(here.clone())
+                    .map(|&(_, token)| token)
+                    .find(|&token| passes(token))
+            })
+            .min()?;
+        let at = slot.tokens.binary_search_by_key(&token, |(id, _)| *id);
+        debug_assert!(
+            at.is_ok(),
+            "the index names {token:?} in {place:?}, which does not hold it"
+        );
+        Some((at.ok()?, token))
+    }
+
     /// The index a net with these places would have if it were built from
     /// nothing: what the incremental one is checked against.
     #[cfg(test)]
@@ -252,6 +330,49 @@ impl KeyIndex {
         }
         Ok(())
     }
+}
+
+/// The first token of `place`, in queue order, whose keys pass every clause
+/// of `filter`, its parameters read from `params`, with its position in the
+/// place: the token a keyed input edge takes or hands over (DESIGN §8.3).
+/// `None` when there is none, or no such place.
+///
+/// The filter's `places` and `prefix` are not consulted: an edge reads one
+/// place, and says which. A filter without clauses accepts the front token;
+/// one with clauses accepts nothing in a place without keys.
+pub(crate) fn first_match(
+    places: &[PlaceSlot],
+    params: &[ParamSlot],
+    index: &KeyIndex,
+    place: PlaceId,
+    filter: &Filter,
+) -> Option<(usize, TokenId)> {
+    let slot = places.get(place.0 as usize)?;
+    if filter.clauses.is_empty() {
+        return slot.tokens.front().map(|(token, _)| (0, *token));
+    }
+    slot.meta.keys.as_ref()?;
+    index.first_in(slot, place, &filter.resolve_in(params))
+}
+
+/// [`first_match`] by reading the place front to back and extracting each
+/// token's keys: what the indexed answer is checked against.
+#[cfg(test)]
+pub(crate) fn first_match_scan(
+    places: &[PlaceSlot],
+    params: &[ParamSlot],
+    place: PlaceId,
+    filter: &Filter,
+) -> Option<(usize, TokenId)> {
+    let slot = places.get(place.0 as usize)?;
+    if !filter.clauses.is_empty() && slot.meta.keys.is_none() {
+        return None;
+    }
+    let resolved = filter.resolve_in(params);
+    slot.tokens
+        .iter()
+        .position(|(_, value)| resolved.accepts(&keys_or_none(slot, &**value)))
+        .map(|at| (at, slot.tokens[at].0))
 }
 
 /// How many values each key has, never the values or the tokens: a net's
@@ -435,7 +556,10 @@ impl Net {
 mod tests {
     use super::*;
     use crate::keys::{distinct_scan, query_scan};
-    use crate::{Command, KeyValue, MutateEdge, NetBuilder, PlaceRef, TakeAllEdge, TakeEdge};
+    use crate::{
+        Command, KeyValue, MutateEdge, MutateWhereEdge, NetBuilder, PlaceRef, TakeAllEdge,
+        TakeEdge, TakeWhereEdge,
+    };
 
     #[derive(Debug, Clone, PartialEq)]
     #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -475,7 +599,9 @@ mod tests {
     }
 
     /// `Field` and `Barn` declare keys, `Pen` does not; transitions that
-    /// take one, take all, mutate (renaming, so a key changes) and fail.
+    /// take one, take all, mutate (renaming, so a key changes) and fail, and
+    /// keyed ones that take a bird, shear a mammal (changing a key) and fail
+    /// on a bird, restoring it.
     struct Farm {
         net: Net,
         field: PlaceRef<Animal>,
@@ -515,6 +641,34 @@ mod tests {
         b.transition(
             "Fail",
             (TakeEdge(barn),),
+            (field,),
+            |_: Animal| -> Result<(Animal,), Broken> { Err(Broken) },
+        )
+        .restore_tokens_on_failure();
+        b.transition(
+            "Pick",
+            (TakeWhereEdge(
+                field,
+                Filter::new().key_in("class", ["Bird"]),
+            ),),
+            (barn,),
+            |a: Animal| (a,),
+        );
+        b.transition(
+            "Shear",
+            (MutateWhereEdge(
+                barn,
+                Filter::new().key_in("class", ["Mammal"]),
+            ),),
+            (),
+            |a: &mut Animal| {
+                a.name.push('~');
+                a.legs -= 1;
+            },
+        );
+        b.transition(
+            "Drop a bird",
+            (TakeWhereEdge(barn, Filter::new().key_in("class", ["Bird"])),),
             (field,),
             |_: Animal| -> Result<(Animal,), Broken> { Err(Broken) },
         )
@@ -569,6 +723,15 @@ mod tests {
         for filter in &filters {
             let scanned = query_scan(&net.places, &net.params, net.label_limit, filter).unwrap();
             assert_eq!(net.query(filter).unwrap(), scanned, "{filter:?}");
+            // What a keyed edge would choose, from the index and by reading
+            // the place front to back.
+            for &place in &places {
+                assert_eq!(
+                    first_match(&net.places, &net.params, &net.index, place, filter),
+                    first_match_scan(&net.places, &net.params, place, filter),
+                    "{filter:?} in {place:?}"
+                );
+            }
         }
         for key in ["name", "class", "legs", "nope"] {
             assert_eq!(
@@ -631,6 +794,61 @@ mod tests {
         let firing = net.launch(rename).unwrap();
         check(&net);
         net.distribute(firing.run()).unwrap();
+        check(&net);
+    }
+
+    /// The keyed edges move tokens through the same points as the plain
+    /// ones: a token taken from the middle leaves the index, one sheared
+    /// where it stands is indexed again, and one put back at the front marks
+    /// its place out of order.
+    #[test]
+    fn the_index_follows_the_keyed_edges() {
+        let Farm {
+            mut net,
+            field,
+            barn,
+            ..
+        } = farm();
+        net.set_tokens(
+            field,
+            [
+                animal("Cow", "Mammal", 4),
+                animal("Hen", "Bird", 2),
+                animal("Ram", "Mammal", 4),
+                animal("Duck", "Bird", 2),
+            ],
+        );
+        check(&net);
+
+        fire(&mut net, "Pick").unwrap();
+        check(&net);
+        let names: Vec<String> = net
+            .query(&Filter::new().in_places([field.id()]))
+            .unwrap()
+            .into_iter()
+            .map(|found| found.keys.get("name").unwrap().to_string())
+            .collect();
+        assert_eq!(names, ["Cow", "Ram", "Duck"], "the hen, from between them");
+
+        fire(&mut net, "Shear").unwrap();
+        check(&net);
+        fire(&mut net, "Pick").unwrap();
+        check(&net);
+
+        // The barn holds Cat~ (sheared), Hen, Duck; a failing pick of a bird
+        // puts the hen back in front of the cat, out of id order.
+        assert!(!net.index.unordered.contains(&barn.id()));
+        fire(&mut net, "Drop a bird").expect_err("the body fails, the hen goes back");
+        check(&net);
+        assert!(net.index.unordered.contains(&barn.id()));
+        let birds = Filter::new().key_in("class", ["Bird"]);
+        let (front, _) = net.tokens(barn.id()).next().unwrap();
+        assert_eq!(
+            first_match(&net.places, &net.params, &net.index, barn.id(), &birds),
+            Some((0, front)),
+            "the restored hen, first in queue order"
+        );
+        fire(&mut net, "Shear").unwrap();
         check(&net);
     }
 

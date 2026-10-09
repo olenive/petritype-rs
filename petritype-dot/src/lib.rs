@@ -23,7 +23,7 @@
 //! The shapes and colours mirror the Python petritype renderer
 //! (`petritype/plotting/rustworkx_to_graphviz.py`,
 //! `activation_coloured_attr_functions`), so a net ported from Python looks
-//! like the Python one. Three things are additions, marked *new* below.
+//! like the Python one. Four things are additions, marked *new* below.
 //!
 //! | element | drawn as |
 //! |---|---|
@@ -36,6 +36,8 @@
 //! | [`TakeAllEdge`](petritype::TakeAllEdge) | the same, plus `label="*"` (*new*: the arity matters to a reader) |
 //! | [`SnapshotEdge`](petritype::SnapshotEdge) | `style=dashed, color=dimgray, arrowhead=normal, penwidth=1` |
 //! | [`MutateEdge`](petritype::MutateEdge) | `dir=both, arrowhead=dot, arrowtail=dot, color=dimgray, penwidth=2` |
+//! | [`TakeWhereEdge`](petritype::TakeWhereEdge), [`MutateWhereEdge`](petritype::MutateWhereEdge) | as `TakeEdge` and `MutateEdge`, plus the filter as the label, `label="class in {Bird}"` (*new*: a keyed edge chooses its token, and the diagram says by what) |
+//! | an input edge of a kind this version does not know | as a `TakeEdge` |
 //! | output edge | `color=black, penwidth=1`, plus `label="<slot>"` when the transition has more than one output (*new*: positional order is what a positional body returns into) |
 //! | highlighted edge | both its ends highlighted: the kind's shape is kept and its `color` and `penwidth` become `magenta`/`red` and `2` |
 //!
@@ -105,8 +107,8 @@ use std::collections::HashMap;
 use std::fmt::{self, Write as _};
 
 use petritype::{
-    EdgeInfo, EdgeKind, Event, Net, PlaceId, PlaceInfo, Snapshot, TokenId, TransitionId,
-    TransitionInfo,
+    Clause, EdgeInfo, EdgeKind, Event, Filter, Net, PlaceId, PlaceInfo, Snapshot, TokenId,
+    TransitionId, TransitionInfo,
 };
 
 /// Anything the renderer can draw: a live [`Net`] or an owned [`Snapshot`].
@@ -483,12 +485,14 @@ fn render(source: &impl DotSource, style: &Style, out: &mut String) -> fmt::Resu
                 place,
                 transition,
                 kind,
+                filter,
+                ..
             } => {
                 let lit = style.highlights_place(place) && style.highlights_transition(transition);
                 Some((
                     format!("p{}", places[&place]),
                     format!("t{}", transitions[&transition]),
-                    input_attrs(kind, lit.then(|| style.colour())),
+                    input_attrs(kind, filter.as_ref(), lit.then(|| style.colour())),
                 ))
             }
             EdgeInfo::Output {
@@ -556,10 +560,13 @@ fn transition_label(name: &str, params: &[&'static str]) -> String {
     label
 }
 
-/// The attributes of a place → transition edge, by the kind of read it is.
-fn input_attrs(kind: EdgeKind, highlight: Option<&str>) -> String {
-    let attrs: Vec<String> = match kind {
-        EdgeKind::Take => vec![String::from("color=black"), String::from("penwidth=1")],
+/// The attributes of a place → transition edge, by the kind of read it is,
+/// with a keyed edge's filter as its label.
+fn input_attrs(kind: EdgeKind, filter: Option<&Filter>, highlight: Option<&str>) -> String {
+    let mut attrs: Vec<String> = match kind {
+        EdgeKind::Take | EdgeKind::TakeWhere => {
+            vec![String::from("color=black"), String::from("penwidth=1")]
+        }
         EdgeKind::TakeAll => vec![
             String::from("color=black"),
             String::from("penwidth=1"),
@@ -571,15 +578,46 @@ fn input_attrs(kind: EdgeKind, highlight: Option<&str>) -> String {
             String::from("arrowhead=normal"),
             String::from("penwidth=1"),
         ],
-        EdgeKind::Mutate => vec![
+        EdgeKind::Mutate | EdgeKind::MutateWhere => vec![
             String::from("dir=both"),
             String::from("arrowhead=dot"),
             String::from("arrowtail=dot"),
             String::from("color=dimgray"),
             String::from("penwidth=2"),
         ],
+        // `EdgeKind` is `#[non_exhaustive]`: a kind this renderer has never
+        // heard of is drawn as a plain take, as a protocol reader would.
+        _ => vec![String::from("color=black"), String::from("penwidth=1")],
     };
+    if let Some(filter) = filter {
+        attrs.push(format!("label=\"{}\"", escape(&filter_label(filter))));
+    }
     join_attrs(attrs, highlight)
+}
+
+/// A keyed edge's filter as a reader writes one: `class in {Bird, Mammal}
+/// and diet in {Insectivore}`, a parameter clause as `class = $season`, and
+/// `any` for a filter with no clauses. Its places and prefix are left out:
+/// an edge reads one place, and does not consult them.
+fn filter_label(filter: &Filter) -> String {
+    if filter.clauses.is_empty() {
+        return String::from("any");
+    }
+    filter
+        .clauses
+        .iter()
+        .map(|clause| match clause {
+            Clause::In { key, values } => {
+                let values: Vec<String> = values.iter().map(ToString::to_string).collect();
+                format!("{key} in {{{}}}", values.join(", "))
+            }
+            Clause::IsParam { key, param } => format!("{key} = ${param}"),
+            // `Clause` is `#[non_exhaustive]`: a condition this version
+            // cannot spell is still a condition.
+            _ => String::from("?"),
+        })
+        .collect::<Vec<_>>()
+        .join(" and ")
 }
 
 /// The attributes of a transition → place edge, with its slot number when the

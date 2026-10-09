@@ -11,8 +11,9 @@
 //!   [`Event::Toggled`](crate::Event::Toggled). A switched-off transition is
 //!   ignored however full its places are.
 //! - **fireable** is whether this transition could fire *right now*:
-//!   switched on, not in flight, every input place non-empty, guard (if any)
-//!   saying yes. That is [`Net::fireable`] and [`Net::is_fireable`].
+//!   switched on, not in flight, every input place non-empty (holding a
+//!   token its filter accepts, for a keyed edge), guard (if any) saying yes.
+//!   That is [`Net::fireable`] and [`Net::is_fireable`].
 //!
 //! Classical Petri net writing calls the second one "enabled" (and DESIGN §3
 //! still does); this crate needs the word for the switch, which is the one an
@@ -92,7 +93,7 @@ use crate::erased::{ErasedBody, ErasedInput, ErasedInputs, ErasedOutcome, Output
 use crate::error::{BodyPanicked, FiringFailed, NetError};
 use crate::event::Event;
 use crate::ids::{NetId, PlaceId, TokenId, TransitionId};
-use crate::index::KeyIndex;
+use crate::index::{KeyIndex, first_match};
 use crate::keys::KeyValue;
 use crate::nested::lift_from;
 use crate::net::Net;
@@ -103,6 +104,11 @@ use crate::transition::{ArgSource, TransitionSlot};
 /// Why an input place is never empty once stage one starts: being fireable
 /// is what was checked.
 const NON_EMPTY: &str = "a fireable transition's input places all hold a token";
+
+/// Why a keyed edge finds its token once stage one starts: fireability asked
+/// the same question of the same marking, and the other edges of the
+/// transition read other places.
+const MATCHING: &str = "a fireable transition's keyed edges each have a token to choose";
 
 /// How a net picks which of its fireable transitions fires next.
 ///
@@ -162,8 +168,14 @@ impl Net {
     /// - every one of its input places holds at least one token, whatever the
     ///   edge kind: [`SnapshotEdge`](crate::SnapshotEdge) and
     ///   [`MutateEdge`](crate::MutateEdge) consume nothing but still need
-    ///   something to read;
-    /// - its guard, if it has one, returns true.
+    ///   something to read; and a keyed edge
+    ///   ([`TakeWhereEdge`](crate::TakeWhereEdge),
+    ///   [`MutateWhereEdge`](crate::MutateWhereEdge)) needs a token its
+    ///   filter accepts, asked of the key index, a
+    ///   [`Clause::IsParam`](crate::Clause::IsParam) reading the parameter as
+    ///   it is now;
+    /// - its guard, if it has one, returns true. It is asked last, so a guard
+    ///   on a keyed transition knows a token is there to be had.
     ///
     /// The list is recomputed by a linear scan over the transitions each time
     /// it is asked for, so it is always current and never has to be
@@ -241,7 +253,17 @@ impl Net {
     fn slot_is_fireable(&self, slot: &TransitionSlot) -> bool {
         slot.enabled
             && slot.body.is_some()
-            && slot.inputs.iter().all(|(place, _)| self.count(*place) > 0)
+            && slot
+                .inputs
+                .iter()
+                .zip(&slot.filters)
+                .all(|(&(place, _), filter)| match filter {
+                    None => self.count(place) > 0,
+                    Some(filter) => {
+                        first_match(&self.places, &self.params, &self.index, place, filter)
+                            .is_some()
+                    }
+                })
             && match &slot.guard {
                 Some(guard) => guard(self),
                 None => true,
@@ -652,6 +674,9 @@ impl Net {
 
         let mut consumed = Vec::new();
         let mut mutated = Vec::new();
+        // Beside `mutated`: for each token a mutating edge will lend the
+        // body, the argument it fills and where it stands in its place.
+        let mut lent = Vec::new();
         // What the inner nets of consumed nested tokens had logged, lifted
         // under the place and id each token had (DESIGN §6.6, rule 3).
         let mut lifted = Vec::new();
@@ -673,16 +698,14 @@ impl Net {
                 index: key_index,
                 ..
             } = &mut *self;
-            let inputs = &transitions[index].inputs;
-            let sources = &transitions[index].args;
             let args = consume(
                 places,
                 params,
                 key_index,
-                sources,
-                inputs,
+                &transitions[index],
                 &mut consumed,
                 &mut mutated,
+                &mut lent,
                 &mut lifted,
                 restore.as_mut(),
             );
@@ -692,17 +715,19 @@ impl Net {
                 // The keys of the tokens the body is about to change, while
                 // they are still the old ones: the index finds a token's
                 // entries by them (DESIGN §8.3).
-                let before = keys_before(places, &mutated);
+                let before = keys_before(places, &mutated, &lent);
                 // Stage two, here and now: a `MutateEdge` hands the body a
                 // borrow into a place, which may neither travel with the
                 // `Firing` nor still be alive when stage three writes.
-                let args = borrow_mutated(places, sources, inputs, args);
+                let args = borrow_mutated(places, &mutated, &lent, args);
                 let outcome = call_body(&mut body, args);
                 // Whatever the body did, done or half done before a panic,
-                // is in the place now, and the index follows it there.
-                for ((place, token), before) in mutated.iter().zip(before) {
+                // is in the place now, and the index follows it there. The
+                // body could change the token, never the place around it,
+                // so each token is still where it was lent.
+                for (((place, token), lent), before) in mutated.iter().zip(&lent).zip(before) {
                     let slot = &places[place.0 as usize];
-                    let (_, value) = slot.tokens.front().expect(NON_EMPTY);
+                    let (_, value) = &slot.tokens[lent.at];
                     key_index.changed(&slot.meta, *place, *token, before, &**value);
                 }
                 Stage::Ran { body, outcome }
@@ -1306,6 +1331,23 @@ pub(crate) fn default_selector(net: &Net, fireable: &[TransitionId]) -> Option<T
     best.map(|(transition, _)| transition)
 }
 
+/// A token a mutating edge lends the body, beside its entry in `mutated`:
+/// which argument it fills and where it stands in its place.
+///
+/// The position is taken when the edge chooses its token — the front for a
+/// [`MutateEdge`](crate::MutateEdge), the first its filter accepts for a
+/// [`MutateWhereEdge`](crate::MutateWhereEdge) — and stays good until stage
+/// one is over: the other edges of the transition read other places, and the
+/// body can change the token but never the queue around it.
+#[derive(Debug, Clone, Copy)]
+struct Lent {
+    /// The argument's position in the body's parameter list. Not the
+    /// edge's: a parameter may stand between two edges.
+    arg: usize,
+    /// The token's position in its place's queue.
+    at: usize,
+}
+
 /// Stage one: one argument per input, in declaration order, taking out of the
 /// places whatever each edge kind takes and off the net whatever each
 /// parameter names.
@@ -1317,10 +1359,18 @@ pub(crate) fn default_selector(net: &Net, fireable: &[TransitionId]) -> Option<T
 ///
 /// Every argument it produces is **owned** — `ErasedInput<'static>` — which
 /// is what lets a [`Firing`] be `Send` and outlive the call that made it. A
-/// [`MutateEdge`](crate::MutateEdge) has no owned argument to give, since its
-/// token stays in its place, so it leaves an [`ErasedInput::Taken`] behind
-/// and is recorded in `mutated`; [`borrow_mutated`] fills those positions in,
+/// [`MutateEdge`](crate::MutateEdge) or
+/// [`MutateWhereEdge`](crate::MutateWhereEdge) has no owned argument to give,
+/// since its token stays in its place, so it leaves an
+/// [`ErasedInput::Taken`] behind and is recorded in `mutated`, with where
+/// the token stands in `lent`; [`borrow_mutated`] fills those positions in,
 /// for the inline path that is the only one allowed to hold such a borrow.
+///
+/// A keyed edge chooses its token with the key index ([`first_match`]): the
+/// first in queue order its filter accepts, which is wherever it is. A
+/// [`TakeWhereEdge`](crate::TakeWhereEdge) takes it out of the middle of the
+/// place, as a [`TakeEdge`](crate::TakeEdge) takes the front, and every
+/// other token stays where it is.
 ///
 /// `restore` is `Some` for a transition declared with
 /// [`restore_tokens_on_failure`](crate::TransitionBuilder::restore_tokens_on_failure),
@@ -1336,8 +1386,9 @@ pub(crate) fn default_selector(net: &Net, fireable: &[TransitionId]) -> Option<T
 /// with. A parameter consumes nothing, so it is in neither `consumed` nor
 /// `restore` and puts nothing in an event.
 ///
-/// `sources` is the tuple order — one entry per argument, saying which input
-/// edge or which parameter fills it — because `inputs` is the edges alone.
+/// The transition's `args` are the tuple order — one entry per argument,
+/// saying which input edge or which parameter fills it — because its
+/// `inputs` are the edges alone.
 ///
 /// A token taken from a [nested](crate::NetBuilder::place_nested) place has
 /// its inner nets' logs emptied into `lifted` on its way out, under the place
@@ -1348,18 +1399,18 @@ fn consume(
     places: &mut [PlaceSlot],
     params: &[ParamSlot],
     index: &mut KeyIndex,
-    sources: &[ArgSource],
-    inputs: &[(PlaceId, EdgeKind)],
+    transition: &TransitionSlot,
     consumed: &mut Vec<(PlaceId, TokenId)>,
     mutated: &mut Vec<(PlaceId, TokenId)>,
+    lent: &mut Vec<Lent>,
     lifted: &mut Vec<Event>,
     mut restore: Option<&mut Vec<(PlaceId, TokenId, ErasedToken)>>,
 ) -> Vec<ErasedInput<'static>> {
-    let mut args = Vec::with_capacity(sources.len());
+    let mut args = Vec::with_capacity(transition.args.len());
 
-    for source in sources {
-        let (place, kind) = match *source {
-            ArgSource::Edge(edge) => inputs[edge],
+    for source in &transition.args {
+        let edge = match *source {
+            ArgSource::Edge(edge) => edge,
             ArgSource::Param { type_id, .. } => {
                 let slot = param_slot(params, type_id)
                     .expect("build refuses a net whose declared parameter has no value");
@@ -1367,11 +1418,24 @@ fn consume(
                 continue;
             }
         };
+        let (place, kind) = transition.inputs[edge];
         let position = place.0 as usize;
+        // The token a keyed edge chooses, with where it stands, asked before
+        // anything of its place has moved.
+        let chosen = |places: &[PlaceSlot], index: &KeyIndex| {
+            let filter = transition.filters[edge]
+                .as_ref()
+                .expect("a keyed edge carries its filter");
+            first_match(places, params, index, place, filter).expect(MATCHING)
+        };
         match kind {
-            EdgeKind::Take => {
+            EdgeKind::Take | EdgeKind::TakeWhere => {
+                let at = match kind {
+                    EdgeKind::TakeWhere => chosen(places, index).0,
+                    _ => 0,
+                };
                 let slot = &mut places[position];
-                let (token, mut value) = slot.tokens.pop_front().expect(NON_EMPTY);
+                let (token, mut value) = slot.tokens.remove(at).expect(NON_EMPTY);
                 index.leave(&slot.meta, place, token, &*value);
                 if slot.tokens.is_empty() {
                     index.emptied(place);
@@ -1414,9 +1478,16 @@ fn consume(
                 // cannot change under it even once firings run elsewhere.
                 args.push(ErasedInput::Token(clone(&**value)));
             }
-            EdgeKind::Mutate => {
-                let (token, _) = places[position].tokens.front().expect(NON_EMPTY);
-                mutated.push((place, *token));
+            EdgeKind::Mutate | EdgeKind::MutateWhere => {
+                let (at, token) = match kind {
+                    EdgeKind::MutateWhere => chosen(places, index),
+                    _ => (0, places[position].tokens.front().expect(NON_EMPTY).0),
+                };
+                mutated.push((place, token));
+                lent.push(Lent {
+                    arg: args.len(),
+                    at,
+                });
                 // Overwritten by `borrow_mutated`, which is the only caller
                 // allowed to hold the borrow; a body never sees this.
                 args.push(ErasedInput::Taken);
@@ -1430,12 +1501,17 @@ fn consume(
 /// The key values of each token a mutating edge is about to hand its body,
 /// in edge order, while they are still the old ones; `None` for a token of a
 /// place without keys. See [`KeyIndex::changed`].
-fn keys_before(places: &[PlaceSlot], mutated: &[(PlaceId, TokenId)]) -> Vec<Option<Vec<KeyValue>>> {
+fn keys_before(
+    places: &[PlaceSlot],
+    mutated: &[(PlaceId, TokenId)],
+    lent: &[Lent],
+) -> Vec<Option<Vec<KeyValue>>> {
     mutated
         .iter()
-        .map(|(place, _)| {
+        .zip(lent)
+        .map(|((place, _), lent)| {
             let slot = &places[place.0 as usize];
-            let (_, value) = slot.tokens.front().expect(NON_EMPTY);
+            let (_, value) = &slot.tokens[lent.at];
             KeyIndex::before(&slot.meta, &**value)
         })
         .collect()
@@ -1479,8 +1555,10 @@ fn call_body(body: &mut ErasedBody, args: Vec<ErasedInput<'_>>) -> ErasedOutcome
     }
 }
 
-/// Fills in the arguments of the mutating edges: the front token of each
-/// place, borrowed where it lies.
+/// Fills in the arguments of the mutating edges: the token each one chose,
+/// borrowed where it lies — the front one for a
+/// [`MutateEdge`](crate::MutateEdge), the one its filter accepted for a
+/// [`MutateWhereEdge`](crate::MutateWhereEdge).
 ///
 /// The second half of stage one, and inline firing's alone. A `&mut` into a
 /// place may not be taken while [`consume`] is still draining the other
@@ -1492,25 +1570,12 @@ fn call_body(body: &mut ErasedBody, args: Vec<ErasedInput<'_>>) -> ErasedOutcome
 /// is what the annotation below says.
 fn borrow_mutated<'a>(
     places: &'a mut [PlaceSlot],
-    sources: &[ArgSource],
-    inputs: &[(PlaceId, EdgeKind)],
+    mutated: &[(PlaceId, TokenId)],
+    lent: &[Lent],
     args: Vec<ErasedInput<'static>>,
 ) -> Vec<ErasedInput<'a>> {
     let mut args: Vec<ErasedInput<'a>> = args;
-    // Where the mutating edges are: the argument each fills and the place it
-    // borrows. The position is the argument's, not the edge's, since a
-    // parameter may stand between two edges.
-    let borrows: Vec<(usize, usize)> = sources
-        .iter()
-        .enumerate()
-        .filter_map(|(position, source)| match *source {
-            ArgSource::Edge(edge) => Some((position, inputs[edge])),
-            ArgSource::Param { .. } => None,
-        })
-        .filter(|(_, (_, kind))| *kind == EdgeKind::Mutate)
-        .map(|(position, (place, _))| (position, place.0 as usize))
-        .collect();
-    if borrows.is_empty() {
+    if mutated.is_empty() {
         return args;
     }
 
@@ -1521,11 +1586,15 @@ fn borrow_mutated<'a>(
     // they are disjoint is `BuildError::DuplicateInputPlace`'s doing — no two
     // input edges of one transition name the same place.
     for (index, slot) in places.iter_mut().enumerate() {
-        let Some(&(position, _)) = borrows.iter().find(|&&(_, place)| place == index) else {
+        let Some((_, lent)) = mutated
+            .iter()
+            .zip(lent)
+            .find(|((place, _), _)| place.0 as usize == index)
+        else {
             continue;
         };
-        let (_, value) = slot.tokens.front_mut().expect(NON_EMPTY);
-        args[position] = ErasedInput::Borrowed(value);
+        let (_, value) = slot.tokens.get_mut(lent.at).expect(NON_EMPTY);
+        args[lent.arg] = ErasedInput::Borrowed(value);
     }
 
     args

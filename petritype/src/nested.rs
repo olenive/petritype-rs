@@ -327,7 +327,9 @@ impl Net {
     /// ([`place_nested`](crate::NetBuilder::place_nested)), or does not
     /// exist, or holds no such token. This is how a
     /// [guard](crate::TransitionBuilder::guard) reads inside a token — the
-    /// front one is what a [`MutateEdge`](crate::MutateEdge) would be handed:
+    /// front one is what a [`MutateEdge`](crate::MutateEdge) would be handed,
+    /// and [`first_match`](Net::first_match) names the one a
+    /// [`MutateWhereEdge`](crate::MutateWhereEdge) would:
     ///
     /// ```
     /// use petritype::{NetBuilder, TakeEdge};

@@ -190,6 +190,7 @@ impl Net {
             let info = TransitionInfo {
                 name: &slot.name,
                 inputs: &slot.inputs,
+                filters: &slot.filters,
                 params: &slot.params,
                 outputs: &slot.outputs,
                 positional: slot.positional,
@@ -234,8 +235,8 @@ impl Net {
     /// assert_eq!(
     ///     net.edges().collect::<Vec<_>>(),
     ///     [
-    ///         EdgeInfo::Input { place: inbox.id(), transition: weigh, kind: EdgeKind::Take },
-    ///         EdgeInfo::Input { place: config.id(), transition: weigh, kind: EdgeKind::Snapshot },
+    ///         EdgeInfo::Input { place: inbox.id(), transition: weigh, kind: EdgeKind::Take, filter: None },
+    ///         EdgeInfo::Input { place: config.id(), transition: weigh, kind: EdgeKind::Snapshot, filter: None },
     ///         EdgeInfo::Output { transition: weigh, place: heavy.id(), slot: 0 },
     ///     ],
     /// );
@@ -244,6 +245,9 @@ impl Net {
     ///
     /// A place nothing reads or writes appears in no edge; it is still a
     /// node, and [`places`](Net::places) is where a diagram gets its nodes.
+    /// A keyed edge ([`TakeWhereEdge`](crate::TakeWhereEdge),
+    /// [`MutateWhereEdge`](crate::MutateWhereEdge)) carries its filter in
+    /// `filter`, which is `None` on every other input edge.
     pub fn edges(&self) -> impl Iterator<Item = EdgeInfo> {
         edges_of(self.transitions())
     }
@@ -1090,10 +1094,12 @@ pub(crate) fn edges_of<'a>(
         let inputs = info
             .inputs
             .iter()
-            .map(move |&(place, kind)| EdgeInfo::Input {
+            .zip(info.filters)
+            .map(move |(&(place, kind), filter)| EdgeInfo::Input {
                 place,
                 transition,
                 kind,
+                filter: filter.clone(),
             });
         let outputs = info
             .outputs

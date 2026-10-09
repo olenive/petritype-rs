@@ -305,21 +305,52 @@ impl fmt::Debug for KeysVtable {
 /// parameter, which a filter alone does not know: [`Net::query`] and
 /// [`Net::matches`] read it from the net, and [`matches`](Filter::matches)
 /// on its own passes no such clause.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+///
+/// A filter is also what a keyed input edge carries
+/// ([`TakeWhereEdge`](crate::TakeWhereEdge),
+/// [`MutateWhereEdge`](crate::MutateWhereEdge)): there it is asked of the
+/// tokens of the edge's one place, and its `places` and `prefix` are not
+/// consulted (DESIGN §8.3).
+///
+/// With the `serde` feature it is `Serialize` and `Deserialize` in the
+/// protocol's shape (PROTOCOL.md §13.2) — `{"clauses": [{"key", "values"} |
+/// {"key", "param"}], "places"?, "prefix"?}`, `clauses` defaulting to none
+/// and the two restrictions written only when set — except that `places`
+/// holds the core's [`PlaceId`]s, as everything the core serialises does
+/// (DESIGN §19.2). The protocol names places by name; a runner maps one to
+/// the other, as it does for every edge and event.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Filter {
     /// Every one of these must pass.
+    #[cfg_attr(feature = "serde", serde(default))]
     pub clauses: Vec<Clause>,
     /// The places to look in, by id, or `None` for every place.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
     pub places: Option<Vec<PlaceId>>,
     /// The start of the name of every place to look in, or `None` for any
     /// name.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
     pub prefix: Option<String>,
 }
 
 /// One condition on one key of a token.
 ///
 /// `#[non_exhaustive]`: match with a `_` arm.
-#[derive(Clone, Debug, PartialEq, Eq)]
+///
+/// With the `serde` feature a clause is written untagged, as the protocol
+/// writes it: `{"key": "class", "values": ["Bird"]}` or `{"key": "class",
+/// "param": "season"}`. An object with neither `values` nor `param` reads as
+/// neither and is an error.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(untagged))]
 #[non_exhaustive]
 pub enum Clause {
     /// The token's value for `key` is one of `values`, compared by variant
@@ -638,6 +669,39 @@ impl Net {
     /// should show — where [`query`](Net::query) finds them all.
     pub fn matches(&self, filter: &Filter, place: PlaceId, token: TokenId) -> bool {
         matches_in(&self.places, &self.params, filter, place, token)
+    }
+
+    /// The token a keyed edge with this filter would choose from `place`
+    /// now: the first, in queue order, whose keys pass every clause — the
+    /// oldest, unless a failed firing has put a token back at the front.
+    /// `None` when no token of the place passes, or there is no such place.
+    ///
+    /// What a [`TakeWhereEdge`](crate::TakeWhereEdge) takes and a
+    /// [`MutateWhereEdge`](crate::MutateWhereEdge) hands over, so a guard on
+    /// such a transition reads it where a guard on a plain edge reads the
+    /// front token. Asked as the edge asks it: of this one place, so the
+    /// filter's [`places`](Filter::places) and [`prefix`](Filter::prefix)
+    /// are not consulted, a [`Clause::IsParam`] reading the parameter now,
+    /// and answered from the index.
+    ///
+    /// ```
+    /// use petritype::{Filter, NetBuilder};
+    ///
+    /// let mut b = NetBuilder::new();
+    /// let names = b.place::<String>("Names");
+    /// b.keys(names, ["initial"], |name: &String| [name[..1].into()]);
+    /// let mut net = b.build()?;
+    /// net.put(names, "Ada".to_owned());
+    /// let bram = net.put(names, "Bram".to_owned());
+    ///
+    /// let b_names = Filter::new().key_in("initial", ["B"]);
+    /// assert_eq!(net.first_match(names.id(), &b_names), Some(bram));
+    /// assert_eq!(net.first_match(names.id(), &Filter::new().key_in("initial", ["C"])), None);
+    /// # Ok::<(), petritype::BuildError>(())
+    /// ```
+    pub fn first_match(&self, place: PlaceId, filter: &Filter) -> Option<TokenId> {
+        crate::index::first_match(&self.places, &self.params, &self.index, place, filter)
+            .map(|(_, token)| token)
     }
 }
 

@@ -185,11 +185,13 @@ fn edges_are_inputs_then_outputs_transition_by_transition() {
             place: place("Inbox"),
             transition: weigh,
             kind: EdgeKind::Take,
+            filter: None,
         },
         EdgeInfo::Input {
             place: place("Config"),
             transition: weigh,
             kind: EdgeKind::Snapshot,
+            filter: None,
         },
         EdgeInfo::Output {
             transition: weigh,
@@ -200,11 +202,13 @@ fn edges_are_inputs_then_outputs_transition_by_transition() {
             place: place("Heavy"),
             transition: batch,
             kind: EdgeKind::TakeAll,
+            filter: None,
         },
         EdgeInfo::Input {
             place: place("Tally"),
             transition: batch,
             kind: EdgeKind::Mutate,
+            filter: None,
         },
         EdgeInfo::Output {
             transition: batch,
@@ -252,11 +256,11 @@ mod json {
 
         // Inbox is place 0, Weigh transition 0, Heavy place 2.
         assert_eq!(
-            serde_json::to_value(edges[0]).unwrap(),
+            serde_json::to_value(&edges[0]).unwrap(),
             json!({"edge": "input", "place": 0, "transition": 0, "kind": "take"}),
         );
         assert_eq!(
-            serde_json::to_value(edges[2]).unwrap(),
+            serde_json::to_value(&edges[2]).unwrap(),
             json!({"edge": "output", "transition": 0, "place": 2, "slot": 0}),
         );
     }

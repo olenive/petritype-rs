@@ -131,7 +131,7 @@ impl<T: Clone + Send + Sync + 'static> EdgeSealed for Param<T> {
         owned_token::<T>(input)
     }
 
-    fn spec(self) -> InputSpec {
+    fn spec(&self) -> InputSpec {
         InputSpec::Param {
             type_id: TypeId::of::<T>(),
             type_name: type_name::<T>(),
@@ -264,7 +264,7 @@ mod tests {
         #[derive(Clone)]
         struct ApiToken;
 
-        let spec = EdgeSealed::spec(Param::<ApiToken>::new());
+        let spec = EdgeSealed::spec(&Param::<ApiToken>::new());
         assert_eq!(
             spec,
             InputSpec::Param {

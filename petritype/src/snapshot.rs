@@ -90,6 +90,7 @@ impl Net {
             .map(|slot| SnapshotTransition {
                 name: slot.name.clone(),
                 inputs: slot.inputs.clone(),
+                filters: slot.filters.clone(),
                 params: slot.params.clone(),
                 outputs: slot.outputs.clone(),
                 positional: slot.positional,
@@ -190,6 +191,7 @@ fn forks(slot: &PlaceSlot) -> bool {
 struct SnapshotTransition {
     name: String,
     inputs: Vec<(PlaceId, crate::EdgeKind)>,
+    filters: Vec<Option<crate::Filter>>,
     params: Vec<&'static str>,
     outputs: Vec<PlaceId>,
     positional: bool,
@@ -282,6 +284,7 @@ impl Snapshot {
             let info = TransitionInfo {
                 name: &slot.name,
                 inputs: &slot.inputs,
+                filters: &slot.filters,
                 params: &slot.params,
                 outputs: &slot.outputs,
                 positional: slot.positional,
@@ -485,6 +488,7 @@ impl Clone for Snapshot {
                 .map(|slot| SnapshotTransition {
                     name: slot.name.clone(),
                     inputs: slot.inputs.clone(),
+                    filters: slot.filters.clone(),
                     params: slot.params.clone(),
                     outputs: slot.outputs.clone(),
                     positional: slot.positional,
@@ -538,6 +542,7 @@ impl fmt::Debug for SnapshotTransition {
         f.debug_struct("SnapshotTransition")
             .field("name", &self.name)
             .field("inputs", &self.inputs)
+            .field("filters", &self.filters)
             .field("params", &self.params)
             .field("outputs", &self.outputs)
             .field("enabled", &self.enabled)

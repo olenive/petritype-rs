@@ -29,14 +29,20 @@ use crate::place::ErasedToken;
 /// The engine half of [`InputEdge`](crate::InputEdge): what the body
 /// parameter for this input is, how to take it out of an erased input, and
 /// what the input says it is.
-pub trait EdgeSealed: Copy {
+///
+/// No `Copy` bound since slice 19: a keyed edge
+/// ([`TakeWhereEdge`](crate::TakeWhereEdge),
+/// [`MutateWhereEdge`](crate::MutateWhereEdge)) holds a
+/// [`Filter`](crate::Filter), and describes itself by reference.
+pub trait EdgeSealed {
     /// The body parameter this input produces, for a body called with tokens
     /// that live for `'a`.
     ///
     /// A generic associated type, because [`MutateEdge`](crate::MutateEdge)
-    /// produces `&'a mut T`: the parameter borrows the token where it lies,
-    /// for the duration of one call. The other three kinds, and
-    /// [`Param<T>`](crate::Param), hand over owned values and ignore `'a`.
+    /// and [`MutateWhereEdge`](crate::MutateWhereEdge) produce `&'a mut T`:
+    /// the parameter borrows the token where it lies, for the duration of
+    /// one call. The other kinds, and [`Param<T>`](crate::Param), hand over
+    /// owned values and ignore `'a`.
     type Arg<'a>;
 
     /// Takes this input's argument out of the input the engine prepared.
@@ -46,12 +52,13 @@ pub trait EdgeSealed: Copy {
     /// edge has already guaranteed.
     fn extract<'a>(input: &'a mut ErasedInput<'_>) -> Self::Arg<'a>;
 
-    /// What this input is: a place edge with its kind and the net its handle
-    /// carried, or a parameter with its type (DESIGN §10).
+    /// What this input is: a place edge with its kind, the net its handle
+    /// carried and a keyed edge's filter, or a parameter with its type
+    /// (DESIGN §10).
     ///
     /// Takes `self` rather than being a constant because an edge's answer
-    /// depends on the handle inside it, and `Self: Copy` makes that free.
-    fn spec(self) -> InputSpec;
+    /// depends on the handle (and the filter) inside it.
+    fn spec(&self) -> InputSpec;
 }
 
 /// The engine half of [`InputEdges`](crate::InputEdges): the erased

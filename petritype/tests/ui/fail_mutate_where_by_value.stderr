@@ -1,0 +1,24 @@
+error[E0631]: type mismatch in closure arguments
+  --> tests/ui/fail_mutate_where_by_value.rs:12:7
+   |
+12 |     b.transition(
+   |       ^^^^^^^^^^ expected due to this
+...
+16 |         |n: u32| {
+   |         -------- found signature defined here
+   |
+   = note: expected closure signature `for<'a> fn(&'a mut u32) -> _`
+              found closure signature `fn(u32) -> _`
+   = note: required for `{closure@$DIR/tests/ui/fail_mutate_where_by_value.rs:16:9: 16:17}` to implement `TransitionBody<(MutateWhereEdge<u32>,), (), (_, _)>`
+note: required by a bound in `NetBuilder::transition`
+  --> src/builder.rs
+   |
+   |     pub fn transition<Edges, Outputs, Body, Marker>(
+   |            ---------- required by a bound in this associated function
+...
+   |         Body: TransitionBody<Edges, Outputs, Marker>,
+   |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `NetBuilder::transition`
+help: consider adjusting the signature so it borrows its argument
+   |
+16 |         |n: &mut u32| {
+   |             ++++

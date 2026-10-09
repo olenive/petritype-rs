@@ -1,4 +1,4 @@
-//! Input edges: the four kinds, and what each one hands to the body.
+//! Input edges: the six kinds, and what each one hands to the body.
 //!
 //! An input edge says *how* a transition reads a place, which fixes the type
 //! of the matching body parameter:
@@ -9,11 +9,14 @@
 //! | [`TakeAllEdge<T>`] | every token | `Vec<T>` |
 //! | [`SnapshotEdge<T>`] | nothing (clones the front token) | `T` |
 //! | [`MutateEdge<T>`] | nothing (borrows the front token) | `&mut T` |
+//! | [`TakeWhereEdge<T>`] | the oldest token a [`Filter`] accepts | `T` |
+//! | [`MutateWhereEdge<T>`] | nothing (borrows the oldest token a [`Filter`] accepts) | `&mut T` |
 //!
-//! All four require the place to be non-empty for the transition to be
-//! [fireable](crate::Net::fireable), including the two that do not consume,
-//! and one transition may read one place through one edge only: two edges
-//! into the same place are a
+//! The first four require the place to be non-empty for the transition to be
+//! [fireable](crate::Net::fireable), including the two that do not consume;
+//! the two *keyed* edges require it to hold a token their filter accepts
+//! (DESIGN §8.3). One transition may read one place through one edge only:
+//! two edges into the same place are a
 //! [`BuildError::DuplicateInputPlace`](crate::BuildError::DuplicateInputPlace).
 //!
 //! A fifth kind of input is not an edge at all: [`Param<T>`](crate::Param)
@@ -28,20 +31,30 @@ use std::fmt;
 use crate::arity::for_each_arity;
 use crate::erased::ErasedInput;
 use crate::ids::{NetId, PlaceId, PlaceRef, TransitionId};
+use crate::keys::Filter;
 use crate::sealed::{EdgeSealed, EdgeTupleSealed};
 
-/// Which of the four input edge kinds an edge is, with its type forgotten.
+/// Which of the six input edge kinds an edge is, with its type forgotten.
 ///
 /// This is the form the net stores and the read API reports
 /// ([`TransitionInfo::inputs`](crate::TransitionInfo::inputs)); the typed
-/// form is [`TakeEdge`] and the other three structs.
+/// form is [`TakeEdge`] and the other five structs. The filter of a keyed
+/// kind is beside it, not in it, so that the kind stays `Copy`:
+/// [`TransitionInfo::filters`](crate::TransitionInfo::filters) and
+/// [`EdgeInfo::Input`]'s `filter`.
 ///
 /// With the `serde` feature it is `Serialize` (never `Deserialize`) as a
-/// snake_case string — `"take"`, `"take_all"`, `"snapshot"`, `"mutate"` —
-/// for logs and tests.
+/// snake_case string — `"take"`, `"take_all"`, `"snapshot"`, `"mutate"`,
+/// `"take_where"`, `"mutate_where"`, the protocol's names (PROTOCOL.md §5.1)
+/// — for logs and tests.
+///
+/// `#[non_exhaustive]` since the two keyed kinds were added (slice 19):
+/// match with a `_` arm, which a reader of the protocol fills by drawing a
+/// plain edge.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
+#[non_exhaustive]
 pub enum EdgeKind {
     /// [`TakeEdge`]: consumes the front token.
     Take,
@@ -51,16 +64,41 @@ pub enum EdgeKind {
     Snapshot,
     /// [`MutateEdge`]: borrows the front token and may change it.
     Mutate,
+    /// [`TakeWhereEdge`]: consumes the oldest token its filter accepts.
+    TakeWhere,
+    /// [`MutateWhereEdge`]: borrows the oldest token its filter accepts and
+    /// may change it.
+    MutateWhere,
 }
 
 impl EdgeKind {
-    /// Whether firing through this edge removes tokens from its place.
+    /// Whether firing through this edge removes tokens from its place:
+    /// [`Take`](EdgeKind::Take), [`TakeAll`](EdgeKind::TakeAll) and
+    /// [`TakeWhere`](EdgeKind::TakeWhere).
     ///
-    /// The two reading kinds leave the marking alone, which is what makes
-    /// them safe to point at a configuration place that every transition
-    /// reads.
+    /// The reading kinds leave the marking alone, which is what makes them
+    /// safe to point at a configuration place that every transition reads.
     pub fn consumes(self) -> bool {
-        matches!(self, EdgeKind::Take | EdgeKind::TakeAll)
+        matches!(
+            self,
+            EdgeKind::Take | EdgeKind::TakeAll | EdgeKind::TakeWhere
+        )
+    }
+
+    /// Whether this edge chooses its token with a [`Filter`]:
+    /// [`TakeWhere`](EdgeKind::TakeWhere) and
+    /// [`MutateWhere`](EdgeKind::MutateWhere). Exactly these carry a filter
+    /// in [`TransitionInfo::filters`](crate::TransitionInfo::filters) and
+    /// [`EdgeInfo::Input`].
+    pub fn is_keyed(self) -> bool {
+        matches!(self, EdgeKind::TakeWhere | EdgeKind::MutateWhere)
+    }
+
+    /// Whether this edge hands its body a borrow into the place, which ties
+    /// the firing to the net: [`Mutate`](EdgeKind::Mutate) and
+    /// [`MutateWhere`](EdgeKind::MutateWhere).
+    pub(crate) fn mutates(self) -> bool {
+        matches!(self, EdgeKind::Mutate | EdgeKind::MutateWhere)
     }
 }
 
@@ -82,7 +120,7 @@ impl EdgeKind {
 ///
 /// Nameable only inside the crate: it is the argument of a sealed trait's
 /// method, like [`ErasedInput`] and the rest of the erased plumbing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InputSpec {
     /// An input edge: which place, how it is read, and the net the handle
     /// carried, which the builder checks before recording anything.
@@ -93,6 +131,9 @@ pub enum InputSpec {
         kind: EdgeKind,
         /// The net the place handle belongs to.
         net: NetId,
+        /// The filter of a [keyed](EdgeKind::is_keyed) edge; `None` for the
+        /// others.
+        filter: Option<Filter>,
     },
     /// A [`Param<T>`](crate::Param): no place, no net, just the type whose
     /// value the body is handed a clone of.
@@ -123,9 +164,14 @@ pub enum InputSpec {
 /// core's id form, for logs and tests, tagged by direction under `"edge"`
 /// (`"kind"` is taken by the input edge's [`EdgeKind`]):
 /// `{"edge":"input","place":0,"transition":1,"kind":"take"}` and
-/// `{"edge":"output","transition":1,"place":2,"slot":0}`. Shapes keyed by
-/// name, for a wire protocol, live outside this crate.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// `{"edge":"output","transition":1,"place":2,"slot":0}`; a keyed edge
+/// carries its filter, `{"edge":"input",..,"kind":"take_where","filter":
+/// {"clauses":[{"key":"class","values":["Bird"]}]}}`, and no other edge
+/// has the field. Shapes keyed by name, for a wire protocol, live outside
+/// this crate.
+///
+/// Not `Copy` since slice 19: an input edge may carry a [`Filter`].
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[cfg_attr(feature = "serde", serde(tag = "edge", rename_all = "snake_case"))]
 #[non_exhaustive]
@@ -136,9 +182,14 @@ pub enum EdgeInfo {
         place: PlaceId,
         /// The transition reading it.
         transition: TransitionId,
-        /// Which of the four ways it is read; only the two
+        /// Which of the six ways it is read; only the
         /// [consuming](EdgeKind::consumes) kinds move tokens.
         kind: EdgeKind,
+        /// The filter of a [keyed](EdgeKind::is_keyed) edge, as declared
+        /// (a [`Clause::IsParam`](crate::Clause::IsParam) unevaluated);
+        /// `None` for every other kind.
+        #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+        filter: Option<Filter>,
     },
     /// transition → place, positional index `slot` among the transition's
     /// outputs.
@@ -217,16 +268,92 @@ pub struct MutateEdge<T>(
     pub PlaceRef<T>,
 );
 
+/// Consumes the oldest token of a place that a [`Filter`] accepts; the body
+/// parameter is `T`.
+///
+/// A *keyed* edge (DESIGN §8.3): the transition is
+/// [fireable](crate::Net::fireable) only while the place holds a token whose
+/// [keys](crate::NetBuilder::keys) pass every clause of the filter (and its
+/// guard, asked after, passes), and a firing takes the first such token in
+/// queue order — the oldest, in a place nothing has been put back into —
+/// wherever it stands. Every other token stays where it is, with its id: no
+/// [`Removed`](crate::Event::Removed) or [`Added`](crate::Event::Added) is
+/// emitted for them, and the firing's `consumed` names the one token taken.
+/// This is what "take everything, keep one, put the rest back" did at the
+/// cost of a fresh id for every token it touched.
+///
+/// The filter is asked of this one place, so its
+/// [`places`](Filter::places) and [`prefix`](Filter::prefix) are not
+/// consulted; a [`Clause::IsParam`](crate::Clause::IsParam) reads the net's
+/// parameter of that wire name each time fireability is asked. A filter
+/// without clauses accepts every token, and the edge then takes the front
+/// one, as a [`TakeEdge`] would. The place must declare keys
+/// ([`BuildError::KeyedEdgeOnUnkeyedPlace`](crate::BuildError::KeyedEdgeOnUnkeyedPlace)):
+/// a keyed edge chooses by them.
+///
+/// A transition that
+/// [restores its inputs on failure](crate::TransitionBuilder::restore_tokens_on_failure)
+/// puts the token back at the **front** of the place, as every restore does,
+/// with its id: the id is kept, the position is not.
+///
+/// ```
+/// # use petritype::{Filter, KeyValue, NetBuilder, TakeWhereEdge};
+/// let mut b = NetBuilder::new();
+/// let forest = b.place::<(String, String)>("Forest");
+/// let flying = b.place::<(String, String)>("Flying");
+/// b.keys(forest, ["class"], |(_, class): &(String, String)| [class.as_str().into()]);
+/// b.seed(forest, [("Fox".into(), "Mammal".into()), ("Robin".into(), "Bird".into())]);
+/// b.transition(
+///     "Fly",
+///     (TakeWhereEdge(forest, Filter::new().key_in("class", ["Bird"])),),
+///     (flying,),
+///     |bird: (String, String)| (bird,),
+/// );
+/// let mut net = b.build()?;
+/// let (fox, _) = net.tokens(forest.id()).next().unwrap();
+///
+/// net.step()?;
+/// assert_eq!(net.count(flying.id()), 1, "the robin flew");
+/// assert_eq!(net.tokens(forest.id()).next().unwrap().0, fox, "the fox stayed, same id");
+/// assert_eq!(net.step()?, None, "no bird left");
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
+pub struct TakeWhereEdge<T>(
+    /// The place to take from.
+    pub PlaceRef<T>,
+    /// Which tokens it may take.
+    pub Filter,
+);
+
+/// Borrows the oldest token of a place that a [`Filter`] accepts and may
+/// change it in place; the body parameter is `&mut T`.
+///
+/// A [`MutateEdge`] that chooses its token as a [`TakeWhereEdge`] does: the
+/// transition is fireable only while the place holds a token the filter
+/// accepts, and the body is handed the first such token in queue order,
+/// where it stands. The token keeps its id and its position; the firing
+/// reports it in an [`Event::Mutated`](crate::Event::Mutated), and its keys
+/// are extracted again afterwards, so a body that changes what the filter
+/// reads changes what the next firing finds. A transition with one is not
+/// detachable, as with a `MutateEdge`. The place must declare keys
+/// ([`BuildError::KeyedEdgeOnUnkeyedPlace`](crate::BuildError::KeyedEdgeOnUnkeyedPlace)).
+pub struct MutateWhereEdge<T>(
+    /// The place whose token to borrow.
+    pub PlaceRef<T>,
+    /// Which tokens it may borrow.
+    pub Filter,
+);
+
 /// One input position of a transition.
 ///
 /// The name says "edge" because that is what an input almost always is: one
-/// of the four kinds in this module, reading one place. The fifth implementor
-/// is [`Param<T>`](crate::Param), which reads a value off the net instead
-/// (DESIGN §10) — no place, no node in the diagram — and is here because the
-/// tuple of inputs is also the list of the body's parameters, and a parameter
-/// occupies one of those positions like anything else.
+/// of the six kinds in this module, reading one place. The seventh
+/// implementor is [`Param<T>`](crate::Param), which reads a value off the net
+/// instead (DESIGN §10) — no place, no node in the diagram — and is here
+/// because the tuple of inputs is also the list of the body's parameters,
+/// and a parameter occupies one of those positions like anything else.
 ///
-/// Sealed: the five structs are the only implementors, and the bound exists
+/// Sealed: the seven structs are the only implementors, and the bound exists
 /// so that a transition's inputs are checked at compile time. What each one
 /// hands the body is the table at the top of this module, plus `T` for a
 /// `Param<T>`. The engine half — how an input describes itself to the builder
@@ -236,8 +363,8 @@ pub struct MutateEdge<T>(
     message = "`{Self}` is not an input edge",
     label = "not an input edge",
     note = "an input must say how it reads its place: `TakeEdge(p)`, `TakeAllEdge(p)`, \
-            `SnapshotEdge(p)` or `MutateEdge(p)`; `Param::<T>::new()` is the input that \
-            reads no place"
+            `SnapshotEdge(p)`, `MutateEdge(p)`, or by a filter `TakeWhereEdge(p, f)` or \
+            `MutateWhereEdge(p, f)`; `Param::<T>::new()` is the input that reads no place"
 )]
 pub trait InputEdge: EdgeSealed {}
 
@@ -258,14 +385,26 @@ pub(crate) fn owned_token<T: 'static>(input: &mut ErasedInput<'_>) -> T {
 }
 
 /// The `spec` of a place edge, written once: the handle's place and net, and
-/// the kind this edge type stands for.
+/// the kind this edge type stands for; a keyed edge's filter, cloned, when
+/// the kind is followed by `keyed`.
 macro_rules! edge_spec {
     ($kind:expr) => {
-        fn spec(self) -> InputSpec {
+        fn spec(&self) -> InputSpec {
             InputSpec::Edge {
                 place: self.0.id(),
                 kind: $kind,
                 net: self.0.net(),
+                filter: None,
+            }
+        }
+    };
+    ($kind:expr, keyed) => {
+        fn spec(&self) -> InputSpec {
+            InputSpec::Edge {
+                place: self.0.id(),
+                kind: $kind,
+                net: self.0.net(),
+                filter: Some(self.1.clone()),
             }
         }
     };
@@ -341,6 +480,36 @@ impl<T: Send + Sync + 'static> EdgeSealed for MutateEdge<T> {
 
 impl<T: Send + Sync + 'static> InputEdge for MutateEdge<T> {}
 
+impl<T: Send + Sync + 'static> EdgeSealed for TakeWhereEdge<T> {
+    type Arg<'a> = T;
+
+    fn extract(input: &mut ErasedInput<'_>) -> T {
+        owned_token::<T>(input)
+    }
+
+    edge_spec!(EdgeKind::TakeWhere, keyed);
+}
+
+impl<T: Send + Sync + 'static> InputEdge for TakeWhereEdge<T> {}
+
+impl<T: Send + Sync + 'static> EdgeSealed for MutateWhereEdge<T> {
+    /// Borrows, as a [`MutateEdge`] does, the token the filter chose.
+    type Arg<'a> = &'a mut T;
+
+    fn extract<'a>(input: &'a mut ErasedInput<'_>) -> &'a mut T {
+        match input {
+            ErasedInput::Borrowed(token) => (**token)
+                .downcast_mut::<T>()
+                .expect("an input edge's token has the type of its place"),
+            other => panic!("expected a borrowed token for this edge, got {other:?}"),
+        }
+    }
+
+    edge_spec!(EdgeKind::MutateWhere, keyed);
+}
+
+impl<T: Send + Sync + 'static> InputEdge for MutateWhereEdge<T> {}
+
 /// A tuple of input edges, `()` to twelve of them.
 ///
 /// This is the type of the `inputs` argument of
@@ -356,15 +525,15 @@ impl<T: Send + Sync + 'static> InputEdge for MutateEdge<T> {}
 )]
 pub trait InputEdges: EdgeTupleSealed {}
 
-/// The handles are `Copy`, so the tuple is read by reference and the inputs
-/// are copied out of it.
+/// The tuple is read by reference: the plain handles are `Copy`, and a keyed
+/// edge's filter is cloned into its spec.
 macro_rules! impl_edges {
     ($(($t:ident, $r:ident, $i:tt)),*) => {
         impl<$($t: InputEdge,)*> EdgeTupleSealed for ($($t,)*) {
             #[allow(unused_variables, non_snake_case)]
             fn describe(&self, out: &mut Vec<InputSpec>) {
                 let ($($t,)*) = self;
-                $(out.push(EdgeSealed::spec(*$t));)*
+                $(out.push(EdgeSealed::spec($t));)*
             }
         }
 
@@ -399,6 +568,30 @@ edge_handle_impls!(TakeAllEdge);
 edge_handle_impls!(SnapshotEdge);
 edge_handle_impls!(MutateEdge);
 
+/// A keyed edge holds its filter, so it is `Clone` and not `Copy`; still no
+/// bound on `T`.
+macro_rules! keyed_edge_handle_impls {
+    ($name:ident) => {
+        impl<T> Clone for $name<T> {
+            fn clone(&self) -> Self {
+                $name(self.0, self.1.clone())
+            }
+        }
+
+        impl<T> fmt::Debug for $name<T> {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.debug_tuple(stringify!($name))
+                    .field(&self.0)
+                    .field(&self.1)
+                    .finish()
+            }
+        }
+    };
+}
+
+keyed_edge_handle_impls!(TakeWhereEdge);
+keyed_edge_handle_impls!(MutateWhereEdge);
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -414,14 +607,37 @@ mod tests {
         assert_handle::<TakeAllEdge<Rc<u32>>>();
         assert_handle::<SnapshotEdge<Rc<u32>>>();
         assert_handle::<MutateEdge<Rc<u32>>>();
+
+        // A keyed edge carries its filter, so it clones rather than copies.
+        fn assert_keyed<H: Clone + Send + Sync + fmt::Debug>() {}
+        assert_keyed::<TakeWhereEdge<Rc<u32>>>();
+        assert_keyed::<MutateWhereEdge<Rc<u32>>>();
     }
 
     #[test]
     fn only_the_taking_kinds_consume() {
         assert!(EdgeKind::Take.consumes());
         assert!(EdgeKind::TakeAll.consumes());
+        assert!(EdgeKind::TakeWhere.consumes());
         assert!(!EdgeKind::Snapshot.consumes());
         assert!(!EdgeKind::Mutate.consumes());
+        assert!(!EdgeKind::MutateWhere.consumes());
+    }
+
+    #[test]
+    fn the_keyed_kinds_are_the_where_kinds_and_the_mutating_ones_borrow() {
+        let all = [
+            EdgeKind::Take,
+            EdgeKind::TakeAll,
+            EdgeKind::Snapshot,
+            EdgeKind::Mutate,
+            EdgeKind::TakeWhere,
+            EdgeKind::MutateWhere,
+        ];
+        let keyed: Vec<EdgeKind> = all.into_iter().filter(|kind| kind.is_keyed()).collect();
+        assert_eq!(keyed, [EdgeKind::TakeWhere, EdgeKind::MutateWhere]);
+        let mutating: Vec<EdgeKind> = all.into_iter().filter(|kind| kind.mutates()).collect();
+        assert_eq!(mutating, [EdgeKind::Mutate, EdgeKind::MutateWhere]);
     }
 
     #[test]
@@ -437,20 +653,57 @@ mod tests {
                 InputSpec::Edge {
                     place: PlaceId(0),
                     kind: EdgeKind::Take,
-                    net
+                    net,
+                    filter: None,
                 },
                 InputSpec::Edge {
                     place: PlaceId(1),
                     kind: EdgeKind::Snapshot,
-                    net
+                    net,
+                    filter: None,
                 },
                 InputSpec::Edge {
                     place: PlaceId(0),
                     kind: EdgeKind::Mutate,
-                    net
+                    net,
+                    filter: None,
                 },
             ]
         );
+    }
+
+    /// A keyed edge describes itself with its filter, cloned out of the
+    /// tuple, which stays usable.
+    #[test]
+    fn a_keyed_edge_describes_itself_with_its_filter() {
+        let net = NetId(5);
+        let a = PlaceRef::<u32>::new(net, PlaceId(0));
+        let b = PlaceRef::<u32>::new(net, PlaceId(1));
+        let birds = Filter::new().key_in("class", ["Bird"]);
+        let inputs = (
+            TakeWhereEdge(a, birds.clone()),
+            MutateWhereEdge(b, Filter::new()),
+        );
+        let mut out = Vec::new();
+        EdgeTupleSealed::describe(&inputs, &mut out);
+        assert_eq!(
+            out,
+            [
+                InputSpec::Edge {
+                    place: PlaceId(0),
+                    kind: EdgeKind::TakeWhere,
+                    net,
+                    filter: Some(birds),
+                },
+                InputSpec::Edge {
+                    place: PlaceId(1),
+                    kind: EdgeKind::MutateWhere,
+                    net,
+                    filter: Some(Filter::new()),
+                },
+            ]
+        );
+        assert_eq!(inputs.0.0, a, "the tuple is only read");
     }
 
     /// A tuple may mix the two kinds of input, and it describes them in the

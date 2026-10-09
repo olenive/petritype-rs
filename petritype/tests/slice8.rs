@@ -79,6 +79,7 @@ fn described(net: &Net) -> Vec<String> {
                 place,
                 transition,
                 kind,
+                ..
             } => format!(
                 "{} -{kind:?}-> {}",
                 name(place),
@@ -127,11 +128,13 @@ fn the_weigh_net_reads_back_as_its_edges() {
                 place: inbox.id(),
                 transition: weigh,
                 kind: EdgeKind::TakeAll,
+                filter: None,
             },
             EdgeInfo::Input {
                 place: config.id(),
                 transition: weigh,
                 kind: EdgeKind::Snapshot,
+                filter: None,
             },
             EdgeInfo::Output {
                 transition: weigh,

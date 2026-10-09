@@ -1,8 +1,11 @@
-//! The core's ids and read API turned into the protocol's names and shapes.
+//! The core's ids and read API turned into the protocol's names and shapes,
+//! and a request's filter turned into the core's.
 
 use std::collections::HashMap;
+use std::fmt;
 
-use petritype::{EdgeInfo, Net, PlaceId, TokenId, Topology, TransitionId};
+use petritype::{Clause, EdgeInfo, Filter, Net, PlaceId, TokenId, Topology, TransitionId};
+use serde_json::Value;
 
 use crate::protocol;
 
@@ -77,23 +80,133 @@ impl Names {
             .collect()
     }
 
-    /// `[place, id, label]` triples, labelled from the live net.
+    /// `produced` entries, labelled from the live net, each with its keys
+    /// where its place declares some (PROTOCOL.md §7.1).
     pub(crate) fn produced(
         &self,
         net: &Net,
         tokens: &[(PlaceId, TokenId)],
-    ) -> Vec<(String, String, String)> {
+    ) -> Vec<protocol::Produced> {
         tokens
             .iter()
-            .map(|&(place, token)| {
-                (
-                    self.place(place),
-                    token.to_string(),
-                    label(net, place, token),
-                )
+            .map(|&(place, token)| protocol::Produced {
+                place: self.place(place),
+                id: token.to_string(),
+                label: label(net, place, token),
+                keys: keys(net, place, token),
             })
             .collect()
     }
+}
+
+/// A token's keys as the wire carries them (PROTOCOL.md §13.1): `Some` when
+/// its place declares keys, in declaration order; `None` for a place that
+/// declares none, or a token that is gone.
+pub(crate) fn keys(net: &Net, place: PlaceId, token: TokenId) -> Option<protocol::Keys> {
+    net.keys(place, token)
+        .filter(|keys| !keys.is_empty())
+        .map(|keys| {
+            protocol::Keys(
+                keys.iter()
+                    .map(|(name, value)| (name.to_owned(), value.clone()))
+                    .collect(),
+            )
+        })
+}
+
+/// A filter of the core's, places by id, as the wire writes it, places by
+/// name (§13.2): what a keyed edge carries in the topology (§13.5), a
+/// `{key, param}` clause as declared.
+pub(crate) fn filter_to_wire(filter: &Filter, names: &Names) -> protocol::Filter {
+    protocol::Filter {
+        clauses: filter
+            .clauses
+            .iter()
+            .filter_map(|clause| match clause {
+                Clause::In { key, values } => Some(protocol::Clause::In {
+                    key: key.clone(),
+                    values: values.clone(),
+                }),
+                Clause::IsParam { key, param } => Some(protocol::Clause::IsParam {
+                    key: key.clone(),
+                    param: param.clone(),
+                }),
+                // A kind of clause this runner does not know yet: left out,
+                // as an unknown kind of edge is.
+                _ => None,
+            })
+            .collect(),
+        places: filter
+            .places
+            .as_ref()
+            .map(|places| places.iter().map(|&place| names.place(place)).collect()),
+        prefix: filter.prefix.clone(),
+    }
+}
+
+/// Why a request's filter could not be used.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum FilterError {
+    /// Not a filter's shape (PROTOCOL.md §13.2): `invalid_params`.
+    Shape(String),
+    /// `places` names a place the net does not have: `unknown_place`.
+    UnknownPlace(String),
+}
+
+impl fmt::Display for FilterError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            FilterError::Shape(message) => f.write_str(message),
+            FilterError::UnknownPlace(name) => write!(f, "no place named {name:?}"),
+        }
+    }
+}
+
+/// A request's filter as the core's, for `net`: the shape read strictly
+/// ([`protocol::Filter::parse`]) and each place name turned into the id of
+/// that place of `net`.
+pub(crate) fn filter(value: &Value, net: &Net) -> Result<Filter, FilterError> {
+    let wire = protocol::Filter::parse(value).map_err(FilterError::Shape)?;
+    filter_from_wire(&wire, net)
+}
+
+/// A wire filter's places, by name, turned into `net`'s ids.
+pub(crate) fn filter_from_wire(wire: &protocol::Filter, net: &Net) -> Result<Filter, FilterError> {
+    let places = wire
+        .places
+        .as_ref()
+        .map(|names| place_ids(names, net))
+        .transpose()?;
+    Ok(Filter {
+        clauses: wire
+            .clauses
+            .iter()
+            .map(|clause| match clause {
+                protocol::Clause::In { key, values } => Clause::In {
+                    key: key.clone(),
+                    values: values.clone(),
+                },
+                protocol::Clause::IsParam { key, param } => Clause::IsParam {
+                    key: key.clone(),
+                    param: param.clone(),
+                },
+            })
+            .collect(),
+        places,
+        prefix: wire.prefix.clone(),
+    })
+}
+
+/// Place names turned into `net`'s ids; the first that names no place is
+/// [`FilterError::UnknownPlace`].
+pub(crate) fn place_ids(names: &[String], net: &Net) -> Result<Vec<PlaceId>, FilterError> {
+    names
+        .iter()
+        .map(|name| {
+            net.place_named(name)
+                .ok_or_else(|| FilterError::UnknownPlace(name.clone()))
+        })
+        .collect()
 }
 
 /// The topology keyed by names (PROTOCOL.md §5.1): places with `nested` and
@@ -122,6 +235,7 @@ pub(crate) fn topology(topology: &Topology, names: &Names) -> protocol::Topology
                 serializable: p.serializable,
                 nested: p.nested,
                 passive: p.passive,
+                key_names: p.key_names.iter().map(|name| (*name).to_owned()).collect(),
             })
             .collect(),
         transitions: topology
@@ -138,17 +252,21 @@ pub(crate) fn topology(topology: &Topology, names: &Names) -> protocol::Topology
         edges: topology
             .edges
             .iter()
-            .filter_map(|edge| match *edge {
+            .filter_map(|edge| match edge {
                 EdgeInfo::Input {
                     place,
                     transition,
                     kind,
+                    filter,
                     ..
                 } => Some(protocol::Edge {
-                    place: names.place(place),
-                    transition: names.transition(transition),
+                    place: names.place(*place),
+                    transition: names.transition(*transition),
                     direction: protocol::Direction::In,
-                    kind: edge_kind(kind),
+                    kind: edge_kind(*kind),
+                    // A keyed edge's filter as declared (§13.5), its places
+                    // by name.
+                    filter: filter.as_ref().map(|filter| filter_to_wire(filter, names)),
                     slot: None,
                 }),
                 EdgeInfo::Output {
@@ -156,15 +274,16 @@ pub(crate) fn topology(topology: &Topology, names: &Names) -> protocol::Topology
                     place,
                     slot,
                 } => Some(protocol::Edge {
-                    place: names.place(place),
-                    transition: names.transition(transition),
+                    place: names.place(*place),
+                    transition: names.transition(*transition),
                     direction: protocol::Direction::Out,
                     kind: None,
+                    filter: None,
                     slot: slotted
-                        .get(&transition)
+                        .get(transition)
                         .copied()
                         .unwrap_or(false)
-                        .then_some(slot),
+                        .then_some(*slot),
                 }),
                 // A kind of edge this runner does not know yet: left out, as
                 // a reader of the protocol would skip it.
@@ -175,23 +294,24 @@ pub(crate) fn topology(topology: &Topology, names: &Names) -> protocol::Topology
 }
 
 /// The wire's name for an input edge's kind, or `None` for a kind this
-/// runner does not serve yet, which goes out without `kind` and is drawn as
-/// a plain edge (PROTOCOL.md §5.1). The keyed kinds are such for now: on the
-/// wire they carry their filter with places by name (§13.5), which is the
-/// runner's half of keys and not done yet.
+/// runner does not know, which goes out without `kind` and is drawn as a
+/// plain edge (PROTOCOL.md §5.1).
 fn edge_kind(kind: petritype::EdgeKind) -> Option<protocol::EdgeKind> {
     match kind {
         petritype::EdgeKind::Take => Some(protocol::EdgeKind::Take),
         petritype::EdgeKind::TakeAll => Some(protocol::EdgeKind::TakeAll),
         petritype::EdgeKind::Snapshot => Some(protocol::EdgeKind::Snapshot),
         petritype::EdgeKind::Mutate => Some(protocol::EdgeKind::Mutate),
+        petritype::EdgeKind::TakeWhere => Some(protocol::EdgeKind::TakeWhere),
+        petritype::EdgeKind::MutateWhere => Some(protocol::EdgeKind::MutateWhere),
         _ => None,
     }
 }
 
 /// Up to `limit` tokens of `place` from `offset`, oldest first, as wire
-/// tokens, each with the nets it holds. `path` is the wire path of `net`
-/// itself, which the paths in `nets` extend; `place_name` is the place's.
+/// tokens, each with its keys and the nets it holds. `path` is the wire path
+/// of `net` itself, which the paths in `nets` extend; `place_name` is the
+/// place's.
 pub(crate) fn tokens(
     net: &Net,
     path: &str,
@@ -203,12 +323,24 @@ pub(crate) fn tokens(
     net.tokens(place)
         .skip(offset)
         .take(limit)
-        .map(|(token, _)| protocol::Token {
-            id: token.to_string(),
-            label: label(net, place, token),
-            nets: nets(net, path, place, place_name, token),
-        })
+        .map(|(token, _)| entry(net, path, place, place_name, token))
         .collect()
+}
+
+/// One token entry (PROTOCOL.md §5.3): its id, label, keys and nets.
+pub(crate) fn entry(
+    net: &Net,
+    path: &str,
+    place: PlaceId,
+    place_name: &str,
+    token: TokenId,
+) -> protocol::Token {
+    protocol::Token {
+        id: token.to_string(),
+        label: label(net, place, token),
+        keys: keys(net, place, token),
+        nets: nets(net, path, place, place_name, token),
+    }
 }
 
 /// The `nets` of a token entry (PROTOCOL.md §12.2): each net the token

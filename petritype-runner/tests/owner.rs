@@ -310,10 +310,13 @@ fn every_method_but_describe_load_and_shutdown_needs_a_net() {
         "disable",
         "set_param",
         "get_log",
+        "query",
+        "distinct",
+        "set_filter",
     ] {
         assert_eq!(h.error(method, json!({})), "not_loaded", "{method}");
     }
-    assert_eq!(tags(&h.send("shutdown", json!({}))), ["#13", "EXIT"]);
+    assert_eq!(tags(&h.send("shutdown", json!({}))), ["#16", "EXIT"]);
 }
 
 #[test]
@@ -1427,10 +1430,56 @@ fn a_step_fires_inside_when_the_outer_net_has_nothing() {
     assert_eq!(inner["progress"]["fired_counts"], json!({"Move": 2}));
     let state = h.result("get_state", json!({}));
     assert_eq!(
-        state["progress"]["step_count"], 0,
-        "the outer net fired nothing"
+        state["progress"]["step_count"], 2,
+        "the outer net counts the firings inside its tokens"
     );
-    assert_eq!(state["progress"]["fired_counts"], json!({}));
+    assert_eq!(
+        state["progress"]["fired_counts"],
+        json!({"Lot/#0/bin/Move": 2}),
+        "under their path without the net's name, then the transition"
+    );
+}
+
+#[test]
+fn the_outer_progress_counts_inner_firings_under_their_path() {
+    let mut h = loaded_over("depot");
+    let truck = held(&h.result("get_state", json!({})), "Lot");
+    h.send("disable", json!({"transition": "Drive"}));
+    assert_eq!(h.result("step", json!({}))["nested_id"], truck["nested_id"]);
+    h.send("enable", json!({"transition": "Drive"}));
+    assert_eq!(h.result("step", json!({}))["transition"], "Drive");
+    let progress = h.result("get_state", json!({}))["progress"].clone();
+    assert_eq!(
+        progress,
+        json!({"step_count": 2, "last_fired": "Drive",
+               "fired_counts": {"Lot/#0/bin/Move": 1, "Drive": 1},
+               "last_progress_at": "2026-10-03T09:35:02.413Z"}),
+        "Python's keys: the path as it was when the inner net fired"
+    );
+    let inner = h.result("get_state", json!({"nested_id": truck["nested_id"]}));
+    assert_eq!(
+        inner["progress"],
+        json!({"step_count": 1, "last_fired": "Move", "fired_counts": {"Move": 1},
+               "last_progress_at": "2026-10-03T09:35:02.413Z"}),
+        "the inner net counts its own, under its own names"
+    );
+    // A failed inner firing is counted by neither.
+    h.send(
+        "inject",
+        json!({"place": "In", "token": 13, "nested_id": truck["nested_id"]}),
+    );
+    h.send("disable", json!({"transition": "Crush"}));
+    h.send("step", json!({}));
+    let failed = h.send("step", json!({}));
+    assert_eq!(
+        failed.last().unwrap()["result"]["failed"],
+        true,
+        "{failed:#?}"
+    );
+    assert_eq!(
+        h.result("get_state", json!({}))["progress"]["step_count"],
+        3
+    );
 }
 
 #[test]
@@ -1704,5 +1753,647 @@ fn get_log_keeps_one_ring_and_filters_it_by_the_chain_of_nets() {
             .unwrap()
             .len(),
         1
+    );
+}
+
+// ----- keys, queries and the connection's projection (PROTOCOL.md §13) -----------
+
+/// An animal: its keys are its `name`, its `class` and its `legs`.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+struct Animal {
+    name: String,
+    class: String,
+    legs: i64,
+}
+
+fn animal(name: &str, class: &str, legs: i64) -> Animal {
+    Animal {
+        name: name.to_owned(),
+        class: class.to_owned(),
+        legs,
+    }
+}
+
+/// Net parameter `wanted`, a class: what `{"key": "class", "param":
+/// "wanted"}` accepts.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+struct Wanted(String);
+
+/// `zoo`: `Pen` holds Robin (Bird), Fox (Mammal), Owl (Bird) and Hare
+/// (Mammal), tokens 0 to 3; `Yard` is empty; both are serializable and keyed
+/// by `name`, `class` and `legs`. `Notes` holds one string (token 4) and
+/// declares no keys. `Molt` turns the front animal of `Pen` into the other
+/// class (a mutate edge, so inline), `Move` takes the front animal of `Pen`
+/// into `Yard`, and `Bolt` takes it and fails, putting it back. Parameter
+/// `wanted`, `"Bird"`.
+fn zoo(_: &Params) -> Result<Net, LoadError> {
+    let mut b = NetBuilder::new();
+    let pen = b.place::<Animal>("Pen");
+    let yard = b.place::<Animal>("Yard");
+    let notes = b.place::<String>("Notes");
+    for place in [pen, yard] {
+        b.serializable(place);
+        b.keys(place, ["name", "class", "legs"], |a: &Animal| {
+            [
+                a.name.as_str().into(),
+                a.class.as_str().into(),
+                a.legs.into(),
+            ]
+        });
+    }
+    b.seed(
+        pen,
+        [
+            animal("Robin", "Bird", 2),
+            animal("Fox", "Mammal", 4),
+            animal("Owl", "Bird", 2),
+            animal("Hare", "Mammal", 4),
+        ],
+    );
+    b.seed(notes, ["counted in spring".to_owned()]);
+    b.param(Wanted("Bird".into()));
+    b.serializable_param::<Wanted>("wanted");
+    b.transition("Molt", (MutateEdge(pen),), (), |a: &mut Animal| {
+        a.class = if a.class == "Bird" { "Mammal" } else { "Bird" }.to_owned();
+    });
+    b.transition("Move", (TakeEdge(pen),), (yard,), |a: Animal| (a,));
+    b.transition(
+        "Bolt",
+        (TakeEdge(pen),),
+        (yard,),
+        |_: Animal| -> Result<(Animal,), Refused> { Err(Refused) },
+    )
+    .restore_tokens_on_failure();
+    Ok(b.build()?)
+}
+
+/// The zoo loaded, every transition but `only` switched off.
+fn zoo_with(only: &[&str]) -> H {
+    let mut h = H::over(vec![NetEntry::new("zoo", zoo)]);
+    let lines = h.send("load", json!({"net": "zoo"}));
+    assert_eq!(lines.last().unwrap()["result"]["status"], "loaded");
+    for transition in ["Molt", "Move", "Bolt"] {
+        if !only.contains(&transition) {
+            h.send("disable", json!({ "transition": transition }));
+        }
+    }
+    h
+}
+
+fn birds() -> Value {
+    json!({"clauses": [{"key": "class", "values": ["Bird"]}]})
+}
+
+/// The ids of a place's listed tokens in a state.
+fn ids(state: &Value, place: &str) -> Vec<String> {
+    state["marking"]["places"][place]["tokens"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|token| token["id"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+#[test]
+fn keys_go_on_the_wire_where_a_place_declares_them() {
+    let mut h = zoo_with(&["Molt", "Move"]);
+    let state = h.result("get_state", json!({}));
+    let places = &state["topology"]["places"];
+    assert_eq!(places[0]["key_names"], json!(["name", "class", "legs"]));
+    assert!(places[2].get("key_names").is_none(), "Notes declares none");
+    let pen = &state["marking"]["places"]["Pen"];
+    assert!(pen.get("matching").is_none(), "no filter, no matching");
+    assert_eq!(
+        pen["tokens"][0]["keys"],
+        json!({"name": "Robin", "class": "Bird", "legs": 2})
+    );
+    assert!(
+        state["marking"]["places"]["Notes"]["tokens"][0]
+            .get("keys")
+            .is_none()
+    );
+
+    let lines = h.send(
+        "inject",
+        json!({"place": "Yard", "token": {"name": "Wren", "class": "Bird", "legs": 2}}),
+    );
+    assert_eq!(
+        find(&lines, "added")["keys"],
+        json!({"name": "Wren", "class": "Bird", "legs": 2})
+    );
+    let lines = h.send("step", json!({}));
+    assert_eq!(tags(&lines)[..2], ["mutated", "fired"]);
+    assert_eq!(
+        find(&lines, "mutated")["keys"],
+        json!({"name": "Robin", "class": "Mammal", "legs": 2}),
+        "the keys as they stand after the change"
+    );
+    h.send("disable", json!({"transition": "Molt"}));
+    let lines = h.send("step", json!({}));
+    assert_eq!(
+        find(&lines, "distributed")["produced"],
+        json!([["Yard", "6", "Animal { name: \"Robin\", class: \"Mammal\", legs: 2 }", null,
+                {"name": "Robin", "class": "Mammal", "legs": 2}]]),
+        "five elements, the colour null"
+    );
+    let token = h.result("get_token", json!({"id": "6"}));
+    assert!(
+        token.get("keys").is_none(),
+        "get_token's answer is not a token entry"
+    );
+}
+
+#[test]
+fn under_a_filter_reads_list_and_count_the_matching_tokens() {
+    let mut h = zoo_with(&[]);
+    let before = h.result("get_state", json!({}))["marking_version"].clone();
+    let set = h.result("set_filter", json!({ "filter": birds() }));
+    assert_eq!(
+        set,
+        json!({ "marking_version": before }),
+        "it moves nothing"
+    );
+    let state = h.result("get_state", json!({}));
+    let pen = &state["marking"]["places"]["Pen"];
+    assert_eq!((&pen["count"], &pen["matching"]), (&json!(4), &json!(2)));
+    assert_eq!(ids(&state, "Pen"), ["0", "2"]);
+    assert_eq!(
+        state["marking"]["places"]["Notes"],
+        json!({"count": 1, "matching": 0, "tokens": []}),
+        "a place without keys matches no clause"
+    );
+    assert_eq!(state["marking_version"], before, "versions are the net's");
+    assert_eq!(
+        ids(&h.result("get_state", json!({"token_limit": 1})), "Pen"),
+        ["0"]
+    );
+    assert_eq!(h.error("get_token", json!({"id": "1"})), "unknown_token");
+    assert_eq!(h.result("get_token", json!({"id": "2"}))["place"], "Pen");
+
+    // Cleared: everything again, and no `matching`.
+    assert_eq!(
+        h.result("set_filter", json!({})),
+        json!({ "marking_version": before })
+    );
+    let state = h.result("get_state", json!({}));
+    assert_eq!(ids(&state, "Pen"), ["0", "1", "2", "3"]);
+    assert!(state["marking"]["places"]["Pen"].get("matching").is_none());
+    assert_eq!(h.result("get_token", json!({"id": "1"}))["place"], "Pen");
+
+    assert_eq!(
+        h.error(
+            "set_filter",
+            json!({"filter": {"clauses": [{"key": "class"}]}})
+        ),
+        "invalid_params"
+    );
+    assert_eq!(
+        h.error("set_filter", json!({"filter": {"places": ["Moon"]}})),
+        "unknown_place"
+    );
+    assert_eq!(
+        h.error("set_filter", json!({"filter": birds(), "nested_id": "77"})),
+        "unknown_net"
+    );
+}
+
+#[test]
+fn under_a_filter_firings_list_the_matching_tokens_and_hidden_stands_in() {
+    let mut h = zoo_with(&["Move"]);
+    h.send("set_filter", json!({ "filter": birds() }));
+    // Robin, shown, goes to the yard.
+    let lines = h.send("step", json!({}));
+    assert_eq!(tags(&lines), ["launched", "distributed", "#5"]);
+    assert_eq!(lines[0]["params"]["consumed"], json!([["Pen", "0"]]));
+    assert_eq!(lines[1]["params"]["produced"][0][0], "Yard");
+    // Fox, hidden: both pieces still go out, with empty lists.
+    let lines = h.send("step", json!({}));
+    assert_eq!(tags(&lines), ["launched", "distributed", "#6"]);
+    assert_eq!(lines[0]["params"]["consumed"], json!([]));
+    assert_eq!(lines[1]["params"]["produced"], json!([]));
+    let v = lines[1]["params"]["marking_version"].as_u64().unwrap();
+    assert_eq!(
+        lines[0]["params"]["marking_version"].as_u64().unwrap() + 1,
+        v,
+        "they move the version as ever"
+    );
+
+    // An injected mammal is `hidden`, a bird `added`; each moves the version.
+    let lines = h.send(
+        "inject",
+        json!({"place": "Pen", "token": {"name": "Mole", "class": "Mammal", "legs": 4}}),
+    );
+    assert_eq!(
+        lines[0],
+        json!({"method": "hidden", "params": {"kind": "added", "place": "Pen",
+               "marking_version": v + 1, "running": false}})
+    );
+    assert_eq!(lines[1]["result"]["marking_version"], v + 1);
+    let lines = h.send(
+        "inject",
+        json!({"place": "Pen", "token": {"name": "Kite", "class": "Bird", "legs": 2}}),
+    );
+    assert_eq!(find(&lines, "added")["marking_version"], v + 2);
+    assert_eq!(find(&lines, "added")["keys"]["name"], "Kite");
+}
+
+#[test]
+fn a_mutation_that_crosses_the_filter_is_added_or_removed() {
+    let mut h = zoo_with(&["Molt"]);
+    h.send("set_filter", json!({ "filter": birds() }));
+    // Robin turns into a mammal: out of view, although it did not move.
+    let lines = h.send("step", json!({}));
+    assert_eq!(tags(&lines), ["removed", "fired", "#5"]);
+    assert_eq!(lines[0]["params"]["place"], "Pen");
+    assert_eq!(lines[0]["params"]["id"], "0");
+    assert_eq!(
+        (
+            &lines[1]["params"]["consumed"],
+            &lines[1]["params"]["produced"]
+        ),
+        (&json!([]), &json!([]))
+    );
+    assert_eq!(
+        h.result("get_state", json!({}))["marking"]["places"]["Pen"]["matching"],
+        1
+    );
+    // And back into a bird: into view, keys and all.
+    let lines = h.send("step", json!({}));
+    assert_eq!(tags(&lines), ["added", "fired", "#7"]);
+    assert_eq!(
+        lines[0]["params"]["keys"],
+        json!({"name": "Robin", "class": "Bird", "legs": 2})
+    );
+    // Hidden before and after: `hidden`.
+    h.send(
+        "set_filter",
+        json!({"filter": {"clauses": [{"key": "class", "values": ["Fish"]}]}}),
+    );
+    let lines = h.send("step", json!({}));
+    assert_eq!(tags(&lines), ["hidden", "fired", "#9"]);
+    assert_eq!(lines[0]["params"]["kind"], "mutated");
+    // Shown before and after: `mutated`.
+    h.send(
+        "set_filter",
+        json!({"filter": {"clauses": [{"key": "legs", "values": [2]}]}}),
+    );
+    let lines = h.send("step", json!({}));
+    assert_eq!(tags(&lines), ["mutated", "fired", "#11"]);
+}
+
+#[test]
+fn a_parameter_a_clause_names_brings_tokens_into_and_out_of_view() {
+    let mut h = zoo_with(&[]);
+    h.send(
+        "set_filter",
+        json!({"filter": {"clauses": [{"key": "class", "param": "wanted"}]}}),
+    );
+    assert_eq!(ids(&h.result("get_state", json!({})), "Pen"), ["0", "2"]);
+    let lines = h.send("set_param", json!({"param": "wanted", "value": "Mammal"}));
+    assert_eq!(
+        tags(&lines),
+        [
+            "param_changed",
+            "removed",
+            "removed",
+            "added",
+            "added",
+            "#7"
+        ]
+    );
+    let told: Vec<(&Value, &Value)> = lines[1..5]
+        .iter()
+        .map(|line| (&line["method"], &line["params"]["id"]))
+        .collect();
+    assert_eq!(
+        told,
+        [
+            (&json!("removed"), &json!("0")),
+            (&json!("removed"), &json!("2")),
+            (&json!("added"), &json!("1")),
+            (&json!("added"), &json!("3")),
+        ],
+        "out of view first, then into view, each in id order"
+    );
+    assert_eq!(lines[3]["params"]["keys"]["name"], "Fox");
+    let v = versions(&lines);
+    assert!(
+        v.windows(2).all(|pair| pair[1] == pair[0] + 1),
+        "each a state notification: {v:?}"
+    );
+    assert_eq!(lines[5]["result"]["marking_version"], v[4]);
+    assert_eq!(ids(&h.result("get_state", json!({})), "Pen"), ["1", "3"]);
+
+    // A filter that names no parameter: the change brings nothing.
+    h.send("set_filter", json!({ "filter": birds() }));
+    let lines = h.send("set_param", json!({"param": "wanted", "value": "Fish"}));
+    assert_eq!(tags(&lines), ["param_changed", "#10"]);
+}
+
+#[test]
+fn get_place_tokens_pages_the_matching_tokens() {
+    let mut h = zoo_with(&[]);
+    for name in ["Wren", "Jay"] {
+        h.send(
+            "inject",
+            json!({"place": "Pen", "token": {"name": name, "class": "Bird", "legs": 2}}),
+        );
+    }
+    h.send("set_filter", json!({ "filter": birds() }));
+    let page = |h: &mut H, offset: u64, limit: u64| {
+        h.result(
+            "get_place_tokens",
+            json!({"place": "Pen", "offset": offset, "limit": limit}),
+        )
+    };
+    let first = page(&mut h, 0, 3);
+    assert_eq!(
+        (&first["count"], &first["matching"], &first["has_more"]),
+        (&json!(6), &json!(4), &json!(true))
+    );
+    let listed: Vec<&Value> = first["tokens"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| &t["id"])
+        .collect();
+    assert_eq!(listed, [&json!("0"), &json!("2"), &json!("5")]);
+    let second = page(&mut h, 3, 3);
+    assert_eq!(second["tokens"].as_array().unwrap().len(), 1);
+    assert_eq!(second["tokens"][0]["id"], "6");
+    assert_eq!(second["has_more"], false, "relative to the matching tokens");
+    assert_eq!(page(&mut h, 4, 3)["tokens"], json!([]));
+
+    h.send("set_filter", json!({"filter": {"places": ["Yard"]}}));
+    let elsewhere = page(&mut h, 0, 3);
+    assert_eq!(
+        (
+            &elsewhere["matching"],
+            &elsewhere["tokens"],
+            &elsewhere["has_more"]
+        ),
+        (&json!(0), &json!([]), &json!(false)),
+        "a place the filter does not look in"
+    );
+    h.send("set_filter", json!({}));
+    let all = page(&mut h, 0, 3);
+    assert!(all.get("matching").is_none());
+    assert_eq!(all["has_more"], true, "relative to every token again");
+}
+
+#[test]
+fn query_uses_its_own_filter_or_else_the_connection_s() {
+    let mut h = zoo_with(&[]);
+    let all = h.result("query", json!({}));
+    assert_eq!(all["count"], 5, "no filter anywhere: every token");
+    assert_eq!(
+        all["matches"][0],
+        json!({"place": "Pen",
+               "token": {"id": "0", "label": "Animal { name: \"Robin\", class: \"Bird\", legs: 2 }",
+                         "keys": {"name": "Robin", "class": "Bird", "legs": 2}},
+               "json": {"name": "Robin", "class": "Bird", "legs": 2}})
+    );
+    assert_eq!(
+        all["matches"][4],
+        json!({"place": "Notes", "token": {"id": "4", "label": "\"counted in spring\""}}),
+        "no keys and no JSON where the place has none"
+    );
+
+    h.send("set_filter", json!({ "filter": birds() }));
+    let connection = h.result("query", json!({}));
+    assert_eq!(connection["count"], 2);
+    let mammals = h.result(
+        "query",
+        json!({"filter": {"clauses": [{"key": "class", "values": ["Mammal"]}]}}),
+    );
+    assert_eq!(mammals["count"], 2, "its own filter alone");
+    assert_eq!(mammals["matches"][0]["token"]["keys"]["name"], "Fox");
+    assert_eq!(
+        h.result("query", json!({"filter": {}}))["count"],
+        5,
+        "an empty filter of its own keeps everything"
+    );
+    let capped = h.result("query", json!({"token_limit": 1}));
+    assert_eq!(
+        (
+            &capped["count"],
+            capped["matches"].as_array().unwrap().len()
+        ),
+        (&json!(2), 1)
+    );
+    assert_eq!(
+        h.result(
+            "query",
+            json!({"filter": {"clauses": [{"key": "class", "param": "wanted"}]}})
+        )["count"],
+        2,
+        "a clause on a parameter reads it now"
+    );
+    assert_eq!(
+        h.result("get_state", json!({}))["marking"]["places"]["Pen"]["matching"],
+        2,
+        "the connection's filter is as it was"
+    );
+    assert_eq!(
+        h.error("query", json!({"filter": {"clauses": [{"key": "class"}]}})),
+        "invalid_params"
+    );
+    assert_eq!(
+        h.error("query", json!({"filter": {"places": ["Moon"]}})),
+        "unknown_place"
+    );
+    assert_eq!(
+        h.error("query", json!({"token_limit": "all"})),
+        "invalid_params"
+    );
+}
+
+#[test]
+fn distinct_lists_values_in_order_of_first_appearance() {
+    let mut h = zoo_with(&[]);
+    let v = h.result("get_state", json!({}))["marking_version"].clone();
+    assert_eq!(
+        h.result("distinct", json!({"key": "class"})),
+        json!({"marking_version": v, "key": "class", "values": ["Bird", "Mammal"]})
+    );
+    h.send(
+        "inject",
+        json!({"place": "Yard", "token": {"name": "Carp", "class": "Fish", "legs": 0}}),
+    );
+    assert_eq!(
+        h.result("distinct", json!({"key": "legs"}))["values"],
+        json!([2, 4, 0])
+    );
+    assert_eq!(
+        h.result("distinct", json!({"key": "legs", "places": ["Yard"]}))["values"],
+        json!([0])
+    );
+    assert_eq!(
+        h.result("distinct", json!({"key": "colour"}))["values"],
+        json!([]),
+        "a key nobody declares"
+    );
+    h.send("set_filter", json!({ "filter": birds() }));
+    assert_eq!(
+        h.result("distinct", json!({"key": "class"}))["values"],
+        json!(["Bird", "Mammal", "Fish"]),
+        "over the net, as PROTOCOL.md §13.3 has it, not the projection"
+    );
+    assert_eq!(
+        h.error("distinct", json!({"key": "class", "places": ["Moon"]})),
+        "unknown_place"
+    );
+    assert_eq!(
+        h.error("distinct", json!({"key": "class", "places": "Pen"})),
+        "invalid_params"
+    );
+    assert_eq!(h.error("distinct", json!({})), "invalid_params");
+}
+
+#[test]
+fn a_failed_firing_tells_what_was_shown_and_shows_it_again() {
+    let mut h = zoo_with(&["Bolt"]);
+    h.send("set_filter", json!({ "filter": birds() }));
+    let lines = h.send("step", json!({}));
+    assert_eq!(find(&lines, "launched")["consumed"], json!([["Pen", "0"]]));
+    let failed = find(&lines, "failed");
+    assert_eq!(
+        (&failed["consumed"], &failed["restored"]),
+        (&json!([["Pen", "0"]]), &json!(true))
+    );
+    // Back, and still shown: the next firing names it.
+    h.send("disable", json!({"transition": "Bolt"}));
+    h.send("enable", json!({"transition": "Move"}));
+    let lines = h.send("step", json!({}));
+    assert_eq!(find(&lines, "launched")["consumed"], json!([["Pen", "0"]]));
+    // A hidden token's failure names nothing.
+    h.send("disable", json!({"transition": "Move"}));
+    h.send("enable", json!({"transition": "Bolt"}));
+    let lines = h.send("step", json!({}));
+    assert_eq!(find(&lines, "launched")["consumed"], json!([]));
+    assert_eq!(find(&lines, "failed")["consumed"], json!([]));
+}
+
+#[test]
+fn set_filter_waits_for_a_landing_and_query_does_not() {
+    let mut h = zoo_with(&["Move"]);
+    h.auto = false;
+    assert_eq!(tags(&h.send("step", json!({}))), ["launched"]);
+    let lines = h.send("query", json!({}));
+    assert_eq!(tags(&lines), ["#5"], "a read, answered while the body runs");
+    assert_eq!(
+        lines[0]["result"]["count"], 4,
+        "Robin is in the body's hands"
+    );
+    assert_eq!(tags(&h.send("distinct", json!({"key": "class"}))), ["#6"]);
+    assert!(
+        h.send("set_filter", json!({ "filter": birds() }))
+            .is_empty()
+    );
+    let lines = h.land();
+    assert_eq!(tags(&lines), ["distributed", "#4", "#7"]);
+    assert_eq!(
+        lines[0]["params"]["produced"][0][0], "Yard",
+        "the firing was told through the filter it began under"
+    );
+    assert_eq!(
+        h.result("get_state", json!({}))["marking"]["places"]["Yard"]["matching"],
+        1
+    );
+}
+
+#[test]
+fn load_and_reset_clear_the_filter() {
+    let mut h = zoo_with(&[]);
+    h.send("set_filter", json!({ "filter": birds() }));
+    h.send("reset", json!({}));
+    let state = h.result("get_state", json!({}));
+    assert!(state["marking"]["places"]["Pen"].get("matching").is_none());
+    assert_eq!(ids(&state, "Pen"), ["0", "1", "2", "3"]);
+}
+
+#[test]
+fn a_filter_on_an_inner_net_projects_that_net_alone() {
+    let mut h = loaded_over("depot");
+    let truck = held(&h.result("get_state", json!({})), "Lot");
+    h.send("disable", json!({"transition": "Drive"}));
+    let set = h.result(
+        "set_filter",
+        json!({"nested_id": truck["nested_id"], "filter": {"places": ["Out"]}}),
+    );
+    assert_eq!(
+        set,
+        json!({"marking_version": 0}),
+        "the inner net's version"
+    );
+    let inner = h.result("get_state", json!({"nested_id": truck["nested_id"]}));
+    assert_eq!(
+        inner["marking"]["places"]["In"],
+        json!({"count": 2, "matching": 0, "tokens": []})
+    );
+    let outer = h.result("get_state", json!({}));
+    assert!(
+        outer["marking"]["places"]["Lot"].get("matching").is_none(),
+        "the outer net's view is its own"
+    );
+    assert_eq!(outer["marking"]["places"]["Lot"]["tokens"][0]["id"], "0");
+
+    // Inside, `Move` takes from `In` (hidden) and gives to `Out` (shown).
+    let lines = h.send("step", json!({}));
+    let event = &lines[0]["params"]["event"];
+    assert_eq!(event["method"], "fired");
+    assert_eq!(event["params"]["consumed"], json!([]));
+    assert_eq!(event["params"]["produced"], json!([["Out", "2", "1"]]));
+    let lines = h.send(
+        "inject",
+        json!({"place": "In", "token": 9, "path": truck["path"]}),
+    );
+    assert_eq!(
+        lines[0]["params"]["event"],
+        json!({"method": "hidden", "params": {"kind": "added", "place": "In",
+               "marking_version": 2, "running": false}})
+    );
+    let lines = h.send(
+        "inject",
+        json!({"place": "Out", "token": 7, "path": truck["path"]}),
+    );
+    assert_eq!(lines[0]["params"]["event"]["method"], "added");
+    assert_eq!(
+        h.result("query", json!({"nested_id": truck["nested_id"]}))["count"],
+        2,
+        "the inner net's own filter"
+    );
+    h.result("set_filter", json!({"nested_id": truck["nested_id"]}));
+    let inner = h.result("get_state", json!({"path": truck["path"]}));
+    assert!(inner["marking"]["places"]["In"].get("matching").is_none());
+}
+
+#[test]
+fn set_param_keeps_the_json_type_of_the_parameter() {
+    let mut h = H::loaded("pipeline");
+    for value in [
+        json!("10"),
+        json!(10.5),
+        json!(true),
+        json!(-1),
+        json!(null),
+    ] {
+        assert_eq!(
+            h.error("set_param", json!({"param": "limit", "value": value})),
+            "invalid_params",
+            "{value}: no param_changed, and nothing moves"
+        );
+    }
+    let mut h = zoo_with(&[]);
+    for value in [json!(3), json!(["Bird"]), json!({"class": "Bird"})] {
+        assert_eq!(
+            h.error("set_param", json!({"param": "wanted", "value": value})),
+            "invalid_params",
+            "{value}"
+        );
+    }
+    assert_eq!(
+        tags(&h.send("set_param", json!({"param": "wanted", "value": "Fish"}))),
+        ["param_changed", "#8"]
     );
 }

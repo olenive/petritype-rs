@@ -121,11 +121,18 @@ rename backlog.
 | which tokens to keep | `Filter { clauses, places, prefix }`: `Filter::new().key_in(..).key_is_param(..).in_places(..).with_prefix(..)`, `filter.matches(&keys)`, `net.matches(&filter, place, token)` | `Filter(clauses, places, prefix)`, `Filter.where(class_=..)`, `in_places`, `with_prefix` | — |
 | one condition on one key | `Clause::In { key, values }` (OR within), `Clause::IsParam { key, param }` (a net parameter's current value, by wire name) | `Clause(key, values)`, `Clause(key, param=name)` | — |
 | every token a filter keeps, in place then token order | `net.query(&filter)` → `Vec<Match { place, token, keys, label, json }>` | `Query.matches(graph, filter)` → `Match` | — |
+| the same tokens as ids alone, nothing rendered | `net.query_ids(&filter)` → `Vec<(PlaceId, TokenId)>` (what the runner's projection counts and pages) | — | — |
 | a key's values in order of first appearance | `net.distinct_values(key, places)` | `Query.distinct(graph, key)` | — |
 | per key, per value, the tokens holding it, kept by the net | the **index** (crate-private; never saved, rebuilt on import) | — (Python scans) | — |
 | an input edge that chooses its token with a filter | **keyed edge**; `EdgeKind::is_keyed`, its filter in `TransitionInfo::filters` and on `EdgeInfo::Input` | keyed edge | — |
 | the token a keyed edge would choose now | `net.first_match(place, &filter)` (the first in queue order whose keys pass; places and prefix not consulted) | — | — |
 | a keyed edge on a place that declares no keys | `BuildError::KeyedEdgeOnUnkeyedPlace { transition, place }` | — | — |
+| the tokens a filter keeps, asked over the wire | the `query {filter?, token_limit?}` method → `{marking_version, count, matches: [{place, token, json?}]}`, `protocol::QueryResult` (PROTOCOL.md §13.3) | `query`, `wire.QueryResult` | — |
+| a key's values, asked over the wire | the `distinct {key, places?}` method → `{marking_version, key, values}`, `protocol::DistinctResult` | `distinct` | — |
+| a connection's filter, through which every read and notification of one net is projected | `set_filter {filter?}` (without `filter`: cleared); the runner's `Projection`, one per net (PROTOCOL.md §13.4) | `set_filter`, `_Net.filter` | — |
+| the line a connection gets in place of an `added`, `removed` or `mutated` about a token its filter hides | the `hidden {kind, place}` notification, `protocol::Notification::Hidden`, `HiddenKind` | `wire.Hidden` | — |
+| how many of a place's tokens the connection's filter lets through | `matching` beside `count`, written only while a filter is set; `PlaceMarking::matching`, `PlaceTokens::matching` | `matching` | — |
+| a token's keys on the wire / a `produced` entry with them | `protocol::Keys` (an object in declaration order) / `protocol::Produced` (`[place, id, label]`, or five elements with `null` for the colour) | `keys`, `Tokens.produced` | — |
 
 ## Rust-specific conventions
 

@@ -100,6 +100,9 @@ where it is under its id, so taking one token out of a crowd no longer means tak
 `petritype/examples/wildlife.rs` asks the token-keys proposal's five questions of species across habitats and
 migrates its birds through a keyed edge (`cargo run -p petritype --example wildlife --features serde`);
 `DESIGN.md` §8.3 has the rules.
+Served by `petritype-runner`, every token carries its keys on the wire, and a host can `query` the net, list a key's
+`distinct` values, or `set_filter` so that it reads and hears of only the tokens a filter keeps, the rest told as
+`hidden` (PROTOCOL.md §13, `DESIGN.md` §19.3.12).
 
 ## Crates
 

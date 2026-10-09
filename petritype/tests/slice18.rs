@@ -193,6 +193,9 @@ fn check(net: &Net) {
             .collect();
         assert_eq!(found, scanned(net, filter), "{filter:?}");
         assert_eq!(indexed, snapshot.query(filter).unwrap(), "{filter:?}");
+        // The same tokens as ids alone (slice 20), from the index and by a scan.
+        assert_eq!(net.query_ids(filter).unwrap(), found, "{filter:?}");
+        assert_eq!(snapshot.query_ids(filter).unwrap(), found, "{filter:?}");
         for found in &indexed {
             // Empty for a place without keys, where `keys` says `None`.
             assert_eq!(

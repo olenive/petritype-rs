@@ -2,9 +2,10 @@
 //! that the transcript tests can load the very same registry without a
 //! process.
 //!
-//! Besides the parcel nets it carries the protocol's second conformance net,
-//! `transit` (PROTOCOL.md §11, §12): the core's own example net, included
-//! from `petritype/examples/transit/net.rs` as it is, not copied.
+//! Besides the parcel nets it carries the protocol's two other conformance
+//! nets, `transit` (PROTOCOL.md §11, §12) and `wildlife` (§11, §13): the
+//! core's own example nets, included from `petritype/examples/transit/net.rs`
+//! and `petritype/examples/wildlife/net.rs` as they are, not copied.
 
 use std::fmt;
 
@@ -230,6 +231,38 @@ pub fn transit_registry() -> Vec<NetEntry> {
     vec![transit_entry()]
 }
 
+/// The protocol's conformance net `wildlife` (PROTOCOL.md §11): species
+/// across habitats, each place declaring the keys `species`, `class` and
+/// `diet`, `Migrate Forest Wetland` a keyed edge — the keys net of §13. The
+/// file is the core's example (`petritype/examples/wildlife/net.rs`), which
+/// depends on `petritype`, `serde` and `serde_json` only, for this.
+#[path = "../../../petritype/examples/wildlife/net.rs"]
+#[allow(dead_code)]
+pub mod wildlife_net;
+
+/// The habitats as §11 seeds them: nine species in five habitats, nothing
+/// migrating. Its parameters, `season` and `spread_threshold`, are net
+/// parameters set with `set_param`, not load parameters, so the entry
+/// declares none.
+pub fn wildlife(_: &petritype_runner::Params) -> Result<Net, LoadError> {
+    wildlife_net::build_wildlife()
+        .map(|wildlife| wildlife.net)
+        .map_err(LoadError::from)
+}
+
+/// The `wildlife` entry, as PROTOCOL.md §11 names and describes it.
+fn wildlife_entry() -> NetEntry {
+    NetEntry::new("wildlife", wildlife)
+        .description("Species migrate, spread and decline across habitats")
+        .hosting(Hosting::Manual)
+}
+
+/// The `wildlife` net alone, for the transcripts over it (PROTOCOL.md §11).
+#[allow(dead_code)]
+pub fn wildlife_registry() -> Vec<NetEntry> {
+    vec![wildlife_entry()]
+}
+
 /// The conformance net's entry, as PROTOCOL.md §11 names and describes it.
 fn conformance_entry() -> NetEntry {
     NetEntry::new("parcel-distribution", conformance::parcel_distribution)
@@ -257,5 +290,6 @@ pub fn registry() -> Vec<NetEntry> {
             .description("Shelve parcels as they are injected")
             .hosting(Hosting::Continuous),
         transit_entry(),
+        wildlife_entry(),
     ]
 }

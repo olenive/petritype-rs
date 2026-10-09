@@ -51,17 +51,21 @@
 //!   lines, then the `fired`, where the `distributed` was. The last is what
 //!   this runner's inline (mutate-edge) firings need, which it reports as
 //!   one `fired` after their `mutated`s where the Python runner reports
-//!   `launched` first. The folds are applied to the expected lines as well
-//!   as to the actual ones, so a transcript recorded either way reads the
-//!   same.
+//!   `launched` first. Under a connection's filter (PROTOCOL.md §13.4) a
+//!   mutation may be told as `hidden`, `added` or `removed`, and those may
+//!   stand between the pieces too. The folds are applied to the expected
+//!   lines as well as to the actual ones, so a transcript recorded either
+//!   way reads the same.
 //! - Type names are the example's: the harness rewrites this test crate's
 //!   module path to `parcel_runner::nets::`, as the example binary spells it.
 //!
 //! Our own transcripts, over the example's demo nets, are in
-//! `tests/protocol/`, with a verbatim copy of the shared `05_nested_nets.json`
-//! over `transit`. The shared set of §11, over the conformance nets
-//! `parcel-distribution` and `transit`, lives in the Python repository and is
-//! replayed here from a sibling checkout by `the_shared_transcripts_hold`.
+//! `tests/protocol/`, with verbatim copies of the shared
+//! `05_nested_nets.json` over `transit` and `06_keys_query_filter.json` over
+//! `wildlife`. The shared set of §11, over the conformance nets
+//! `parcel-distribution`, `transit` and `wildlife`, lives in the Python
+//! repository and is replayed here from a sibling checkout by
+//! `the_shared_transcripts_hold`.
 //! A transcript over a conformance net is replayed against a runner carrying
 //! that net alone (§11), whichever directory it is in, so that it may pin
 //! `describe` in full; any other against everything the example carries.
@@ -114,6 +118,13 @@ fn fired(l: &Value, d: &Value) -> Value {
     }})
 }
 
+/// The lines a firing's own body causes, which may stand between its
+/// `launched` and its `distributed`: what it did inside the tokens it holds
+/// (`nested`), and its mutations, which a connection's filter may tell as
+/// `hidden`, or as an `added` or a `removed` when they carry a token across
+/// the filter's boundary.
+const BETWEEN_PIECES: [&str; 5] = ["nested", "mutated", "hidden", "added", "removed"];
+
 /// A firing told in two pieces as one `fired`; see the module's
 /// documentation for the three shapes it folds.
 fn fold(lines: Vec<Value>) -> Vec<Value> {
@@ -121,11 +132,13 @@ fn fold(lines: Vec<Value>) -> Vec<Value> {
     for line in lines {
         if line["method"] == "distributed" {
             // The firing's own inner effects and mutations may stand between
-            // its two pieces (PROTOCOL.md §12.4); nothing else may.
+            // its two pieces (PROTOCOL.md §12.4), and under a connection's
+            // filter a mutation is told as `hidden`, `added` or `removed`
+            // (§13.4); nothing else may.
             let between = folded
                 .iter()
                 .rev()
-                .take_while(|l| l["method"] == "nested" || l["method"] == "mutated")
+                .take_while(|l| BETWEEN_PIECES.contains(&l["method"].as_str().unwrap_or("")))
                 .count();
             let at = folded.len() - between;
             if at > 0
@@ -334,6 +347,7 @@ fn registry_for(net: &str) -> Vec<petritype_runner::NetEntry> {
     match net {
         "parcel-distribution" => nets::conformance_registry(),
         "transit" => nets::transit_registry(),
+        "wildlife" => nets::wildlife_registry(),
         _ => nets::registry(),
     }
 }
@@ -451,11 +465,10 @@ fn shared_dir() -> PathBuf {
 }
 
 /// The shared transcripts of PROTOCOL.md §11, over the conformance nets
-/// `parcel-distribution` and `transit`, replayed exactly as ours are, each
-/// against a registry carrying its own net alone, which §11 makes the rule
-/// so that a shared transcript may pin `describe` in full. A shared
-/// transcript over a net this runner does not carry (`wildlife`, §13, until
-/// it is built) fails at its `load`.
+/// `parcel-distribution`, `transit` and `wildlife`, replayed exactly as ours
+/// are, each against a registry carrying its own net alone, which §11 makes
+/// the rule so that a shared transcript may pin `describe` in full. A shared
+/// transcript over a net this runner does not carry fails at its `load`.
 ///
 /// They live in the Python repository (§11 makes it the home of the shared
 /// set), not here, so this test reads them from a sibling checkout, or from
@@ -663,4 +676,34 @@ fn the_nested_folds() {
         interrupted,
         "only the firing's own lines may stand between its pieces"
     );
+}
+
+#[test]
+fn the_fold_lets_a_projected_mutation_stand_between_the_pieces() {
+    // Under a connection's filter (PROTOCOL.md §13.4) a firing's mutation is
+    // told as `hidden`, or as `added` or `removed` when it carries a token
+    // across the filter: the firing's own lines all the same, as
+    // `06_keys_query_filter.json`'s `Spread` has it.
+    for between in [
+        json!({"method": "hidden", "params": {"kind": "mutated", "place": "Savanna"}}),
+        json!({"method": "removed", "params": {"place": "Savanna", "id": "4"}}),
+        json!({"method": "added", "params": {"place": "Savanna", "id": "4"}}),
+    ] {
+        let folded = fold(vec![
+            json!({"method": "launched", "params": {"transition": "Spread", "consumed": [],
+                   "marking_version": 5, "running": false}}),
+            between.clone(),
+            json!({"method": "distributed", "params": {"transition": "Spread", "produced": [],
+                   "duration_ms": 0.0, "marking_version": 7, "running": false}}),
+        ]);
+        assert_eq!(
+            folded,
+            [
+                between,
+                json!({"method": "fired", "params": {"transition": "Spread", "consumed": [],
+                       "produced": [], "duration_ms": 0.0, "marking_version": 7,
+                       "running": false}}),
+            ]
+        );
+    }
 }

@@ -64,7 +64,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt;
 
 use crate::ids::{PlaceId, TokenId};
-use crate::keys::{Filter, KeyValue, Match, Resolved, keys_or_none, match_of};
+use crate::keys::{Filter, KeyValue, Keys, Match, Resolved, keys_or_none, match_of};
 use crate::net::Net;
 use crate::param::ParamSlot;
 use crate::place::{PlaceMeta, PlaceSlot};
@@ -396,8 +396,34 @@ impl Net {
     /// index when there are clauses, by reading the covered places when
     /// there are none.
     pub(crate) fn query_indexed(&self, filter: &Filter) -> Vec<Match> {
-        let resolved = filter.resolve_in(&self.params);
         let mut found = Vec::new();
+        self.visit_matches(filter, |slot, place, token, value, keys| {
+            let keys = keys.unwrap_or_else(|| keys_or_none(slot, value));
+            found.push(match_of(slot, place, token, value, keys, self.label_limit));
+        });
+        found
+    }
+
+    /// [`Net::query_ids`] once the filter's places are known to exist: the
+    /// same tokens as [`query_indexed`](Net::query_indexed), with nothing
+    /// rendered.
+    pub(crate) fn query_ids_indexed(&self, filter: &Filter) -> Vec<(PlaceId, TokenId)> {
+        let mut found = Vec::new();
+        self.visit_matches(filter, |_, place, token, _, _| found.push((place, token)));
+        found
+    }
+
+    /// Calls `found` with each token `filter` lets through, in place order
+    /// then token order: its place's slot, the place, the token, its value,
+    /// and its keys when they were extracted to decide (`None` for a filter
+    /// without clauses, which keeps every token of the places it covers and
+    /// extracts nothing).
+    fn visit_matches(
+        &self,
+        filter: &Filter,
+        mut found: impl FnMut(&PlaceSlot, PlaceId, TokenId, &dyn Any, Option<Keys>),
+    ) {
+        let resolved = filter.resolve_in(&self.params);
 
         if resolved.clauses.is_empty() {
             for (position, slot) in self.places.iter().enumerate() {
@@ -406,18 +432,10 @@ impl Net {
                     continue;
                 }
                 for (token, value) in &slot.tokens {
-                    let keys = keys_or_none(slot, &**value);
-                    found.push(match_of(
-                        slot,
-                        place,
-                        *token,
-                        &**value,
-                        keys,
-                        self.label_limit,
-                    ));
+                    found(slot, place, *token, &**value, None);
                 }
             }
-            return found;
+            return;
         }
 
         // The candidates: the tokens holding one of the values of the clause
@@ -426,7 +444,7 @@ impl Net {
         let mut best: Option<(usize, Vec<&Postings>)> = None;
         for clause in &resolved.clauses {
             let Some(values) = self.index.postings.get(clause.key) else {
-                return found;
+                return;
             };
             let mut seen: Vec<&KeyValue> = Vec::new();
             let mut sets = Vec::new();
@@ -441,14 +459,14 @@ impl Net {
             }
             let held: usize = sets.iter().map(|postings| postings.len()).sum();
             if held == 0 {
-                return found;
+                return;
             }
             if best.as_ref().is_none_or(|(fewest, _)| held < *fewest) {
                 best = Some((held, sets));
             }
         }
         let Some((held, sets)) = best else {
-            return found;
+            return;
         };
         let mut candidates: Vec<(PlaceId, TokenId)> = Vec::with_capacity(held);
         for postings in sets {
@@ -467,7 +485,7 @@ impl Net {
             let mut keep = |token: TokenId, value: &dyn Any| {
                 let keys = keys_or_none(slot, value);
                 if resolved.accepts(&keys) {
-                    found.push(match_of(slot, place, token, value, keys, self.label_limit));
+                    found(slot, place, token, value, Some(keys));
                 }
             };
             if self.index.unordered.contains(&place) {
@@ -493,7 +511,6 @@ impl Net {
                 }
             }
         }
-        found
     }
 
     /// [`Net::distinct_values`], from the index: each value's first token in

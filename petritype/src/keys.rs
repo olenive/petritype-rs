@@ -647,6 +647,40 @@ impl Net {
         Ok(self.query_indexed(filter))
     }
 
+    /// The tokens `filter` lets through, as [`query`](Net::query) finds them
+    /// and in the same order, as `(place, token)` pairs alone: nothing is
+    /// rendered, so no label and no JSON is made for a token the caller
+    /// will not show.
+    ///
+    /// For a reader that counts matches, pages them or keeps a set of them —
+    /// a protocol runner's projection of the net through a client's filter
+    /// (PROTOCOL.md §13.4) — and renders only the tokens it writes. Answered
+    /// from the index, as `query` is.
+    ///
+    /// ```
+    /// use petritype::{Filter, NetBuilder};
+    ///
+    /// let mut b = NetBuilder::new();
+    /// let names = b.place::<String>("Names");
+    /// b.keys(names, ["initial"], |name: &String| [name[..1].into()]);
+    /// let mut net = b.build()?;
+    /// net.put(names, "Ada".to_owned());
+    /// let bram = net.put(names, "Bram".to_owned());
+    ///
+    /// let b_names = Filter::new().key_in("initial", ["B"]);
+    /// assert_eq!(net.query_ids(&b_names)?, [(names.id(), bram)]);
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// [`NetError::NoSuchPlace`] if [`Filter::places`] names a place this net
+    /// does not have.
+    pub fn query_ids(&self, filter: &Filter) -> Result<Vec<(PlaceId, TokenId)>, NetError> {
+        check_places(&self.places, filter)?;
+        Ok(self.query_ids_indexed(filter))
+    }
+
     /// The distinct values of `key` over the tokens of the net, or of
     /// `places`, in order of first appearance: place order, then token
     /// order. Empty for a key no place declares.
@@ -773,9 +807,36 @@ pub(crate) fn query_scan(
     label_limit: usize,
     filter: &Filter,
 ) -> Result<Vec<Match>, NetError> {
+    let mut found = Vec::new();
+    scan(places, params, filter, |slot, place, token, value, keys| {
+        found.push(match_of(slot, place, token, value, keys, label_limit));
+    })?;
+    Ok(found)
+}
+
+/// The tokens a filter lets through, as ids, by scanning.
+pub(crate) fn query_ids_scan(
+    places: &[impl Borrow<PlaceSlot>],
+    params: &[ParamSlot],
+    filter: &Filter,
+) -> Result<Vec<(PlaceId, TokenId)>, NetError> {
+    let mut found = Vec::new();
+    scan(places, params, filter, |_, place, token, _, _| {
+        found.push((place, token));
+    })?;
+    Ok(found)
+}
+
+/// Calls `found` with each token a filter lets through, in place order then
+/// token order, by reading every place it covers.
+fn scan(
+    places: &[impl Borrow<PlaceSlot>],
+    params: &[ParamSlot],
+    filter: &Filter,
+    mut found: impl FnMut(&PlaceSlot, PlaceId, TokenId, &dyn Any, Keys),
+) -> Result<(), NetError> {
     check_places(places, filter)?;
     let resolved = filter.resolve_in(params);
-    let mut found = Vec::new();
     for (index, slot) in places.iter().enumerate() {
         let slot = slot.borrow();
         let place = PlaceId(index as u32);
@@ -789,11 +850,11 @@ pub(crate) fn query_scan(
         for (token, value) in &slot.tokens {
             let keys = keys_or_none(slot, &**value);
             if resolved.accepts(&keys) {
-                found.push(match_of(slot, place, *token, &**value, keys, label_limit));
+                found(slot, place, *token, &**value, keys);
             }
         }
     }
-    Ok(found)
+    Ok(())
 }
 
 /// The distinct values of a key, in order of first appearance, by scanning.

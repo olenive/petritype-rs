@@ -7,7 +7,9 @@ use std::sync::Arc;
 use crate::edge::EdgeInfo;
 use crate::error::NetError;
 use crate::ids::{NetId, PlaceId, TokenId, TransitionId};
-use crate::keys::{Filter, KeyValue, Keys, Match, distinct_scan, keys_in, matches_in, query_scan};
+use crate::keys::{
+    Filter, KeyValue, Keys, Match, distinct_scan, keys_in, matches_in, query_ids_scan, query_scan,
+};
 use crate::nested::nested_in;
 #[cfg(feature = "serde")]
 use crate::net::json_in;
@@ -392,6 +394,17 @@ impl Snapshot {
     /// does not have.
     pub fn query(&self, filter: &Filter) -> Result<Vec<Match>, NetError> {
         query_scan(&self.places, &self.params, self.label_limit, filter)
+    }
+
+    /// The tokens `filter` let through, as ids: [`Net::query_ids`], by
+    /// reading every place the filter covers.
+    ///
+    /// # Errors
+    ///
+    /// [`NetError::NoSuchPlace`] if [`Filter::places`] names a place the net
+    /// does not have.
+    pub fn query_ids(&self, filter: &Filter) -> Result<Vec<(PlaceId, TokenId)>, NetError> {
+        query_ids_scan(&self.places, &self.params, filter)
     }
 
     /// The distinct values of a key, in order of first appearance:

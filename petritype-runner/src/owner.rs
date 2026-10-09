@@ -1,5 +1,6 @@
-//! The state machine at the heart of the runner (DESIGN §19.3.2–§19.3.6, and
-//! §19.3.11 for nested nets).
+//! The state machine at the heart of the runner (DESIGN §19.3.2–§19.3.6,
+//! §19.3.11 for nested nets, and §19.3.12 for keys, queries and the
+//! connection's projection).
 //!
 //! [`Owner`] owns the registry and the loaded net and turns each [`Input`]
 //! into the [`Outgoing`] lines and firings it causes. It creates no threads,
@@ -14,19 +15,20 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, SystemTime};
 
 use petritype::{
-    BodyPanicked, Completed, Event, Firing, FiringFailed, JsonCommand, Net, NetError, NetId,
-    PlaceId, TokenId, Topology, TransitionId,
+    BodyPanicked, Completed, Event, Filter, Firing, FiringFailed, JsonCommand, Net, NetError,
+    NetId, PlaceId, TokenId, Topology, TransitionId,
 };
 use serde_json::{Map, Value, json};
 
 use crate::errors::{CoreError, code_of};
+use crate::projection::{Projection, Seen};
 use crate::protocol::{
-    self, Describe, ErrorCode, LogEntry, Notification, PlaceTokens, Request, Response, State,
-    TokenBody, TokenValue,
+    self, Describe, DistinctResult, ErrorCode, HiddenKind, LogEntry, Notification, PlaceTokens,
+    QueryMatch, QueryResult, Request, Response, State, TokenBody, TokenValue,
 };
 use crate::registry::{Hosting, NetEntry, Params};
 use crate::time::iso8601;
-use crate::translate::{self, Names};
+use crate::translate::{self, FilterError, Names};
 
 /// What the heartbeat thread reads: the transition whose body is running and
 /// when it started, or `None` when no body runs.
@@ -42,20 +44,33 @@ const MAX_TOKEN_LIMIT: u64 = 1000;
 /// The requests answered at once while a body is airborne; every other one
 /// waits in arrival order until it lands (DESIGN §19.3.5). `shutdown` is here
 /// because it abandons the body (§19.3.6), and `describe` because it reads
-/// nothing of the net.
+/// nothing of the net. `query` and `distinct` are reads (PROTOCOL.md §13.3);
+/// `set_filter` is not, and waits, so that a firing is projected through one
+/// filter from its `launched` to its landing.
 const ANSWERED_WHILE_AIRBORNE: &[&str] = &[
     "get_state",
     "get_place_tokens",
     "get_token",
     "get_log",
+    "query",
+    "distinct",
     "stop",
     "shutdown",
     "describe",
 ];
 
 /// The reads that a `path` or a `nested_id` may point at an inner net
-/// (PROTOCOL.md §12.3); `inject` takes one too, but changes what it names.
-const ADDRESSED_READS: &[&str] = &["get_state", "get_place_tokens", "get_token", "get_log"];
+/// (PROTOCOL.md §12.3). `inject` and `set_filter` take one too, but are not
+/// reads: one changes the net it names, the other the connection's view of
+/// it, and both wait for an airborne body to land.
+const ADDRESSED_READS: &[&str] = &[
+    "get_state",
+    "get_place_tokens",
+    "get_token",
+    "get_log",
+    "query",
+    "distinct",
+];
 
 /// The methods that act on the outer net alone (PROTOCOL.md §12.3): a `path`
 /// or a `nested_id` on one of them is `invalid_params`. An inner net's
@@ -86,6 +101,9 @@ const METHODS: &[&str] = &[
     "disable",
     "set_param",
     "get_log",
+    "query",
+    "distinct",
+    "set_filter",
     "shutdown",
 ];
 
@@ -174,6 +192,10 @@ struct Loaded {
     /// Inner nets that have had events since their fireable set was last
     /// compared, in the order they first had them.
     touched: Vec<NetId>,
+    /// The connection's projection of the outer net (PROTOCOL.md §13.4),
+    /// while `set_filter` has set one. A generation's own: `load` and
+    /// `reset` clear it.
+    projection: Option<Projection>,
 }
 
 /// What the runner keeps about one inner net (PROTOCOL.md §12.3,
@@ -200,6 +222,9 @@ struct Inner {
     template: Option<String>,
     /// The path it was last found at or reported under.
     last_path: String,
+    /// The connection's projection of this net, while `set_filter` named it
+    /// and set one (PROTOCOL.md §13.4); it goes with the record.
+    projection: Option<Projection>,
 }
 
 impl Inner {
@@ -215,6 +240,7 @@ impl Inner {
             last_fireable: Vec::new(),
             template: None,
             last_path: path,
+            projection: None,
         };
         if let Some(net) = net {
             inner.see(net);
@@ -263,6 +289,10 @@ struct ProgressKept {
     last_fired: Option<String>,
     fired_counts: BTreeMap<String, u64>,
     last_progress_at: Option<SystemTime>,
+    /// The inner firings counted here besides the net's own, which its
+    /// `fired_count` holds: the outer net's count of the firings the runner
+    /// made inside its tokens.
+    inside: u64,
 }
 
 impl ProgressKept {
@@ -270,6 +300,14 @@ impl ProgressKept {
         self.last_fired = Some(transition.to_owned());
         *self.fired_counts.entry(transition.to_owned()).or_default() += 1;
         self.last_progress_at = Some(now);
+    }
+
+    /// An inner firing, counted by the outer net under `key`: its path
+    /// without the outer net's name, then the transition
+    /// (`Depot/#17/cabin/Sit`), as the Python runner counts it.
+    fn fired_inside(&mut self, key: &str, now: SystemTime) {
+        self.inside += 1;
+        self.fired(key, now);
     }
 }
 
@@ -611,19 +649,156 @@ fn fireable_names(net: &Net, names: &Names) -> Vec<String> {
         .collect()
 }
 
-/// `[place, id, label]` triples, labelled from `net` when it can be read and
-/// with `""` when it cannot (an inner net whose token a body holds).
+/// `produced` entries, labelled from `net` when it can be read, with their
+/// keys where their place declares some, and with `""` and no keys when it
+/// cannot (an inner net whose token a body holds).
 fn produced(
     names: &Names,
     net: Option<&Net>,
     tokens: &[(PlaceId, TokenId)],
-) -> Vec<(String, String, String)> {
+) -> Vec<protocol::Produced> {
     match net {
         Some(net) => names.produced(net, tokens),
         None => tokens
             .iter()
-            .map(|&(place, token)| (names.place(place), token.to_string(), String::new()))
+            .map(|&(place, token)| protocol::Produced {
+                place: names.place(place),
+                id: token.to_string(),
+                label: String::new(),
+                keys: None,
+            })
             .collect(),
+    }
+}
+
+/// A token event — `Added`, `Removed` or `Mutated` — as the notification the
+/// connection is told (PROTOCOL.md §7.1, §13.4), through `projection` when
+/// the net has one: a token the filter hides is told of as `hidden`, and a
+/// mutation that carries a token across the filter's boundary as an `added`
+/// or a `removed`, in place of its `mutated`. `net` is the net it happened
+/// in, `None` when it cannot be read. `None` for any other event.
+fn token_line(
+    names: &Names,
+    net: Option<&Net>,
+    projection: Option<&mut Projection>,
+    event: &Event,
+    marking_version: u64,
+    running: bool,
+) -> Option<Notification> {
+    let keys = |place, token| net.and_then(|net| translate::keys(net, place, token));
+    let hidden = |kind, place| Notification::Hidden {
+        kind,
+        place: names.place(place),
+        marking_version,
+        running,
+    };
+    let added = |place, token: TokenId| Notification::Added {
+        place: names.place(place),
+        id: token.to_string(),
+        label: net.map_or_else(String::new, |net| translate::label(net, place, token)),
+        keys: keys(place, token),
+        marking_version,
+        running,
+    };
+    let removed = |place, token: TokenId| Notification::Removed {
+        place: names.place(place),
+        id: token.to_string(),
+        marking_version,
+        running,
+    };
+    Some(match *event {
+        Event::Added { place, token } => {
+            if projection.is_none_or(|p| p.arrived(net, place, token)) {
+                added(place, token)
+            } else {
+                hidden(HiddenKind::Added, place)
+            }
+        }
+        Event::Removed { place, token } => {
+            if projection.is_none_or(|p| p.left(place, token)) {
+                removed(place, token)
+            } else {
+                hidden(HiddenKind::Removed, place)
+            }
+        }
+        Event::Mutated { place, token } => {
+            match projection.map_or(Seen::Mutated, |p| p.changed(net, place, token)) {
+                Seen::Mutated => Notification::Mutated {
+                    place: names.place(place),
+                    id: token.to_string(),
+                    label: net
+                        .and_then(|net| net.debug(place, token))
+                        .map(translate::cut),
+                    keys: keys(place, token),
+                    marking_version,
+                    running,
+                },
+                Seen::Added => added(place, token),
+                Seen::Removed => removed(place, token),
+                Seen::Hidden => hidden(HiddenKind::Mutated, place),
+            }
+        }
+        _ => return None,
+    })
+}
+
+/// The lines that tell a connection which tokens went out of its view and
+/// which came into it although none of them moved (PROTOCOL.md §13.4): a
+/// `removed` for each of `gone`, then an `added` for each of `came`, each a
+/// state notification stamped from `version` upward.
+fn view_lines(
+    names: &Names,
+    net: &Net,
+    gone: &[(PlaceId, TokenId)],
+    came: &[(PlaceId, TokenId)],
+    version: &mut u64,
+    running: bool,
+) -> Vec<Notification> {
+    let mut lines = Vec::with_capacity(gone.len() + came.len());
+    for &(place, token) in gone {
+        *version += 1;
+        lines.push(Notification::Removed {
+            place: names.place(place),
+            id: token.to_string(),
+            marking_version: *version,
+            running,
+        });
+    }
+    for &(place, token) in came {
+        *version += 1;
+        lines.push(Notification::Added {
+            place: names.place(place),
+            id: token.to_string(),
+            label: translate::label(net, place, token),
+            keys: translate::keys(net, place, token),
+            marking_version: *version,
+            running,
+        });
+    }
+    lines
+}
+
+/// The tokens one firing event names, as the connection is told of them:
+/// what `consumed` it took (moved out of view, kept for a restore) and what
+/// `produced` it placed, through `projection` when the net has one, every
+/// one of them when it has none. `landed` says the firing ended with this
+/// event.
+fn firing_tokens(
+    projection: Option<&mut Projection>,
+    net: Option<&Net>,
+    consumed: &[(PlaceId, TokenId)],
+    produced: &[(PlaceId, TokenId)],
+    landed: bool,
+) -> (Pairs, Pairs) {
+    match projection {
+        None => (consumed.to_vec(), produced.to_vec()),
+        Some(projection) => {
+            let consumed = projection.took(consumed);
+            if landed {
+                projection.landed();
+            }
+            (consumed, projection.placed(net, produced))
+        }
     }
 }
 
@@ -785,6 +960,9 @@ impl Loaded {
             .get_mut(&nested_id)
             .expect("lifted_path made the record");
         let names = &inner.names;
+        // The inner net's own projection, if `set_filter` named it: its
+        // events are told through it, whatever the outer net's is.
+        let mut projection = inner.projection.as_mut();
         let version = inner.marking_version + 1;
         // What the inner net's log entry for a firing says, if this is one.
         let mut firing: Option<(String, Pairs, Pairs)> = None;
@@ -802,10 +980,12 @@ impl Loaded {
                     consumed.clone(),
                     made.clone(),
                 ));
+                let (consumed, made) =
+                    firing_tokens(projection.as_deref_mut(), live, consumed, made, true);
                 Notification::Fired {
                     transition: names.transition(*transition),
-                    consumed: names.pairs(consumed),
-                    produced: produced(names, live, made),
+                    consumed: names.pairs(&consumed),
+                    produced: produced(names, live, &made),
                     duration_ms: 0.0,
                     marking_version: version,
                     running,
@@ -816,9 +996,11 @@ impl Loaded {
                 consumed,
             } => {
                 launched.insert(nested_id, consumed.clone());
+                let (consumed, _) =
+                    firing_tokens(projection.as_deref_mut(), live, consumed, &[], false);
                 Notification::Launched {
                     transition: names.transition(*transition),
-                    consumed: names.pairs(consumed),
+                    consumed: names.pairs(&consumed),
                     marking_version: version,
                     running,
                 }
@@ -829,9 +1011,10 @@ impl Loaded {
             } => {
                 let consumed = launched.remove(&nested_id).unwrap_or_default();
                 firing = Some((names.transition(*transition), consumed, made.clone()));
+                let (_, made) = firing_tokens(projection.as_deref_mut(), live, &[], made, true);
                 Notification::Distributed {
                     transition: names.transition(*transition),
-                    produced: produced(names, live, made),
+                    produced: produced(names, live, &made),
                     duration_ms: 0.0,
                     marking_version: version,
                     running,
@@ -845,39 +1028,24 @@ impl Loaded {
             } => {
                 firing = Some((names.transition(*transition), consumed.clone(), Vec::new()));
                 failure = Some((error.clone(), *restored));
+                let told = match projection.as_deref_mut() {
+                    Some(projection) => projection.failed(consumed, *restored),
+                    None => consumed.clone(),
+                };
                 Notification::Failed {
                     transition: names.transition(*transition),
                     error: error.clone(),
                     restored: *restored,
-                    consumed: names.pairs(consumed),
+                    consumed: names.pairs(&told),
                     marking_version: version,
                     running,
                 }
             }
-            Event::Added { place, token } => Notification::Added {
-                place: names.place(*place),
-                id: token.to_string(),
-                // Under rule 3 (lifted at launch, the token in the body's
-                // hands) there is no net to label from.
-                label: live.map_or_else(String::new, |net| translate::label(net, *place, *token)),
-                marking_version: version,
-                running,
-            },
-            Event::Removed { place, token } => Notification::Removed {
-                place: names.place(*place),
-                id: token.to_string(),
-                marking_version: version,
-                running,
-            },
-            Event::Mutated { place, token } => Notification::Mutated {
-                place: names.place(*place),
-                id: token.to_string(),
-                label: live
-                    .and_then(|net| net.debug(*place, *token))
-                    .map(translate::cut),
-                marking_version: version,
-                running,
-            },
+            // Under rule 3 (lifted at launch, the token in the body's hands)
+            // there is no net to label from, nor to read keys from.
+            event @ (Event::Added { .. } | Event::Removed { .. } | Event::Mutated { .. }) => {
+                token_line(names, live, projection, event, version, running).expect("a token event")
+            }
             Event::Toggled {
                 transition,
                 enabled,
@@ -956,6 +1124,101 @@ impl Loaded {
         }
     }
 
+    /// The `added`s and `removed`s of the tokens that came into a
+    /// projection's view, or went out of it, with no token event of their
+    /// own (PROTOCOL.md §13.4), after a batch's events and before its
+    /// `fireable`s, as the Python runner tells them: after a change of a net
+    /// parameter a `{key, param}` clause names, every token is compared;
+    /// after inner events, the tokens they were lifted through, whose keys
+    /// may read the nets they hold. The outer net's first, then each inner
+    /// net's, `nested`; each line a state notification of its own net.
+    fn reproject(
+        &mut self,
+        outer_version: &mut u64,
+        params_changed: &[Option<NetId>],
+        lifted_through: &[(Option<NetId>, PlaceId, TokenId)],
+        out: &mut Vec<Outgoing>,
+    ) {
+        if params_changed.is_empty() && lifted_through.is_empty() {
+            return;
+        }
+        let running = self.running;
+        let mut nets: Vec<Option<NetId>> = vec![None];
+        for which in params_changed
+            .iter()
+            .copied()
+            .chain(lifted_through.iter().map(|&(which, ..)| which))
+        {
+            if !nets.contains(&which) {
+                nets.push(which);
+            }
+        }
+        for which in nets {
+            let only: Pairs = lifted_through
+                .iter()
+                .filter(|&&(net, ..)| net == which)
+                .map(|&(_, place, token)| (place, token))
+                .collect();
+            let asks_all = params_changed.contains(&which);
+            match which {
+                None => {
+                    let Some(projection) = self.projection.as_mut() else {
+                        continue;
+                    };
+                    let full = asks_all && projection.reads_params();
+                    if !full && only.is_empty() {
+                        continue;
+                    }
+                    let (gone, came) =
+                        projection.reconcile(&self.net, (!full).then_some(only.as_slice()));
+                    for line in
+                        view_lines(&self.names, &self.net, &gone, &came, outer_version, running)
+                    {
+                        push(out, line);
+                    }
+                }
+                Some(id) => {
+                    let Some(inner) = self.inner.get_mut(&id) else {
+                        continue;
+                    };
+                    let Some(projection) = inner.projection.as_mut() else {
+                        continue;
+                    };
+                    let full = asks_all && projection.reads_params();
+                    if !full && only.is_empty() {
+                        continue;
+                    }
+                    let Some((found, net)) = find(&self.net, self.name, |net| net.id() == id)
+                    else {
+                        continue;
+                    };
+                    let (gone, came) =
+                        projection.reconcile(net, (!full).then_some(only.as_slice()));
+                    let lines = view_lines(
+                        &inner.names,
+                        net,
+                        &gone,
+                        &came,
+                        &mut inner.marking_version,
+                        running,
+                    );
+                    for line in lines {
+                        push(
+                            out,
+                            Notification::Nested {
+                                path: found.path.clone(),
+                                nested_id: id.to_string(),
+                                event: Box::new(line),
+                                marking_version: *outer_version,
+                                running,
+                            },
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     /// The `fireable` of each inner net that had events since it was last
     /// compared, `nested`, when it differs from the last one sent: after
     /// the outer net's (PROTOCOL.md §12.4). Not a state notification, so no
@@ -1008,6 +1271,8 @@ struct View<'a> {
     path: String,
     /// What a result about an inner net carries besides (§12.3).
     inner: Option<InnerView>,
+    /// The connection's projection of this net, if it set one (§13.4).
+    projection: Option<&'a Projection>,
 }
 
 struct InnerView {
@@ -1247,21 +1512,100 @@ impl Owner {
                     (ErrorCode::UnknownPlace, format!("no place named {place:?}"))
                 })?;
                 let count = view.net.count(place_id);
-                let tokens =
-                    translate::tokens(view.net, &view.path, place_id, place, offset, limit);
+                // Under the connection's filter the page is of the tokens it
+                // keeps, and `has_more` is relative to them (§13.4).
+                let (matching, tokens) = match view.projection {
+                    None => (
+                        None,
+                        translate::tokens(view.net, &view.path, place_id, place, offset, limit),
+                    ),
+                    Some(projection) => {
+                        let kept = projection.kept_in(view.net, place_id);
+                        let tokens = kept
+                            .iter()
+                            .skip(offset)
+                            .take(limit)
+                            .map(|&token| {
+                                translate::entry(view.net, &view.path, place_id, place, token)
+                            })
+                            .collect();
+                        (Some(kept.len()), tokens)
+                    }
+                };
                 let (path, nested_id) = view.address();
                 let page = PlaceTokens {
                     place: place.to_owned(),
                     marking_version: view.marking_version,
                     count,
+                    matching,
                     offset,
                     limit,
-                    has_more: offset.saturating_add(tokens.len()) < count,
+                    has_more: offset.saturating_add(tokens.len()) < matching.unwrap_or(count),
                     tokens,
                     path,
                     nested_id,
                 };
                 respond(out, id, page);
+            }
+            "query" => self.query(id, args, out)?,
+            "distinct" => {
+                let key = string_arg(args, "key")?.to_owned();
+                let target = self.target(args)?;
+                let view = self.view(&target)?;
+                let places = match args.get("places") {
+                    None | Some(Value::Null) => None,
+                    Some(Value::Array(names)) => {
+                        let names: Vec<String> = names
+                            .iter()
+                            .map(|name| name.as_str().map(str::to_owned))
+                            .collect::<Option<_>>()
+                            .ok_or_else(not_place_names)?;
+                        Some(translate::place_ids(&names, view.net).map_err(filter_error)?)
+                    }
+                    Some(_) => return Err(not_place_names()),
+                };
+                let values = view.net.distinct_values(&key, places.as_deref());
+                respond(
+                    out,
+                    id,
+                    DistinctResult {
+                        marking_version: view.marking_version,
+                        key,
+                        values,
+                    },
+                );
+            }
+            "set_filter" => {
+                let target = self.target(args)?;
+                let projection = match args.get("filter").filter(|value| !value.is_null()) {
+                    None => None,
+                    Some(value) => {
+                        let view = self.view(&target)?;
+                        let filter = translate::filter(value, view.net).map_err(filter_error)?;
+                        Some(Projection::new(filter, view.net))
+                    }
+                };
+                let version = match &target {
+                    Target::Outer => {
+                        self.loaded_mut().projection = projection;
+                        self.marking_version
+                    }
+                    Target::Inner(found) => {
+                        let inner = self
+                            .loaded_mut()
+                            .inner
+                            .get_mut(&found.nested_id)
+                            .ok_or_else(|| {
+                                (
+                                    ErrorCode::UnknownNet,
+                                    format!("no live inner net at {:?}", found.path),
+                                )
+                            })?;
+                        inner.projection = projection;
+                        inner.marking_version
+                    }
+                };
+                respond(out, id, json!({ "marking_version": version }));
             }
             "get_token" => {
                 let token = string_arg(args, "id")?;
@@ -1436,6 +1780,57 @@ impl Owner {
         Ok(())
     }
 
+    /// `query {filter?, token_limit?, path?, nested_id?}` (PROTOCOL.md
+    /// §13.3): the tokens `filter` keeps — or, without one, the connection's
+    /// filter, or else every token — in place order then token order, from
+    /// the key index; `count` all of them, and the first `token_limit` in
+    /// full, each with its JSON where its place is serializable.
+    fn query(
+        &mut self,
+        id: &str,
+        args: &Args,
+        out: &mut Vec<Outgoing>,
+    ) -> Result<(), (ErrorCode, String)> {
+        let limit = page_limit(args, "token_limit")?;
+        let target = self.target(args)?;
+        let view = self.view(&target)?;
+        let net = view.net;
+        let given = match args.get("filter").filter(|value| !value.is_null()) {
+            Some(value) => Some(translate::filter(value, net).map_err(filter_error)?),
+            None => None,
+        };
+        let every = Filter::new();
+        let filter = given
+            .as_ref()
+            .or(view.projection.map(|projection| &projection.filter))
+            .unwrap_or(&every);
+        let found = net
+            .query_ids(filter)
+            .map_err(|error| (code_of(CoreError::Net(&error)), error.to_string()))?;
+        let matches = found
+            .iter()
+            .take(limit)
+            .map(|&(place, token)| {
+                let name = view.names.place(place);
+                QueryMatch {
+                    token: translate::entry(net, &view.path, place, &name, token),
+                    json: net.json(place, token),
+                    place: name,
+                }
+            })
+            .collect();
+        respond(
+            out,
+            id,
+            QueryResult {
+                marking_version: view.marking_version,
+                count: found.len(),
+                matches,
+            },
+        );
+        Ok(())
+    }
+
     fn apply(&mut self, command: JsonCommand) -> Result<(), (ErrorCode, String)> {
         self.loaded_mut()
             .net
@@ -1606,6 +2001,7 @@ impl Owner {
             pending_param: None,
             inner: HashMap::new(),
             touched: Vec::new(),
+            projection: None,
         };
         loaded.know_all();
         self.loaded = Some(loaded);
@@ -1636,6 +2032,7 @@ impl Owner {
                 marking_version: self.marking_version,
                 path: loaded.name.to_owned(),
                 inner: None,
+                projection: loaded.projection.as_ref(),
             });
         };
         let gone = || {
@@ -1659,6 +2056,7 @@ impl Owner {
                 name: found.name.clone(),
                 template: inner.template.clone(),
             }),
+            projection: inner.projection.as_ref(),
         })
     }
 
@@ -1682,16 +2080,41 @@ impl Owner {
                 )
             })
             .collect();
+        // Under the connection's filter, each place lists the tokens it
+        // keeps and says how many there are (§13.4), from the key index.
+        let kept: Option<HashMap<PlaceId, Vec<TokenId>>> = view.projection.map(|projection| {
+            let mut kept: HashMap<PlaceId, Vec<TokenId>> = HashMap::new();
+            for (place, token) in projection.kept(net) {
+                kept.entry(place).or_default().push(token);
+            }
+            kept
+        });
         let places = view
             .topology
             .places
             .iter()
             .map(|p| {
+                let (matching, tokens) = match &kept {
+                    None => (
+                        None,
+                        translate::tokens(net, &view.path, p.id, &p.name, 0, token_limit),
+                    ),
+                    Some(kept) => {
+                        let ids = kept.get(&p.id).map_or(&[][..], Vec::as_slice);
+                        let tokens = ids
+                            .iter()
+                            .take(token_limit)
+                            .map(|&token| translate::entry(net, &view.path, p.id, &p.name, token))
+                            .collect();
+                        (Some(ids.len()), tokens)
+                    }
+                };
                 (
                     p.name.clone(),
                     protocol::PlaceMarking {
                         count: net.count(p.id),
-                        tokens: translate::tokens(net, &view.path, p.id, &p.name, 0, token_limit),
+                        matching,
+                        tokens,
                     },
                 )
             })
@@ -1718,7 +2141,9 @@ impl Owner {
             transitions,
             marking: protocol::Marking { places },
             progress: protocol::Progress {
-                step_count: net.fired_count(),
+                // The outer net's count includes the firings the runner made
+                // inside its tokens (§12.3), as the Python runner's does.
+                step_count: net.fired_count() + view.progress.inside,
                 last_fired: view.progress.last_fired.clone(),
                 fired_counts: view.progress.fired_counts.clone(),
                 last_progress_at: view.progress.last_progress_at.map(iso8601),
@@ -1740,6 +2165,14 @@ impl Owner {
             .iter()
             .find(|p| net.tokens(p.id).any(|(t, _)| t == token))
             .ok_or_else(unknown)?;
+        // A token the connection's filter hides is not there for it
+        // (§13.4), and is answered as one that is not there at all.
+        if view
+            .projection
+            .is_some_and(|projection| !projection.keeps(Some(net), place.id, token))
+        {
+            return Err(unknown());
+        }
         let value = match net.json(place.id, token) {
             Some(value) => TokenBody::Json { value },
             None => TokenBody::Text {
@@ -1802,6 +2235,22 @@ impl Owner {
         loaded.idle = false;
         let flushed = self.flush_events(now, None, true, out);
         let loaded = self.loaded_mut();
+        // The outer net counts the firing too, under its path without the
+        // outer net's name, then the transition (`Depot/#17/cabin/Sit`), as
+        // the Python runner does; the inner net's own progress counted it
+        // under its own name when the flush lifted it.
+        if failure.is_none()
+            && let Some(firing) = flushed.inner_firings.last()
+        {
+            let below = firing
+                .path
+                .strip_prefix(loaded.name)
+                .and_then(|rest| rest.strip_prefix('/'))
+                .unwrap_or(&firing.path);
+            loaded
+                .progress
+                .fired_inside(&format!("{below}/{}", firing.transition), now);
+        }
         loaded.prune();
         if let Some(failure) = &failure
             && loaded.running
@@ -2086,7 +2535,23 @@ impl Owner {
         let mut inline_consumed: Vec<(PlaceId, TokenId)> = Vec::new();
         let mut inner_launched = HashMap::new();
         let mut inner_firings = Vec::new();
+        // What may bring tokens into a projection's view, or take them out
+        // of it, with no token event (PROTOCOL.md §13.4): a parameter that
+        // changed, in the outer net (`None`) or an inner one, and the tokens
+        // inner events were lifted through, by the net that holds them.
+        let mut params_changed: Vec<Option<NetId>> = Vec::new();
+        let mut lifted_through: Vec<(Option<NetId>, PlaceId, TokenId)> = Vec::new();
         for event in wire_order(&events) {
+            if let Some(lifted) = Lifted::of(event) {
+                let mut above = None;
+                for &(place, token, _, id) in &lifted.levels {
+                    lifted_through.push((above, place, token));
+                    above = Some(id);
+                }
+                if matches!(lifted.event, Event::ParamChanged { .. }) {
+                    params_changed.push(Some(lifted.nested_id()));
+                }
+            }
             if matches!(event, Event::Nested { .. }) {
                 let line = loaded.lift(
                     event,
@@ -2100,88 +2565,94 @@ impl Owner {
             }
             let names = &loaded.names;
             let net = &loaded.net;
+            // The connection's projection of the outer net, if it set one:
+            // every token a line names goes through it (§13.4).
+            let projection = loaded.projection.as_mut();
             let version = *marking_version + 1;
             let notification = match event {
                 Event::Fired {
                     transition,
                     consumed,
                     produced,
-                } => Notification::Fired {
-                    transition: names.transition(*transition),
-                    consumed: names.pairs(consumed),
-                    produced: names.produced(net, produced),
-                    duration_ms: duration,
-                    marking_version: version,
-                    running,
-                },
+                } => {
+                    let (consumed, produced) =
+                        firing_tokens(projection, Some(net), consumed, produced, true);
+                    Notification::Fired {
+                        transition: names.transition(*transition),
+                        consumed: names.pairs(&consumed),
+                        produced: names.produced(net, &produced),
+                        duration_ms: duration,
+                        marking_version: version,
+                        running,
+                    }
+                }
                 Event::Launched { consumed, .. } if inline => {
                     // Reported with the landing, as one `fired`.
-                    inline_consumed.clone_from(consumed);
+                    inline_consumed = firing_tokens(projection, Some(net), consumed, &[], false).0;
                     continue;
                 }
                 Event::Launched {
                     transition,
                     consumed,
-                } => Notification::Launched {
-                    transition: names.transition(*transition),
-                    consumed: names.pairs(consumed),
-                    marking_version: version,
-                    running,
-                },
+                } => {
+                    let (consumed, _) = firing_tokens(projection, Some(net), consumed, &[], false);
+                    Notification::Launched {
+                        transition: names.transition(*transition),
+                        consumed: names.pairs(&consumed),
+                        marking_version: version,
+                        running,
+                    }
+                }
                 Event::Distributed {
                     transition,
                     produced,
-                } if inline => Notification::Fired {
-                    transition: names.transition(*transition),
-                    consumed: names.pairs(&inline_consumed),
-                    produced: names.produced(net, produced),
-                    duration_ms: duration,
-                    marking_version: version,
-                    running,
-                },
+                } if inline => {
+                    let (_, produced) = firing_tokens(projection, Some(net), &[], produced, true);
+                    Notification::Fired {
+                        transition: names.transition(*transition),
+                        consumed: names.pairs(&inline_consumed),
+                        produced: names.produced(net, &produced),
+                        duration_ms: duration,
+                        marking_version: version,
+                        running,
+                    }
+                }
                 Event::Distributed {
                     transition,
                     produced,
-                } => Notification::Distributed {
-                    transition: names.transition(*transition),
-                    produced: names.produced(net, produced),
-                    duration_ms: duration,
-                    marking_version: version,
-                    running,
-                },
+                } => {
+                    let (_, produced) = firing_tokens(projection, Some(net), &[], produced, true);
+                    Notification::Distributed {
+                        transition: names.transition(*transition),
+                        produced: names.produced(net, &produced),
+                        duration_ms: duration,
+                        marking_version: version,
+                        running,
+                    }
+                }
                 Event::Failed {
                     transition,
                     consumed,
                     restored,
                     error,
-                } => Notification::Failed {
-                    transition: names.transition(*transition),
-                    error: error.clone(),
-                    restored: *restored,
-                    consumed: names.pairs(consumed),
-                    marking_version: version,
-                    running,
-                },
-                Event::Added { place, token } => Notification::Added {
-                    place: names.place(*place),
-                    id: token.to_string(),
-                    label: translate::label(net, *place, *token),
-                    marking_version: version,
-                    running,
-                },
-                Event::Removed { place, token } => Notification::Removed {
-                    place: names.place(*place),
-                    id: token.to_string(),
-                    marking_version: version,
-                    running,
-                },
-                Event::Mutated { place, token } => Notification::Mutated {
-                    place: names.place(*place),
-                    id: token.to_string(),
-                    label: net.debug(*place, *token).map(translate::cut),
-                    marking_version: version,
-                    running,
-                },
+                } => {
+                    let told = match projection {
+                        Some(projection) => projection.failed(consumed, *restored),
+                        None => consumed.clone(),
+                    };
+                    Notification::Failed {
+                        transition: names.transition(*transition),
+                        error: error.clone(),
+                        restored: *restored,
+                        consumed: names.pairs(&told),
+                        marking_version: version,
+                        running,
+                    }
+                }
+                event @ (Event::Added { .. } | Event::Removed { .. } | Event::Mutated { .. }) => {
+                    token_line(names, Some(net), projection, event, version, running)
+                        .expect("a token event")
+                }
                 Event::Toggled {
                     transition,
                     enabled,
@@ -2194,15 +2665,18 @@ impl Owner {
                 // The name the `set_param` being served used; for a change
                 // nobody asked for over the wire, the wire name the net
                 // registered, or the type name if it registered none.
-                Event::ParamChanged { type_name } => Notification::ParamChanged {
-                    param: loaded
-                        .pending_param
-                        .clone()
-                        .or_else(|| net.param_name(type_name).map(str::to_owned))
-                        .unwrap_or_else(|| (*type_name).to_owned()),
-                    marking_version: version,
-                    running,
-                },
+                Event::ParamChanged { type_name } => {
+                    params_changed.push(None);
+                    Notification::ParamChanged {
+                        param: loaded
+                            .pending_param
+                            .clone()
+                            .or_else(|| net.param_name(type_name).map(str::to_owned))
+                            .unwrap_or_else(|| (*type_name).to_owned()),
+                        marking_version: version,
+                        running,
+                    }
+                }
                 // An `import_marking`: the marking was replaced wholesale and
                 // is not told as events (DESIGN §8.1), so a reader refetches.
                 Event::Resynced => Notification::Reloaded {
@@ -2225,6 +2699,7 @@ impl Owner {
             }
             push(out, notification);
         }
+        loaded.reproject(marking_version, &params_changed, &lifted_through, out);
         if compare_fireable && !events.is_empty() {
             let fireable = fireable_names(&loaded.net, &loaded.names);
             if fireable != loaded.last_fireable {
@@ -2308,6 +2783,18 @@ fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
     } else {
         "panic payload of unknown type".to_owned()
     }
+}
+
+/// A request's filter that could not be used, as the error it answers.
+fn filter_error(error: FilterError) -> (ErrorCode, String) {
+    (code_of(CoreError::Filter(&error)), error.to_string())
+}
+
+fn not_place_names() -> (ErrorCode, String) {
+    (
+        ErrorCode::InvalidParams,
+        "\"places\" is a list of place names".to_owned(),
+    )
 }
 
 fn string_arg<'a>(args: &'a Args, key: &str) -> Result<&'a str, (ErrorCode, String)> {

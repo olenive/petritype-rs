@@ -5,6 +5,7 @@ use petritype::{CommandError, NetError};
 
 use crate::protocol::ErrorCode;
 use crate::registry::LoadError;
+use crate::translate::FilterError;
 
 /// An error from the core or a factory, borrowed, for [`code_of`].
 #[derive(Debug, Clone, Copy)]
@@ -15,6 +16,8 @@ pub(crate) enum CoreError<'a> {
     Net(&'a NetError),
     /// From a factory.
     Load(&'a LoadError),
+    /// From reading a request's filter (PROTOCOL.md §13.2).
+    Filter(&'a FilterError),
 }
 
 /// The protocol code for a core or factory error. The message sent with it is
@@ -47,6 +50,9 @@ pub(crate) fn code_of(error: CoreError<'_>) -> ErrorCode {
             _ => ErrorCode::Internal,
         },
         CoreError::Net(error) => match error {
+            // Also a filter whose `places` names a place the net does not
+            // have, from `Net::query` and `Net::query_ids` (PROTOCOL.md
+            // §13.2).
             NetError::NoSuchPlace { .. } => ErrorCode::UnknownPlace,
             NetError::NoSuchTransition { .. } => ErrorCode::UnknownTransition,
             NetError::NoSuchToken { .. } => ErrorCode::UnknownToken,
@@ -56,6 +62,13 @@ pub(crate) fn code_of(error: CoreError<'_>) -> ErrorCode {
         CoreError::Load(error) => match error {
             LoadError::InvalidParams(_) => ErrorCode::InvalidParams,
             LoadError::Build(_) | LoadError::Other(_) => ErrorCode::LoadFailed,
+        },
+        CoreError::Filter(error) => match error {
+            // A clause with neither `values` nor `param`, a field a filter
+            // does not have, a value that is not a string, an integer or a
+            // boolean: the request's parameters are wrong.
+            FilterError::Shape(_) => ErrorCode::InvalidParams,
+            FilterError::UnknownPlace(_) => ErrorCode::UnknownPlace,
         },
     }
 }
@@ -284,6 +297,60 @@ mod tests {
             name: "Numbers".into(),
         });
         assert_eq!(command(e), ErrorCode::Internal);
+    }
+
+    fn filter(value: serde_json::Value) -> Result<petritype::Filter, FilterError> {
+        crate::translate::filter(&value, &sample())
+    }
+
+    #[test]
+    fn a_filter_of_the_wrong_shape_is_invalid_params() {
+        assert!(filter(json!({"clauses": [{"key": "n", "values": [1]}]})).is_ok());
+        for (shape, why) in [
+            (json!([1]), "not an object"),
+            (
+                json!({"clauses": [{"key": "n"}]}),
+                "neither values nor param",
+            ),
+            (
+                json!({"clauses": [{"key": "n", "values": [1], "param": "limit"}]}),
+                "both values and param",
+            ),
+            (
+                json!({"clauses": [{"key": "n", "values": []}]}),
+                "no values",
+            ),
+            (
+                json!({"clauses": [{"key": "n", "values": [1.5]}]}),
+                "a float",
+            ),
+            (json!({"clauses": [{"values": [1]}]}), "no key"),
+            (json!({"clauses": {"key": "n"}}), "clauses not a list"),
+            (json!({"places": "Numbers"}), "places not a list"),
+            (json!({"prefix": 3}), "prefix not a string"),
+            (json!({"where": []}), "a field a filter has not"),
+        ] {
+            let error = filter(shape).expect_err(why);
+            assert!(matches!(error, FilterError::Shape(_)), "{why}: {error}");
+            assert_eq!(
+                code_of(CoreError::Filter(&error)),
+                ErrorCode::InvalidParams,
+                "{why}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_filter_naming_a_place_the_net_lacks_is_unknown_place() {
+        let error = filter(json!({"places": ["Numbers", "Nowhere"]})).unwrap_err();
+        assert_eq!(error, FilterError::UnknownPlace("Nowhere".into()));
+        assert_eq!(code_of(CoreError::Filter(&error)), ErrorCode::UnknownPlace);
+        // The core's own answer to a place id it does not have, from a
+        // query: the same code.
+        let error = sample()
+            .query_ids(&petritype::Filter::new().in_places([place(7)]))
+            .unwrap_err();
+        assert_eq!(net(error), ErrorCode::UnknownPlace);
     }
 
     #[test]

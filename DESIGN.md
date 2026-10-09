@@ -1006,9 +1006,10 @@ filter.matches(&keys) -> bool;  filter.matches_with(&keys, |param| ..) -> bool
 #[non_exhaustive] pub struct Match { pub place, pub token, pub keys: Keys, pub label: String, #[cfg(serde)] pub json: Option<Value> }
 net.keys(place, token) -> Option<Keys>
 net.query(&filter) -> Result<Vec<Match>, NetError>             // NoSuchPlace for a place `places` names that is not there
+net.query_ids(&filter) -> Result<Vec<(PlaceId, TokenId)>, NetError>   // slice 20: the same tokens, nothing rendered
 net.distinct_values(key, places: Option<&[PlaceId]>) -> Vec<KeyValue>
 net.matches(&filter, place, token) -> bool
-snapshot.{keys, query, distinct_values, matches}             // the same answers, by scanning
+snapshot.{keys, query, query_ids, distinct_values, matches}  // the same answers, by scanning
 PlaceInfo::key_names: &[&'static str];  TopologyPlace::key_names: Vec<&'static str>
 ```
 
@@ -1079,7 +1080,11 @@ PlaceInfo::key_names: &[&'static str];  TopologyPlace::key_names: Vec<&'static s
   same trimmed-paths effect that kept `positional` a flag in §4.5.
 - **Queries.** `Net::query` returns `Match`es in place order and then
   token order, the order `tokens` gives (oldest first); `label` is
-  `Net::label`, `json` is `Net::json` for a serializable place. `Net::matches`
+  `Net::label`, `json` is `Net::json` for a serializable place.
+  `Net::query_ids` (slice 20) finds the same tokens in the same order and
+  returns their `(place, token)` alone, rendering no label and no JSON: what
+  the runner's projection (§19.3.12) counts, pages and remembers, rendering
+  only the tokens it writes. `Net::matches`
   asks the same question of one token, for a reader that has just been told
   of a token by an event. `Net::distinct_values(key, places)` lists the
   values in order of first appearance, place order then token order (the
@@ -1219,11 +1224,11 @@ BuildError::KeyedEdgeOnUnkeyedPlace { transition, place }
   `{"edge":"input",..,"kind":"take_where","filter":{"clauses":[{"key":"class","values":["Bird"]}]}}`,
   `places` as `PlaceId`s, `filter` and `filters` written only where there
   is one — because a `Filter` alone knows no names: the protocol's shapes
-  keyed by name live in the runner (§19.2), which maps the ids. Until the
-  runner's half of keys lands (PROTOCOL.md §13, the next branch), the
-  runner sends a keyed edge without `kind`, which a reader draws as a plain
-  edge; `petritype-dot` draws one as its plain counterpart labelled with
-  the filter (`class in {Bird}`).
+  keyed by name live in the runner (§19.2), which maps the ids; since the
+  runner's half of keys (slice 20, §19.3.12) it sends `kind` and `filter`
+  with places by name, and sent a keyed edge without `kind` until then.
+  `petritype-dot` draws one as its plain counterpart labelled with the
+  filter (`class in {Bird}`).
 - **The example.** `Migrate Forest Wetland` is one
   `TakeWhereEdge(forest, class in {Bird})` into `Migrating`, PROTOCOL.md
   §11's `take_where`; its guard keeps the test on `season`, which is a
@@ -1637,6 +1642,19 @@ notifications its request caused, so the transport holds a state-changing
 answer until the stream reaches its version, and the mirror ignores a
 version it already holds instead of calling it a gap (protocol §9).
 
+**2026-10-09:** nested nets (phase 4 of nets as tokens, R9): a token that holds nets is
+badged with the tokens inside (from `nets[].count`, kept from `nested`; locally from
+`Net::nested` and `Event::Nested`), and `RemoteNet::descend` shows its first inner net in the
+same window, read by `nested_id` so the view stays attached as the token moves, with
+`Enter`/`Backspace`, a breadcrumb, and a return up when the inner net is gone; one level,
+remote only, not over HTTP (the server relays no `nested_id`); 190 tests with `http`. **2026-10-09:** token keys (phase 4, R4): keys and edge
+filters on the wire and in the mirror, a `TokenFilter` that composes with
+`ViewFilter` (hidden tokens keep their entities, marked `FilteredOut`;
+counts read `matching / count`; a banner clears), a filter bar with
+toggles and tabs (`K`), `distinct` asked only when the mirror knows fewer
+tokens than the net holds, keyed edges dashed; the `set_filter` projection
+deferred (bevy DESIGN §3.6); 213 tests with `http`.
+
 - `NetRes(Net)` newtype `Resource` (orphan rule; the newtype lives in the
   adapter).
 - Startup: `net.places()`, `net.transitions()`, `net.edges()` → spawn view
@@ -1819,6 +1837,18 @@ Slices, each with tests, in order:
     (§8.3, "Pattern notes"). `petritype-dot` labels a keyed edge with its
     filter; the runner sends one without `kind` until its own half of keys.
     `tests/slice19.rs`, two `trybuild` cases.
+20. Token keys, phase 3 (§19.3.12), 2026-10-09, R3 of the same proposal on
+    PROTOCOL.md §13: the runner puts `key_names` on places, `keys` on token
+    entries, `added` and `mutated`, and as the fifth element of a `produced`
+    entry; sends keyed edges with `kind` and `filter` by name; answers
+    `query`, `distinct` and `set_filter`; and projects each net, the outer
+    one or an inner one, through the connection's filter, with `matching`
+    in reads and `hidden` in place of what the filter hides. It carries the
+    conformance net `wildlife` (the core example, included by path), and
+    the shared `06_keys_query_filter.json` replays unchanged, as 01 to 05
+    still do. The outer `progress` counts inner firings under their paths,
+    as Python's does. The core gained `Net::query_ids` and
+    `Snapshot::query_ids`; `tests/slice20.rs`.
 
 ## 19. Interop: one protocol, two runtimes, two viewers
 
@@ -1862,19 +1892,23 @@ The decisions that shape it, all of 2026-10-03:
 | `topology.places` | `net.places()`: `name`, `type_name`, and `serializable` (new field, §19.2) |
 | `topology.transitions[].detail` | `TransitionInfo::params` (type names) and `detachable` |
 | `topology.edges` | `net.edges()`: `EdgeKind::{Take, TakeAll, Snapshot, Mutate}` as `"take"`, `"take_all"`, `"snapshot"`, `"mutate"`; `Output { slot }` as `slot` where the transition has more than one output and `TransitionInfo::positional` (slice 17; a routed or distributing body has no slots to speak of) |
-| keyed edges, `kind: "take_where"` / `"mutate_where"` with `filter` (§5.1, §13.5) | `EdgeKind::{TakeWhere, MutateWhere}` and `EdgeInfo::Input::filter` (slice 19), the filter's `places` mapped from ids to names by the runner; until the runner's half of keys, sent without `kind` |
+| keyed edges, `kind: "take_where"` / `"mutate_where"` with `filter` (§5.1, §13.5) | `EdgeKind::{TakeWhere, MutateWhere}` and `EdgeInfo::Input::filter` (slice 19), the filter's `places` mapped from ids to names by the runner (slice 20; sent without `kind` before it) |
 | `topology.places[].nested`, `passive` (§12.2) | `TopologyPlace::nested`, `passive`, written only when true |
 | `path`, `nested_id` (§12.1) | a path walked through `net.nested(place, token)` level by level; a nested id is the inner net's `NetId` printed with its `Display`, found by walking every nested place at every depth; mutable reach (`inject`) through `nested_scope` at each level |
 | a token's `nets` (§12.2) | `net.nested(place, token)`: each net's name, `id()`, its path, `template()`, and the sum of its places' counts |
 | `nested` notification (§12.4) | `Event::Nested`, unwrapped to the event the innermost net logged: one wrapper with the full path, the inner notification built with that net's names and version |
 | inner `marking_version` (§12.3) | the runner's counter per inner net, one per state notification of that net; the outer one does not move |
 | `step` or a running net, inside (§12.3) | `select()`; when it picks nothing, `step_inside()`, inline: `nested` around `fired` |
-| `topology.places[].key_names`, a token's `keys`, `query`, `distinct` (§13; not served yet) | `TopologyPlace::key_names`, `Net::keys`, `Net::query` with place names resolved to ids, `Net::distinct_values` (slice 18, §8.3) |
+| `topology.places[].key_names`, a token's `keys` (§13.1) | `TopologyPlace::key_names`, written only when non-empty; `Net::keys`, read when the line is written (slice 20, §19.3.12) |
+| a `produced` entry's fifth element (§7.1) | `protocol::Produced`: three elements, or five with `null` for the colour Rust never has when the place declares keys |
+| a request's filter (§13.2) | `protocol::Filter::parse`, then place names resolved to the named net's ids: a `Filter` with `Clause::{In, IsParam}` |
+| `query`, `distinct` (§13.3) | `Net::query_ids` (slice 20), rendering only the matches written; `Net::distinct_values` |
+| `set_filter`, `matching`, `hidden` (§13.4) | a `Projection` per net, the runner's (§19.3.12): `Net::query_ids` for reads, `Net::matches` for each token an event names, a set of what was shown for the tokens that are gone |
 | `transitions[name]` | `is_enabled`, `is_in_flight`, membership of `fireable()`, `priority_of` |
 | `marking` | `tokens(place)` ids; the wire `label` is `debug(place, token)` cut by the runner at the protocol's 1000 characters, whatever the net's own `label_limit` |
 | token id `"17"` | `TokenId` printed with its `Display` (the bare number) |
-| `progress.step_count` | `fired_count()` |
-| `progress.last_fired`, `fired_counts`, `last_progress_at` | kept by the runner from the events: the core dropped them on purpose (§2) and does not get them back |
+| `progress.step_count` | `fired_count()`, plus, for the outer net, the firings the runner made inside its tokens (slice 20) |
+| `progress.last_fired`, `fired_counts`, `last_progress_at` | kept by the runner from the events: the core dropped them on purpose (§2) and does not get them back; the outer net's count an inner firing under its path without the net's name, then the transition (`Depot/#17/cabin/Sit`) |
 | `marking_version` | the runner's own counter, one per state notification. Not `state_counter`, which starts at 0 again when `reset` rebuilds the net |
 | `generation` | the runner's counter of loads and resets; a rebuilt `Net` numbers its tokens from the start again, which is why the protocol has generations at all |
 | state notifications | `Event` variants, ids resolved to names through the read API, produced tokens labelled with `label()`; `ParamChanged { type_name }` reported under the parameter's wire name from `serializable_param` when it has one |
@@ -1930,7 +1964,7 @@ a wire format they do not own. `Snapshot` stays unserialisable; tokens are
 
 ### 19.3 The `petritype-runner` crate
 
-**Designed and built 2026-10-03**; as-built notes in §19.3.10, nested nets in §19.3.11. A library crate in this
+**Designed and built 2026-10-03**; as-built notes in §19.3.10, nested nets in §19.3.11, keys in §19.3.12. A library crate in this
 workspace plus an example binary. A net's bodies are the user's code, so the
 binary is always the user's own: it lists its nets and hands over to the
 crate. Dependencies: `petritype` with `serde`, `serde`, `serde_json`, and
@@ -1942,7 +1976,9 @@ The example binary (`examples/parcel_runner.rs`, its nets in
 `parcel-distribution` of PROTOCOL.md §11 and, since slice 17, the second
 conformance net `transit`, which is not a copy: `nets.rs` includes the
 core's own example net, `petritype/examples/transit/net.rs`, with
-`#[path]`, and registers `build_city` as the entry's factory.
+`#[path]`, and registers `build_city` as the entry's factory. Since slice
+20 it carries the third, `wildlife`, the same way
+(`petritype/examples/wildlife/net.rs`, `build_wildlife`).
 
 #### 19.3.1 What the user writes
 
@@ -2038,7 +2074,8 @@ The core dropped these on purpose (§2); the runner keeps them:
 | `log: VecDeque<LogEntry>` (1000) | `get_log`; each entry keeps, off the wire, the chain of nested ids it happened in (slice 17) |
 | `inner: HashMap<NetId, Inner>` | slice 17: per inner net, its own `marking_version`, `Topology` and `Names`, progress, last fireable set, template and last path (§19.3.11) |
 | `touched: Vec<NetId>` | slice 17: inner nets with events since their fireable set was last compared |
-| `progress: {step_count, last_fired, fired_counts, last_progress_at}` | `progress` |
+| `projection: Option<Projection>` | slice 20: the connection's filter for the outer net and what it has been shown (§19.3.12); an inner net's is in its `Inner` |
+| `progress: {step_count, last_fired, fired_counts, last_progress_at}` | `progress`; the outer net's also counts the inner firings the runner made (slice 20) |
 | `idle: bool` | one `idle` per idle spell |
 | `factory`, `params` | `reset` rebuilds from them |
 
@@ -2056,7 +2093,7 @@ last set sent. Only then does it write the response, which is the protocol's
 | `Launched` | `launched` |
 | `Distributed` | `distributed` with `duration_ms` from `in_flight.started_at` |
 | `Failed` | `failed`; the log gets a `"failed"` entry |
-| `Added` / `Removed` / `Mutated` | `added` / `removed` / `mutated` |
+| `Added` / `Removed` / `Mutated` | `added` / `removed` / `mutated`, or under the connection's filter `hidden`, or an `added` or a `removed` for a mutation across it (§19.3.12) |
 | `Toggled` | `toggled` |
 | `ParamChanged` | `param_changed {param}`, the name taken from the `set_param` request being served, because the owner is the only writer and the event carries only a type name; since slice 17, otherwise `Net::param_name` (an outer body setting an inner net's parameter) |
 | `Resynced` | `reloaded {reason: "resync"}` (slice 16's `import_marking`), which moves no version |
@@ -2068,8 +2105,8 @@ label `debug()` cut at 1000 characters on a character boundary with `"..."`
 `color` is not either. What a token has instead, since slice 18, is keys
 (§8.3): named values its place derives from it, which the protocol's §13
 puts on a token entry as `keys: {name: value}` (from `Net::keys`) and on a
-place as `key_names` (from `TopologyPlace::key_names`). The runner does not
-write them yet; that is the next phase. A transition's `detail` is
+place as `key_names` (from `TopologyPlace::key_names`), and the runner
+writes them since slice 20 (§19.3.12). A transition's `detail` is
 `{params, detachable}`; `priority` is `priority_of` behind `catch_unwind`
 and omitted if the closure panicked.
 
@@ -2325,10 +2362,15 @@ copy in `tests/protocol/`.
   running net does the same, one inner firing per `handle` with
   `wants_tick` asking for the next, so `execution_stopped {reason:
   "no_fireable_transitions"}` and `idle` mean deep quiescence, and an inner
-  failure stops a run as an outer one does. The outer net's `progress`
-  counts its own firings only; an inner net's counts its own (its
-  `step_count` is its `fired_count`). Python counts inner firings in the
-  outer `fired_counts` under path keys; the shared transcript pins neither.
+  failure stops a run as an outer one does. An inner net's `progress`
+  counts its own firings (its `step_count` is its `fired_count`). The outer
+  net's counted its own only until slice 20; it now counts each inner
+  firing the runner makes too, as the Python runner does: `step_count` one
+  more, `fired_counts` and `last_fired` under the path without the net's
+  name and then the transition (`Depot/#17/cabin/Sit`, the path where the
+  inner net fired), and `last_progress_at`. A failed inner firing counts in
+  neither; an inner firing an outer body makes counts in its own net's
+  alone. No shared transcript pins it; the Python track asked for parity.
 - **Inner `fireable`** (§7.2, §12.4). After a batch, after the outer
   `fireable`, each inner net that had events (in that batch, or since the
   last compare, across a launch) is compared with the last set sent for it,
@@ -2382,10 +2424,120 @@ copy in `tests/protocol/`.
   first. Our transcript 01's `describe` lists `transit` too, since the
   example binary carries it, and 03 has `invalid_params` for the unknown
   parameter.
-- **Deferred.** Keys, queries and filters (§13 of the protocol; the shared
-  `06_keys_query_filter.json` fails at its `load` until they are built) —
-  the core half landed as slice 18 (§8.3), and the runner's is next; inner
-  firings on threads of their own; an id-preserving import.
+- **Deferred.** Inner firings on threads of their own; an id-preserving
+  import. (Keys, queries and filters, deferred here, landed as slice 20,
+  §19.3.12.)
+
+#### 19.3.12 Keys, queries and the projection on the wire, 2026-10-09
+
+Phase 3 of token keys, slice 20: the proposal's R3, on PROTOCOL.md §13,
+which the Python track wrote first and this runner conforms to. The shared
+transcript `06_keys_query_filter.json`, over the conformance net `wildlife`
+(the core's example, included by path as `transit` is), replays here
+unchanged, both from the Python repository and from a verbatim copy in
+`tests/protocol/`; 01 to 05 still do.
+
+- **Keys on the wire** (§13.1). `topology.places[].key_names` comes from
+  `TopologyPlace::key_names`, written only when there are some. A token
+  entry — in `get_state`, `get_place_tokens` and `query` — carries `keys`
+  (`protocol::Keys`, an object in declaration order) from `Net::keys` when
+  its place declares keys, and so do `added` and `mutated`, read when the
+  line is written, as labels are, so a `mutated` has the keys after the
+  change. `get_token`'s answer is not a token entry and has none, as the
+  transcript has it. A `produced` entry is `protocol::Produced`: three
+  elements, or five when its place declares keys, `null` in the colour's
+  place, since a Rust token has no colour (and so never four).
+- **Keyed edges** (§13.5) go out with `kind: "take_where"` or
+  `"mutate_where"` and their `filter` as declared, places mapped from ids to
+  names, a `{key, param}` clause unevaluated.
+- **A filter off the wire** (§13.2) is read by `protocol::Filter::parse`,
+  as strictly as Python's `Filters.from_wire`: no field but `clauses`,
+  `places` and `prefix`; a clause a string `key` and either a non-empty
+  `values` of strings, integers and booleans or a string `param`, never
+  both. `translate::filter` then resolves the place names against the net
+  the request names. A bad shape is `invalid_params`, an unknown place
+  `unknown_place` (`CoreError::Filter`, a test per arm). `{key, param}` is
+  `Clause::IsParam`, which reads the parameter by its wire name.
+- **Served from the index.** Every question of many tokens asks
+  `Net::query_ids`, the core's one addition: `query`'s tokens as ids alone,
+  from the key index, so a reader renders — label, keys, nets, JSON — only
+  the tokens it writes. `query` counts all its matches and renders the first
+  `token_limit` (200 by default, 1 to 1000); `get_state` under a filter
+  groups the kept ids by place, for `matching` and the first `token_limit`
+  of each; `get_place_tokens` pages its place's (asked of that place
+  alone). `distinct` is `Net::distinct_values`, the index alone. Not from
+  the index: one token's question as its event is read, which
+  `Net::matches` answers by extracting that token's keys, and `get_token`'s.
+- **`query` and `distinct` are reads.** Answered at once while a body is
+  airborne, from the live net (a taken token is absent, as from
+  `get_state`), and held for the landing only when they name an inner net a
+  body may hold, like the other reads. `query` without `filter` uses the
+  connection's filter for that net, or else keeps every token; with one,
+  that one alone. `distinct` is over the net's tokens, not the projection:
+  §13.3 says so, and Python does the same.
+- **One projection per net.** `set_filter {filter?, path?, nested_id?}`
+  gives the net it names a `Projection` (`projection.rs`): the core's
+  `Filter`, places by id, and the set of `(place, token)` the connection has
+  been shown. The outer net's is in `Loaded`, an inner net's in its `Inner`
+  record, so it goes with the record, and `load` and `reset` clear the
+  outer one (in Python too: a new generation is a new net record). An inner
+  net's events go through its own projection, never the outer net's.
+  `set_filter` answers with the named net's version and announces nothing:
+  the client changed its view and reads it afresh. It is not a read, so it
+  waits for an airborne body to land: a firing is told through one filter
+  from its `launched` to its landing.
+- **The `hidden` rule.** As the owner flushes the log, each token event
+  goes through the net's projection (`token_line`, shared by the outer flush
+  and the inner lift). An `added` is told when the filter keeps the token
+  where it stands; a `removed` when the connection had been shown the
+  token; a `mutated` by where it crosses — kept before and after,
+  `mutated`; after only, `added`; before only, `removed`; neither,
+  `hidden`. In place of every line it hides the connection gets `hidden
+  {kind, place}`, a state notification, so the version moves exactly as it
+  would unfiltered and a filtered client never sees a gap. A firing's lists
+  name only what the connection is told: `launched` (and an inline
+  `fired`) the consumed tokens it had been shown, which the projection keeps
+  aside as taken; `failed` exactly those, shown again when `restored`;
+  `distributed` and `fired` the produced tokens the filter keeps. The line
+  goes out with empty lists too, since it moves the version. The set of
+  what was shown is the one thing a filter cannot answer by itself: a
+  consumed or removed token is gone by the time its event is read.
+- **Into or out of view without a token event.** After a batch's events and
+  before its `fireable`s: when a parameter of a net changed and that net's
+  filter has a `{key, param}` clause, every token the filter keeps now
+  (from the index) is compared with what was shown, and the difference is
+  told as `removed`s and then `added`s, each in id order, the Python
+  runner's `_sync_visible`; after inner events, only the tokens they were
+  lifted through are compared, since a key may read the nets a token holds
+  (§8.3). Python compares after every batch; here only where something can
+  have moved without an event, so a filtered firing costs the tokens it
+  names. These lines are state notifications of their net and move its
+  version, as in Python: the one place a filtered connection's version runs
+  ahead of the version an unfiltered one would have read.
+- **The outer progress** counts the runner's inner firings (§19.3.11), for
+  parity with the Python runner.
+- **`set_param` keeps the parameter's JSON type**, as it always has: the
+  value goes through the parameter's strict decoder (§6.4), so a string for
+  a number, a float for an integer or a number for a string is
+  `invalid_params` and moves nothing. Now tested as such.
+- **What the harness needed.** The `wildlife` registry, and one fold
+  widened: a `launched` and its `distributed` with only the firing's own
+  lines between become those lines and a `fired`, and the firing's own
+  lines now include `hidden`, `added` and `removed`, the forms its mutations
+  take under a filter. `06_keys_query_filter.json` has Python's `Spread
+  Savanna Reef` as `launched`, `hidden {kind: "mutated"}`, `distributed`;
+  this runner's inline firing tells `hidden`, `fired`.
+- **Read in PROTOCOL.md, where it is silent or loose** (for its next
+  revision): `failed.consumed` is projected like `launched.consumed` here,
+  so a hidden token's id is never told, where §13.4 names only `launched`,
+  `distributed` and `fired` and the Python runner lists every consumed
+  token; the `added`s and `removed`s a parameter change brings move the
+  version, which §13.4's "the versions a filtered connection sees are the
+  net's" does not quite say; a clause's empty `values` is `invalid_params`,
+  as in Python, where §13.2 says nothing; `query {filter: null}` reads as no
+  filter here (Python answers `invalid_params`); and a `mutated` inside an
+  inner net whose token a body holds cannot be checked against the filter,
+  so it keeps the token's view as it was.
 
 ### 19.4 Who spawns it
 

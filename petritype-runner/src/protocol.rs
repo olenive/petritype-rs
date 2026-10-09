@@ -8,11 +8,19 @@
 //!
 //! Optional fields are omitted, never `null`, unless the protocol says
 //! otherwise (`progress.last_fired`, `progress.last_progress_at` and the
-//! heartbeat's two fields are `null` by design).
+//! heartbeat's two fields are `null` by design, and so is the colour of a
+//! `produced` entry that carries keys, [`Produced`]).
+//!
+//! A key's value is the core's [`KeyValue`]: a string, an integer or a
+//! boolean, written as the bare JSON value (PROTOCOL.md §13.1).
 
 use std::collections::BTreeMap;
+use std::fmt;
 
-use serde::{Deserialize, Serialize};
+use petritype::KeyValue;
+use serde::de::{self, MapAccess, SeqAccess, Visitor};
+use serde::ser::{SerializeMap, SerializeSeq};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::{Map, Value};
 
 /// The protocol version this crate speaks.
@@ -236,8 +244,9 @@ pub enum Notification {
         transition: String,
         /// `[place, id]` of each token taken.
         consumed: Vec<(String, String)>,
-        /// `[place, id, label]` of each token produced.
-        produced: Vec<(String, String, String)>,
+        /// Each token produced: `[place, id, label]`, and its keys when its
+        /// place declares some ([`Produced`]).
+        produced: Vec<Produced>,
         /// How long the body ran.
         duration_ms: f64,
         /// See the type's documentation.
@@ -261,8 +270,9 @@ pub enum Notification {
     Distributed {
         /// The transition that landed.
         transition: String,
-        /// `[place, id, label]` of each token produced.
-        produced: Vec<(String, String, String)>,
+        /// Each token produced: `[place, id, label]`, and its keys when its
+        /// place declares some ([`Produced`]).
+        produced: Vec<Produced>,
         /// How long the body was airborne.
         duration_ms: f64,
         /// See the type's documentation.
@@ -285,7 +295,8 @@ pub enum Notification {
         /// See the type's documentation.
         running: bool,
     },
-    /// A token arrived from outside.
+    /// A token arrived from outside; or, under the connection's filter, a
+    /// token came into its view (PROTOCOL.md §13.4).
     Added {
         /// Where.
         place: String,
@@ -293,12 +304,16 @@ pub enum Notification {
         id: String,
         /// Its label.
         label: String,
+        /// Its keys, when its place declares some (§13.1).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        keys: Option<Keys>,
         /// See the type's documentation.
         marking_version: u64,
         /// See the type's documentation.
         running: bool,
     },
-    /// A token was removed from outside.
+    /// A token was removed from outside; or, under the connection's
+    /// filter, a token went out of its view (PROTOCOL.md §13.4).
     Removed {
         /// Where from.
         place: String,
@@ -318,6 +333,23 @@ pub enum Notification {
         /// Its new label.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         label: Option<String>,
+        /// Its keys after the change, when its place declares some (§13.1).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        keys: Option<Keys>,
+        /// See the type's documentation.
+        marking_version: u64,
+        /// See the type's documentation.
+        running: bool,
+    },
+    /// Stands in for an `added`, `removed` or `mutated` about a token the
+    /// connection's filter hides (PROTOCOL.md §13.4): a state notification,
+    /// so the version moves as the hidden one would have, and nothing of the
+    /// token is told but where it is.
+    Hidden {
+        /// What happened to the hidden token.
+        kind: HiddenKind,
+        /// The place it happened in.
+        place: String,
         /// See the type's documentation.
         marking_version: u64,
         /// See the type's documentation.
@@ -430,6 +462,139 @@ pub enum Notification {
     },
 }
 
+/// What a [`Notification::Hidden`] stands in for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HiddenKind {
+    /// An `added`.
+    Added,
+    /// A `removed`.
+    Removed,
+    /// A `mutated`.
+    Mutated,
+}
+
+/// One entry of a `produced` list (PROTOCOL.md §7.1): `[place, id, label]`,
+/// or, for a token whose place declares keys, `[place, id, label, null,
+/// keys]`.
+///
+/// The fourth element is the token's colour, which this runner never has:
+/// it is written, as `null`, only to keep the keys in fifth place — the one
+/// place the protocol writes `null` for an absent optional. Read back, a
+/// colour in fourth place is accepted and dropped.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Produced {
+    /// The place the token went to.
+    pub place: String,
+    /// Its id.
+    pub id: String,
+    /// Its label.
+    pub label: String,
+    /// Its keys, when its place declares some.
+    pub keys: Option<Keys>,
+}
+
+impl Serialize for Produced {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut seq = serializer.serialize_seq(Some(if self.keys.is_some() { 5 } else { 3 }))?;
+        seq.serialize_element(&self.place)?;
+        seq.serialize_element(&self.id)?;
+        seq.serialize_element(&self.label)?;
+        if let Some(keys) = &self.keys {
+            seq.serialize_element(&None::<String>)?;
+            seq.serialize_element(keys)?;
+        }
+        seq.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for Produced {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Entry;
+
+        impl<'de> Visitor<'de> for Entry {
+            type Value = Produced;
+
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("[place, id, label, colour?, keys?]")
+            }
+
+            fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Produced, A::Error> {
+                let mut next = |what: &str| {
+                    seq.next_element::<String>()?.ok_or_else(|| {
+                        de::Error::custom(format!("a produced entry needs its {what}"))
+                    })
+                };
+                let place = next("place")?;
+                let id = next("id")?;
+                let label = next("label")?;
+                let _colour: Option<Option<String>> = seq.next_element()?;
+                let keys: Option<Keys> = seq.next_element()?;
+                if seq.next_element::<de::IgnoredAny>()?.is_some() {
+                    return Err(de::Error::custom(
+                        "a produced entry has at most five elements",
+                    ));
+                }
+                Ok(Produced {
+                    place,
+                    id,
+                    label,
+                    keys,
+                })
+            }
+        }
+
+        deserializer.deserialize_seq(Entry)
+    }
+}
+
+/// A token's keys on the wire (PROTOCOL.md §13.1): `{name: value}`, written
+/// in the order its place declares them, each value a string, an integer or
+/// a boolean.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Keys(pub Vec<(String, KeyValue)>);
+
+impl Keys {
+    /// The value of the key `name`, if the token has that key.
+    pub fn get(&self, name: &str) -> Option<&KeyValue> {
+        self.0.iter().find(|(n, _)| n == name).map(|(_, v)| v)
+    }
+}
+
+impl Serialize for Keys {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut map = serializer.serialize_map(Some(self.0.len()))?;
+        for (name, value) in &self.0 {
+            map.serialize_entry(name, value)?;
+        }
+        map.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for Keys {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Object;
+
+        impl<'de> Visitor<'de> for Object {
+            type Value = Keys;
+
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("an object of strings, integers and booleans")
+            }
+
+            fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Keys, A::Error> {
+                let mut keys = Vec::new();
+                while let Some(entry) = map.next_entry::<String, KeyValue>()? {
+                    keys.push(entry);
+                }
+                Ok(Keys(keys))
+            }
+        }
+
+        deserializer.deserialize_map(Object)
+    }
+}
+
 impl Notification {
     /// Whether this is a state notification (PROTOCOL.md §7.1), the kind that
     /// raises `marking_version` by exactly one.
@@ -443,6 +608,7 @@ impl Notification {
                 | Notification::Added { .. }
                 | Notification::Removed { .. }
                 | Notification::Mutated { .. }
+                | Notification::Hidden { .. }
                 | Notification::Toggled { .. }
                 | Notification::ParamChanged { .. }
         )
@@ -566,6 +732,10 @@ pub struct Place {
     /// written only when true.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub passive: bool,
+    /// The keys the place derives from its tokens, in declaration order
+    /// (§13.1); written only when there are some.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub key_names: Vec<String>,
 }
 
 /// A transition in [`Topology`].
@@ -598,6 +768,10 @@ pub struct Edge {
     /// How an input edge reads its place.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kind: Option<EdgeKind>,
+    /// The filter a keyed edge (`take_where`, `mutate_where`) chooses its
+    /// token with, as declared (§13.5).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filter: Option<Filter>,
     /// The output slot, for a transition with more than one output that
     /// returns them by position.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -626,6 +800,150 @@ pub enum EdgeKind {
     Snapshot,
     /// Borrows the front token and may change it.
     Mutate,
+    /// Consumes the oldest token its filter accepts (§13.5).
+    TakeWhere,
+    /// Borrows the oldest token its filter accepts and may change it.
+    MutateWhere,
+}
+
+// ----- filters ---------------------------------------------------------------
+
+/// A filter on the wire (PROTOCOL.md §13.2): every clause must pass (AND
+/// across clauses), and the token must lie in a place `places` names, if
+/// given, whose name begins with `prefix`, if given. Places by name.
+///
+/// Read off a request with [`Filter::parse`], which is as strict as the
+/// Python runner; the derived `Deserialize` is the lenient reading of a
+/// line this runner wrote.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Filter {
+    /// Every one must pass.
+    #[serde(default)]
+    pub clauses: Vec<Clause>,
+    /// The places to look in, by name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub places: Option<Vec<String>>,
+    /// The start of the name of every place to look in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prefix: Option<String>,
+}
+
+/// One clause of a [`Filter`]: `{key, values}` or `{key, param}`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum Clause {
+    /// The token's `key` is one of `values` (OR within the clause),
+    /// compared by JSON type and value.
+    In {
+        /// The key's name.
+        key: String,
+        /// The values accepted.
+        values: Vec<KeyValue>,
+    },
+    /// The token's `key` equals the current value of the net parameter
+    /// `param` (keyed edges, §13.5). `IsParam`, as the core's, and not
+    /// `Param`, which is the core's parameter input.
+    IsParam {
+        /// The key's name.
+        key: String,
+        /// The net parameter's wire name.
+        param: String,
+    },
+}
+
+impl Filter {
+    /// Reads a request's filter (PROTOCOL.md §13.2), as strictly as the
+    /// Python runner reads one: an object with no fields but `clauses`,
+    /// `places` and `prefix`; `clauses` a list (or `null`) of objects with a
+    /// string `key` and either a non-empty list `values` of strings,
+    /// integers and booleans or a string `param`, never both; `places` a
+    /// list of strings; `prefix` a string. Whether the places exist is the
+    /// net's to say.
+    ///
+    /// # Errors
+    ///
+    /// What is wrong with the shape, for an `invalid_params` answer.
+    pub fn parse(value: &Value) -> Result<Filter, String> {
+        let Value::Object(object) = value else {
+            return Err("a filter is an object".into());
+        };
+        if let Some(unknown) = object
+            .keys()
+            .find(|key| !["clauses", "places", "prefix"].contains(&key.as_str()))
+        {
+            return Err(format!("a filter has no {unknown:?}"));
+        }
+        let clauses = match object.get("clauses") {
+            None | Some(Value::Null) => Vec::new(),
+            Some(Value::Array(clauses)) => clauses
+                .iter()
+                .map(Clause::parse)
+                .collect::<Result<_, _>>()?,
+            Some(_) => return Err("a filter's \"clauses\" is a list".into()),
+        };
+        let places = match object.get("places") {
+            None | Some(Value::Null) => None,
+            Some(Value::Array(places)) => Some(
+                places
+                    .iter()
+                    .map(|place| place.as_str().map(str::to_owned))
+                    .collect::<Option<Vec<_>>>()
+                    .ok_or("\"places\" is a list of place names")?,
+            ),
+            Some(_) => return Err("\"places\" is a list of place names".into()),
+        };
+        let prefix = match object.get("prefix") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(prefix)) => Some(prefix.clone()),
+            Some(_) => return Err("\"prefix\" is a string".into()),
+        };
+        Ok(Filter {
+            clauses,
+            places,
+            prefix,
+        })
+    }
+}
+
+impl Clause {
+    fn parse(value: &Value) -> Result<Clause, String> {
+        const SHAPE: &str = "a clause is {\"key\", \"values\"} or {\"key\", \"param\"}";
+        let Some(Value::String(key)) = value.get("key") else {
+            return Err(SHAPE.into());
+        };
+        let key = key.clone();
+        match (value.get("values"), value.get("param")) {
+            (None, Some(Value::String(param))) => Ok(Clause::IsParam {
+                key,
+                param: param.clone(),
+            }),
+            (None, None) => Err(SHAPE.into()),
+            (Some(_), Some(_)) | (None, Some(_)) => {
+                Err("a clause has \"values\" or a string \"param\"".into())
+            }
+            (Some(values), None) => {
+                let values = values
+                    .as_array()
+                    .filter(|values| !values.is_empty())
+                    .and_then(|values| values.iter().map(key_value).collect::<Option<Vec<_>>>())
+                    .ok_or(
+                        "a clause's \"values\" is a non-empty list of strings, integers or booleans",
+                    )?;
+                Ok(Clause::In { key, values })
+            }
+        }
+    }
+}
+
+/// A JSON value as a key value: a string, an integer that fits an `i64`, or
+/// a boolean (PROTOCOL.md §13.1); `None` for anything else.
+pub(crate) fn key_value(value: &Value) -> Option<KeyValue> {
+    match value {
+        Value::String(value) => Some(KeyValue::Str(value.clone())),
+        Value::Number(number) => number.as_i64().map(KeyValue::Int),
+        Value::Bool(value) => Some(KeyValue::Bool(*value)),
+        _ => None,
+    }
 }
 
 /// One transition's state (PROTOCOL.md §5.2).
@@ -654,18 +972,26 @@ pub struct Marking {
 pub struct PlaceMarking {
     /// How many tokens the place holds.
     pub count: usize,
+    /// How many of them the connection's filter lets through, while one is
+    /// set (PROTOCOL.md §13.4); `tokens` then holds only those.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub matching: Option<usize>,
     /// The oldest, up to the limit.
     pub tokens: Vec<Token>,
 }
 
 /// A token on the wire: its id, a label of at most 1000 characters (plus
-/// `"..."` when cut), and the nets it holds, if any.
+/// `"..."` when cut), its keys if its place declares some, and the nets it
+/// holds, if any.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Token {
     /// The decimal id.
     pub id: String,
     /// The token's `Debug`, cut.
     pub label: String,
+    /// Its keys, when its place declares some (§13.1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keys: Option<Keys>,
     /// The nets the token holds (§12.2), in the token's own order; omitted
     /// for a token that holds none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -713,6 +1039,10 @@ pub struct PlaceTokens {
     pub marking_version: u64,
     /// The true count.
     pub count: usize,
+    /// How many tokens the connection's filter lets through, while one is
+    /// set; the page and `has_more` are then of those (§13.4).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub matching: Option<usize>,
     /// Where the page starts.
     pub offset: usize,
     /// The page size used, after clamping.
@@ -767,6 +1097,40 @@ pub enum TokenBody {
         /// The token's `Debug`, untruncated.
         text: String,
     },
+}
+
+/// The answer to `query` (PROTOCOL.md §13.3).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct QueryResult {
+    /// The version the answer reflects.
+    pub marking_version: u64,
+    /// How many tokens matched.
+    pub count: usize,
+    /// The first `token_limit` of them, in place order then token order.
+    pub matches: Vec<QueryMatch>,
+}
+
+/// One token a `query` found.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct QueryMatch {
+    /// Where it is.
+    pub place: String,
+    /// The token entry, keys included.
+    pub token: Token,
+    /// Its JSON value, where its place is serializable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub json: Option<Value>,
+}
+
+/// The answer to `distinct` (PROTOCOL.md §13.3).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DistinctResult {
+    /// The version the answer reflects.
+    pub marking_version: u64,
+    /// The key asked about.
+    pub key: String,
+    /// Its values, in order of first appearance.
+    pub values: Vec<KeyValue>,
 }
 
 /// One entry of `get_log` (PROTOCOL.md §8).
@@ -861,6 +1225,7 @@ mod tests {
                 place: "Door".into(),
                 id: "1".into(),
                 label: "\"Ada\"".into(),
+                keys: None,
                 marking_version: 4,
                 running: false,
             }),
@@ -886,6 +1251,7 @@ mod tests {
         let token = Token {
             id: "1".into(),
             label: "x".into(),
+            keys: None,
             nets: Vec::new(),
         };
         assert_eq!(to_value(&token), json!({"id": "1", "label": "x"}));
@@ -895,6 +1261,7 @@ mod tests {
             serializable: false,
             nested: false,
             passive: false,
+            key_names: Vec::new(),
         };
         assert_eq!(
             to_value(&place),
@@ -923,6 +1290,157 @@ mod tests {
         assert_eq!(
             to_value(&held)["nets"],
             json!([{"name": "cabin", "nested_id": "3", "path": "City/Depot/#1/cabin", "count": 0}])
+        );
+    }
+
+    fn bird() -> Keys {
+        Keys(vec![
+            ("species".into(), KeyValue::from("Robin")),
+            ("legs".into(), KeyValue::Int(2)),
+            ("flies".into(), KeyValue::Bool(true)),
+        ])
+    }
+
+    #[test]
+    fn keys_are_an_object_in_declaration_order() {
+        let keys = bird();
+        assert_eq!(
+            serde_json::to_string(&keys).unwrap(),
+            r#"{"species":"Robin","legs":2,"flies":true}"#,
+            "declaration order, not sorted"
+        );
+        let back: Keys =
+            serde_json::from_str(r#"{"species":"Robin","legs":2,"flies":true}"#).unwrap();
+        assert_eq!(back, keys);
+        assert_eq!(keys.get("legs"), Some(&KeyValue::Int(2)));
+        assert!(serde_json::from_value::<Keys>(json!({"weight": 1.5})).is_err());
+        let token = Token {
+            id: "1".into(),
+            label: "Robin".into(),
+            keys: Some(keys),
+            nets: Vec::new(),
+        };
+        assert_eq!(
+            to_value(&token),
+            json!({"id": "1", "label": "Robin", "keys": {"species": "Robin", "legs": 2, "flies": true}})
+        );
+    }
+
+    #[test]
+    fn a_produced_entry_has_three_elements_or_five_with_keys() {
+        let plain = Produced {
+            place: "Out".into(),
+            id: "4".into(),
+            label: "4".into(),
+            keys: None,
+        };
+        assert_eq!(to_value(&plain), json!(["Out", "4", "4"]));
+        let keyed = Produced {
+            keys: Some(bird()),
+            ..plain.clone()
+        };
+        assert_eq!(
+            to_value(&keyed),
+            json!(["Out", "4", "4", null, {"species": "Robin", "legs": 2, "flies": true}]),
+            "the colour this runner never has is null, so the keys stay fifth"
+        );
+        // Read from text, as a line arrives: a `json!` value sorts its keys.
+        for (line, entry) in [
+            (r#"["Out","4","4"]"#, &plain),
+            (
+                r#"["Out","4","4",null,{"species":"Robin","legs":2,"flies":true}]"#,
+                &keyed,
+            ),
+            (r##"["Out","4","4","#d94f4f"]"##, &plain),
+        ] {
+            let back: Produced = serde_json::from_str(line).unwrap();
+            assert_eq!(&back, entry, "{line}");
+        }
+        assert!(serde_json::from_value::<Produced>(json!(["Out", "4"])).is_err());
+        assert!(serde_json::from_value::<Produced>(json!(["Out", "4", "4", null, {}, 6])).is_err());
+    }
+
+    #[test]
+    fn hidden_is_a_state_notification_naming_only_the_place() {
+        let n = Notification::Hidden {
+            kind: HiddenKind::Mutated,
+            place: "Savanna".into(),
+            marking_version: 9,
+            running: false,
+        };
+        assert!(n.is_state(), "it moves the version as the hidden one would");
+        assert_eq!(
+            to_value(&n),
+            json!({"method": "hidden", "params": {"kind": "mutated", "place": "Savanna",
+                   "marking_version": 9, "running": false}})
+        );
+    }
+
+    #[test]
+    fn a_filter_reads_strictly_and_writes_what_it_has() {
+        let filter = Filter::parse(&json!({
+            "clauses": [{"key": "class", "values": ["Bird", 2, true]},
+                        {"key": "class", "param": "season"}],
+            "places": ["Forest"], "prefix": "F"}))
+        .unwrap();
+        assert_eq!(
+            filter.clauses,
+            [
+                Clause::In {
+                    key: "class".into(),
+                    values: vec!["Bird".into(), KeyValue::Int(2), KeyValue::Bool(true)]
+                },
+                Clause::IsParam {
+                    key: "class".into(),
+                    param: "season".into()
+                }
+            ]
+        );
+        assert_eq!(
+            to_value(&filter),
+            json!({"clauses": [{"key": "class", "values": ["Bird", 2, true]},
+                               {"key": "class", "param": "season"}],
+                   "places": ["Forest"], "prefix": "F"})
+        );
+        assert_eq!(
+            Filter::parse(&json!({})).unwrap(),
+            Filter::default(),
+            "everything is optional"
+        );
+        assert_eq!(
+            Filter::parse(&json!({"clauses": null, "places": null, "prefix": null})).unwrap(),
+            Filter::default()
+        );
+        assert_eq!(to_value(Filter::default()), json!({"clauses": []}));
+        for bad in [
+            json!(null),
+            json!({"clauses": [{"key": "class"}]}),
+            json!({"clauses": [{"key": "class", "values": [null]}]}),
+            json!({"clauses": [{"key": "class", "values": "Bird"}]}),
+            json!({"clauses": [{"key": "class", "param": 3}]}),
+            json!({"clauses": [{"key": 3, "values": [1]}]}),
+            json!({"places": [1]}),
+            json!({"limit": 3}),
+        ] {
+            assert!(Filter::parse(&bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn under_a_filter_a_place_says_how_many_match() {
+        let place = PlaceMarking {
+            count: 2,
+            matching: None,
+            tokens: Vec::new(),
+        };
+        assert_eq!(to_value(&place), json!({"count": 2, "tokens": []}));
+        let place = PlaceMarking {
+            matching: Some(1),
+            ..place
+        };
+        assert_eq!(
+            to_value(&place),
+            json!({"count": 2, "matching": 1, "tokens": []})
         );
     }
 

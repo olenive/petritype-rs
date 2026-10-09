@@ -79,7 +79,16 @@
 //!   notification around the inner net's own, with that net's own
 //!   `marking_version`; the outer one does not move. `step` and a running
 //!   net fire the outer net's choice first and, when it has none, one
-//!   inner firing, inline.
+//!   inner firing, inline, which the outer net's `progress` counts under
+//!   the inner net's path.
+//! - A place that declares keys (`NetBuilder::keys`) lists them as
+//!   `key_names`, and its tokens carry theirs as `keys` wherever a token is
+//!   given, `produced` entries included (PROTOCOL.md §13). `query` asks for
+//!   the tokens a filter keeps and `distinct` for a key's values, from the
+//!   net's key index; `set_filter` projects one net, the outer one or an
+//!   inner one, through a filter, so that reads list only what it keeps,
+//!   with `matching` beside `count`, and a notification about a token it
+//!   hides arrives as `hidden {kind, place}`.
 
 #![warn(missing_docs, missing_debug_implementations, unreachable_pub)]
 #![forbid(unsafe_code)]
@@ -87,6 +96,7 @@
 mod errors;
 mod io;
 mod owner;
+mod projection;
 pub mod protocol;
 mod registry;
 mod time;

@@ -251,7 +251,8 @@
 //!   outer log as an [`Event::Nested`], with the place and token it
 //!   happened in and the inner net's own [`NetId`], which does not change as
 //!   the token moves; [`Net::place_ref`] finds an inner place's typed handle
-//!   by name.
+//!   by name. With the `serde` feature such tokens can be saved, restored
+//!   and copied (below).
 //! - [`drivers::run`] drives a net until it has nothing left to fire, and
 //!   [`drivers::run_indefinitely`] drives it on a clock until a flag says
 //!   stop. [`Mode`](drivers::Mode) picks the loop — sequential, where the
@@ -291,8 +292,17 @@
 //!   process-local id an [`Event::Nested`] names its inner net by, never
 //!   something to read back. [`Event`], [`EdgeInfo`], [`EdgeKind`] and [`Topology`]
 //!   become `Serialize` (never `Deserialize`) in that id form, for logs and
-//!   tests; [`PlaceInfo::serializable`] says which places were marked. (All of these are hidden from this page unless the
-//!   feature is on.)
+//!   tests; [`PlaceInfo::serializable`] says which places were marked.
+//!   `Net::export_marking` writes every place's tokens as a `Marking` (JSON
+//!   by place name, oldest first) and `Net::import_marking` replaces the
+//!   whole marking with one, emitting a single [`Event::Resynced`]. A
+//!   `Templates` registry builds nets by name and stamps them, so that a
+//!   `Net` is itself `Serialize` — `{"template", "marking", "params",
+//!   "enabled"}` — and `Deserialize`, rebuilt from the registry in
+//!   `Templates::scope`, and `Net::fork` copies one: which is how a token
+//!   that carries a net is saved, loaded, and snapshotted
+//!   ([`Nested`] gains `fork`). (All of these are hidden from this page
+//!   unless the feature is on.)
 
 #![warn(missing_docs, missing_debug_implementations, unreachable_pub)]
 #![forbid(unsafe_code)]
@@ -309,6 +319,8 @@ mod error;
 mod event;
 mod firing;
 mod ids;
+#[cfg(feature = "serde")]
+mod marking;
 mod nested;
 mod net;
 mod param;
@@ -316,6 +328,8 @@ mod place;
 pub mod routing;
 mod sealed;
 mod snapshot;
+#[cfg(feature = "serde")]
+mod template;
 mod topology;
 mod transition;
 
@@ -330,15 +344,21 @@ pub use distribution::{
 pub use edge::{
     EdgeInfo, EdgeKind, InputEdge, InputEdges, MutateEdge, SnapshotEdge, TakeAllEdge, TakeEdge,
 };
+#[cfg(feature = "serde")]
+pub use error::TemplateError;
 pub use error::{BodyPanicked, BuildError, CommandError, FiringFailed, NetError};
 pub use event::Event;
 pub use firing::{Completed, Firing, Selector, TieBreak};
 pub use ids::{NetId, PlaceId, PlaceRef, TokenId, TransitionId};
+#[cfg(feature = "serde")]
+pub use marking::Marking;
 pub use nested::{DeepStep, Nested};
 pub use net::{Net, PlaceInfo};
 pub use param::Param;
 pub use routing::{Either, RoutedOutput};
 pub use snapshot::Snapshot;
+#[cfg(feature = "serde")]
+pub use template::{Params, Templates};
 pub use topology::{Topology, TopologyPlace, TopologyTransition};
 pub use transition::{TransitionBuilder, TransitionInfo};
 

@@ -150,6 +150,19 @@ pub enum Event {
         /// The parameter type whose value changed.
         type_name: &'static str,
     },
+    /// The marking was replaced wholesale, by an `import_marking` (a
+    /// `serde` feature method): something changed that is not told as
+    /// events. Re-read the marking.
+    ///
+    /// An import is not a sequence of changes, so it reports no
+    /// [`Removed`](Event::Removed) or [`Added`](Event::Added) per token: it
+    /// emits this once, and moves [`state_counter`](crate::Net::state_counter)
+    /// by one. Every token after it has an id the reader has not seen.
+    /// Python petritype has an event of the same name, recorded per place
+    /// with the place's name; an import here replaces every place at once,
+    /// so it is one event with no fields. The runner reports it as
+    /// `reloaded {reason: "resync"}`.
+    Resynced,
     /// Something happened inside an inner net of one of this net's tokens
     /// (DESIGN §6.6): `event` is what that net logged, and the other fields
     /// say where it was. Deeper levels nest: an event two nets down is a

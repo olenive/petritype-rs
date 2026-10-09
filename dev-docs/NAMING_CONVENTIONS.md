@@ -95,6 +95,16 @@ rename backlog.
 | the id that follows a token's inner net across moves | `nested_id`: the inner net's own `NetId` (`Display` and `Serialize` as a bare number) | — | — |
 | where an inner failure happened | `FiringFailed::path`: `(place, token, net name)` per level, outer to inner | — | — |
 | mutable reach into a token's nets from outside a body | `net.nested_scope(place, token, f)` (lifts when `f` returns); read-only `net.nested(place, token)` | — | — |
+| every place's tokens as JSON, by place name, oldest first | `Marking` (`serde`; transparent over a name-ordered map) | `dict[str, list]` | — |
+| write / replace a whole marking | `net.export_marking()` → `NetError::NotSerializable`; `net.import_marking(&marking)` (wholesale, fresh token ids, atomic) | `graph.export_marking()`, `graph.import_marking(...)` (`NetJson`) | — |
+| the marking was replaced and cannot be told as events | `Event::Resynced` (no fields, one per import) | `Resynced(place)` (one per place) | — |
+| a function that builds a net, registered by name | **template**; registry `Templates` (`register`, `names`, `build` → `TemplateError`), `b.template(name, f)`, `b.templates(&registry)`, `net.templates()` | `Templates` (`register`, `template` decorator, `build`) | — |
+| what a factory is given | `Params` (`serde_json::Map<String, Value>`, the runner's type) | keyword arguments | — |
+| the mark a net built from a template carries | the **stamp** (template name, its `Params`, the factory); `net.template()` | `template=` on `construct_graph` | — |
+| the parameters a saved net's factory is given | its saved `params`, by wire name; there is no separate `template_params` (PROTOCOL §12.5) | same | — |
+| a registry in effect while nets are deserialised | `Templates::scope(f)` (thread-local stack, innermost first), `templates.restore(value)` | — (a process-wide registry) | — |
+| a net's saved JSON form | `{"template", "marking", "params", "enabled"}`: `Serialize` / `Deserialize` for `Net`, `net.to_json()` | `NetJson.save`, `NetJson.restore` | — |
+| a copy of a net, built again from its template | `net.fork()` → `NetError::{NoTemplate, InFlight, RebuildFailed}`; per token type `Nested::fork` (default `NotForkable`); in a snapshot `NetError::CannotFork`, read with `snapshot.nested(place, token)` | `fork(token)` (a deep copy) | — |
 
 ## Rust-specific conventions
 

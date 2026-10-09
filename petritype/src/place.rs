@@ -34,7 +34,7 @@ pub(crate) type CloneFn = fn(&dyn Any) -> ErasedToken;
 
 /// Serialises a token. See [`to_json_of`].
 #[cfg(feature = "serde")]
-pub(crate) type ToJsonFn = fn(&dyn Any) -> serde_json::Value;
+pub(crate) type ToJsonFn = fn(&dyn Any) -> Result<serde_json::Value, serde_json::Error>;
 
 /// Deserialises a token. See [`from_json_of`].
 #[cfg(feature = "serde")]
@@ -70,7 +70,8 @@ pub(crate) struct PlaceMeta {
     /// such a transition, and by
     /// [`Net::snapshot`](crate::Net::snapshot) — which is refused outright
     /// when any place lacks it
-    /// ([`NetError::NoClonePlace`](crate::NetError::NoClonePlace)).
+    /// ([`NetError::NoClonePlace`](crate::NetError::NoClonePlace)), except a
+    /// nested place under the `serde` feature, whose tokens it forks.
     pub(crate) clone: Option<CloneFn>,
     /// `to_json_of::<T>`, `Some` only for a place marked
     /// [`serializable`](crate::NetBuilder::serializable).
@@ -86,7 +87,9 @@ pub(crate) struct PlaceMeta {
     /// [`place_nested`](crate::NetBuilder::place_nested): what lets the
     /// engine find, step and drain the inner nets of a token whose type it
     /// has forgotten (DESIGN §6.6). Such a place is also a no-clone place,
-    /// so `clone` is `None` beside it.
+    /// so `clone` is `None` beside it; with the `serde` feature the vtable
+    /// carries `T::fork` instead, which is what
+    /// [`Net::snapshot`](crate::Net::snapshot) copies its tokens with.
     pub(crate) nested: Option<NestedVtable>,
     /// Whether [`step_deep`](crate::Net::step_deep) leaves this nested
     /// place's inner nets alone, as asked for by
@@ -124,9 +127,11 @@ impl PlaceSlot {
     ///
     /// This is what [`Net::snapshot`](crate::Net::snapshot) is built from,
     /// and the `None` is the whole of
-    /// [`NetError::NoClonePlace`](crate::NetError::NoClonePlace). The
-    /// [`PlaceMeta`] comes along, so a copied place answers the read API —
-    /// labels, JSON, counts — exactly as the original does.
+    /// [`NetError::NoClonePlace`](crate::NetError::NoClonePlace), but for a
+    /// nested place under the `serde` feature, which the snapshot forks token
+    /// by token instead. The [`PlaceMeta`] comes along, so a copied place
+    /// answers the read API — labels, JSON, counts — exactly as the original
+    /// does.
     pub(crate) fn try_clone(&self) -> Option<PlaceSlot> {
         let clone = self.meta.clone?;
         Some(PlaceSlot {
@@ -180,13 +185,27 @@ pub(crate) fn clone_of<T: Clone + Send + Sync + 'static>(value: &dyn Any) -> Era
 }
 
 /// `to_json_of::<T>` renders an erased token as JSON.
+///
+/// Fallible, because a `Serialize` impl may refuse — a token holding a
+/// [`Net`](crate::Net) that no template built, for one. Readers that only
+/// want something to show take [`json_or_message`]; a save takes the error.
 #[cfg(feature = "serde")]
-pub(crate) fn to_json_of<T: serde::Serialize + 'static>(value: &dyn Any) -> serde_json::Value {
+pub(crate) fn to_json_of<T: serde::Serialize + 'static>(
+    value: &dyn Any,
+) -> Result<serde_json::Value, serde_json::Error> {
     match value.downcast_ref::<T>() {
-        Some(value) => serde_json::to_value(value)
-            .unwrap_or_else(|error| serde_json::Value::String(error.to_string())),
-        None => serde_json::Value::Null,
+        Some(value) => serde_json::to_value(value),
+        None => Ok(serde_json::Value::Null),
     }
+}
+
+/// A token as JSON for a reader rather than a save: a token whose
+/// `Serialize` refuses shows the refusal as a string, as it always has on
+/// [`Net::json`](crate::Net::json) and
+/// [`Command::to_json`](crate::Command::to_json).
+#[cfg(feature = "serde")]
+pub(crate) fn json_or_message(to_json: ToJsonFn, value: &dyn Any) -> serde_json::Value {
+    to_json(value).unwrap_or_else(|error| serde_json::Value::String(error.to_string()))
 }
 
 /// `from_json_of::<T>` parses a token from JSON, erasing it again.

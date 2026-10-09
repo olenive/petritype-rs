@@ -62,10 +62,13 @@ name = "read_edge_scaler"
 test = true
 
 # Nets as tokens (DESIGN §6.6): vehicles carrying nets of their own, and the
-# acceptance script of the proposal that asked for them.
+# acceptance script of the proposal that asked for them. The net itself is
+# `examples/transit/net.rs`, the protocol's conformance net `transit`, which
+# saves its vehicles' cabins as JSON: hence the feature.
 [[example]]
 name = "transit"
 test = true
+required-features = ["serde"]
 
 [package.metadata.docs.rs]
 all-features = true

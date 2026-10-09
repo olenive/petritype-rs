@@ -202,6 +202,11 @@ pub struct NetBuilder {
     /// kept until [`build`](NetBuilder::build) reports it as
     /// [`BuildError::NotNested`]: the per-place options are infallible.
     not_nested: Option<PlaceId>,
+    /// The registry the net will restore its nested tokens from, as given
+    /// to [`template`](NetBuilder::template) and
+    /// [`templates`](NetBuilder::templates).
+    #[cfg(feature = "serde")]
+    templates: crate::template::Templates,
 }
 
 impl NetBuilder {
@@ -221,6 +226,8 @@ impl NetBuilder {
             tie_break: TieBreak::FirstDeclared,
             resettable: false,
             not_nested: None,
+            #[cfg(feature = "serde")]
+            templates: crate::template::Templates::new(),
         }
     }
 
@@ -277,11 +284,18 @@ impl NetBuilder {
     ///   [`Event::Nested`](crate::Event::Nested), with this place and the
     ///   token's id.
     ///
-    /// The place is a [no-clone](NetBuilder::place_no_clone) place, with
-    /// everything that implies: no snapshot edge from it, no consuming edge
-    /// from it on a transition that restores its inputs, and no
-    /// [`Net::snapshot`] of the net. A [`MutateEdge`](crate::MutateEdge) on it
-    /// is the way an outer body reaches inside.
+    /// The place is a [no-clone](NetBuilder::place_no_clone) place: no
+    /// snapshot edge from it, and no consuming edge from it on a transition
+    /// that restores its inputs. Without the `serde` feature there is no
+    /// [`Net::snapshot`] of the net either; with it, a snapshot copies the
+    /// place's tokens with `Nested::fork`, which rebuilds their inner nets
+    /// from templates (DESIGN §6.6). A [`MutateEdge`](crate::MutateEdge) on
+    /// it is the way an outer body reaches inside.
+    ///
+    /// With the `serde` feature, marking the place `serializable` as any
+    /// other — the token type deriving `Serialize` and `Deserialize`, its
+    /// nets saved in `Net`'s own form — is what lets the outer net's marking
+    /// be saved and loaded with its inner nets in it.
     ///
     /// ```
     /// use petritype::{Nested, Net, NetBuilder};
@@ -381,11 +395,18 @@ impl NetBuilder {
     }
 
     /// Records how to convert this place's tokens to and from JSON, enabling
-    /// [`Net::json`] for them.
+    /// [`Net::json`] for them, the JSON commands, and
+    /// [`Net::export_marking`] and [`Net::import_marking`], which want every
+    /// place marked.
     ///
     /// Serialisation is opt-in per place: most tokens are never inspected
     /// structurally, and requiring `Serialize` on every token type would tax
     /// every author for a feature few need.
+    ///
+    /// A [nested](NetBuilder::place_nested) place is marked the same way,
+    /// after it is declared: a token type with a [`Net`] field derives both
+    /// traits, and its nets travel in `Net`'s own saved form, rebuilt on the
+    /// way in from the templates of [`templates`](NetBuilder::templates).
     ///
     /// # Panics
     ///
@@ -502,6 +523,40 @@ impl NetBuilder {
             to_json: crate::place::to_json_of::<T> as crate::place::ToJsonFn,
             from_json: crate::place::from_json_of::<T> as crate::place::FromJsonFn,
         });
+    }
+
+    /// Registers one template for the net's nested tokens: the function that
+    /// builds an inner net, under the name a saved token gives it (DESIGN
+    /// §6.6). The net decodes its tokens with
+    /// [`Net::templates`] in [scope](crate::Templates::scope), so a vehicle
+    /// read back from JSON gets its cabin rebuilt by the `"Cabin"` template
+    /// registered here. Chainable; a second template of one name replaces
+    /// the first.
+    ///
+    /// See [`Templates::register`](crate::Templates::register) for the
+    /// factory's shape.
+    #[cfg(feature = "serde")]
+    pub fn template<F, E>(&mut self, name: impl Into<String>, factory: F) -> &mut Self
+    where
+        F: Fn(&crate::Params) -> Result<Net, E> + Send + Sync + 'static,
+        E: Into<Box<dyn std::error::Error + Send + Sync>>,
+    {
+        self.templates.register(name, factory);
+        self
+    }
+
+    /// Gives the net every template of a registry, as
+    /// [`template`](NetBuilder::template) would one by one; a name already
+    /// registered is replaced. Chainable.
+    ///
+    /// The usual order: build the registry, build the tokens' inner nets
+    /// from it ([`Templates::build`](crate::Templates::build), which stamps
+    /// them so they can be saved), then hand the outer net the same
+    /// registry, so it can read them back.
+    #[cfg(feature = "serde")]
+    pub fn templates(&mut self, templates: &crate::Templates) -> &mut Self {
+        self.templates.merge(templates);
+        self
     }
 
     /// Declares a transition: what it reads, what it writes, and the
@@ -986,6 +1041,10 @@ impl NetBuilder {
             resettable: self.resettable,
             label_limit: self.label_limit,
             events: Vec::new(),
+            #[cfg(feature = "serde")]
+            stamp: None,
+            #[cfg(feature = "serde")]
+            templates: self.templates,
         };
         for (index, tokens) in self.seeds.into_iter().enumerate() {
             let place = PlaceId(index as u32);
@@ -1214,8 +1273,8 @@ impl Default for NetBuilder {
 
 impl fmt::Debug for NetBuilder {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("NetBuilder")
-            .field("id", &self.net)
+        let mut out = f.debug_struct("NetBuilder");
+        out.field("id", &self.net)
             .field("places", &self.places)
             .field("transitions", &self.transitions)
             .field("seeded", &self.seeds.iter().map(Vec::len).sum::<usize>())
@@ -1237,12 +1296,14 @@ impl fmt::Debug for NetBuilder {
             .field("assert_acyclic", &self.assert_acyclic)
             .field("tie_break", &self.tie_break)
             .field("resettable", &self.resettable)
-            .field("not_nested", &self.not_nested)
-            .field(
-                "assert_no_source_transitions",
-                &self.assert_no_source_transitions,
-            )
-            .finish()
+            .field("not_nested", &self.not_nested);
+        #[cfg(feature = "serde")]
+        out.field("templates", &self.templates);
+        out.field(
+            "assert_no_source_transitions",
+            &self.assert_no_source_transitions,
+        )
+        .finish()
     }
 }
 

@@ -1,562 +1,61 @@
 //! Transit: vehicles that carry Petri nets of their own (DESIGN §6.6).
 //!
 //! The example of the nets-as-tokens proposal
-//! (`Cyberpunk2020-Simulation/dev-docs/NETS_AS_TOKENS.md` §2). The outer net,
-//! `City`, has four stations — `Depot`, `Central`, `Harbour`, `Airport` —
-//! each holding the vehicles standing there, a `Platform@<station>` of
-//! passengers waiting at each, and `In Transit` for the vehicles between
-//! them. A vehicle is a token, and it carries an *inner* net whose shape
-//! depends on its kind: a `Cabin` for a bus or a tram, a `Deck` for a ferry,
-//! a `Pod` for a shuttle. The city has one `Depot` place whatever is inside
-//! the vehicles in it.
+//! (`Cyberpunk2020-Simulation/dev-docs/NETS_AS_TOKENS.md` §2), built as the
+//! conformance net `transit` of the shared protocol (`PROTOCOL.md` §11),
+//! which lives in [`net`] so that a runner can carry the same file. The
+//! outer net, `City`, has four stations — `Depot`, `Central`, `Harbour`,
+//! `Airport` — each holding the vehicles standing there, a
+//! `Platform@<station>` of passengers waiting at each, and `In Transit` for
+//! the vehicles between them. A vehicle is a token, and it carries an
+//! *inner* net, its `cabin`, whose shape depends on its kind: built from the
+//! template `Cabin` for a bus or a tram, `Deck` for a ferry, `Pod` for a
+//! shuttle. The city has one `Depot` place whatever is inside the vehicles
+//! in it.
 //!
-//! Inside a vehicle, passengers come in at the `Door`, sit or stand while it
-//! is under way, and go back to the door once it has stopped and announced
-//! the station. Nothing inside a vehicle touches the city. The city reaches
-//! in only through the vehicle token it holds: `Board <station>` and
-//! `Alight <station>` put a passenger into the inner `Door` and take one out
-//! with a [`MutateEdge`] body; `Depart <station>` and `Arrive` move the
-//! vehicle and set the inner parameter `Stopped`, and `Arrive` puts an
-//! announcement inside. A guard on `Board` reads the inner marking through
-//! [`Net::nested`] to see whether there is room.
+//! Inside a vehicle, passengers come in at the `Door` and sit or stand; once
+//! it has stopped and announced a station they go back to the door, and the
+//! announcement is cleared when nobody is left aboard. Nothing inside a
+//! vehicle touches the city. The city reaches in only through the vehicle
+//! token it holds: `Board <station>` and `Alight <station>` put a passenger
+//! into the cabin's `Door` and take one out with a [`MutateEdge`] body;
+//! `Depart <station>` and `Arrive` move the vehicle and set the cabin's
+//! parameter `stopped`, and `Arrive` puts an announcement inside. A guard on
+//! `Board` reads the cabin's marking through [`Net::nested`] to see whether
+//! there is room.
 //!
-//! **The city fires only on orders.** Its transitions start switched off,
-//! and an order switches one on for a single [`Net::fire`] and off again
-//! ([`City::order`]); [`drivers::run`] then has nothing to fire in the city
-//! itself and runs the inner nets of the vehicles, which is what "run to
-//! quiet" means in the script below. That keeps the city's transitions as
-//! the proposal writes them — no extra input for orders — and keeps the
-//! city honestly quiescent between orders, so
-//! [`Net::is_quiescent_deep`] answers what the script asks of it. (A
-//! selector that declines everything would also stop the driver firing the
-//! city's own transitions, but `Depart` and `Arrive` would still be fireable,
-//! and the city would never be quiescent.)
+//! **The script fires the city only on orders.** The city is built with
+//! every transition switched on, as the protocol's conformance net is; the
+//! script holds them all back first ([`City::hold_back`]), and an order
+//! switches one on for a single [`Net::fire`] and off again
+//! ([`City::order`]). [`drivers::run`] then has nothing to fire in the city
+//! itself and runs the vehicles' cabins, which is what "run to quiet" means
+//! in the script below, and the city is honestly quiescent between orders,
+//! so [`Net::is_quiescent_deep`] answers what the script asks of it.
 //!
-//! The acceptance script, steps 1 to 5 and 7 of the proposal, is `main` and
-//! the tests below. Step 6, saving and loading the city, is phase 2.
+//! The acceptance script, steps 1 to 7 of the proposal, is `main` and the
+//! tests below. Where the proposal's §6 has the announcement cleared after
+//! step 4, it is not: the protocol's guards (see [`net`]) clear it only once
+//! the vehicle is empty, which the Python track adopted after finding that
+//! the proposal's guards re-seat the passengers at the door. Step 6 saves
+//! the city's marking as JSON text — the vehicles' cabins in it, each as the
+//! template that built it with its marking, parameters and switches — loads
+//! it into a freshly built city, and carries on.
+//!
+//! [`MutateEdge`]: petritype::MutateEdge
+//! [`drivers::run`]: petritype::drivers::run
 
-use std::fmt;
+// A crate root's `mod` looks beside it, so the path is spelled out: the net
+// lives in `transit/net.rs`, the file a runner's example includes too.
+#[path = "transit/net.rs"]
+mod net;
 
-use petritype::drivers::{self, DriverError, Limits, Mode, OnFailure, RunSummary};
-use petritype::{
-    BuildError, Distribution, Event, MutateEdge, Nested, Net, NetBuilder, NetError, Param, PlaceId,
-    PlaceRef, TakeEdge, TokenId, TransitionId,
-};
+use petritype::serde_json;
+use petritype::{Event, Marking, Net, Params, PlaceId, TransitionId};
 
-/// The four stations.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Location {
-    Depot,
-    Central,
-    Harbour,
-    Airport,
-}
+use net::{BoxedError, City, Kind, Location, Vehicle, build_city, cabin, templates};
 
-impl Location {
-    const ALL: [Location; 4] = [
-        Location::Depot,
-        Location::Central,
-        Location::Harbour,
-        Location::Airport,
-    ];
-}
-
-impl fmt::Display for Location {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Debug::fmt(self, f)
-    }
-}
-
-/// What a vehicle is, which decides the shape of the net inside it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Kind {
-    Bus,
-    Tram,
-    Ferry,
-    Shuttle,
-}
-
-impl Kind {
-    const ALL: [Kind; 4] = [Kind::Bus, Kind::Tram, Kind::Ferry, Kind::Shuttle];
-
-    /// The template the inner net is built from, which is also its name in
-    /// the city's log.
-    fn template(self) -> &'static str {
-        match self {
-            Kind::Bus | Kind::Tram => "cabin",
-            Kind::Ferry => "deck",
-            Kind::Shuttle => "pod",
-        }
-    }
-}
-
-/// A vehicle token: what the city knows about it, and the net inside it.
-struct Vehicle {
-    name: String,
-    kind: Kind,
-    destination: Option<Location>,
-    inner: Net,
-}
-
-/// The inner net is left out of the label: a diagram of the city shows the
-/// vehicle, and [`Net::nested`] is how to look inside.
-impl fmt::Debug for Vehicle {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Vehicle")
-            .field("name", &self.name)
-            .field("kind", &self.kind)
-            .field("destination", &self.destination)
-            .finish_non_exhaustive()
-    }
-}
-
-/// One inner net, named after its template.
-impl Nested for Vehicle {
-    fn nets(&self) -> Vec<(&str, &Net)> {
-        vec![(self.kind.template(), &self.inner)]
-    }
-
-    fn nets_mut(&mut self) -> Vec<(&str, &mut Net)> {
-        vec![(self.kind.template(), &mut self.inner)]
-    }
-}
-
-impl Vehicle {
-    /// A vehicle standing still, with nobody aboard.
-    fn new(name: &str, kind: Kind) -> Result<Vehicle, BuildError> {
-        let inner = match kind {
-            Kind::Bus => cabin(2, 6)?,
-            Kind::Tram => cabin(8, 30)?,
-            Kind::Ferry => deck(40)?,
-            Kind::Shuttle => pod(4)?,
-        };
-        Ok(Vehicle {
-            name: name.to_owned(),
-            kind,
-            destination: None,
-            inner,
-        })
-    }
-
-    /// A place of the inner net by name, typed: the body that reaches inside
-    /// knows the templates' place names, not their handles.
-    fn place(&self, name: &'static str) -> Result<PlaceRef<String>, TransitError> {
-        self.inner
-            .place_ref::<String>(name)
-            .ok_or_else(|| TransitError::NoPlace {
-                vehicle: self.name.clone(),
-                place: name,
-            })
-    }
-}
-
-// ----- the inner nets -------------------------------------------------------
-
-/// Inner parameter: the vehicle has stopped at a station and announced it.
-/// Passengers take their places while it is false and head for the door
-/// while it is true.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct Stopped(bool);
-
-/// Inner parameter: how many seats there are.
-#[derive(Debug, Clone, Copy)]
-struct SeatCount(usize);
-
-/// Inner parameter: how many passengers fit aboard, door included.
-#[derive(Debug, Clone, Copy)]
-struct Capacity(usize);
-
-fn stopped(net: &Net) -> bool {
-    net.param::<Stopped>().is_some_and(|stopped| stopped.0)
-}
-
-fn seat_count(net: &Net) -> usize {
-    net.param::<SeatCount>().map_or(0, |seats| seats.0)
-}
-
-/// `Cabin`, for a bus or a tram: `Door`, `Seats`, `Standing`,
-/// `Announcements`.
-///
-/// "Go To Door" is two transitions, one from `Seats` and one from
-/// `Standing`: a transition needs a token in every input place, so one
-/// transition cannot take from whichever of two places has someone in it.
-fn cabin(seats: usize, capacity: usize) -> Result<Net, BuildError> {
-    let mut b = NetBuilder::new();
-    let door = b.place::<String>("Door");
-    let seated = b.place::<String>("Seats");
-    let standing = b.place::<String>("Standing");
-    let announcements = b.place::<String>("Announcements");
-    b.param(Stopped(false));
-    b.param(SeatCount(seats));
-    b.param(Capacity(capacity));
-
-    b.transition("Sit", (TakeEdge(door),), (seated,), |who: String| (who,))
-        .guard(move |net| !stopped(net) && net.count(seated.id()) < seat_count(net));
-    b.transition(
-        "Stand",
-        (TakeEdge(door),),
-        (standing,),
-        |who: String| (who,),
-    )
-    .guard(move |net| !stopped(net) && net.count(seated.id()) >= seat_count(net));
-    let leave = move |net: &Net| stopped(net) && net.count(announcements.id()) > 0;
-    b.transition(
-        "Go To Door From Seats",
-        (TakeEdge(seated),),
-        (door,),
-        |who: String| (who,),
-    )
-    .guard(leave);
-    b.transition(
-        "Go To Door From Standing",
-        (TakeEdge(standing),),
-        (door,),
-        |who: String| (who,),
-    )
-    .guard(leave);
-    b.transition(
-        "Clear Announcement",
-        (TakeEdge(announcements),),
-        (),
-        |_announcement: String| {},
-    )
-    .guard(move |net| net.count(seated.id()) == 0 && net.count(standing.id()) == 0);
-    b.build()
-}
-
-/// `Deck`, for a ferry: `Door`, `Lower Deck`, `Upper Deck`,
-/// `Announcements`. Passengers go below, then up, and back to the door from
-/// either deck once the ferry has stopped.
-fn deck(capacity: usize) -> Result<Net, BuildError> {
-    let mut b = NetBuilder::new();
-    let door = b.place::<String>("Door");
-    let lower = b.place::<String>("Lower Deck");
-    let upper = b.place::<String>("Upper Deck");
-    let announcements = b.place::<String>("Announcements");
-    b.param(Stopped(false));
-    b.param(Capacity(capacity));
-
-    b.transition(
-        "Go Below",
-        (TakeEdge(door),),
-        (lower,),
-        |who: String| (who,),
-    )
-    .guard(|net| !stopped(net));
-    b.transition("Go Up", (TakeEdge(lower),), (upper,), |who: String| (who,))
-        .guard(|net| !stopped(net));
-    let leave = move |net: &Net| stopped(net) && net.count(announcements.id()) > 0;
-    b.transition(
-        "Go To Door From Lower Deck",
-        (TakeEdge(lower),),
-        (door,),
-        |who: String| (who,),
-    )
-    .guard(leave);
-    b.transition(
-        "Go To Door From Upper Deck",
-        (TakeEdge(upper),),
-        (door,),
-        |who: String| (who,),
-    )
-    .guard(leave);
-    b.transition(
-        "Clear Announcement",
-        (TakeEdge(announcements),),
-        (),
-        |_announcement: String| {},
-    )
-    .guard(move |net| net.count(lower.id()) == 0 && net.count(upper.id()) == 0);
-    b.build()
-}
-
-/// `Pod`, for a shuttle: `Door` and `Seats`, nobody standing and no
-/// announcements — everyone heads for the door once it stops.
-fn pod(seats: usize) -> Result<Net, BuildError> {
-    let mut b = NetBuilder::new();
-    let door = b.place::<String>("Door");
-    let seated = b.place::<String>("Seats");
-    b.param(Stopped(false));
-    b.param(SeatCount(seats));
-    b.param(Capacity(seats));
-
-    b.transition("Sit", (TakeEdge(door),), (seated,), |who: String| (who,))
-        .guard(move |net| !stopped(net) && net.count(seated.id()) < seat_count(net));
-    b.transition("Go To Door", (TakeEdge(seated),), (door,), |who: String| {
-        (who,)
-    })
-    .guard(stopped);
-    b.build()
-}
-
-/// How many passengers are aboard: everyone in every place but
-/// `Announcements`, whatever the template.
-fn aboard(inner: &Net) -> usize {
-    inner
-        .places()
-        .filter(|(_, info)| info.name != "Announcements")
-        .map(|(_, info)| info.count)
-        .sum()
-}
-
-// ----- the city -------------------------------------------------------------
-
-/// Outer parameter: where the next `Depart` sends its vehicle.
-#[derive(Debug, Clone, Copy)]
-struct NextStop(Location);
-
-/// What a body that reaches inside a vehicle can find wrong.
-#[derive(Debug)]
-enum TransitError {
-    /// The vehicle's inner net has no such place: a template without it.
-    NoPlace {
-        vehicle: String,
-        place: &'static str,
-    },
-    /// A vehicle in transit with nowhere to go.
-    NoDestination { vehicle: String },
-    /// The inner net refused a call.
-    Net(NetError),
-}
-
-impl fmt::Display for TransitError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            TransitError::NoPlace { vehicle, place } => {
-                write!(f, "{vehicle} has no place {place:?} inside")
-            }
-            TransitError::NoDestination { vehicle } => {
-                write!(f, "{vehicle} is in transit with no destination")
-            }
-            TransitError::Net(error) => write!(f, "{error}"),
-        }
-    }
-}
-
-impl std::error::Error for TransitError {}
-
-impl From<NetError> for TransitError {
-    fn from(error: NetError) -> Self {
-        TransitError::Net(error)
-    }
-}
-
-/// One place per station, of one kind of token.
-#[derive(Debug)]
-struct ByLocation<T> {
-    places: [PlaceRef<T>; 4],
-}
-
-/// Written out: a derive would ask `T: Copy`, and a handle is `Copy` whatever
-/// its token is.
-impl<T> Clone for ByLocation<T> {
-    fn clone(&self) -> Self {
-        *self
-    }
-}
-
-impl<T> Copy for ByLocation<T> {}
-
-impl<T> ByLocation<T> {
-    fn at(&self, location: Location) -> PlaceRef<T> {
-        self.places[location as usize]
-    }
-}
-
-/// The city: its net, its places and its transitions.
-struct City {
-    net: Net,
-    stations: ByLocation<Vehicle>,
-    platforms: ByLocation<String>,
-    in_transit: PlaceRef<Vehicle>,
-    board: [TransitionId; 4],
-    alight: [TransitionId; 4],
-    depart: [TransitionId; 4],
-    arrive: TransitionId,
-}
-
-/// The front vehicle standing at a station: the one a `MutateEdge` on that
-/// place is handed, read through [`Net::nested`] as a guard sees it.
-fn front_vehicle(net: &Net, station: PlaceRef<Vehicle>) -> Option<&Net> {
-    let (token, _) = net.tokens(station.id()).next()?;
-    let mut nets = net.nested(station.id(), token)?;
-    (!nets.is_empty()).then(|| nets.remove(0).1)
-}
-
-/// Step 1 of the script: the city with one bus at `Depot`, one ferry at
-/// `Harbour`, and Ada, Bram and Cato waiting on `Platform@Depot`.
-fn build_city() -> Result<City, BuildError> {
-    let mut b = NetBuilder::new();
-    let stations = ByLocation {
-        places: Location::ALL.map(|location| b.place_nested::<Vehicle>(location.to_string())),
-    };
-    let platforms = ByLocation {
-        places: Location::ALL.map(|location| b.place::<String>(format!("Platform@{location}"))),
-    };
-    let in_transit = b.place_nested::<Vehicle>("In Transit");
-    b.param(NextStop(Location::Central));
-
-    b.seed(
-        stations.at(Location::Depot),
-        [Vehicle::new("Bus 1", Kind::Bus)?],
-    );
-    b.seed(
-        stations.at(Location::Harbour),
-        [Vehicle::new("Ferry 1", Kind::Ferry)?],
-    );
-    b.seed(
-        platforms.at(Location::Depot),
-        ["Ada", "Bram", "Cato"].map(String::from),
-    );
-
-    let board = Location::ALL.map(|location| {
-        let station = stations.at(location);
-        b.transition(
-            format!("Board {location}"),
-            (TakeEdge(platforms.at(location)), MutateEdge(station)),
-            (),
-            |passenger: String, vehicle: &mut Vehicle| -> Result<(), TransitError> {
-                let door = vehicle.place("Door")?;
-                vehicle.inner.put(door, passenger);
-                Ok(())
-            },
-        )
-        // Room aboard: door, seats, standing and the rest, below capacity.
-        .guard(move |net| {
-            front_vehicle(net, station).is_some_and(|inner| {
-                aboard(inner) < inner.param::<Capacity>().map_or(0, |capacity| capacity.0)
-            })
-        })
-        .id()
-    });
-    let alight = Location::ALL.map(|location| {
-        let station = stations.at(location);
-        b.transition(
-            format!("Alight {location}"),
-            (MutateEdge(station),),
-            (platforms.at(location),),
-            |vehicle: &mut Vehicle| -> Result<(Option<String>,), TransitError> {
-                let door = vehicle.place("Door")?;
-                let Some((token, _)) = vehicle.inner.tokens(door.id()).next() else {
-                    return Ok((None,));
-                };
-                let passenger = vehicle.inner.token::<String>(door.id(), token).cloned();
-                vehicle.inner.remove(door.id(), token)?;
-                Ok((passenger,))
-            },
-        )
-        // Someone at the door to step off.
-        .guard(move |net| {
-            front_vehicle(net, station).is_some_and(|inner| {
-                inner
-                    .place_named("Door")
-                    .is_some_and(|door| inner.count(door) > 0)
-            })
-        })
-        .id()
-    });
-    let depart = Location::ALL.map(|location| {
-        b.transition(
-            format!("Depart {location}"),
-            (TakeEdge(stations.at(location)), Param::<NextStop>::new()),
-            (in_transit,),
-            |mut vehicle: Vehicle, next: NextStop| -> Result<(Vehicle,), TransitError> {
-                vehicle.inner.set_param(Stopped(false))?;
-                vehicle.destination = Some(next.0);
-                Ok((vehicle,))
-            },
-        )
-        .guard(move |net| {
-            net.param::<NextStop>()
-                .is_some_and(|next| next.0 != location)
-        })
-        .id()
-    });
-    let arrive = b
-        .transition(
-            "Arrive",
-            (TakeEdge(in_transit),),
-            (
-                stations.at(Location::Depot),
-                stations.at(Location::Central),
-                stations.at(Location::Harbour),
-                stations.at(Location::Airport),
-            ),
-            move |mut vehicle: Vehicle| -> Result<Distribution, TransitError> {
-                let destination =
-                    vehicle
-                        .destination
-                        .take()
-                        .ok_or_else(|| TransitError::NoDestination {
-                            vehicle: vehicle.name.clone(),
-                        })?;
-                vehicle.inner.set_param(Stopped(true))?;
-                // A pod has nowhere to announce anything.
-                if let Some(announcements) = vehicle.inner.place_ref::<String>("Announcements") {
-                    vehicle
-                        .inner
-                        .put(announcements, format!("Arrived at {destination}"));
-                }
-                Ok(Distribution::new().to(stations.at(destination), vehicle))
-            },
-        )
-        .id();
-
-    let mut net = b.build()?;
-    // Everything in the city waits for an order. Setting the switches is
-    // part of setting the city up, so its log starts after them.
-    let transitions: Vec<TransitionId> = net.transitions().map(|(id, _)| id).collect();
-    for transition in transitions {
-        net.disable(transition).expect("a transition of the city");
-    }
-    net.drain_events().for_each(drop);
-
-    Ok(City {
-        net,
-        stations,
-        platforms,
-        in_transit,
-        board,
-        alight,
-        depart,
-        arrive,
-    })
-}
-
-impl City {
-    /// Carries out one order: switches the transition on, fires it, and
-    /// switches it off again.
-    fn order(&mut self, transition: TransitionId) -> Result<(), NetError> {
-        self.net.enable(transition)?;
-        let fired = self.net.fire(transition);
-        self.net.disable(transition)?;
-        fired
-    }
-
-    /// Runs to quiet: nothing in the city is switched on, so this is the
-    /// vehicles' inner nets, in place order and token order.
-    fn run_to_quiet(&mut self) -> Result<RunSummary, DriverError> {
-        drivers::run(
-            &mut self.net,
-            Mode::Sequential,
-            Limits::default(),
-            OnFailure::Stop,
-        )
-    }
-
-    /// The inner net of the front vehicle at a station or in transit.
-    fn inside(&self, place: PlaceRef<Vehicle>) -> Option<&Net> {
-        front_vehicle(&self.net, place)
-    }
-
-    /// The front vehicle at a station or in transit, typed.
-    fn vehicle(&self, place: PlaceRef<Vehicle>) -> Option<(TokenId, &Vehicle)> {
-        let (token, _) = self.net.tokens(place.id()).next()?;
-        Some((token, self.net.token::<Vehicle>(place.id(), token)?))
-    }
-}
-
-/// The passengers in a place of the city, by name, oldest first.
+/// The passengers on a platform, by name, oldest first.
 fn waiting(city: &City, location: Location) -> Vec<String> {
     city.net
         .tokens(city.platforms.at(location).id())
@@ -599,7 +98,7 @@ fn place_name(net: &Net, place: PlaceId) -> String {
 /// Inner transitions are named from a fresh cabin: every net built from one
 /// template numbers its transitions the same way.
 fn firings(city: &Net, events: &[Event]) -> Vec<String> {
-    let template = cabin(2, 6).expect("the cabin template builds");
+    let template = cabin(&Params::new()).expect("the cabin template builds");
     events
         .iter()
         .filter_map(|event| match event {
@@ -623,12 +122,21 @@ fn firings(city: &Net, events: &[Event]) -> Vec<String> {
         .collect()
 }
 
-/// The script, steps 2 to 5. Each returns the events it logged.
+/// The script, steps 1 to 6.
 mod script {
     use super::*;
+    use petritype::drivers::RunSummary;
+
+    /// Step 1: the city as built, held back so that it fires only on
+    /// orders.
+    pub(super) fn city() -> Result<City, BoxedError> {
+        let mut city = build_city()?;
+        city.hold_back();
+        Ok(city)
+    }
 
     /// Step 2: `Board Depot` three times, then run to quiet.
-    pub(super) fn board(city: &mut City) -> Result<RunSummary, Box<dyn std::error::Error>> {
+    pub(super) fn board(city: &mut City) -> Result<RunSummary, BoxedError> {
         for _ in 0..3 {
             city.order(city.board[Location::Depot as usize])?;
         }
@@ -636,37 +144,51 @@ mod script {
     }
 
     /// Step 3: `Depart Depot` for `Central`.
-    pub(super) fn depart(city: &mut City) -> Result<(), Box<dyn std::error::Error>> {
-        city.net.set_param(NextStop(Location::Central))?;
+    pub(super) fn depart(city: &mut City) -> Result<(), BoxedError> {
+        city.net.set_param(net::Destination(Location::Central))?;
         city.order(city.depart[Location::Depot as usize])?;
         Ok(())
     }
 
     /// Step 4: `Arrive`, then run to quiet.
-    pub(super) fn arrive(city: &mut City) -> Result<RunSummary, Box<dyn std::error::Error>> {
+    pub(super) fn arrive(city: &mut City) -> Result<RunSummary, BoxedError> {
         city.order(city.arrive)?;
         Ok(city.run_to_quiet()?)
     }
 
     /// Step 5: `Alight Central` twice.
-    pub(super) fn alight(city: &mut City) -> Result<(), Box<dyn std::error::Error>> {
+    pub(super) fn alight(city: &mut City) -> Result<(), BoxedError> {
         for _ in 0..2 {
             city.order(city.alight[Location::Central as usize])?;
         }
         Ok(())
     }
 
-    // Step 6, saving the city after step 3 and step 5 and carrying on from
-    // the loaded copies, is phase 2: it needs inner nets rebuilt from
-    // templates and markings imported by name.
+    /// Step 6, the first half: the city's marking as JSON text, every
+    /// vehicle's cabin inside it.
+    pub(super) fn save(city: &City) -> Result<String, BoxedError> {
+        Ok(serde_json::to_string(&city.net.export_marking()?)?)
+    }
+
+    /// Step 6, the second half: a freshly built city, held back as the
+    /// script's is, with a saved marking loaded into it. The import's one
+    /// `Resynced` is dropped with the rest of the set-up.
+    pub(super) fn load(text: &str) -> Result<City, BoxedError> {
+        let mut city = city()?;
+        let marking: Marking = serde_json::from_str(text)?;
+        city.net.import_marking(&marking)?;
+        city.net.drain_events().for_each(drop);
+        Ok(city)
+    }
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut city = build_city()?;
+fn main() -> Result<(), BoxedError> {
+    let mut city = script::city()?;
     println!("{}", petritype_dot::dot(&city.net));
+    let templates = templates();
     for kind in Kind::ALL {
-        let vehicle = Vehicle::new(&format!("{kind:?}"), kind)?;
-        let places: Vec<&str> = vehicle.inner.places().map(|(_, info)| info.name).collect();
+        let vehicle = Vehicle::new(&format!("{kind:?}"), kind, &templates)?;
+        let places: Vec<&str> = vehicle.cabin.places().map(|(_, info)| info.name).collect();
         println!("a {kind:?} carries a {}: {places:?}", kind.template());
     }
     println!("waiting at Depot: {:?}\n", waiting(&city, Location::Depot));
@@ -674,15 +196,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let summary = script::board(&mut city)?;
     log.extend(city.net.drain_events());
-    let cabin = city
-        .inside(city.stations.at(Location::Depot))
-        .expect("the bus");
+    let depot = city.stations.at(Location::Depot);
+    let cabin = city.inside(depot).expect("the bus");
     println!(
         "after boarding ({} inner firings): seats {:?}, standing {:?}, door {:?}",
         summary.fired_count,
         names(cabin, "Seats"),
         names(cabin, "Standing"),
         names(cabin, "Door"),
+    );
+    let (_, bus) = city.vehicle(depot).expect("the bus");
+    println!(
+        "the bus, as a saved city writes it:\n{}",
+        serde_json::to_string_pretty(bus)?
     );
 
     script::depart(&mut city)?;
@@ -693,6 +219,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         bus.destination,
         city.net.is_quiescent_deep()
     );
+    let saved = script::save(&city)?;
 
     script::arrive(&mut city)?;
     log.extend(city.net.drain_events());
@@ -716,6 +243,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         names(cabin, "Door"),
     );
 
+    let mut loaded = script::load(&saved)?;
+    script::arrive(&mut loaded)?;
+    script::alight(&mut loaded)?;
+    println!(
+        "\nsaved in transit ({} bytes), loaded into a fresh city and carried on: \
+         the same marking as the straight run, inside the vehicles too: {}",
+        saved.len(),
+        loaded.net.export_marking()? == city.net.export_marking()?,
+    );
+
     println!("\nthe firings, with paths:");
     for firing in firings(&city.net, &log) {
         println!("  {firing}");
@@ -726,11 +263,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use net::{Capacity, Destination, SeatCount, Stopped};
+    use petritype::{NetError, PlaceRef, TokenId};
+    use serde_json::json;
 
     /// The city after the first `step` steps of the script (1 to 5), and
     /// everything it logged on the way.
     fn after(step: u32) -> (City, Vec<Event>) {
-        let mut city = build_city().expect("the city builds");
+        let mut city = script::city().expect("the city builds");
         let mut log = Vec::new();
         if step >= 2 {
             script::board(&mut city).expect("boarding works");
@@ -751,11 +291,78 @@ mod tests {
         (city, log)
     }
 
-    /// The bus's token id at a station, and its inner net's id.
+    /// The bus's token id at a station, and its cabin's id.
     fn bus_at(city: &City, place: PlaceRef<Vehicle>) -> (TokenId, petritype::NetId) {
         let (token, bus) = city.vehicle(place).expect("the bus is there");
         assert_eq!(bus.name, "Bus 1");
-        (token, bus.inner.id())
+        (token, bus.cabin.id())
+    }
+
+    #[test]
+    fn the_city_is_the_conformance_net_of_protocol_section_11() {
+        let city = build_city().expect("the city builds");
+        let places: Vec<(&str, bool, bool)> = city
+            .net
+            .places()
+            .map(|(_, info)| (info.name, info.nested, info.serializable))
+            .collect();
+        assert_eq!(
+            places,
+            [
+                ("Depot", true, true),
+                ("Central", true, true),
+                ("Harbour", true, true),
+                ("Airport", true, true),
+                ("Platform@Depot", false, true),
+                ("Platform@Central", false, true),
+                ("Platform@Harbour", false, true),
+                ("Platform@Airport", false, true),
+                ("In Transit", true, true),
+            ],
+        );
+        let transitions: Vec<&str> = city.net.transitions().map(|(_, info)| info.name).collect();
+        assert_eq!(
+            transitions,
+            [
+                "Board Depot",
+                "Board Central",
+                "Board Harbour",
+                "Board Airport",
+                "Alight Depot",
+                "Alight Central",
+                "Alight Harbour",
+                "Alight Airport",
+                "Depart Depot",
+                "Depart Central",
+                "Depart Harbour",
+                "Depart Airport",
+                "Arrive",
+            ],
+        );
+        assert!(
+            city.net.transitions().all(|(_, info)| info.enabled),
+            "every transition starts switched on"
+        );
+        assert_eq!(
+            city.net.param::<Destination>(),
+            Some(&Destination(Location::Central))
+        );
+        let ferry = city
+            .inside(city.stations.at(Location::Harbour))
+            .expect("the ferry");
+        assert_eq!(ferry.template(), Some("Deck"));
+        let cabin = cabin(&Params::new()).expect("a cabin");
+        let inner: Vec<&str> = cabin.transitions().map(|(_, info)| info.name).collect();
+        assert_eq!(
+            inner,
+            [
+                "Sit",
+                "Stand",
+                "Go To Door",
+                "Go To Door From Standing",
+                "Clear Announcement",
+            ],
+        );
     }
 
     #[test]
@@ -769,16 +376,14 @@ mod tests {
             .expect("Depot is a nested place");
         assert_eq!(nets.len(), 1);
         assert_eq!(nets[0].0, "cabin");
+        assert_eq!(nets[0].1.template(), Some("Cabin"));
         assert_eq!(
             city.vehicle(city.stations.at(Location::Harbour))
                 .map(|(_, ferry)| ferry.kind),
             Some(Kind::Ferry),
         );
         assert_eq!(names(&city.net, "Platform@Depot"), ["Ada", "Bram", "Cato"]);
-        assert!(
-            city.net.fireable().is_empty(),
-            "every order is switched off"
-        );
+        assert!(city.net.fireable().is_empty(), "every order is held back");
         assert!(city.net.is_quiescent_deep());
         let info = city.net.places().next().expect("Depot").1;
         assert!(info.nested && !info.passive);
@@ -786,7 +391,7 @@ mod tests {
 
     #[test]
     fn step_2_three_board_and_the_bus_sorts_them_out_inside() {
-        let mut city = build_city().expect("the city builds");
+        let mut city = script::city().expect("the city builds");
         let summary = script::board(&mut city).expect("boarding works");
         let log: Vec<Event> = city.net.drain_events().collect();
         assert!(summary.quiesced);
@@ -828,7 +433,7 @@ mod tests {
         assert_eq!(cabin.param::<Stopped>(), Some(&Stopped(false)));
         assert_eq!(names(cabin, "Seats"), ["Ada", "Bram"], "unchanged");
         assert_eq!(names(cabin, "Standing"), ["Cato"]);
-        assert!(city.net.is_quiescent_deep(), "Stopped is false");
+        assert!(city.net.is_quiescent_deep(), "nothing to announce yet");
     }
 
     #[test]
@@ -840,10 +445,11 @@ mod tests {
         assert_eq!(city.net.count(city.in_transit.id()), 0);
         let cabin = city.inside(central).expect("the bus");
         assert_eq!(names(cabin, "Door"), ["Ada", "Bram", "Cato"]);
-        assert!(names(cabin, "Announcements").is_empty());
+        // PROTOCOL §11: the announcement stands while anyone is aboard, the
+        // door included, so that nobody sits down again.
+        assert_eq!(names(cabin, "Announcements"), ["Arrived at Central"]);
         assert!(city.net.is_quiescent_deep());
 
-        // `Clear Announcement` only once all three had gone to the door.
         let inner: Vec<String> = firings(&city.net, &log)
             .into_iter()
             .filter_map(|firing| firing.split_once(": ").map(|(_, name)| name.to_owned()))
@@ -851,12 +457,7 @@ mod tests {
             .collect();
         assert_eq!(
             inner,
-            [
-                "Go To Door From Seats",
-                "Go To Door From Seats",
-                "Go To Door From Standing",
-                "Clear Announcement",
-            ],
+            ["Go To Door", "Go To Door", "Go To Door From Standing"],
         );
     }
 
@@ -869,6 +470,141 @@ mod tests {
             .inside(city.stations.at(Location::Central))
             .expect("the bus");
         assert_eq!(names(cabin, "Door"), ["Cato"]);
+        assert_eq!(names(cabin, "Announcements"), ["Arrived at Central"]);
+    }
+
+    #[test]
+    fn step_6_saved_in_transit_and_loaded_the_city_carries_on_to_the_same_end() {
+        let (in_transit, _) = after(3);
+        let text = script::save(&in_transit).expect("every place is serializable");
+        let (straight, _) = after(5);
+
+        let mut loaded = script::load(&text).expect("the saved city loads");
+        assert_eq!(
+            loaded.net.export_marking().expect("saves"),
+            in_transit.net.export_marking().expect("saves"),
+            "what was saved is what was loaded",
+        );
+        script::arrive(&mut loaded).expect("the loaded bus arrives");
+        script::alight(&mut loaded).expect("two passengers alight");
+
+        // By place name, token order and value, inside the vehicles too.
+        assert_eq!(
+            script::save(&loaded).expect("saves"),
+            script::save(&straight).expect("saves"),
+        );
+        assert_eq!(names(&loaded.net, "Platform@Central"), ["Ada", "Bram"]);
+        let cabin = loaded
+            .inside(loaded.stations.at(Location::Central))
+            .expect("the bus");
+        assert_eq!(names(cabin, "Door"), ["Cato"]);
+    }
+
+    #[test]
+    fn step_6_saved_at_the_end_and_loaded_the_city_is_the_same() {
+        let (straight, _) = after(5);
+        let text = script::save(&straight).expect("every place is serializable");
+        let loaded = script::load(&text).expect("the saved city loads");
+        assert_eq!(
+            loaded.net.export_marking().expect("saves"),
+            straight.net.export_marking().expect("saves"),
+        );
+        assert_eq!(script::save(&loaded).expect("saves"), text);
+    }
+
+    #[test]
+    fn step_6_a_loaded_cabin_is_a_new_net_with_its_parameters_and_switches() {
+        let (mut city, _) = after(3);
+        // A switch inside, thrown, to see it come back.
+        let (token, _) = city.vehicle(city.in_transit).expect("the bus");
+        city.net
+            .nested_scope(city.in_transit.id(), token, |nets| {
+                let cabin = &mut *nets[0].1;
+                let clear = cabin
+                    .transition_named("Clear Announcement")
+                    .expect("a cabin transition");
+                cabin.disable(clear).expect("disables");
+            })
+            .expect("a nested place");
+        let text = script::save(&city).expect("saves");
+        let loaded = script::load(&text).expect("loads");
+
+        let before = city.inside(city.in_transit).expect("the bus");
+        let after = loaded.inside(loaded.in_transit).expect("the bus");
+        assert_ne!(after.id(), before.id(), "a restored cabin is a new net");
+        assert_eq!(after.template(), Some("Cabin"));
+        assert_eq!(after.param::<Stopped>(), Some(&Stopped(false)));
+        assert_eq!(after.param::<SeatCount>(), Some(&SeatCount(2)));
+        assert_eq!(after.param::<Capacity>(), Some(&Capacity(6)));
+        for (transition, info) in before.transitions() {
+            let same = after.transition_named(info.name).expect("same template");
+            assert_eq!(after.is_enabled(same), before.is_enabled(transition));
+        }
+        let clear = after.transition_named("Clear Announcement").expect("there");
+        assert!(!after.is_enabled(clear));
+        assert_eq!(
+            loaded
+                .vehicle(loaded.in_transit)
+                .map(|(_, bus)| bus.destination),
+            Some(Some(Location::Central)),
+        );
+        assert_eq!(after.state_counter(), 0, "restoring is setup");
+    }
+
+    #[test]
+    fn the_bus_saves_in_the_shape_of_protocol_section_12_5() {
+        let (city, _) = after(2);
+        let (_, bus) = city
+            .vehicle(city.stations.at(Location::Depot))
+            .expect("the bus");
+        assert_eq!(
+            serde_json::to_value(bus).expect("the bus serialises"),
+            json!({"name": "Bus 1", "kind": "Bus", "destination": null,
+                   "cabin": {"template": "Cabin",
+                             "marking": {"Door": [], "Seats": ["Ada", "Bram"], "Standing": ["Cato"],
+                                         "Announcements": []},
+                             "params": {"stopped": true, "seats": 2, "capacity": 6},
+                             "enabled": {"Sit": true, "Stand": true, "Go To Door": true,
+                                         "Go To Door From Standing": true,
+                                         "Clear Announcement": true}}}),
+        );
+    }
+
+    #[test]
+    fn a_snapshot_of_the_city_forks_every_vehicle() {
+        let (city, _) = after(5);
+        let snapshot = city.net.snapshot().expect("the vehicles can be forked");
+        let mut seen = 0;
+        for place in city.stations.places.into_iter().chain([city.in_transit]) {
+            for (token, _) in city.net.tokens(place.id()) {
+                let live = city.net.nested(place.id(), token).expect("nested")[0].1;
+                let copy = snapshot.nested(place.id(), token).expect("in the snapshot")[0].1;
+                assert_eq!(
+                    copy.export_marking().expect("saves"),
+                    live.export_marking().expect("saves"),
+                );
+                assert_ne!(copy.id(), live.id(), "a fork is a new net");
+                seen += 1;
+            }
+        }
+        assert_eq!(seen, 2, "the bus and the ferry");
+        assert_eq!(
+            snapshot.count(city.platforms.at(Location::Central).id()),
+            2,
+            "the rest of the city is cloned as ever"
+        );
+        let central = city.stations.at(Location::Central);
+        let (bus, _) = bus_at(&city, central);
+        let cabin_id = |snapshot: &petritype::Snapshot| {
+            snapshot
+                .nested(central.id(), bus)
+                .map(|nets| nets[0].1.id())
+        };
+        assert_eq!(
+            cabin_id(&snapshot.clone()),
+            cabin_id(&snapshot),
+            "a clone of a snapshot shares its forks",
+        );
     }
 
     #[test]
@@ -898,10 +634,9 @@ mod tests {
                 format!("{depot}: Stand"),
                 "Depart Depot".to_owned(),
                 "Arrive".to_owned(),
-                format!("{central}: Go To Door From Seats"),
-                format!("{central}: Go To Door From Seats"),
+                format!("{central}: Go To Door"),
+                format!("{central}: Go To Door"),
                 format!("{central}: Go To Door From Standing"),
-                format!("{central}: Clear Announcement"),
                 "Alight Central".to_owned(),
                 "Alight Central".to_owned(),
             ],
@@ -910,7 +645,7 @@ mod tests {
 
     #[test]
     fn step_7_the_bus_is_followed_by_its_nested_id_across_token_ids() {
-        let mut city = build_city().expect("the city builds");
+        let mut city = script::city().expect("the city builds");
         let depot = city.stations.at(Location::Depot);
         let (first_token, nested_id) = bus_at(&city, depot);
 
@@ -939,7 +674,7 @@ mod tests {
             }
         }
         let (last_token, still) = bus_at(&city, city.stations.at(Location::Central));
-        assert_eq!(still, nested_id, "the inner net never changed");
+        assert_eq!(still, nested_id, "the cabin never changed");
         assert_eq!(stops.len(), 3, "{stops:?}");
         assert_eq!(stops[0], ("Depot".to_owned(), first_token));
         assert_eq!(stops[1].0, "In Transit");
@@ -957,7 +692,7 @@ mod tests {
 
     #[test]
     fn board_is_refused_when_the_bus_is_full() {
-        let mut city = build_city().expect("the city builds");
+        let mut city = script::city().expect("the city builds");
         let platform = city.platforms.at(Location::Depot);
         // Six fit aboard a bus; three are waiting already.
         city.net
@@ -974,18 +709,22 @@ mod tests {
     }
 
     #[test]
-    fn every_kind_has_an_inside_of_its_own() {
-        let tram = Vehicle::new("Tram 1", Kind::Tram).expect("a cabin");
-        let ferry = Vehicle::new("Ferry 2", Kind::Ferry).expect("a deck");
-        let shuttle = Vehicle::new("Shuttle 1", Kind::Shuttle).expect("a pod");
-        assert_eq!(tram.nets()[0].0, "cabin");
-        assert_eq!(ferry.nets()[0].0, "deck");
-        assert_eq!(shuttle.nets()[0].0, "pod");
-        assert_eq!(
-            tram.inner.param::<SeatCount>().map(|seats| seats.0),
-            Some(8)
-        );
-        assert!(ferry.inner.place_named("Upper Deck").is_some());
-        assert!(shuttle.inner.place_named("Standing").is_none());
+    fn every_kind_has_a_cabin_of_its_own_template() {
+        let templates = templates();
+        let tram = Vehicle::new("Tram 1", Kind::Tram, &templates).expect("a cabin");
+        let ferry = Vehicle::new("Ferry 2", Kind::Ferry, &templates).expect("a deck");
+        let shuttle = Vehicle::new("Shuttle 1", Kind::Shuttle, &templates).expect("a pod");
+        use petritype::Nested;
+        for vehicle in [&tram, &ferry, &shuttle] {
+            assert_eq!(vehicle.nets()[0].0, "cabin", "one name whatever the kind");
+        }
+        assert_eq!(tram.cabin.template(), Some("Cabin"));
+        assert_eq!(ferry.cabin.template(), Some("Deck"));
+        assert_eq!(shuttle.cabin.template(), Some("Pod"));
+        assert_eq!(tram.cabin.param::<SeatCount>(), Some(&SeatCount(2)));
+        assert_eq!(shuttle.cabin.param::<Capacity>(), Some(&Capacity(4)));
+        assert!(ferry.cabin.place_named("Upper Deck").is_some());
+        assert!(ferry.cabin.param::<SeatCount>().is_none());
+        assert!(shuttle.cabin.place_named("Standing").is_none());
     }
 }

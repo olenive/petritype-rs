@@ -34,10 +34,12 @@ use std::any::Any;
 use std::fmt;
 
 use crate::error::FiringFailed;
+#[cfg(feature = "serde")]
+use crate::error::NetError;
 use crate::event::Event;
 use crate::ids::{NetId, PlaceId, TokenId, TransitionId};
 use crate::net::Net;
-use crate::place::ErasedToken;
+use crate::place::{ErasedToken, PlaceSlot};
 
 /// A token type that owns Petri nets of its own, each under a name.
 ///
@@ -76,6 +78,31 @@ use crate::place::ErasedToken;
 ///
 /// [`Net`] implements it as one unnamed inner net, `("", net)`, so a place of
 /// bare nets is a place of nested tokens with no wrapper type at all.
+///
+/// # Copies
+///
+/// A `Net` cannot be cloned — its bodies are closures — so neither can a
+/// token that owns one. With the `serde` feature the trait has a third
+/// method, `fork`, a fallible copy: the plain fields cloned, each inner net
+/// through `Net::fork`, which rebuilds it from the template that built it.
+/// It is what [`Net::snapshot`] copies the tokens of a nested place with.
+/// The default refuses (`NetError::NotForkable`), so a type that never needs
+/// a snapshot writes nothing; one that does writes three lines:
+///
+/// ```
+/// # #[cfg(feature = "serde")] {
+/// # use petritype::{Nested, Net, NetError};
+/// # #[derive(Debug)] struct Vehicle { name: String, inner: Net }
+/// impl Nested for Vehicle {
+/// #   fn nets(&self) -> Vec<(&str, &Net)> { vec![("cabin", &self.inner)] }
+/// #   fn nets_mut(&mut self) -> Vec<(&str, &mut Net)> { vec![("cabin", &mut self.inner)] }
+///     // nets and nets_mut as above, and:
+///     fn fork(&self) -> Result<Self, NetError> {
+///         Ok(Vehicle { name: self.name.clone(), inner: self.inner.fork()? })
+///     }
+/// }
+/// # }
+/// ```
 #[diagnostic::on_unimplemented(
     message = "`{Self}` does not say which nets it owns, so it cannot be the token of a nested place",
     label = "not `Nested`",
@@ -90,6 +117,25 @@ pub trait Nested: Send + Sync + 'static {
     /// The same nets, mutably, under the same names and in the same order as
     /// [`nets`](Nested::nets).
     fn nets_mut(&mut self) -> Vec<(&str, &mut Net)>;
+
+    /// A copy of this token, its inner nets rebuilt from their templates
+    /// with [`Net::fork`]: what [`Net::snapshot`] copies a nested place's
+    /// tokens with (DESIGN §6.6).
+    ///
+    /// # Errors
+    ///
+    /// By default [`NetError::NotForkable`] naming the type: a token type
+    /// says how to copy itself or it is not copied. An implementation
+    /// passes on whatever its nets' `fork` returns.
+    #[cfg(feature = "serde")]
+    fn fork(&self) -> Result<Self, NetError>
+    where
+        Self: Sized,
+    {
+        Err(NetError::NotForkable {
+            type_name: std::any::type_name::<Self>(),
+        })
+    }
 }
 
 /// A net is a token that owns one inner net, itself, with no name: `""`.
@@ -101,6 +147,12 @@ impl Nested for Net {
     fn nets_mut(&mut self) -> Vec<(&str, &mut Net)> {
         vec![("", self)]
     }
+
+    /// [`Net::fork`].
+    #[cfg(feature = "serde")]
+    fn fork(&self) -> Result<Self, NetError> {
+        Net::fork(self)
+    }
 }
 
 /// Lists the inner nets of an erased token. See [`nets_of`].
@@ -108,6 +160,11 @@ pub(crate) type NetsFn = fn(&dyn Any) -> Vec<(&str, &Net)>;
 
 /// Lists the inner nets of an erased token, mutably. See [`nets_mut_of`].
 pub(crate) type NetsMutFn = fn(&mut dyn Any) -> Vec<(&str, &mut Net)>;
+
+/// Copies an erased token through its type's [`Nested::fork`]. See
+/// [`fork_of`].
+#[cfg(feature = "serde")]
+pub(crate) type ForkFn = fn(&dyn Any) -> Result<ErasedToken, NetError>;
 
 /// The [`Nested`] half of a place's vtable: `T::nets` and `T::nets_mut`,
 /// monomorphised by
@@ -119,6 +176,10 @@ pub(crate) struct NestedVtable {
     pub(crate) nets: NetsFn,
     /// `nets_mut_of::<T>`.
     pub(crate) nets_mut: NetsMutFn,
+    /// `fork_of::<T>`: the cloner a nested place has instead of `clone`,
+    /// fallible because a fork rebuilds nets from templates.
+    #[cfg(feature = "serde")]
+    pub(crate) fork: ForkFn,
 }
 
 impl NestedVtable {
@@ -127,6 +188,8 @@ impl NestedVtable {
         NestedVtable {
             nets: nets_of::<T> as NetsFn,
             nets_mut: nets_mut_of::<T> as NetsMutFn,
+            #[cfg(feature = "serde")]
+            fork: fork_of::<T> as ForkFn,
         }
     }
 }
@@ -151,6 +214,31 @@ fn nets_mut_of<T: Nested>(value: &mut dyn Any) -> Vec<(&str, &mut Net)> {
         .downcast_mut::<T>()
         .expect("token in a place is always of the place's type")
         .nets_mut()
+}
+
+/// `fork_of::<T>` copies an erased token with `T`'s [`Nested::fork`],
+/// erasing the copy again.
+#[cfg(feature = "serde")]
+fn fork_of<T: Nested>(value: &dyn Any) -> Result<ErasedToken, NetError> {
+    value
+        .downcast_ref::<T>()
+        .expect("token in a place is always of the place's type")
+        .fork()
+        .map(|copy| Box::new(copy) as ErasedToken)
+}
+
+/// The inner nets of one token of a nested place, read through the place's
+/// vtable: [`Net::nested`] and [`Snapshot::nested`](crate::Snapshot::nested)
+/// both ask this.
+pub(crate) fn nested_in(
+    places: &[impl std::borrow::Borrow<PlaceSlot>],
+    place: PlaceId,
+    token: TokenId,
+) -> Option<Vec<(&str, &Net)>> {
+    let slot = places.get(place.0 as usize)?.borrow();
+    let nested = slot.meta.nested?;
+    let index = slot.position(token)?;
+    Some((nested.nets)(&*slot.tokens[index].1))
 }
 
 /// Empties the logs of one token's inner nets, wrapping every event for the
@@ -271,10 +359,7 @@ impl Net {
     /// # Ok::<(), petritype::BuildError>(())
     /// ```
     pub fn nested(&self, place: PlaceId, token: TokenId) -> Option<Vec<(&str, &Net)>> {
-        let slot = self.places.get(place.0 as usize)?;
-        let nested = slot.meta.nested?;
-        let index = slot.position(token)?;
-        Some((nested.nets)(&*slot.tokens[index].1))
+        nested_in(&self.places, place, token)
     }
 
     /// Calls `f` with the inner nets of one token of a nested place, mutably,

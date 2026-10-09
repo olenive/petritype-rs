@@ -4,6 +4,7 @@
 //! transitions could fire, which one does, and what one firing changes.
 
 use std::any::{Any, TypeId, type_name};
+use std::borrow::Borrow;
 use std::fmt;
 
 use crate::command::ERASED;
@@ -65,6 +66,15 @@ pub struct Net {
     pub(crate) label_limit: usize,
     /// Appended to by the net, drained by the driver.
     pub(crate) events: Vec<Event>,
+    /// The template that built this net, if one did: what lets it be saved
+    /// and [forked](Net::fork) (DESIGN §6.6). Set by
+    /// [`Templates::build`](crate::Templates::build), never by the builder.
+    #[cfg(feature = "serde")]
+    pub(crate) stamp: Option<crate::template::Stamp>,
+    /// The registry this net's nested tokens are restored from, in scope
+    /// wherever the net decodes tokens.
+    #[cfg(feature = "serde")]
+    pub(crate) templates: crate::template::Templates,
 }
 
 /// The stand-in name for an id that indexes nothing, in the message of an
@@ -945,8 +955,8 @@ impl Net {
 
 impl fmt::Debug for Net {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Net")
-            .field("id", &self.id)
+        let mut out = f.debug_struct("Net");
+        out.field("id", &self.id)
             .field("places", &self.places)
             .field("transitions", &self.transitions)
             // Type names only: a parameter value is never printed (DESIGN
@@ -960,8 +970,11 @@ impl fmt::Debug for Net {
             .field("custom_selector", &self.selector.is_some())
             .field("tie_break", &self.tie_break)
             .field("resettable", &self.resettable)
-            .field("pending_events", &self.events.len())
-            .finish()
+            .field("pending_events", &self.events.len());
+        #[cfg(feature = "serde")]
+        out.field("template", &self.template())
+            .field("templates", &self.templates);
+        out.finish()
     }
 }
 
@@ -975,8 +988,11 @@ impl fmt::Debug for Net {
 // it carries the same [`PlaceMeta`](crate::place::PlaceMeta) vtables.
 
 /// Every place, in id order, with its name, token type and live count.
-pub(crate) fn places_of(places: &[PlaceSlot]) -> impl Iterator<Item = (PlaceId, PlaceInfo<'_>)> {
+pub(crate) fn places_of(
+    places: &[impl Borrow<PlaceSlot>],
+) -> impl Iterator<Item = (PlaceId, PlaceInfo<'_>)> {
     places.iter().enumerate().map(|(index, slot)| {
+        let slot = slot.borrow();
         // The index is where the id came from in the first place.
         let id = PlaceId(index as u32);
         let info = PlaceInfo {
@@ -1026,27 +1042,27 @@ pub(crate) fn edges_of<'a>(
 }
 
 /// The id of the place with this name, if there is one.
-pub(crate) fn place_named_in(places: &[PlaceSlot], name: &str) -> Option<PlaceId> {
+pub(crate) fn place_named_in(places: &[impl Borrow<PlaceSlot>], name: &str) -> Option<PlaceId> {
     places
         .iter()
-        .position(|slot| slot.meta.name == name)
+        .position(|slot| slot.borrow().meta.name == name)
         .map(|index| PlaceId(index as u32))
 }
 
 /// How many tokens a place holds; an unknown place counts zero.
-pub(crate) fn count_in(places: &[PlaceSlot], place: PlaceId) -> usize {
+pub(crate) fn count_in(places: &[impl Borrow<PlaceSlot>], place: PlaceId) -> usize {
     places
         .get(place.0 as usize)
-        .map_or(0, |slot| slot.tokens.len())
+        .map_or(0, |slot| slot.borrow().tokens.len())
 }
 
 /// The tokens of a place, oldest first and erased.
 pub(crate) fn tokens_in(
-    places: &[PlaceSlot],
+    places: &[impl Borrow<PlaceSlot>],
     place: PlaceId,
 ) -> impl Iterator<Item = (TokenId, &dyn Any)> {
     places.get(place.0 as usize).into_iter().flat_map(|slot| {
-        slot.tokens.iter().map(|(id, value)| {
+        slot.borrow().tokens.iter().map(|(id, value)| {
             // `dyn Any + Send + Sync` unsizes to plain `dyn Any`; the
             // auto traits matter to the net, not to a reader.
             let value: &dyn Any = &**value;
@@ -1057,18 +1073,18 @@ pub(crate) fn tokens_in(
 
 /// One token of a place, downcast to `T`.
 pub(crate) fn token_in<T: 'static>(
-    places: &[PlaceSlot],
+    places: &[impl Borrow<PlaceSlot>],
     place: PlaceId,
     token: TokenId,
 ) -> Option<&T> {
-    let slot = places.get(place.0 as usize)?;
+    let slot = places.get(place.0 as usize)?.borrow();
     let index = slot.position(token)?;
     slot.tokens[index].1.downcast_ref::<T>()
 }
 
 /// One token rendered with its type's `Debug`, truncated to `limit`.
 pub(crate) fn label_in(
-    places: &[PlaceSlot],
+    places: &[impl Borrow<PlaceSlot>],
     place: PlaceId,
     token: TokenId,
     limit: usize,
@@ -1077,8 +1093,12 @@ pub(crate) fn label_in(
 }
 
 /// One token's full `Debug` rendering, the text a label is cut from.
-pub(crate) fn debug_in(places: &[PlaceSlot], place: PlaceId, token: TokenId) -> Option<String> {
-    let slot = places.get(place.0 as usize)?;
+pub(crate) fn debug_in(
+    places: &[impl Borrow<PlaceSlot>],
+    place: PlaceId,
+    token: TokenId,
+) -> Option<String> {
+    let slot = places.get(place.0 as usize)?.borrow();
     let index = slot.position(token)?;
     Some((slot.meta.debug)(&*slot.tokens[index].1))
 }
@@ -1086,14 +1106,17 @@ pub(crate) fn debug_in(places: &[PlaceSlot], place: PlaceId, token: TokenId) -> 
 /// One token as JSON, for a place that recorded an encoder.
 #[cfg(feature = "serde")]
 pub(crate) fn json_in(
-    places: &[PlaceSlot],
+    places: &[impl Borrow<PlaceSlot>],
     place: PlaceId,
     token: TokenId,
 ) -> Option<serde_json::Value> {
-    let slot = places.get(place.0 as usize)?;
+    let slot = places.get(place.0 as usize)?.borrow();
     let to_json = slot.meta.to_json?;
     let index = slot.position(token)?;
-    Some(to_json(&*slot.tokens[index].1))
+    Some(crate::place::json_or_message(
+        to_json,
+        &*slot.tokens[index].1,
+    ))
 }
 
 /// Cuts `text` to `limit` characters, on a character boundary, appending

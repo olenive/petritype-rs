@@ -376,6 +376,99 @@ pub enum NetError {
         /// builder.
         name: String,
     },
+    /// [`Net::export_marking`](crate::Net::export_marking), a save or a
+    /// [`fork`](crate::Net::fork) met a place that was not marked
+    /// [`serializable`](crate::NetBuilder::serializable).
+    ///
+    /// A marking is every place's tokens as JSON, and such a place has no
+    /// encoder, so half a marking is all there could be. Every place is
+    /// checked before anything is written; this names the first offender in
+    /// id order. [`CommandError::NotSerializable`] is the same refusal on the
+    /// way in.
+    #[cfg(feature = "serde")]
+    #[error("place {name:?} ({place:?}) is not marked serializable")]
+    NotSerializable {
+        /// The place with no encoder.
+        place: PlaceId,
+        /// The place's name, for the message; the id is the field to match
+        /// on.
+        name: String,
+    },
+    /// A token's own `Serialize` refused, on the way to a marking: most
+    /// often a token holding a [`Net`](crate::Net) that no template built,
+    /// which cannot be saved because it could not be restored.
+    #[cfg(feature = "serde")]
+    #[error("place {name:?} ({place:?}): token {token:?} cannot be serialised: {source}")]
+    CannotSerialize {
+        /// The place holding the token.
+        place: PlaceId,
+        /// The place's name, for the message.
+        name: String,
+        /// The token that would not serialise.
+        token: TokenId,
+        /// What its `Serialize` said.
+        #[source]
+        source: serde_json::Error,
+    },
+    /// [`Net::fork`](crate::Net::fork) was asked of a net that no template
+    /// built: there is no factory to build the copy with. Build the net
+    /// through [`Templates::build`](crate::Templates::build) to give it one.
+    #[cfg(feature = "serde")]
+    #[error("the net was not built from a template, so it cannot be rebuilt")]
+    NoTemplate,
+    /// A [`fork`](crate::Net::fork) or a save of a net with a transition in
+    /// flight: the tokens that firing took are in no place, so a copy would
+    /// silently lose them. Distribute the firing first; a driver never
+    /// returns with one airborne.
+    #[cfg(feature = "serde")]
+    #[error("transition {name:?} ({transition:?}) is in flight")]
+    InFlight {
+        /// The first transition in flight, in declaration order.
+        transition: TransitionId,
+        /// Its name, for the message.
+        name: String,
+    },
+    /// A nested token whose type keeps the default
+    /// [`Nested::fork`](crate::Nested::fork), which refuses: the type has
+    /// not said how to copy itself. Implement `fork` (the plain fields
+    /// cloned, each inner net through [`Net::fork`](crate::Net::fork)).
+    #[cfg(feature = "serde")]
+    #[error("{type_name} does not implement Nested::fork, so it cannot be copied")]
+    NotForkable {
+        /// The token type, `std::any::type_name::<T>()`.
+        type_name: &'static str,
+    },
+    /// [`Net::snapshot`](crate::Net::snapshot) could not fork one token of a
+    /// nested place; `source` says why. The first such token, in place
+    /// order and then token order; nothing is returned, as with
+    /// [`NoClonePlace`](NetError::NoClonePlace).
+    #[cfg(feature = "serde")]
+    #[error("place {name:?} ({place:?}): token {token:?} cannot be forked: {source}")]
+    CannotFork {
+        /// The nested place holding the token.
+        place: PlaceId,
+        /// The place's name, for the message.
+        name: String,
+        /// The token whose fork failed.
+        token: TokenId,
+        /// Why: [`NotForkable`](NetError::NotForkable),
+        /// [`NoTemplate`](NetError::NoTemplate) or whatever else the token's
+        /// fork returned.
+        #[source]
+        source: Box<NetError>,
+    },
+    /// [`Net::fork`](crate::Net::fork) built a fresh net from the template
+    /// and could not make it a copy: the factory failed this time, or the
+    /// marking it exported did not load back into what the factory built.
+    #[cfg(feature = "serde")]
+    #[error("the net could not be rebuilt from template {template:?}: {source}")]
+    RebuildFailed {
+        /// The template the net was built from.
+        template: String,
+        /// The factory's error, or the [`CommandError`] of the import.
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync>,
+    },
     /// A firing this call started failed. [`Net::fire`](crate::Net::fire)
     /// reports a body's failure this way; [`Net::step`](crate::Net::step)
     /// returns the [`FiringFailed`] itself.
@@ -522,6 +615,29 @@ pub enum CommandError {
         /// What `serde_json` made of it.
         #[source]
         source: serde_json::Error,
+    },
+}
+
+/// A [`Templates::build`](crate::Templates::build) that did not produce a
+/// net.
+#[cfg(feature = "serde")]
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum TemplateError {
+    /// No template is registered under this name.
+    #[error("no template named {name:?}")]
+    NoSuchTemplate {
+        /// The name asked for.
+        name: String,
+    },
+    /// The template's factory returned an error.
+    #[error("template {name:?} failed to build its net: {source}")]
+    Factory {
+        /// The template's name.
+        name: String,
+        /// What the factory returned.
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync>,
     },
 }
 

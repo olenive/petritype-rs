@@ -2,10 +2,12 @@
 
 use std::any::Any;
 use std::fmt;
+use std::sync::Arc;
 
 use crate::edge::EdgeInfo;
 use crate::error::NetError;
 use crate::ids::{NetId, PlaceId, TokenId, TransitionId};
+use crate::nested::nested_in;
 #[cfg(feature = "serde")]
 use crate::net::json_in;
 use crate::net::{
@@ -44,12 +46,27 @@ impl Net {
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
     ///
+    /// # Nested places
+    ///
+    /// A [nested](crate::NetBuilder::place_nested) place has no cloner — a
+    /// token that owns a [`Net`] cannot be cloned — so without the `serde`
+    /// feature it is refused like any no-clone place. With it, each of its
+    /// tokens is copied with `Nested::fork`, which rebuilds the token's
+    /// inner nets from their templates and gives them their markings,
+    /// parameters and switches, under this net's `templates` in scope. The
+    /// copies keep the live token ids, and [`Snapshot::nested`] reads their
+    /// inner nets.
+    ///
     /// # Errors
     ///
     /// [`NetError::NoClonePlace`] if any place was declared with
-    /// [`place_no_clone`](crate::NetBuilder::place_no_clone): its tokens
-    /// cannot be copied, and half a state is no state. Nothing is cloned
-    /// before every place has been checked, so a refusal costs nothing.
+    /// [`place_no_clone`](crate::NetBuilder::place_no_clone) — or, without
+    /// `serde`, with `place_nested` — since its tokens cannot be copied, and
+    /// half a state is no state. Nothing is cloned before every place has
+    /// been checked, so that refusal costs nothing. With `serde`,
+    /// `NetError::CannotFork` naming the place and the first token whose
+    /// fork failed, and why: a token type that keeps the default `fork`, an
+    /// inner net that no template built.
     pub fn snapshot(&self) -> Result<Snapshot, NetError> {
         // Checked first, all of it, so that a net with a `no_clone` place in
         // the middle does not pay for copying the places before it.
@@ -57,7 +74,7 @@ impl Net {
             .places
             .iter()
             .enumerate()
-            .find(|(_, slot)| slot.meta.clone.is_none())
+            .find(|(_, slot)| slot.meta.clone.is_none() && !forks(slot))
         {
             return Err(NetError::NoClonePlace {
                 place: PlaceId(index as u32),
@@ -65,14 +82,7 @@ impl Net {
             });
         }
 
-        let places = self
-            .places
-            .iter()
-            .map(|slot| {
-                slot.try_clone()
-                    .expect("every place was just checked for a cloner")
-            })
-            .collect();
+        let places = self.copy_places()?;
         let transitions = self
             .transitions
             .iter()
@@ -101,6 +111,72 @@ impl Net {
             fired_count: self.fired_count,
         })
     }
+}
+
+impl Net {
+    /// Every place copied for a snapshot, each in an `Arc` so that a clone
+    /// of the snapshot can share what it cannot copy again.
+    ///
+    /// Every place has already been checked for a way to copy it.
+    #[cfg(not(feature = "serde"))]
+    fn copy_places(&self) -> Result<Vec<Arc<PlaceSlot>>, NetError> {
+        Ok(self
+            .places
+            .iter()
+            .map(|slot| {
+                Arc::new(
+                    slot.try_clone()
+                        .expect("every place was just checked for a cloner"),
+                )
+            })
+            .collect())
+    }
+
+    /// Every place copied for a snapshot: cloned, or, for a nested place,
+    /// each token forked under this net's templates.
+    #[cfg(feature = "serde")]
+    fn copy_places(&self) -> Result<Vec<Arc<PlaceSlot>>, NetError> {
+        self.templates.scope(|| {
+            self.places
+                .iter()
+                .enumerate()
+                .map(|(index, slot)| {
+                    if let Some(copy) = slot.try_clone() {
+                        return Ok(Arc::new(copy));
+                    }
+                    let fork = slot
+                        .meta
+                        .nested
+                        .expect("every place was just checked for a cloner or a fork")
+                        .fork;
+                    let tokens = slot
+                        .tokens
+                        .iter()
+                        .map(|(token, value)| {
+                            fork(&**value).map(|copy| (*token, copy)).map_err(|source| {
+                                NetError::CannotFork {
+                                    place: PlaceId(index as u32),
+                                    name: slot.meta.name.clone(),
+                                    token: *token,
+                                    source: Box::new(source),
+                                }
+                            })
+                        })
+                        .collect::<Result<_, _>>()?;
+                    Ok(Arc::new(PlaceSlot {
+                        meta: Clone::clone(&slot.meta),
+                        tokens,
+                    }))
+                })
+                .collect()
+        })
+    }
+}
+
+/// Whether a place without a cloner can still be copied, by forking its
+/// tokens: a nested place, with the `serde` feature.
+fn forks(slot: &PlaceSlot) -> bool {
+    cfg!(feature = "serde") && slot.meta.nested.is_some()
 }
 
 /// One transition inside a [`Snapshot`]: everything
@@ -163,7 +239,10 @@ struct SnapshotTransition {
 /// `Debug` bound at all (DESIGN §10).
 pub struct Snapshot {
     id: NetId,
-    places: Vec<PlaceSlot>,
+    /// Each place in an `Arc`: a nested place's tokens were forked once,
+    /// fallibly, and a clone of the snapshot shares them rather than fork
+    /// again. Nothing reads a snapshot mutably, so sharing is copying.
+    places: Vec<Arc<PlaceSlot>>,
     transitions: Vec<SnapshotTransition>,
     params: Vec<ParamSlot>,
     label_limit: usize,
@@ -276,6 +355,18 @@ impl Snapshot {
         json_in(&self.places, place, token)
     }
 
+    /// The inner nets of one token of a nested place, as they were:
+    /// [`Net::nested`]. Read-only, as everything on a snapshot is.
+    ///
+    /// They are the forks [`Net::snapshot`] made of the live ones (DESIGN
+    /// §6.6), so they have their own [`NetId`]s; their markings, parameters
+    /// and switches are the live nets' at that moment. Without the `serde`
+    /// feature a net with a nested place cannot be snapshotted, and this is
+    /// always `None`.
+    pub fn nested(&self, place: PlaceId, token: TokenId) -> Option<Vec<(&str, &Net)>> {
+        nested_in(&self.places, place, token)
+    }
+
     /// The maximum number of characters [`label`](Snapshot::label) returns:
     /// [`Net::label_limit`].
     pub fn label_limit(&self) -> usize {
@@ -337,7 +428,10 @@ impl Snapshot {
 
 /// Cloning re-clones every token through its place's recorded cloner, and
 /// every parameter through its own: the copy is as independent of this
-/// snapshot as this snapshot is of the net.
+/// snapshot as this snapshot is of the net. A nested place, whose tokens
+/// were forked rather than cloned, is shared between the two instead of
+/// forked again — a fork is fallible and `clone` is not — which no reader
+/// can tell apart, since a snapshot is never written to.
 impl Clone for Snapshot {
     fn clone(&self) -> Self {
         Snapshot {
@@ -345,9 +439,9 @@ impl Clone for Snapshot {
             places: self
                 .places
                 .iter()
-                .map(|slot| {
-                    slot.try_clone()
-                        .expect("a snapshot's places all cloned once already")
+                .map(|slot| match slot.try_clone() {
+                    Some(copy) => Arc::new(copy),
+                    None => Arc::clone(slot),
                 })
                 .collect(),
             transitions: self

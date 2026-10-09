@@ -15,7 +15,9 @@ declare per-run `Param::<T>` values that never appear in the diagram, and
 `DESIGN.md` §18, including the opt-in `assert_acyclic` /
 `assert_no_source_transitions` checks). A token may carry Petri nets of its
 own, which the net runs after its own transitions and reports on in its event
-log (slice 15, nets as tokens). The Bevy visualiser lives in its own
+log (slice 15, nets as tokens). With `serde`, such a net is saved and loaded
+as JSON, its tokens' inner nets rebuilt from templates registered by name,
+and copied with `fork`, which is what lets it be snapshotted (slice 16). The Bevy visualiser lives in its own
 repository, `petritype-bevy`, and depends on this crate. See `DESIGN.md` for the design and
 `dev-docs/NAMING_CONVENTIONS.md` for vocabulary shared with the Python library.*
 
@@ -58,14 +60,18 @@ A token can carry nets of its own: say which, and declare its place with `place_
 
 ```rust
 impl Nested for Vehicle {
-    fn nets(&self) -> Vec<(&str, &Net)> { vec![("cabin", &self.inner)] }
-    fn nets_mut(&mut self) -> Vec<(&str, &mut Net)> { vec![("cabin", &mut self.inner)] }
+    fn nets(&self) -> Vec<(&str, &Net)> { vec![("cabin", &self.cabin)] }
+    fn nets_mut(&mut self) -> Vec<(&str, &mut Net)> { vec![("cabin", &mut self.cabin)] }
 }
 let depot = b.place_nested::<Vehicle>("Depot");   // run by `step_deep` and the drivers, read by `net.nested(place, token)`
 ```
 
 Inner events arrive in the outer log as `Event::Nested`, with the place, the token and the inner
-net's id. `petritype/examples/transit.rs` is a city of buses and ferries built this way; `DESIGN.md` §6.6 has the rules.
+net's id. With the `serde` feature, an inner net built by a registered template (`Templates::build`)
+saves as `{"template", "marking", "params", "enabled"}` inside its token, `export_marking` and
+`import_marking` save and load a whole outer net through JSON text, and `net.fork()` rebuilds a copy,
+so `net.snapshot()` works on a net of vehicles too. `petritype/examples/transit.rs` is a city of buses
+and ferries built this way (`cargo run -p petritype --example transit --features serde`); `DESIGN.md` §6.6 has the rules.
 
 ## Crates
 

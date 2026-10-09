@@ -644,7 +644,7 @@ impl Command {
                 let (param, to_json) = param_wire(net, &**value)?;
                 Ok(JsonCommand::SetParam {
                     param,
-                    value: to_json(&**value),
+                    value: crate::place::json_or_message(to_json, &**value),
                 })
             }
         }
@@ -732,6 +732,9 @@ fn transition_name(net: &Net, transition: TransitionId) -> Result<String, Comman
 /// recorded `from_json`.
 ///
 /// `place` has already been resolved from a name, so it indexes this net.
+/// The net's [`Templates`](crate::Templates) are in scope while the values
+/// are parsed, so a token that carries a [`Net`] of its own — a vehicle and
+/// its cabin — is rebuilt from the registry of the net it is going into.
 #[cfg(feature = "serde")]
 fn decode_all(
     net: &Net,
@@ -746,17 +749,19 @@ fn decode_all(
             place,
             name: slot.meta.name.clone(),
         })?;
-    values
-        .into_iter()
-        .map(|value| {
-            from_json(value).map_err(|source| CommandError::InvalidToken {
-                place,
-                name: slot.meta.name.clone(),
-                expected: slot.meta.type_name,
-                source,
+    net.templates.scope(|| {
+        values
+            .into_iter()
+            .map(|value| {
+                from_json(value).map_err(|source| CommandError::InvalidToken {
+                    place,
+                    name: slot.meta.name.clone(),
+                    expected: slot.meta.type_name,
+                    source,
+                })
             })
-        })
-        .collect()
+            .collect()
+    })
 }
 
 /// Renders a batch of erased tokens as the place's type would, with the
@@ -786,7 +791,7 @@ fn encode_all(
         .iter()
         .map(|token| {
             if (**token).type_id() == slot.meta.type_id {
-                Ok(to_json(&**token))
+                Ok(crate::place::json_or_message(to_json, &**token))
             } else {
                 Err(CommandError::from(crate::NetError::TypeMismatch {
                     place,

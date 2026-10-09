@@ -29,9 +29,10 @@ for the first implementation. Vocabulary is fixed in
   adapter crate.
 - **Lightweight** in API surface and dependencies (core: `thiserror` only).
 
-Non-goals for v1: persistence of markings, distributed nets, edge weights
-beyond one/all, timed Petri net semantics, topology editing at runtime
-(designed for, not built).
+Non-goals for v1: persistence of markings (beyond a marking's JSON form,
+export and import, which nets as tokens needed: §9, slice 16), distributed
+nets, edge weights beyond one/all, timed Petri net semantics, topology
+editing at runtime (designed for, not built).
 
 ## 2. Relationship to Python petritype
 
@@ -94,6 +95,9 @@ Dropped, and why:
 - **Inner net**: a net carried by a token, in a *nested* place; the net
   holding the token is the **outer net** (§6.6, slice 15). *Quiescent deep*:
   quiescent here and in every inner net that is not passive.
+- **Template**: a function registered by name that builds a net; a net
+  built through one is **stamped** with it, and can then be saved, restored
+  and **forked** (copied by building it again), §6.6, slice 16.
 
 ## 4. Representation
 
@@ -162,7 +166,7 @@ struct PlaceMeta {
     debug: fn(&dyn Any) -> String,
     clone: Option<fn(&dyn Any) -> Box<dyn Any + Send + Sync>>,   // None only for no_clone places
     #[cfg(feature = "serde")]
-    to_json: Option<fn(&dyn Any) -> serde_json::Value>,          // Some iff marked serializable
+    to_json: Option<fn(&dyn Any) -> Result<serde_json::Value, _>>, // Some iff marked serializable
     #[cfg(feature = "serde")]
     from_json: Option<fn(serde_json::Value) -> Result<Box<dyn Any + Send + Sync>, _>>,
     nested: Option<NestedVtable>,   // Some iff place_nested (§6.6)
@@ -172,8 +176,17 @@ struct PlaceMeta {
 struct NestedVtable {               // slice 15: T::nets and T::nets_mut of the token's Nested impl
     nets: fn(&dyn Any) -> Vec<(&str, &Net)>,
     nets_mut: fn(&mut dyn Any) -> Vec<(&str, &mut Net)>,
+    #[cfg(feature = "serde")]
+    fork: fn(&dyn Any) -> Result<Box<dyn Any + Send + Sync>, NetError>,  // slice 16: T::fork
 }
 ```
+
+`to_json` became fallible in slice 16: a `Serialize` impl may refuse (a token
+holding a net no template built), and a save must hear it. `Net::json` and
+`Command::to_json` keep their old behaviour and show the refusal as a string;
+`export_marking` returns it as an error. `fork` is the nested place's cloner,
+fallible because it rebuilds nets: `Net::snapshot` calls it where an
+ordinary place's `clone` would be (§4.3, §6.6).
 
 `PlaceMeta` is a hand-rolled vtable: monomorphised generic functions
 (`debug_of::<T>`, `clone_of::<T>`) coerced to plain `fn` pointers when the
@@ -198,8 +211,12 @@ a `MutateEdge` from it is fine), and makes `Net::snapshot()` return `Err`.
 
 `place_nested::<T>()` (slice 15, §6.6) is the second: `T: Nested + Debug +
 Send + Sync + 'static`, no `Clone`, because a `Net` cannot be cloned. It is a
-no-clone place with all of the above, until phase 2 of nets as tokens
-(templates, a fork) gives it a cloner.
+no-clone place with all of the above, except, since slice 16 and with the
+`serde` feature, `Net::snapshot()`: a snapshot copies each of its tokens with
+`Nested::fork`, which rebuilds the token's inner nets from their templates
+(§6.6). The snapshot edge and the restoring consuming edge stay build
+errors: both clone on the launch path, where nothing may fail, and a fork
+can.
 
 Big data idiom: put heavy fields in `Arc`. Moves are free (a `Vec` is 24
 bytes to move); `Arc::clone` is a counter bump; `Arc::make_mut` is
@@ -528,7 +545,7 @@ pub enum DeepStep {
 - **Declaring.** A token type says which nets it owns; one without
   `Nested` is a compile error (`#[diagnostic::on_unimplemented]`).
   `place_nested` records `T::nets` and `T::nets_mut` in the place's vtable
-  (§4.2). The place is no-clone (§4.3) until phase 2.
+  (§4.2). The place is no-clone (§4.3); phase 2 lets a snapshot fork it.
 - **Running.** `step()` keeps its meaning: one firing of this net.
   `step_deep()` tries `step()` and, when it fires nothing, walks the nested
   places in place order, passive ones skipped, their tokens oldest first,
@@ -594,12 +611,135 @@ pub enum DeepStep {
   in only through the token, and no inner guard or body sees the outer net.
   Depth is unbounded; the tests go two deep (a passenger carrying luggage).
   Adding a vehicle is adding a token, never a place.
-- **Not yet.** Serialising nested tokens, templates, marking export and
-  import, and a fork that makes a nested place cloneable are phase 2;
-  addressing inner nets on the runner protocol is phase 3. Until then the
-  runner reports an `Event::Nested` as a variant it does not know
-  (`reloaded {reason: "resync"}`, §19.3.10), and `petritype-dot` draws the
-  outer net only.
+- **Not yet.** Addressing inner nets on the runner protocol is phase 3
+  (PROTOCOL.md §12). Until then the runner reports an `Event::Nested` as a
+  variant it does not know (`reloaded {reason: "resync"}`, §19.3.10), and
+  `petritype-dot` draws the outer net only.
+
+**Phase 2, 2026-10-09: saving and forking** (slice 16; the proposal's R5a,
+R5b, R5, R6 and step 6 of its script). Everything here is behind the `serde`
+feature; without it the crate is as phase 1 left it.
+
+```rust
+pub struct Marking;                                    // place name -> tokens as JSON, oldest first; BTreeMap, transparent
+net.export_marking() -> Result<Marking, NetError>      // every place serializable, or NotSerializable (first offender)
+net.import_marking(&Marking) -> Result<(), CommandError>  // wholesale; one Event::Resynced
+
+pub type Params = serde_json::Map<String, serde_json::Value>;   // the runner's Params, same definition
+pub struct Templates;                                  // name -> Arc<dyn Fn(&Params) -> Result<Net, Box<dyn Error + Send + Sync>> + Send + Sync>
+Templates::new(); templates.register(name, factory) -> &mut Self; templates.names()
+templates.build(name, &Params) -> Result<Net, TemplateError>    // stamps the net
+templates.scope(|| ..) -> R;  templates.restore(serde_json::Value) -> Result<Net, serde_json::Error>
+b.template(name, factory); b.templates(&Templates);    // the registry the net decodes nested tokens with
+net.template() -> Option<&str>;  net.templates() -> &Templates
+impl Serialize for Net; impl<'de> Deserialize<'de> for Net;  net.to_json()
+net.fork() -> Result<Net, NetError>
+trait Nested { .., fn fork(&self) -> Result<Self, NetError> where Self: Sized { Err(NotForkable) } }
+snapshot.nested(place, token) -> Option<Vec<(&str, &Net)>>
+```
+
+- **The JSON form of a net** (PROTOCOL.md §12.5, which fixes it for both
+  runtimes) is exactly `{"template", "marking", "params", "enabled"}`: the
+  template that built it; its marking as `export_marking` writes it; the
+  current value of every parameter registered with `serializable_param`, by
+  wire name (a parameter without a wire name is not saved); and every
+  transition's switch, by name. A token type with a `Net` field derives
+  `Serialize` and `Deserialize` and gets its net in this form under the
+  field's name, so a vehicle is `{"name", "kind", "destination", "cabin"}`.
+  Serialising a net that could not be restored is an error, not a quiet
+  loss: one with no template stamp, one with a place that is not
+  serializable, one with a transition in flight.
+- **Templates and the stamp.** A template is a factory of the runner's
+  shape (§19.3.1) registered by name. `Templates::build` calls it and
+  *stamps* the net with the template's name, the `Params` it was given and
+  an `Arc` of the factory, so that `Serialize` and `fork` need no registry.
+  Restoring calls the factory with the saved `params` object, imports the
+  marking, sets every saved parameter again through the JSON parameter route
+  (so a value changed at run time wins over what the factory baked in; an
+  unknown name or a bad value is an error naming it), throws every saved
+  switch, and empties the log: a restored net starts at zero, as a built one
+  does. A factory therefore reads what it needs from its net's own wire
+  parameters, with defaults.
+- **The scope rule.** `Deserialize` for a type with a `Net` field cannot be
+  handed a registry, so `Net`'s reads one from a stack kept per thread
+  (`thread_local!` over a `RefCell<Vec<Templates>>`; no `unsafe`).
+  `Templates::scope(f)` pushes a registry for the duration of `f`, and pops
+  it on return or unwind. A template is looked for innermost scope first,
+  then outwards. A net opens a scope of its own registry wherever it decodes
+  tokens — `import_marking`, `Command::from_json` and so `apply_json`, and
+  around the forks of `snapshot` — so a caller that goes through the net
+  never sees the stack. Depth two works either way: a cabin that carries
+  the `Luggage` template itself finds it in its own scope, and one that does
+  not finds it in the city's, one level out. Deserialising a `Net` with no
+  scope open is a serde error saying so.
+- **Import is a resync.** `import_marking` checks everything first — every
+  name in the marking is a place (`NoSuchPlaceName`), every place of the net
+  is serializable (`NotSerializable`, mentioned or not, since emptying a
+  place that cannot be filled would lose what it holds), every token decodes
+  (`InvalidToken`) — and only then empties every place and fills it, with
+  fresh token ids. A place the marking does not mention loads empty. It
+  emits one `Event::Resynced` and no `Removed` or `Added`: it is a
+  replacement, not a sequence of changes (§8.1). Incoming nested tokens are
+  setup, their inner logs forgotten as a seed's are, so no stale `Nested`
+  is lifted later. A rejected import changes nothing and emits nothing.
+- **Fork.** `Net::fork` builds the net again from its stamp — the factory
+  given the stamp's `Params` with every wire parameter's current value over
+  them — imports this net's exported marking, clones every parameter value
+  across (all of them: a fork never leaves the process, so it keeps what a
+  save cannot), copies every switch, the label limit and the tie-break, and
+  empties the log. The selector is a closure and is not copied. A net with
+  no stamp is `NoTemplate`; one with a transition in flight is `InFlight`,
+  since the tokens that firing took are in no place; a factory that fails
+  this time, or a marking that does not load back, is `RebuildFailed`.
+  `Nested` gains `fork` with a default that refuses (`NotForkable`), so
+  phase 1's implementors compile unchanged and a type that wants snapshots
+  writes three lines; `Net`'s own is `Net::fork`.
+- **What a snapshot does with a nested place.** An ordinary place is cloned
+  as before; a nested place has each token forked through the vtable's
+  `fork` (§4.2) under the net's templates, keeping its live token id, and
+  the first failure is `CannotFork { place, name, token, source }`; a place
+  with neither is `NoClonePlace` as before. `Snapshot::nested` reads the
+  forks. A clone of a snapshot shares its forked places through an `Arc`
+  instead of forking again, since `Clone` cannot fail and nothing writes to
+  a snapshot; ordinary places are still cloned token by token.
+- **Deviations from the proposal, and why.**
+  1. The proposal names four JSON fields and the first brief for this phase
+     a fifth, `template_params`, for what the factory was given as distinct
+     from the live parameters. PROTOCOL.md §12.5, settled with the Python
+     track, has the four: the factory is given the saved `params`. What a
+     factory was given beyond its net's wire parameters is kept on the stamp
+     and used by `fork`, but not saved.
+  2. The proposal wanted the builder to refuse a snapshot of a nested place
+     without a template. The builder cannot know what template a future
+     token's net will carry, so the refusal is a run-time error of
+     `snapshot()` naming the place, the token and the reason.
+  3. The proposal wanted a templated nested place to become an ordinary,
+     cloneable place, so that snapshot edges work. Snapshot edges and
+     restoring consuming edges from a nested place stay build errors: both
+     would need a fallible clone on the launch path. This is the one part of
+     R6 not taken.
+  4. An import emits `Event::Resynced`, Python petritype's event of the same
+     name for a change that is not told as events, rather than a `Removed`
+     and an `Added` per token; one for the whole import, with no fields,
+     where Python records one per place with its name.
+  5. The registry for `Deserialize` comes from a thread-local scope, the one
+     way a derived `Deserialize` can be given context; the net opens it
+     itself wherever it decodes.
+- **The example** became the protocol's conformance net `transit`
+  (PROTOCOL.md §11): the net lives in `petritype/examples/transit/net.rs`,
+  which depends on `petritype`, `serde` and `serde_json` only so that the
+  runner's example can include it in phase 3, and `transit.rs` holds the
+  script and its tests; the example needs the `serde` feature. Its inner net
+  is called `cabin` whatever the template (`Cabin`, `Deck`, `Pod`), its
+  parameters are `stopped` (starting true), `seats` and `capacity`, the
+  city's is `destination`, and every transition is built switched on (the
+  script holds them back). Two guards follow §11 rather than the proposal:
+  nobody sits or stands while an announcement stands, and the announcement
+  is cleared only once nobody is aboard, so after step 4 it is not cleared,
+  as the proposal's §6 has it, but stands until the vehicle is empty. Step 6
+  saves the city's marking as JSON text after steps 3 and 5, loads each
+  into a freshly built city, carries on, and compares the two cities'
+  exported markings, which reach inside the vehicles.
 
 The plan this section held before — a net as the *body* of a transition,
 run to completion by a stateful closure, with `inner.as_transition(..)`
@@ -646,7 +786,18 @@ Error types (`thiserror`, all `#[non_exhaustive]`):
   `NoSuchParam` (a `set_param` of a type no transition declared),
   `NoClonePlace` (a snapshot of a net with a `no_clone` place). Wraps
   `FiringFailed` transparently so that `net.fire(t)` and
-  `net.distribute(done)` return one error type.
+  `net.distribute(done)` return one error type. With `serde`, since slice
+  16 (§6.6): `NotSerializable { place, name }` (an export of a net with a
+  place not marked), `CannotSerialize { place, name, token, source }` (a
+  token's own `Serialize` refused), `NoTemplate` (a fork of a net no
+  template built), `InFlight { transition, name }` (a fork or a save while a
+  firing is airborne), `NotForkable { type_name }` (the default
+  `Nested::fork`), `CannotFork { place, name, token, source: Box<NetError> }`
+  (a snapshot that could not fork a nested token) and `RebuildFailed {
+  template, source }` (a fork whose factory failed or whose marking did not
+  load back).
+- `TemplateError` (`serde`, slice 16) — from `Templates::build`:
+  `NoSuchTemplate { name }`, `Factory { name, source }`.
 - `FiringFailed` — a body returned `Err` or panicked; carries the transition,
   the boxed error, and whether inputs were restored. Since slice 15 also
   `path: Vec<(PlaceId, TokenId, String)>`: where the transition is when it is
@@ -697,6 +848,7 @@ pub enum Event {
     Toggled     { transition: TransitionId, enabled: bool },
     ParamChanged { type_name: &'static str },
     Nested      { place: PlaceId, token: TokenId, net: String, nested_id: NetId, event: Box<Event> },  // slice 15
+    Resynced,                                            // slice 16: the marking was replaced wholesale (import_marking)
 }
 ```
 
@@ -711,6 +863,15 @@ inline one.
 place and token it happened in, the inner net's name and its stable id; the
 six rules for when are in §6.6. With `serde` the wrapped event is under
 `"inner"`, since `"event"` is the tag.
+
+`Resynced` (slice 16) is Python petritype's event of the same name:
+something changed that is not told as events. `import_marking` emits it
+once, instead of a `Removed` and an `Added` per token, and moves
+`state_counter` by one; every token after it has an id the reader has not
+seen, so a view re-reads the marking. Python records one per place, with the
+place's name; an import here replaces every place at once, so it is one,
+with no fields. The runner already reports a variant it does not know as
+`reloaded {reason: "resync"}`, which is what this one means.
 
 ### 8.2 Read API
 
@@ -732,6 +893,12 @@ net.debug(place, token) -> Option<String>            // the same Debug text untr
 net.token::<T>(place, token) -> Option<&T>           // typed downcast for custom widgets
 #[cfg(feature = "serde")]
 net.json(place, token) -> Option<serde_json::Value>  // structured view, serializable places only
+#[cfg(feature = "serde")]
+net.export_marking() -> Result<Marking, NetError>    // slice 16: every place's tokens as JSON by place name (§9)
+#[cfg(feature = "serde")]
+net.fork() -> Result<Net, NetError>                  // slice 16: rebuilt from its template, state copied across (§6.6)
+#[cfg(feature = "serde")]
+net.template() -> Option<&str>;  net.templates() -> &Templates   // slice 16: the stamp's name; the registry nested tokens are rebuilt from
 net.snapshot() -> Result<Snapshot, NetError>         // owned copy of the *state*, not the net (see below); Err if any no_clone place
 net.topology_counter(), net.state_counter(), net.fired_count()
 ```
@@ -740,15 +907,17 @@ net.topology_counter(), net.state_counter(), net.fired_count()
 parameters and the counters, cloned through the `PlaceMeta` vtables into an
 owned `Send + Sync + Clone` value with the same read API names as `Net`
 (`places`, `transitions`, `edges`, `topology`, `count`, `tokens`, `token`,
-`label`, `debug`, `json`, `is_enabled`, `in_flight`, `param`, the counters). It is *not* a `Net`, and
+`label`, `debug`, `json`, `is_enabled`, `in_flight`, `param`, `nested` since slice 16, the counters). It is *not* a `Net`, and
 cannot be: bodies are `Box<dyn FnMut>` and cannot be cloned, and an in-flight
 transition has no body in the net at all; a what-if copy is a rebuild from
 the builder. What it is for: a renderer or inspector on another thread owns
 a consistent copy while the driver keeps `&mut Net`, and a test keeps the
 state at one moment to compare with another. The fireable set is not stored
 (guards are closures on the live net). Snapshotting emits nothing and moves
-no counter. A net with a nested place cannot be snapshotted yet (§6.6), so
-`Snapshot` has no `nested`.
+no counter. Without `serde` a net with a nested place cannot be snapshotted;
+with it (slice 16) the nested place's tokens are forked from their templates
+(§6.6), and `snapshot.nested(place, token)` reads their inner nets, under the
+live token ids.
 
 There is no observer callback. The driver holds `&mut Net` between steps and
 is the observer.
@@ -815,6 +984,32 @@ net.apply(cmd) -> Result<(), CommandError>   // the one runtime TypeId check in 
 
 Input may arrive whenever the caller holds `&mut Net`, including while
 firings are in flight.
+
+**Done, slice 16** (`serde`): a whole marking, out and back in.
+
+```rust
+pub struct Marking;   // place name -> tokens as serde_json::Value, oldest first; BTreeMap, #[serde(transparent)]
+Marking::new(); marking.get(place) -> Option<&[Value]>; marking.insert(place, tokens); marking.iter(); len(); is_empty()
+net.export_marking() -> Result<Marking, NetError>
+net.import_marking(&Marking) -> Result<(), CommandError>
+```
+
+- `export_marking` writes every place, empty ones as `[]`, in name order,
+  so the same marking always prints the same text:
+  `{"Door": ["Ada"], "Seats": ["Bram", "Cato"]}`. Every place must be
+  marked `serializable` (`NetError::NotSerializable`, the first offender,
+  checked before anything is encoded), nested places included, whose tokens
+  then carry their inner nets in `Net`'s saved form (§6.6). Reading is not a
+  change; tokens airborne with a firing in flight are in no place and in no
+  marking.
+- `import_marking` is a wholesale replacement: every check first
+  (`NoSuchPlaceName`, then `NotSerializable` for any place of the net, then
+  `InvalidToken`), then every place emptied and filled; a place the marking
+  does not mention loads empty. **Token ids are not preserved**: each token
+  gets a fresh id from this net (an id-preserving variant can follow). The
+  event rule: one `Event::Resynced` and nothing per token (§8.1), the
+  incoming nested tokens' inner logs forgotten as setup. Switches,
+  parameters and the in-flight set are untouched. Atomic, like `apply`.
 
 ## 10. Parameters
 
@@ -900,6 +1095,9 @@ Always:
 - `SnapshotEdge` from a `no_clone` place.
 - `restore_tokens_on_failure` on a transition with a consuming (`TakeEdge`,
   `TakeAllEdge`) input from a `no_clone` place.
+  (A nested place counts as `no_clone` for both, with `serde` too: its
+  tokens are copied by a fork, which can fail, and these two copy on the
+  launch path, where nothing may; §4.3, §6.6.)
 - A declared `Param::<T>` with no `param(value)` of that type
   (`MissingParam`); with `serde`, two parameter types sharing a wire name
   (`DuplicateParamName`). Both before routing.
@@ -1021,7 +1219,11 @@ match-up tokens (`TakeAllEdge` + guard + positional), coloured balls
 (`Distribution`), web scrape (routed enums), execution modes (sequential vs
 concurrent), read-edge scaler (`SnapshotEdge` + `MutateEdge`). A ninth,
 transit (slice 15), is no port: it is the nets-as-tokens proposal's example
-and acceptance script (§6.6).
+and acceptance script (§6.6). Since slice 16 it is also the protocol's
+conformance net `transit`, in two files (`examples/transit.rs` for the
+script and its tests, `examples/transit/net.rs` for the net, which a
+runner's example can include), and needs the `serde` feature
+(`required-features`), since its vehicles save their cabins as JSON.
 
 **Done, slice 12.**
 
@@ -1221,6 +1423,17 @@ Slices, each with tests, in order:
     7, and `tests/slice15.rs`. Phase 2 (serialising nested tokens,
     templates, marking export, a cloneable nested place, step 6) and phase 3
     (the runner protocol) follow.
+16. Nets as tokens, phase 2 (§6.6), 2026-10-09, the proposal's R5a, R5b,
+    R5 and R6, all behind `serde`: `Marking`, `export_marking` and
+    `import_marking` with `Event::Resynced` (§9); `Templates`, `Params`,
+    the stamp, `NetBuilder::template` and `templates`, `Net::template` and
+    `templates`; `Serialize` and `Deserialize` for `Net` in PROTOCOL.md
+    §12.5's form, through the thread-local template scope; `Net::fork`,
+    `Nested::fork` with a refusing default, the vtable's `fork`, and
+    `Net::snapshot` forking nested places, with `Snapshot::nested`; seven
+    `NetError` variants and `TemplateError`. The transit example became the
+    protocol's conformance net (PROTOCOL.md §11) in `examples/transit/net.rs`
+    and runs the acceptance script's step 6; `tests/slice16.rs`.
 
 ## 19. Interop: one protocol, two runtimes, two viewers
 
@@ -1354,6 +1567,13 @@ fn build(params: &Params) -> Result<petritype::Net, LoadError>;
   already get in slice 7).
 - `NetEntry::typed::<P: DeserializeOwned>(name, fn(P) -> Result<Net, LoadError>)`
   decodes the parameters first and reports a bad one as `invalid_params`.
+- **For phase 3 of nets as tokens** (2026-10-09): the core's `Templates`
+  (§6.6, slice 16) stores factories of this shape, `Fn(&Params) ->
+  Result<Net, E>` with the error boxed, and `petritype::Params` is the same
+  `serde_json::Map<String, serde_json::Value>` as the runner's, so a
+  `NetEntry` factory can be registered as a template as it is (`LoadError`
+  being an error that converts into a boxed one) and a template's net loaded
+  as an entry.
 - **Registry: a plain function table**, passed to `main`. Chosen over a
   `register!` macro collecting entries at link time (`inventory`-style):
   no extra dependency, no linker behaviour to explain, and the list of nets

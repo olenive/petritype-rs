@@ -11,8 +11,8 @@ use std::fmt;
 
 use petritype::drivers::{self, DriverError, Limits, Mode, OnFailure};
 use petritype::{
-    BuildError, DeepStep, Event, FiringFailed, MutateEdge, Nested, Net, NetBuilder, NetError,
-    PlaceId, PlaceRef, SnapshotEdge, TakeEdge, TokenId, TransitionId,
+    BuildError, DeepStep, Event, FiringFailed, MutateEdge, Nested, Net, NetBuilder, PlaceId,
+    PlaceRef, SnapshotEdge, TakeEdge, TokenId, TransitionId,
 };
 
 /// An inner net with work to do: `Todo -> Work -> Done`.
@@ -295,13 +295,22 @@ fn a_nested_place_is_a_no_clone_place() {
         Err(BuildError::RestoreOfNoClonePlace { .. })
     ));
 
+    // A whole-net snapshot: without `serde` a nested place cannot be copied
+    // at all; with it, its tokens are forked from their templates (slice 16,
+    // `tests/slice16.rs`), and an empty one has nothing to fork.
     let mut b = NetBuilder::new();
     let depot = b.place_nested::<Bus>("Depot");
     let net = b.build().expect("builds");
+    #[cfg(not(feature = "serde"))]
     assert!(matches!(
         net.snapshot(),
-        Err(NetError::NoClonePlace { place, .. }) if place == depot.id()
+        Err(petritype::NetError::NoClonePlace { place, .. }) if place == depot.id()
     ));
+    #[cfg(feature = "serde")]
+    assert_eq!(
+        net.snapshot().expect("nothing to fork").count(depot.id()),
+        0
+    );
 }
 
 #[test]

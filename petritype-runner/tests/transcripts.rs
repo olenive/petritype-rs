@@ -22,15 +22,17 @@
 //!   then its response. A body that is launched is run at once and fed back,
 //!   and a run that asks for a tick gets one, so the lines of the whole
 //!   firing belong to the exchange that caused it.
-//! - Masks may stand for any value in any position: `"<label>"`, `"<time>"`
-//!   and `"<id>"` match any string, `"<ms>"` and `"<version>"` any number (a
-//!   boolean is not a number), `"<any>"` any value at all. `{"<unordered>":
-//!   [...]}` (an object with that one key) matches an array holding the same
-//!   elements in some order, each matched by a distinct element. `"<id:NAME>"`
-//!   matches any string and binds it to `NAME` for the rest of the
-//!   transcript: a later `"<id:NAME>"` in an `expect` must be that string,
-//!   and one anywhere in a `send`'s params is replaced by it. A line that
-//!   fails to match binds nothing, and neither does an exchange that fails.
+//! - Masks may stand for any value in any position: `"<label>"`, `"<time>"`,
+//!   `"<id>"` and `"<path>"` match any string, `"<ms>"` and `"<version>"` any
+//!   number (a boolean is not a number), `"<any>"` any value at all.
+//!   `{"<unordered>": [...]}` (an object with that one key) matches an array
+//!   holding the same elements in some order, each matched by a distinct
+//!   element. `"<id:NAME>"` matches any string and binds it to `NAME` for the
+//!   rest of the transcript: a later `"<id:NAME>"` in an `expect` must be that
+//!   string, and one anywhere in a `send`'s params is replaced by it, whole or
+//!   inside a longer string (`"transit/Depot/#<id:bus>/cabin"`, a path). A
+//!   line that fails to match binds nothing, and neither does an exchange
+//!   that fails.
 //!   Numbers compare by value (`0` matches `0.0`); objects must have exactly
 //!   the expected keys; arrays the expected length, element by element.
 //!   These are PROTOCOL.md §11's rules, and the Python harness's
@@ -40,14 +42,29 @@
 //!   `fired {transition, consumed, produced, duration_ms}` (stamped with the
 //!   `distributed`'s `marking_version` and `running`) before comparing, so
 //!   that a transcript reads the same for a runtime that reports a firing in
-//!   one piece. The `marking_version`s still count both pieces.
+//!   one piece. The `marking_version`s still count both pieces. Two more
+//!   folds came with nested nets (PROTOCOL.md §12.4): a `nested` wrapping a
+//!   `launched` followed at once by a `nested` wrapping its `distributed`,
+//!   for the same path and nested id, becomes one `nested` wrapping a
+//!   `fired`; and a `launched` and its `distributed` with nothing between
+//!   them but the firing's own `nested` and `mutated` lines become those
+//!   lines, then the `fired`, where the `distributed` was. The last is what
+//!   this runner's inline (mutate-edge) firings need, which it reports as
+//!   one `fired` after their `mutated`s where the Python runner reports
+//!   `launched` first. The folds are applied to the expected lines as well
+//!   as to the actual ones, so a transcript recorded either way reads the
+//!   same.
 //! - Type names are the example's: the harness rewrites this test crate's
 //!   module path to `parcel_runner::nets::`, as the example binary spells it.
 //!
 //! Our own transcripts, over the example's demo nets, are in
-//! `tests/protocol/`. The shared set of §11, over the conformance net
-//! `parcel-distribution`, lives in the Python repository and is replayed
-//! here from a sibling checkout by `the_shared_transcripts_hold`.
+//! `tests/protocol/`, with a verbatim copy of the shared `05_nested_nets.json`
+//! over `transit`. The shared set of §11, over the conformance nets
+//! `parcel-distribution` and `transit`, lives in the Python repository and is
+//! replayed here from a sibling checkout by `the_shared_transcripts_hold`.
+//! A transcript over a conformance net is replayed against a runner carrying
+//! that net alone (§11), whichever directory it is in, so that it may pin
+//! `describe` in full; any other against everything the example carries.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -84,25 +101,59 @@ fn run(owner: &mut Owner, input: Input) -> Vec<Value> {
     lines
 }
 
-/// `launched` + its `distributed` as one `fired`.
+/// The `fired` that a `launched` (its params `l`) and its `distributed` (`d`)
+/// tell in two pieces.
+fn fired(l: &Value, d: &Value) -> Value {
+    json!({"method": "fired", "params": {
+        "transition": d["transition"],
+        "consumed": l["consumed"],
+        "produced": d["produced"],
+        "duration_ms": d["duration_ms"],
+        "marking_version": d["marking_version"],
+        "running": d["running"],
+    }})
+}
+
+/// A firing told in two pieces as one `fired`; see the module's
+/// documentation for the three shapes it folds.
 fn fold(lines: Vec<Value>) -> Vec<Value> {
     let mut folded: Vec<Value> = Vec::with_capacity(lines.len());
     for line in lines {
-        if line["method"] == "distributed"
+        if line["method"] == "distributed" {
+            // The firing's own inner effects and mutations may stand between
+            // its two pieces (PROTOCOL.md §12.4); nothing else may.
+            let between = folded
+                .iter()
+                .rev()
+                .take_while(|l| l["method"] == "nested" || l["method"] == "mutated")
+                .count();
+            let at = folded.len() - between;
+            if at > 0
+                && folded[at - 1]["method"] == "launched"
+                && folded[at - 1]["params"]["transition"] == line["params"]["transition"]
+            {
+                let launched = folded.remove(at - 1);
+                folded.push(fired(&launched["params"], &line["params"]));
+                continue;
+            }
+        }
+        if line["method"] == "nested"
+            && line["params"]["event"]["method"] == "distributed"
             && let Some(previous) = folded.last()
-            && previous["method"] == "launched"
-            && previous["params"]["transition"] == line["params"]["transition"]
+            && previous["method"] == "nested"
+            && previous["params"]["path"] == line["params"]["path"]
+            && previous["params"]["nested_id"] == line["params"]["nested_id"]
+            && previous["params"]["event"]["method"] == "launched"
+            && previous["params"]["event"]["params"]["transition"]
+                == line["params"]["event"]["params"]["transition"]
         {
             let launched = folded.pop().unwrap();
-            let (l, d) = (&launched["params"], &line["params"]);
-            folded.push(json!({"method": "fired", "params": {
-                "transition": d["transition"],
-                "consumed": l["consumed"],
-                "produced": d["produced"],
-                "duration_ms": d["duration_ms"],
-                "marking_version": d["marking_version"],
-                "running": d["running"],
-            }}));
+            let mut wrapper = line.clone();
+            wrapper["params"]["event"] = fired(
+                &launched["params"]["event"]["params"],
+                &line["params"]["event"]["params"],
+            );
+            folded.push(wrapper);
             continue;
         }
         folded.push(line);
@@ -130,7 +181,7 @@ fn normalise(value: Value) -> Value {
 /// What `<id:NAME>` masks have bound so far in one transcript.
 type Bindings = BTreeMap<String, String>;
 
-const STRING_MASKS: [&str; 3] = ["<label>", "<time>", "<id>"];
+const STRING_MASKS: [&str; 4] = ["<label>", "<time>", "<id>", "<path>"];
 const NUMBER_MASKS: [&str; 2] = ["<ms>", "<version>"];
 const ANY: &str = "<any>";
 const UNORDERED: &str = "<unordered>";
@@ -229,15 +280,32 @@ fn pair_up(
     false
 }
 
-/// `value` with every `"<id:NAME>"` replaced by its binding.
+/// `value` with every `"<id:NAME>"` replaced by its binding, whole or inside
+/// a longer string.
 fn substitute(value: &Value, bindings: &Bindings, where_: &str) -> Value {
     match value {
-        Value::String(s) if capture_name(s).is_some() => {
-            let name = capture_name(s).unwrap();
-            let bound = bindings
-                .get(name)
-                .unwrap_or_else(|| panic!("{where_}: {s} is sent before any line bound it"));
-            Value::String(bound.clone())
+        Value::String(s) if s.contains("<id:") => {
+            let mut text = String::with_capacity(s.len());
+            let mut rest = s.as_str();
+            while let Some(start) = rest.find("<id:") {
+                let Some(end) = rest[start..].find('>').map(|end| start + end) else {
+                    break;
+                };
+                let mask = &rest[start..=end];
+                let Some(name) = capture_name(mask) else {
+                    text.push_str(&rest[..=end]);
+                    rest = &rest[end + 1..];
+                    continue;
+                };
+                let bound = bindings
+                    .get(name)
+                    .unwrap_or_else(|| panic!("{where_}: {mask} is sent before any line bound it"));
+                text.push_str(&rest[..start]);
+                text.push_str(bound);
+                rest = &rest[end + 1..];
+            }
+            text.push_str(rest);
+            Value::String(text)
         }
         Value::Array(items) => Value::Array(
             items
@@ -259,19 +327,23 @@ struct Mismatch {
     message: String,
 }
 
-/// Replays one transcript through a fresh `Owner` over the example's
-/// registry and returns every mismatch: the first line that differs in each
-/// exchange, or the line count. An exchange that goes wrong binds nothing,
-/// and the replay goes on to the next, so that one difference does not hide
-/// the rest.
-fn replay(path: &Path) -> Vec<Mismatch> {
-    replay_with(path, nets::registry())
+/// What a transcript over `net` is replayed against: a conformance net of
+/// PROTOCOL.md §11 alone, so that its transcripts may pin `describe` in full,
+/// and everything the example carries for any other net.
+fn registry_for(net: &str) -> Vec<petritype_runner::NetEntry> {
+    match net {
+        "parcel-distribution" => nets::conformance_registry(),
+        "transit" => nets::transit_registry(),
+        _ => nets::registry(),
+    }
 }
 
-/// `replay` against a chosen registry: the shared set runs against the
-/// conformance net alone (PROTOCOL.md §11), ours against everything the
-/// example carries.
-fn replay_with(path: &Path, registry: Vec<petritype_runner::NetEntry>) -> Vec<Mismatch> {
+/// Replays one transcript through a fresh `Owner` over the registry its net
+/// calls for ([`registry_for`]) and returns every mismatch: the first line
+/// that differs in each exchange, or the line count. An exchange that goes
+/// wrong binds nothing, and the replay goes on to the next, so that one
+/// difference does not hide the rest.
+fn replay(path: &Path) -> Vec<Mismatch> {
     let file = path.file_name().unwrap().to_string_lossy().into_owned();
     let whole = |message: String| vec![Mismatch { message }];
     let text = match std::fs::read_to_string(path) {
@@ -292,7 +364,7 @@ fn replay_with(path: &Path, registry: Vec<petritype_runner::NetEntry>) -> Vec<Mi
     }
 
     let mut owner = Owner::new(
-        registry,
+        registry_for(net),
         Arc::new(Mutex::new(None)),
         Duration::from_secs(30),
     );
@@ -312,7 +384,7 @@ fn replay_with(path: &Path, registry: Vec<petritype_runner::NetEntry>) -> Vec<Mi
             .into_iter()
             .map(normalise)
             .collect();
-        let expected = exchange["expect"].as_array().expect("expect");
+        let expected = fold(exchange["expect"].as_array().expect("expect").clone());
         let mut trial = bindings.clone();
         let differs = expected
             .iter()
@@ -378,10 +450,12 @@ fn shared_dir() -> PathBuf {
     )
 }
 
-/// The shared transcripts of PROTOCOL.md §11, over the conformance net
-/// `parcel-distribution`, replayed exactly as ours are but against a registry
-/// carrying that net alone, which §11 makes the rule so that a shared
-/// transcript may pin `describe` in full.
+/// The shared transcripts of PROTOCOL.md §11, over the conformance nets
+/// `parcel-distribution` and `transit`, replayed exactly as ours are, each
+/// against a registry carrying its own net alone, which §11 makes the rule
+/// so that a shared transcript may pin `describe` in full. A shared
+/// transcript over a net this runner does not carry (`wildlife`, §13, until
+/// it is built) fails at its `load`.
 ///
 /// They live in the Python repository (§11 makes it the home of the shared
 /// set), not here, so this test reads them from a sibling checkout, or from
@@ -403,7 +477,7 @@ fn the_shared_transcripts_hold() {
     assert!(!paths.is_empty(), "no transcripts in {dir:?}");
     let mismatches: Vec<String> = paths
         .iter()
-        .flat_map(|path| replay_with(path, nets::conformance_registry()))
+        .flat_map(|path| replay(path))
         .map(|m| m.message)
         .collect();
     assert!(
@@ -496,6 +570,16 @@ fn captures() {
         json!("<id:>"),
         "an empty name is no capture"
     );
+    assert_eq!(
+        substitute(&json!({"path": "transit/Depot/#<id:x>/cabin"}), b, "here"),
+        json!({"path": "transit/Depot/#7/cabin"}),
+        "a capture inside a longer string, as a path spells a token"
+    );
+    assert_eq!(
+        substitute(&json!("a/#<id:x>/b/#<id:x>/<id:>/<label>"), b, "here"),
+        json!("a/#7/b/#7/<id:>/<label>"),
+        "every capture in it, and nothing that is not one"
+    );
 }
 
 #[test]
@@ -512,4 +596,71 @@ fn the_fold() {
                "produced": [], "duration_ms": 2.0, "marking_version": 2, "running": false}})
     );
     assert_eq!(folded[1]["method"], "launched", "no distributed follows it");
+}
+
+#[test]
+fn the_nested_folds() {
+    let wrap = |event: Value, nested_id: &str| {
+        json!({"method": "nested", "params": {"path": "c/P/#1/n", "nested_id": nested_id,
+               "event": event, "marking_version": 5, "running": false}})
+    };
+    let launched = json!({"method": "launched", "params": {"transition": "Sit",
+                          "consumed": [["Door", "1"]], "marking_version": 1, "running": false}});
+    let distributed = json!({"method": "distributed", "params": {"transition": "Sit",
+                             "produced": [["Seats", "2", "x"]], "duration_ms": 0.0,
+                             "marking_version": 2, "running": false}});
+    let folded = fold(vec![
+        wrap(launched.clone(), "3"),
+        wrap(distributed.clone(), "3"),
+    ]);
+    assert_eq!(
+        folded,
+        [wrap(
+            json!({"method": "fired", "params": {"transition": "Sit",
+                   "consumed": [["Door", "1"]], "produced": [["Seats", "2", "x"]],
+                   "duration_ms": 0.0, "marking_version": 2, "running": false}}),
+            "3"
+        )]
+    );
+    assert_eq!(
+        fold(vec![wrap(launched, "3"), wrap(distributed, "4")]).len(),
+        2,
+        "another inner net's distributed"
+    );
+
+    // A firing whose body reached inside a token and mutated it: its own
+    // `nested` and `mutated` lines between its pieces stay, before `fired`.
+    let between = json!({"method": "mutated", "params": {"place": "Depot", "id": "0",
+                         "marking_version": 3, "running": false}});
+    let inside = wrap(json!({"method": "added", "params": {}}), "3");
+    let folded = fold(vec![
+        json!({"method": "launched", "params": {"transition": "Board",
+               "consumed": [["Platform", "4"]], "marking_version": 2, "running": false}}),
+        inside.clone(),
+        between.clone(),
+        json!({"method": "distributed", "params": {"transition": "Board", "produced": [],
+               "duration_ms": 1.0, "marking_version": 4, "running": false}}),
+        json!({"method": "fireable", "params": {}}),
+    ]);
+    assert_eq!(
+        folded,
+        [
+            inside,
+            between,
+            json!({"method": "fired", "params": {"transition": "Board",
+                   "consumed": [["Platform", "4"]], "produced": [], "duration_ms": 1.0,
+                   "marking_version": 4, "running": false}}),
+            json!({"method": "fireable", "params": {}}),
+        ]
+    );
+    let interrupted = vec![
+        json!({"method": "launched", "params": {"transition": "T"}}),
+        json!({"method": "toggled", "params": {}}),
+        json!({"method": "distributed", "params": {"transition": "T"}}),
+    ];
+    assert_eq!(
+        fold(interrupted.clone()),
+        interrupted,
+        "only the firing's own lines may stand between its pieces"
+    );
 }

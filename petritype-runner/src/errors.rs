@@ -26,12 +26,21 @@ pub(crate) fn code_of(error: CoreError<'_>) -> ErrorCode {
             CommandError::NoSuchPlaceName { .. } => ErrorCode::UnknownPlace,
             CommandError::NoSuchTransitionName { .. } => ErrorCode::UnknownTransition,
             CommandError::NotSerializable { .. } => ErrorCode::NotSerializable,
+            // Also a nested token whose saved net the core refuses
+            // (PROTOCOL.md §12.5): an unknown template, a parameter the
+            // template does not declare, an unknown inner place, an inner
+            // token that does not decode. The core reports each through the
+            // token's `Deserialize`, so each is the token that did not
+            // decode.
             CommandError::InvalidToken { .. } => ErrorCode::InvalidToken,
-            // A parameter the net registered no wire name for is one this
-            // runtime cannot set: the protocol's `unsupported`.
-            CommandError::NoSuchParamName { .. } | CommandError::ParamNotSerializable { .. } => {
-                ErrorCode::Unsupported
-            }
+            // A name no parameter of the net goes by: the runtime can set
+            // parameters (§6.4), the request named one that is not there.
+            // `unsupported` until 2026-10-09, when the shared transcript
+            // `05_nested_nets.json` pinned `invalid_params`.
+            CommandError::NoSuchParamName { .. } => ErrorCode::InvalidParams,
+            // A parameter type with no wire name cannot cross the wire at
+            // all: this runtime cannot do it.
+            CommandError::ParamNotSerializable { .. } => ErrorCode::Unsupported,
             // The value is a request parameter that did not decode, not a
             // token: `invalid_params`.
             CommandError::InvalidParam { .. } => ErrorCode::InvalidParams,
@@ -127,12 +136,76 @@ mod tests {
     }
 
     #[test]
-    fn no_such_param_name_is_unsupported() {
+    fn no_such_param_name_is_invalid_params() {
         let e = apply(JsonCommand::SetParam {
             param: "speed".into(),
             value: json!(1),
         });
-        assert_eq!(command(e), ErrorCode::Unsupported);
+        assert!(matches!(e, CommandError::NoSuchParamName { .. }));
+        assert_eq!(command(e), ErrorCode::InvalidParams);
+    }
+
+    /// A place of bare nets, serializable, with one template, `Box`: an
+    /// `Items` place of numbers and a `size` parameter.
+    fn yard() -> Net {
+        #[derive(Clone, serde::Serialize, serde::Deserialize)]
+        struct Size(u32);
+        let mut templates = petritype::Templates::new();
+        templates.register("Box", |_: &petritype::Params| {
+            let mut b = NetBuilder::new();
+            let items = b.place::<u32>("Items");
+            b.serializable(items);
+            b.param(Size(1));
+            b.serializable_param::<Size>("size");
+            b.build()
+        });
+        let mut b = NetBuilder::new();
+        b.templates(&templates);
+        let yard = b.place_nested::<Net>("Yard");
+        b.serializable(yard);
+        b.build().unwrap()
+    }
+
+    fn inject_net(saved: serde_json::Value) -> Result<(), CommandError> {
+        yard().apply_json(JsonCommand::Extend {
+            place: "Yard".into(),
+            tokens: vec![saved],
+        })
+    }
+
+    #[test]
+    fn a_nested_token_the_core_refuses_is_invalid_token() {
+        assert!(inject_net(json!({"template": "Box", "marking": {"Items": [1]}})).is_ok());
+        for (saved, why) in [
+            (
+                json!({"template": "Crate", "marking": {}}),
+                "an unknown template",
+            ),
+            (
+                json!({"template": "Box", "marking": {}, "params": {"weight": 3}}),
+                "a parameter the template does not declare",
+            ),
+            (
+                json!({"template": "Box", "marking": {}, "params": {"size": "big"}}),
+                "a parameter value that does not decode",
+            ),
+            (
+                json!({"template": "Box", "marking": {"Shelf": []}}),
+                "an unknown inner place",
+            ),
+            (
+                json!({"template": "Box", "marking": {"Items": ["one"]}}),
+                "an inner token that does not decode",
+            ),
+            (
+                json!({"template": "Box", "marking": {}, "enabled": {"Pack": true}}),
+                "an unknown inner transition",
+            ),
+        ] {
+            let e = inject_net(saved).expect_err(why);
+            assert!(matches!(e, CommandError::InvalidToken { .. }), "{why}: {e}");
+            assert_eq!(command(e), ErrorCode::InvalidToken, "{why}");
+        }
     }
 
     #[test]

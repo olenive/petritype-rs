@@ -1,4 +1,5 @@
-//! The state machine at the heart of the runner (DESIGN §19.3.2–§19.3.6).
+//! The state machine at the heart of the runner (DESIGN §19.3.2–§19.3.6, and
+//! §19.3.11 for nested nets).
 //!
 //! [`Owner`] owns the registry and the loaded net and turns each [`Input`]
 //! into the [`Outgoing`] lines and firings it causes. It creates no threads,
@@ -6,15 +7,15 @@
 //! behaviour of the protocol can be tested by feeding it inputs and reading
 //! what comes out.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, SystemTime};
 
 use petritype::{
-    BodyPanicked, Completed, Event, Firing, FiringFailed, JsonCommand, Net, NetError, PlaceId,
-    TokenId, Topology, TransitionId,
+    BodyPanicked, Completed, Event, Firing, FiringFailed, JsonCommand, Net, NetError, NetId,
+    PlaceId, TokenId, Topology, TransitionId,
 };
 use serde_json::{Map, Value, json};
 
@@ -50,6 +51,23 @@ const ANSWERED_WHILE_AIRBORNE: &[&str] = &[
     "stop",
     "shutdown",
     "describe",
+];
+
+/// The reads that a `path` or a `nested_id` may point at an inner net
+/// (PROTOCOL.md §12.3); `inject` takes one too, but changes what it names.
+const ADDRESSED_READS: &[&str] = &["get_state", "get_place_tokens", "get_token", "get_log"];
+
+/// The methods that act on the outer net alone (PROTOCOL.md §12.3): a `path`
+/// or a `nested_id` on one of them is `invalid_params`. An inner net's
+/// switches and parameters are its template's, or an outer body's to set.
+const OUTER_ONLY: &[&str] = &[
+    "step",
+    "start",
+    "stop",
+    "reset",
+    "enable",
+    "disable",
+    "set_param",
 ];
 
 /// Every method of protocol version 1.
@@ -134,6 +152,9 @@ pub struct Owner {
 /// (DESIGN §19.3.3).
 struct Loaded {
     entry: usize,
+    /// The entry's name: what `get_state` calls the net, and the first
+    /// segment of every path (PROTOCOL.md §12.1).
+    name: &'static str,
     params: Params,
     net: Net,
     topology: Topology,
@@ -142,12 +163,85 @@ struct Loaded {
     in_flight: Option<InFlight>,
     deferred: VecDeque<Request>,
     last_fireable: Vec<String>,
-    log: VecDeque<LogEntry>,
+    log: VecDeque<Logged>,
     log_seq: u64,
     progress: ProgressKept,
     idle: bool,
     /// The wire name of the parameter the `set_param` being served sets.
     pending_param: Option<String>,
+    /// One record per live inner net, by nested id (PROTOCOL.md §12.3).
+    inner: HashMap<NetId, Inner>,
+    /// Inner nets that have had events since their fireable set was last
+    /// compared, in the order they first had them.
+    touched: Vec<NetId>,
+}
+
+/// What the runner keeps about one inner net (PROTOCOL.md §12.3,
+/// DESIGN §19.3.11): what it keeps about the outer net, per net.
+///
+/// Made when the net is first seen — at `load` and `reset` by walking the
+/// marking, when a request names it, or when one of its events arrives —
+/// and dropped at the first landing (or inner firing) after which its
+/// nested id no longer resolves: the token that held it was consumed and
+/// not put back.
+struct Inner {
+    /// Its own version: 0 when first seen, one more per state notification
+    /// of this net. Never the outer net's.
+    marking_version: u64,
+    /// Its shape, which never changes once built (§12.6). `None` only for a
+    /// net first heard of while its token was in a body's hands, until it is
+    /// seen.
+    topology: Option<Topology>,
+    /// Its name tables, empty while `topology` is `None`.
+    names: Names,
+    progress: ProgressKept,
+    last_fireable: Vec<String>,
+    /// The template that built it, when one did.
+    template: Option<String>,
+    /// The path it was last found at or reported under.
+    last_path: String,
+}
+
+impl Inner {
+    /// A record for `net`, found at `path`. `silent` records its fireable
+    /// set as already known, as a `load` does for the outer net; otherwise
+    /// the first non-empty set is announced.
+    fn new(net: Option<&Net>, path: String, silent: bool) -> Inner {
+        let mut inner = Inner {
+            marking_version: 0,
+            topology: None,
+            names: Names::default(),
+            progress: ProgressKept::default(),
+            last_fireable: Vec::new(),
+            template: None,
+            last_path: path,
+        };
+        if let Some(net) = net {
+            inner.see(net);
+            if silent {
+                inner.last_fireable = fireable_names(net, &inner.names);
+            }
+        }
+        inner
+    }
+
+    /// Takes the shape of a net heard of before it was seen.
+    fn see(&mut self, net: &Net) {
+        if self.topology.is_none() {
+            let topology = net.topology();
+            self.names = Names::new(&topology);
+            self.topology = Some(topology);
+            self.template = net.template().map(str::to_owned);
+        }
+    }
+}
+
+/// One log entry and, off the wire, the nested ids of the nets it happened
+/// in, outer to inner: empty for a firing of the outer net. `get_log` with a
+/// `path` or `nested_id` keeps the entries whose chain holds that net.
+struct Logged {
+    entry: LogEntry,
+    chain: Vec<NetId>,
 }
 
 /// The one firing that is airborne, or running inline.
@@ -171,22 +265,768 @@ struct ProgressKept {
     last_progress_at: Option<SystemTime>,
 }
 
+impl ProgressKept {
+    fn fired(&mut self, transition: &str, now: SystemTime) {
+        self.last_fired = Some(transition.to_owned());
+        *self.fired_counts.entry(transition.to_owned()).or_default() += 1;
+        self.last_progress_at = Some(now);
+    }
+}
+
 impl std::fmt::Debug for Owner {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Owner")
             .field("nets", &self.nets)
             .field("generation", &self.generation)
             .field("marking_version", &self.marking_version)
-            .field(
-                "loaded",
-                &self.loaded.as_ref().map(|l| self.nets[l.entry].name),
-            )
+            .field("loaded", &self.loaded.as_ref().map(|l| l.name))
             .finish_non_exhaustive()
     }
 }
 
 /// A request's parameters, or why they are not usable.
 type Args = Map<String, Value>;
+
+// ----- addressing inner nets (PROTOCOL.md §12.1) ------------------------------
+
+/// One step down from a net to one of its inner nets: the nested place, the
+/// token in it, and which of the token's nets, by its position in
+/// `Nested::nets` (names need not be unique; positions are).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Level {
+    place: PlaceId,
+    token: TokenId,
+    index: usize,
+}
+
+/// An inner net found in the live marking: how to get there, its path as the
+/// marking stands, its nested id and its name within its token.
+#[derive(Debug, Clone)]
+struct Found {
+    levels: Vec<Level>,
+    path: String,
+    nested_id: NetId,
+    name: String,
+}
+
+/// The net a request names: the outer one, or an inner one.
+enum Target {
+    Outer,
+    Inner(Found),
+}
+
+/// What [`walk`] calls with each inner net: the levels down to it, its path,
+/// its name within its token, and the net. `Some` stops the walk.
+type Visit<'v, 'a, R> = dyn FnMut(&[Level], &str, &str, &'a Net) -> Option<R> + 'v;
+
+/// `[place, token]` pairs of one net, as its events carry them.
+type Pairs = Vec<(PlaceId, TokenId)>;
+
+/// Calls `visit` with every inner net below `net`, at every depth and in
+/// passive places too, in the order `step_deep` walks them (nested places in
+/// place order, tokens oldest first, a token's nets in order, a net's own
+/// inner nets straight after it), until `visit` answers `Some`.
+fn walk<'a, R>(
+    net: &'a Net,
+    levels: &mut Vec<Level>,
+    path: &str,
+    visit: &mut Visit<'_, 'a, R>,
+) -> Option<R> {
+    for (place, info) in net.places() {
+        if !info.nested {
+            continue;
+        }
+        for (token, _) in net.tokens(place) {
+            let Some(nets) = net.nested(place, token) else {
+                continue;
+            };
+            for (index, (name, inner)) in nets.into_iter().enumerate() {
+                levels.push(Level {
+                    place,
+                    token,
+                    index,
+                });
+                let here = translate::level(path, info.name, token, name);
+                let found =
+                    visit(levels, &here, name, inner).or_else(|| walk(inner, levels, &here, visit));
+                levels.pop();
+                if found.is_some() {
+                    return found;
+                }
+            }
+        }
+    }
+    None
+}
+
+/// The first inner net below `outer`, at any depth, that `wanted` picks.
+fn find<'a>(
+    outer: &'a Net,
+    outer_name: &str,
+    wanted: impl Fn(&Net) -> bool,
+) -> Option<(Found, &'a Net)> {
+    walk(
+        outer,
+        &mut Vec::new(),
+        outer_name,
+        &mut |levels, path, name, net| {
+            wanted(net).then(|| {
+                let found = Found {
+                    levels: levels.to_vec(),
+                    path: path.to_owned(),
+                    nested_id: net.id(),
+                    name: name.to_owned(),
+                };
+                (found, net)
+            })
+        },
+    )
+}
+
+/// The inner net a wire path names, or `None` for a path that is the loaded
+/// net's name alone, which names the outer net. The error says which
+/// segment failed.
+fn resolve_path<'a>(
+    outer: &'a Net,
+    outer_name: &str,
+    path: &str,
+) -> Result<Option<(Found, &'a Net)>, String> {
+    let mut segments = path.split('/');
+    if segments.next() != Some(outer_name) {
+        return Err(format!(
+            "path {path:?} does not start with the loaded net's name {outer_name:?}"
+        ));
+    }
+    let rest: Vec<&str> = segments.collect();
+    if rest.is_empty() {
+        return Ok(None);
+    }
+    let mut net = outer;
+    let mut levels = Vec::new();
+    let mut here = outer_name.to_owned();
+    let mut name = "";
+    for level in rest.chunks(3) {
+        let &[place_name, token_segment, net_name] = level else {
+            return Err(format!(
+                "path {path:?} stops after {:?}: each level is a place, a #token and a net",
+                level.last().copied().unwrap_or_default()
+            ));
+        };
+        let place = net
+            .place_named(place_name)
+            .ok_or_else(|| format!("path {path:?}: {here:?} has no place {place_name:?}"))?;
+        let token = token_segment
+            .strip_prefix('#')
+            .and_then(|id| id.parse::<TokenId>().ok())
+            .ok_or_else(|| {
+                format!("path {path:?}: {token_segment:?} is not a token, which is written #id")
+            })?;
+        let nets = net.nested(place, token).ok_or_else(|| {
+            if net.tokens(place).any(|(t, _)| t == token) {
+                format!("path {path:?}: token #{token} in {place_name:?} holds no nets")
+            } else {
+                format!("path {path:?}: there is no token #{token} in {place_name:?}")
+            }
+        })?;
+        let index = nets
+            .iter()
+            .position(|(n, _)| *n == net_name)
+            .ok_or_else(|| {
+                format!("path {path:?}: token #{token} in {place_name:?} holds no net {net_name:?}")
+            })?;
+        here = translate::level(&here, place_name, token, net_name);
+        levels.push(Level {
+            place,
+            token,
+            index,
+        });
+        net = nets[index].1;
+        name = net_name;
+    }
+    let found = Found {
+        levels,
+        path: here,
+        nested_id: net.id(),
+        name: name.to_owned(),
+    };
+    Ok(Some((found, net)))
+}
+
+/// The net `levels` lead to from `net`, as the marking stands.
+fn descend<'a>(net: &'a Net, levels: &[Level]) -> Option<&'a Net> {
+    levels.iter().try_fold(net, |here, level| {
+        here.nested(level.place, level.token)?
+            .into_iter()
+            .nth(level.index)
+            .map(|(_, inner)| inner)
+    })
+}
+
+/// Calls `f` with the net `levels` lead to, mutably, through
+/// `Net::nested_scope` at every level, so that what `f` did there is lifted
+/// level by level into the outer log as each scope closes. `None` if the
+/// levels lead nowhere.
+fn descend_mut<R>(net: &mut Net, levels: &[Level], f: impl FnOnce(&mut Net) -> R) -> Option<R> {
+    let Some((level, rest)) = levels.split_first() else {
+        return Some(f(net));
+    };
+    net.nested_scope(level.place, level.token, |nets| {
+        let (_, inner) = nets.get_mut(level.index)?;
+        descend_mut(inner, rest, f)
+    })
+    .flatten()
+}
+
+/// An event lifted out of an inner net, unwrapped down to the net it
+/// happened in: one wrapper on the wire whatever the depth (§12.4).
+struct Lifted<'e> {
+    /// Per level, outer to inner: the place and token in the net above as
+    /// they were when the event was lifted, the net's name in the token,
+    /// and its nested id.
+    levels: Vec<(PlaceId, TokenId, &'e str, NetId)>,
+    /// What the innermost net logged.
+    event: &'e Event,
+}
+
+impl<'e> Lifted<'e> {
+    /// `None` for an event of the outer net itself.
+    fn of(mut event: &'e Event) -> Option<Lifted<'e>> {
+        let mut levels = Vec::new();
+        while let Event::Nested {
+            place,
+            token,
+            net,
+            nested_id,
+            event: inner,
+        } = event
+        {
+            levels.push((*place, *token, net.as_str(), *nested_id));
+            event = inner;
+        }
+        (!levels.is_empty()).then_some(Lifted { levels, event })
+    }
+
+    /// The nested id of the net the event happened in.
+    fn nested_id(&self) -> NetId {
+        self.levels.last().expect("a lifted event has a level").3
+    }
+
+    fn chain(&self) -> Vec<NetId> {
+        self.levels.iter().map(|level| level.3).collect()
+    }
+
+    /// The net it happened in, if its token is where the event says, at
+    /// every level: not while a body holds it, nor once it is gone.
+    fn live<'a>(&self, outer: &'a Net) -> Option<&'a Net> {
+        self.levels
+            .iter()
+            .try_fold(outer, |here, &(place, token, _, id)| {
+                here.nested(place, token)?
+                    .into_iter()
+                    .find(|(_, inner)| inner.id() == id)
+                    .map(|(_, inner)| inner)
+            })
+    }
+}
+
+/// A firing inside an inner net, as a flush reported it: what a `step`
+/// that made it answers with.
+#[derive(Debug, Clone)]
+struct InnerFiring {
+    transition: String,
+    path: String,
+    nested_id: String,
+}
+
+/// What one flush wrote: the events, for the caller to read ids off, and
+/// the inner firings among them.
+struct Flushed {
+    events: Vec<Event>,
+    inner_firings: Vec<InnerFiring>,
+}
+
+/// The order the wire tells a batch of events in (PROTOCOL.md §12.4): what a
+/// firing's body did inside the tokens it holds goes out after its
+/// `launched` and before its own `mutated`s and its `distributed` (or
+/// `fired`, or `failed`).
+///
+/// The core lifts a mutated token's inner events just before that token's
+/// `Mutated` (DESIGN §6.6, rule 2) and a produced token's just after the
+/// firing's `Distributed` or `Fired`, under its new place and id (rule 4).
+/// Here every `Nested` of the landing comes first — those lifted for mutated
+/// tokens, then those for produced ones, each in the order logged — then the
+/// `Mutated`s, then the event that ends the firing. The core's own log
+/// keeps its rules; only the wire is reordered.
+fn wire_order(events: &[Event]) -> Vec<&Event> {
+    let mut ordered: Vec<&Event> = Vec::with_capacity(events.len());
+    let mut index = 0;
+    while index < events.len() {
+        let event = &events[index];
+        index += 1;
+        let produced: &[(PlaceId, TokenId)] = match event {
+            Event::Fired { produced, .. } | Event::Distributed { produced, .. } => produced,
+            Event::Failed { .. } => &[],
+            _ => {
+                ordered.push(event);
+                continue;
+            }
+        };
+        // The landing so far: the run of `Nested` and `Mutated` written
+        // since the firing's `Launched` (or since the batch began).
+        let start = ordered
+            .iter()
+            .rposition(|e| !matches!(e, Event::Nested { .. } | Event::Mutated { .. }))
+            .map_or(0, |at| at + 1);
+        let landing: Vec<&Event> = ordered.drain(start..).collect();
+        let mut arrivals = Vec::new();
+        while let Some(next @ Event::Nested { place, token, .. }) = events.get(index)
+            && produced.contains(&(*place, *token))
+        {
+            arrivals.push(next);
+            index += 1;
+        }
+        ordered.extend(
+            landing
+                .iter()
+                .copied()
+                .filter(|e| matches!(e, Event::Nested { .. })),
+        );
+        ordered.extend(arrivals);
+        ordered.extend(
+            landing
+                .iter()
+                .copied()
+                .filter(|e| matches!(e, Event::Mutated { .. })),
+        );
+        ordered.push(event);
+    }
+    ordered
+}
+
+/// A net's fireable set by name, in declaration order.
+fn fireable_names(net: &Net, names: &Names) -> Vec<String> {
+    net.fireable()
+        .into_iter()
+        .map(|t| names.transition(t))
+        .collect()
+}
+
+/// `[place, id, label]` triples, labelled from `net` when it can be read and
+/// with `""` when it cannot (an inner net whose token a body holds).
+fn produced(
+    names: &Names,
+    net: Option<&Net>,
+    tokens: &[(PlaceId, TokenId)],
+) -> Vec<(String, String, String)> {
+    match net {
+        Some(net) => names.produced(net, tokens),
+        None => tokens
+            .iter()
+            .map(|&(place, token)| (names.place(place), token.to_string(), String::new()))
+            .collect(),
+    }
+}
+
+impl Loaded {
+    /// A record for every inner net the marking holds now, its fireable set
+    /// taken silently: what `load` and `reset` start from.
+    fn know_all(&mut self) {
+        let mut seen = Vec::new();
+        walk(
+            &self.net,
+            &mut Vec::new(),
+            self.name,
+            &mut |_, path, _, net| {
+                seen.push((net.id(), Inner::new(Some(net), path.to_owned(), true)));
+                None::<()>
+            },
+        );
+        self.inner.extend(seen);
+    }
+
+    /// The net a request's `path` or `nested_id` names (PROTOCOL.md §12.1):
+    /// both is `invalid_params`, neither the outer net, and one that names
+    /// no live inner net `unknown_net`.
+    fn resolve(&self, args: &Args) -> Result<Target, (ErrorCode, String)> {
+        let path = args.get("path").filter(|v| !v.is_null());
+        let nested_id = args.get("nested_id").filter(|v| !v.is_null());
+        match (path, nested_id) {
+            (None, None) => Ok(Target::Outer),
+            (Some(_), Some(_)) => Err((
+                ErrorCode::InvalidParams,
+                "give a path or a nested_id, not both".to_owned(),
+            )),
+            (Some(Value::String(path)), None) => resolve_path(&self.net, self.name, path)
+                .map(|found| found.map_or(Target::Outer, |(found, _)| Target::Inner(found)))
+                .map_err(|message| (ErrorCode::UnknownNet, message)),
+            (None, Some(Value::String(wanted))) => {
+                find(&self.net, self.name, |net| net.id().to_string() == *wanted)
+                    .map(|(found, _)| Target::Inner(found))
+                    .ok_or_else(|| {
+                        (
+                            ErrorCode::UnknownNet,
+                            format!("no live inner net has the nested id {wanted:?}"),
+                        )
+                    })
+            }
+            _ => Err((
+                ErrorCode::InvalidParams,
+                "\"path\" and \"nested_id\" must be strings".to_owned(),
+            )),
+        }
+    }
+
+    /// Makes sure the net `found` names has a record, its fireable set
+    /// taken silently: whoever named it reads it in the same answer.
+    fn know(&mut self, found: &Found) {
+        let net = descend(&self.net, &found.levels);
+        match self.inner.get_mut(&found.nested_id) {
+            Some(inner) => {
+                if let Some(net) = net {
+                    inner.see(net);
+                }
+                inner.last_path.clone_from(&found.path);
+            }
+            None => {
+                self.inner
+                    .insert(found.nested_id, Inner::new(net, found.path.clone(), true));
+            }
+        }
+    }
+
+    /// Drops the records of inner nets whose nested ids no longer resolve:
+    /// a firing consumed their token and did not put it back. Called when a
+    /// firing lands and after an inner firing, never while a body holds a
+    /// token, so that a vehicle in transit keeps its record and version.
+    fn prune(&mut self) {
+        if self.inner.is_empty() {
+            return;
+        }
+        let mut live = HashSet::new();
+        walk(
+            &self.net,
+            &mut Vec::new(),
+            self.name,
+            &mut |_, _, _, net| {
+                live.insert(net.id());
+                None::<()>
+            },
+        );
+        self.inner.retain(|id, _| live.contains(id));
+        self.touched.retain(|id| live.contains(id));
+    }
+
+    fn push_log(&mut self, entry: LogEntry, chain: Vec<NetId>) {
+        if self.log.len() == LOG_CAPACITY {
+            self.log.pop_front();
+        }
+        self.log.push_back(Logged { entry, chain });
+    }
+
+    /// The wire path of a lifted event: the loaded net's name, then per
+    /// level the place's name in the net above, the token and the net's
+    /// name. Makes a record for each net on the way that has none.
+    fn lifted_path(&mut self, lifted: &Lifted<'_>) -> String {
+        let mut path = self.name.to_owned();
+        for (depth, &(place, token, name, id)) in lifted.levels.iter().enumerate() {
+            let place_name = match depth {
+                0 => self.names.place(place),
+                _ => {
+                    let above = lifted.levels[depth - 1].3;
+                    self.inner
+                        .get(&above)
+                        .map_or_else(|| place.to_string(), |inner| inner.names.place(place))
+                }
+            };
+            path = translate::level(&path, &place_name, token, name);
+            let live = Lifted {
+                levels: lifted.levels[..=depth].to_vec(),
+                event: lifted.event,
+            }
+            .live(&self.net);
+            match self.inner.get_mut(&id) {
+                Some(inner) => {
+                    if let Some(net) = live {
+                        inner.see(net);
+                    }
+                    inner.last_path.clone_from(&path);
+                }
+                None => {
+                    self.inner.insert(id, Inner::new(live, path.clone(), false));
+                }
+            }
+        }
+        path
+    }
+
+    /// One event lifted out of an inner net as the `nested` line the wire
+    /// carries (PROTOCOL.md §12.4): the notification the inner net would
+    /// send on its own, with its own names and version, inside one wrapper
+    /// with the full path and the outer net's version, unchanged. An inner
+    /// firing also gets its log entry and its net's progress here.
+    fn lift(
+        &mut self,
+        event: &Event,
+        outer_version: u64,
+        now: SystemTime,
+        launched: &mut HashMap<NetId, Pairs>,
+        firings: &mut Vec<InnerFiring>,
+    ) -> Notification {
+        let lifted = Lifted::of(event).expect("lift is given a Nested event");
+        let path = self.lifted_path(&lifted);
+        let nested_id = lifted.nested_id();
+        let running = self.running;
+        if !self.touched.contains(&nested_id) {
+            self.touched.push(nested_id);
+        }
+        let live = lifted.live(&self.net);
+        let inner = self
+            .inner
+            .get_mut(&nested_id)
+            .expect("lifted_path made the record");
+        let names = &inner.names;
+        let version = inner.marking_version + 1;
+        // What the inner net's log entry for a firing says, if this is one.
+        let mut firing: Option<(String, Pairs, Pairs)> = None;
+        let mut failure: Option<(String, bool)> = None;
+        let notification = match lifted.event {
+            // An inner firing is inline in the core (`step_deep`), so it is
+            // one piece on the wire too.
+            Event::Fired {
+                transition,
+                consumed,
+                produced: made,
+            } => {
+                firing = Some((
+                    names.transition(*transition),
+                    consumed.clone(),
+                    made.clone(),
+                ));
+                Notification::Fired {
+                    transition: names.transition(*transition),
+                    consumed: names.pairs(consumed),
+                    produced: produced(names, live, made),
+                    duration_ms: 0.0,
+                    marking_version: version,
+                    running,
+                }
+            }
+            Event::Launched {
+                transition,
+                consumed,
+            } => {
+                launched.insert(nested_id, consumed.clone());
+                Notification::Launched {
+                    transition: names.transition(*transition),
+                    consumed: names.pairs(consumed),
+                    marking_version: version,
+                    running,
+                }
+            }
+            Event::Distributed {
+                transition,
+                produced: made,
+            } => {
+                let consumed = launched.remove(&nested_id).unwrap_or_default();
+                firing = Some((names.transition(*transition), consumed, made.clone()));
+                Notification::Distributed {
+                    transition: names.transition(*transition),
+                    produced: produced(names, live, made),
+                    duration_ms: 0.0,
+                    marking_version: version,
+                    running,
+                }
+            }
+            Event::Failed {
+                transition,
+                consumed,
+                restored,
+                error,
+            } => {
+                firing = Some((names.transition(*transition), consumed.clone(), Vec::new()));
+                failure = Some((error.clone(), *restored));
+                Notification::Failed {
+                    transition: names.transition(*transition),
+                    error: error.clone(),
+                    restored: *restored,
+                    consumed: names.pairs(consumed),
+                    marking_version: version,
+                    running,
+                }
+            }
+            Event::Added { place, token } => Notification::Added {
+                place: names.place(*place),
+                id: token.to_string(),
+                // Under rule 3 (lifted at launch, the token in the body's
+                // hands) there is no net to label from.
+                label: live.map_or_else(String::new, |net| translate::label(net, *place, *token)),
+                marking_version: version,
+                running,
+            },
+            Event::Removed { place, token } => Notification::Removed {
+                place: names.place(*place),
+                id: token.to_string(),
+                marking_version: version,
+                running,
+            },
+            Event::Mutated { place, token } => Notification::Mutated {
+                place: names.place(*place),
+                id: token.to_string(),
+                label: live
+                    .and_then(|net| net.debug(*place, *token))
+                    .map(translate::cut),
+                marking_version: version,
+                running,
+            },
+            Event::Toggled {
+                transition,
+                enabled,
+            } => Notification::Toggled {
+                transition: names.transition(*transition),
+                enabled: *enabled,
+                marking_version: version,
+                running,
+            },
+            // A body that set an inner parameter: its wire name, from the
+            // inner net, which only the outer net's own `set_param` names.
+            Event::ParamChanged { type_name } => Notification::ParamChanged {
+                param: live
+                    .and_then(|net| net.param_name(type_name))
+                    .unwrap_or(type_name)
+                    .to_owned(),
+                marking_version: version,
+                running,
+            },
+            // An `import_marking` inside (a body loading a saved cabin): the
+            // inner net's marking was replaced wholesale. An inner net is
+            // always in its first generation.
+            Event::Resynced => Notification::Reloaded {
+                generation: 1,
+                reason: "resync".into(),
+                marking_version: inner.marking_version,
+                running,
+            },
+            // An event this runner does not know: the same, it moved in a
+            // way the runner cannot describe.
+            _ => Notification::Reloaded {
+                generation: 1,
+                reason: "resync".into(),
+                marking_version: inner.marking_version,
+                running,
+            },
+        };
+        if notification.is_state() {
+            inner.marking_version = version;
+        }
+        if let Some((transition, consumed, made)) = firing {
+            if failure.is_none() {
+                inner.progress.fired(&transition, now);
+            }
+            let entry = LogEntry {
+                seq: 0,
+                transition: transition.clone(),
+                started_at: iso8601(now),
+                duration_ms: 0.0,
+                outcome: if failure.is_some() { "failed" } else { "fired" }.to_owned(),
+                consumed: inner.names.pairs(&consumed),
+                produced: inner.names.pairs(&made),
+                error: failure.as_ref().map(|(error, _)| error.clone()),
+                restored: failure.as_ref().map(|&(_, restored)| restored),
+                path: Some(path.clone()),
+                nested_id: Some(nested_id.to_string()),
+            };
+            self.log_seq += 1;
+            let entry = LogEntry {
+                seq: self.log_seq,
+                ..entry
+            };
+            self.push_log(entry, lifted.chain());
+            firings.push(InnerFiring {
+                transition,
+                path: path.clone(),
+                nested_id: nested_id.to_string(),
+            });
+        }
+        Notification::Nested {
+            path,
+            nested_id: nested_id.to_string(),
+            event: Box::new(notification),
+            marking_version: outer_version,
+            running,
+        }
+    }
+
+    /// The `fireable` of each inner net that had events since it was last
+    /// compared, `nested`, when it differs from the last one sent: after
+    /// the outer net's (PROTOCOL.md §12.4). Not a state notification, so no
+    /// version moves. A net whose token is gone, or in a body's hands, is
+    /// skipped.
+    fn compare_inner_fireable(&mut self, outer_version: u64, out: &mut Vec<Outgoing>) {
+        let running = self.running;
+        for id in std::mem::take(&mut self.touched) {
+            let Some((found, net)) = find(&self.net, self.name, |net| net.id() == id) else {
+                continue;
+            };
+            let Some(inner) = self.inner.get_mut(&id) else {
+                continue;
+            };
+            inner.see(net);
+            inner.last_path.clone_from(&found.path);
+            let fireable = fireable_names(net, &inner.names);
+            if fireable == inner.last_fireable {
+                continue;
+            }
+            inner.last_fireable.clone_from(&fireable);
+            push(
+                out,
+                Notification::Nested {
+                    path: found.path,
+                    nested_id: id.to_string(),
+                    event: Box::new(Notification::Fireable {
+                        transitions: fireable,
+                        marking_version: inner.marking_version,
+                        running,
+                    }),
+                    marking_version: outer_version,
+                    running,
+                },
+            );
+        }
+    }
+}
+
+/// One net as a read sees it: the outer net, or an inner net with its
+/// record.
+struct View<'a> {
+    net: &'a Net,
+    topology: &'a Topology,
+    names: &'a Names,
+    progress: &'a ProgressKept,
+    marking_version: u64,
+    /// The net's wire path: the loaded net's name for the outer one, which
+    /// the paths of its tokens' `nets` extend.
+    path: String,
+    /// What a result about an inner net carries besides (§12.3).
+    inner: Option<InnerView>,
+}
+
+struct InnerView {
+    nested_id: String,
+    /// Its name within the token: what its `get_state` calls it.
+    name: String,
+    template: Option<String>,
+}
+
+impl View<'_> {
+    /// The `path` and `nested_id` a result about an inner net carries; both
+    /// `None` for the outer net.
+    fn address(&self) -> (Option<String>, Option<String>) {
+        match &self.inner {
+            Some(inner) => (Some(self.path.clone()), Some(inner.nested_id.clone())),
+            None => (None, None),
+        }
+    }
+}
 
 impl Owner {
     /// An owner serving `nets`, with nothing loaded.
@@ -225,8 +1065,9 @@ impl Owner {
         }
     }
 
-    /// Whether a run fired an inline (mutate-edge) body in the last
-    /// [`handle`](Owner::handle) and is free to fire again at once.
+    /// Whether a run fired an inline (mutate-edge) body, or a firing inside
+    /// an inner net, in the last [`handle`](Owner::handle) and is free to
+    /// fire again at once.
     ///
     /// An inline body lands inside `handle`, so no [`Input::Completed`] will
     /// come to prompt the next firing. A caller that sees `true` should feed
@@ -272,7 +1113,8 @@ impl Owner {
     fn request(&mut self, request: Request, now: SystemTime, out: &mut Vec<Outgoing>) {
         if let Some(loaded) = &mut self.loaded
             && loaded.in_flight.is_some()
-            && !ANSWERED_WHILE_AIRBORNE.contains(&request.method.as_str())
+            && (!ANSWERED_WHILE_AIRBORNE.contains(&request.method.as_str())
+                || held_by_the_body(loaded, &request))
         {
             loaded.deferred.push_back(request);
             return;
@@ -357,6 +1199,19 @@ impl Owner {
                 ErrorCode::NotLoaded,
                 format!("{method} needs a loaded net"),
             ),
+            _ if OUTER_ONLY.contains(&method.as_str())
+                && (args.contains_key("path") || args.contains_key("nested_id")) =>
+            {
+                respond_error(
+                    out,
+                    &id,
+                    ErrorCode::InvalidParams,
+                    format!(
+                        "{method} acts on the outer net only (PROTOCOL.md §12.3): \
+                         it takes no path or nested_id"
+                    ),
+                );
+            }
             "reset" => self.reset(&id, out),
             _ => {
                 if let Err((code, message)) = self.serve_loaded(&id, &method, &args, now, out) {
@@ -378,33 +1233,40 @@ impl Owner {
         match method {
             "get_state" => {
                 let limit = page_limit(args, "token_limit")?;
-                let state = self.state(limit);
+                let target = self.target(args)?;
+                let state = self.state(&target, limit)?;
                 respond(out, id, state);
             }
             "get_place_tokens" => {
                 let place = string_arg(args, "place")?;
                 let offset = usize_arg(args, "offset")?.unwrap_or(0);
                 let limit = page_limit(args, "limit")?;
-                let loaded = self.loaded_ref();
-                let place_id = loaded.net.place_named(place).ok_or_else(|| {
+                let target = self.target(args)?;
+                let view = self.view(&target)?;
+                let place_id = view.net.place_named(place).ok_or_else(|| {
                     (ErrorCode::UnknownPlace, format!("no place named {place:?}"))
                 })?;
-                let count = loaded.net.count(place_id);
-                let tokens = translate::tokens(&loaded.net, place_id, offset, limit);
+                let count = view.net.count(place_id);
+                let tokens =
+                    translate::tokens(view.net, &view.path, place_id, place, offset, limit);
+                let (path, nested_id) = view.address();
                 let page = PlaceTokens {
                     place: place.to_owned(),
-                    marking_version: self.marking_version,
+                    marking_version: view.marking_version,
                     count,
                     offset,
                     limit,
                     has_more: offset.saturating_add(tokens.len()) < count,
                     tokens,
+                    path,
+                    nested_id,
                 };
                 respond(out, id, page);
             }
             "get_token" => {
                 let token = string_arg(args, "id")?;
-                let value = self.token(token)?;
+                let target = self.target(args)?;
+                let value = self.token(&target, token)?;
                 respond(out, id, value);
             }
             "get_log" => {
@@ -412,12 +1274,21 @@ impl Owner {
                 let limit = u64_arg(args, "limit")?
                     .unwrap_or(LOG_CAPACITY as u64)
                     .clamp(1, LOG_CAPACITY as u64) as usize;
+                // One ring for the process (PROTOCOL.md §8): an inner net's
+                // entries, and its own inner nets', are those whose chain
+                // holds it.
+                let within = match self.target(args)? {
+                    Target::Outer => None,
+                    Target::Inner(found) => Some(found.nested_id),
+                };
                 let entries: Vec<&LogEntry> = self
                     .loaded_ref()
                     .log
                     .iter()
-                    .filter(|entry| entry.seq > after)
+                    .filter(|logged| logged.entry.seq > after)
+                    .filter(|logged| within.is_none_or(|id| logged.chain.contains(&id)))
                     .take(limit)
+                    .map(|logged| &logged.entry)
                     .collect();
                 respond(out, id, json!({ "entries": entries }));
             }
@@ -440,35 +1311,7 @@ impl Owner {
                     json!({"status": "stopped", "marking_version": self.marking_version, "running": false}),
                 );
             }
-            "inject" => {
-                let place = string_arg(args, "place")?.to_owned();
-                let token = args.get("token").cloned().ok_or_else(|| {
-                    (
-                        ErrorCode::InvalidParams,
-                        "inject needs a \"token\"".to_owned(),
-                    )
-                })?;
-                self.apply(JsonCommand::Extend {
-                    place,
-                    tokens: vec![token],
-                })?;
-                let events = self.flush_events(now, None, true, out);
-                let added = events.iter().find_map(|event| match event {
-                    Event::Added { token, .. } => Some(token.to_string()),
-                    _ => None,
-                });
-                let added = added.ok_or_else(|| {
-                    (
-                        ErrorCode::Internal,
-                        "the token was added without an event".to_owned(),
-                    )
-                })?;
-                respond(
-                    out,
-                    id,
-                    json!({"status": "injected", "id": added, "marking_version": self.marking_version}),
-                );
-            }
+            "inject" => self.inject(id, args, now, out)?,
             "enable" | "disable" => {
                 let transition = string_arg(args, "transition")?.to_owned();
                 self.apply(if method == "enable" {
@@ -506,6 +1349,93 @@ impl Owner {
         Ok(())
     }
 
+    /// `inject {place, token, path?, nested_id?}`: the token decoded into
+    /// the named net's place and appended (PROTOCOL.md §6.4, §12.3). Into an
+    /// inner net it goes through `nested_scope` at every level, so its
+    /// `added` comes out `nested`, and the answer carries that net's version.
+    fn inject(
+        &mut self,
+        id: &str,
+        args: &Args,
+        now: SystemTime,
+        out: &mut Vec<Outgoing>,
+    ) -> Result<(), (ErrorCode, String)> {
+        let place = string_arg(args, "place")?.to_owned();
+        let token = args.get("token").cloned().ok_or_else(|| {
+            (
+                ErrorCode::InvalidParams,
+                "inject needs a \"token\"".to_owned(),
+            )
+        })?;
+        let command = JsonCommand::Extend {
+            place,
+            tokens: vec![token],
+        };
+        let no_event = || {
+            (
+                ErrorCode::Internal,
+                "the token was added without an event".to_owned(),
+            )
+        };
+        match self.target(args)? {
+            Target::Outer => {
+                self.apply(command)?;
+                let flushed = self.flush_events(now, None, true, out);
+                let added = flushed
+                    .events
+                    .iter()
+                    .find_map(|event| match event {
+                        Event::Added { token, .. } => Some(token.to_string()),
+                        _ => None,
+                    })
+                    .ok_or_else(no_event)?;
+                respond(
+                    out,
+                    id,
+                    json!({"status": "injected", "id": added, "marking_version": self.marking_version}),
+                );
+            }
+            Target::Inner(found) => {
+                let applied = descend_mut(&mut self.loaded_mut().net, &found.levels, |net| {
+                    net.apply_json(command)
+                })
+                .ok_or_else(|| {
+                    (
+                        ErrorCode::UnknownNet,
+                        format!("no live inner net at {:?}", found.path),
+                    )
+                })?;
+                applied
+                    .map_err(|error| (code_of(CoreError::Command(&error)), error.to_string()))?;
+                let flushed = self.flush_events(now, None, true, out);
+                let added = flushed
+                    .events
+                    .iter()
+                    .find_map(|event| {
+                        let lifted = Lifted::of(event)?;
+                        match lifted.event {
+                            Event::Added { token, .. } if lifted.nested_id() == found.nested_id => {
+                                Some(token.to_string())
+                            }
+                            _ => None,
+                        }
+                    })
+                    .ok_or_else(no_event)?;
+                let version = self
+                    .loaded_ref()
+                    .inner
+                    .get(&found.nested_id)
+                    .map_or(0, |inner| inner.marking_version);
+                respond(
+                    out,
+                    id,
+                    json!({"status": "injected", "id": added, "marking_version": version}),
+                );
+            }
+        }
+        Ok(())
+    }
+
     fn apply(&mut self, command: JsonCommand) -> Result<(), (ErrorCode, String)> {
         self.loaded_mut()
             .net
@@ -519,6 +1449,16 @@ impl Owner {
 
     fn loaded_mut(&mut self) -> &mut Loaded {
         self.loaded.as_mut().expect("checked by serve")
+    }
+
+    /// The net a request names, with a record made for an inner one.
+    fn target(&mut self, args: &Args) -> Result<Target, (ErrorCode, String)> {
+        let loaded = self.loaded_mut();
+        let target = loaded.resolve(args)?;
+        if let Target::Inner(found) = &target {
+            loaded.know(found);
+        }
+        Ok(target)
     }
 
     // ----- load and reset ----------------------------------------------------
@@ -612,6 +1552,9 @@ impl Owner {
     /// Runs the factory and, if it gives a net, installs it as the next
     /// generation and writes `reloaded`. On failure writes the error
     /// response, leaves the previous net as it was, and returns false.
+    ///
+    /// Every inner net goes with the old marking (PROTOCOL.md §12.6): the
+    /// new generation's are walked and recorded afresh, at version 0.
     fn build(
         &mut self,
         id: &str,
@@ -643,14 +1586,11 @@ impl Owner {
         net.drain_events().for_each(drop);
         let topology = net.topology();
         let names = Names::new(&topology);
-        let last_fireable = net
-            .fireable()
-            .into_iter()
-            .map(|t| names.transition(t))
-            .collect();
+        let last_fireable = fireable_names(&net, &names);
         self.generation += 1;
-        self.loaded = Some(Loaded {
+        let mut loaded = Loaded {
             entry,
+            name: self.nets[entry].name,
             params,
             net,
             topology,
@@ -664,7 +1604,11 @@ impl Owner {
             progress: ProgressKept::default(),
             idle: false,
             pending_param: None,
-        });
+            inner: HashMap::new(),
+            touched: Vec::new(),
+        };
+        loaded.know_all();
+        self.loaded = Some(loaded);
         *lock(&self.status) = None;
         push(
             out,
@@ -680,10 +1624,48 @@ impl Owner {
 
     // ----- reads -------------------------------------------------------------
 
-    fn state(&self, token_limit: usize) -> State {
+    /// The net `target` names, as a read sees it.
+    fn view(&self, target: &Target) -> Result<View<'_>, (ErrorCode, String)> {
         let loaded = self.loaded_ref();
-        let net = &loaded.net;
-        let transitions = loaded
+        let Target::Inner(found) = target else {
+            return Ok(View {
+                net: &loaded.net,
+                topology: &loaded.topology,
+                names: &loaded.names,
+                progress: &loaded.progress,
+                marking_version: self.marking_version,
+                path: loaded.name.to_owned(),
+                inner: None,
+            });
+        };
+        let gone = || {
+            (
+                ErrorCode::UnknownNet,
+                format!("no live inner net at {:?}", found.path),
+            )
+        };
+        let net = descend(&loaded.net, &found.levels).ok_or_else(gone)?;
+        let inner = loaded.inner.get(&found.nested_id).ok_or_else(gone)?;
+        let topology = inner.topology.as_ref().ok_or_else(gone)?;
+        Ok(View {
+            net,
+            topology,
+            names: &inner.names,
+            progress: &inner.progress,
+            marking_version: inner.marking_version,
+            path: found.path.clone(),
+            inner: Some(InnerView {
+                nested_id: found.nested_id.to_string(),
+                name: found.name.clone(),
+                template: inner.template.clone(),
+            }),
+        })
+    }
+
+    fn state(&self, target: &Target, token_limit: usize) -> Result<State, (ErrorCode, String)> {
+        let view = self.view(target)?;
+        let net = view.net;
+        let transitions = view
             .topology
             .transitions
             .iter()
@@ -700,7 +1682,7 @@ impl Owner {
                 )
             })
             .collect();
-        let places = loaded
+        let places = view
             .topology
             .places
             .iter()
@@ -709,36 +1691,50 @@ impl Owner {
                     p.name.clone(),
                     protocol::PlaceMarking {
                         count: net.count(p.id),
-                        tokens: translate::tokens(net, p.id, 0, token_limit),
+                        tokens: translate::tokens(net, &view.path, p.id, &p.name, 0, token_limit),
                     },
                 )
             })
             .collect();
-        State {
+        let (path, nested_id) = view.address();
+        let loaded = self.loaded_ref();
+        Ok(State {
             protocol_version: protocol::PROTOCOL_VERSION,
             runtime: protocol::RUNTIME.to_owned(),
-            net: self.nets[loaded.entry].name.to_owned(),
-            generation: self.generation,
-            marking_version: self.marking_version,
+            net: view
+                .inner
+                .as_ref()
+                .map_or_else(|| loaded.name.to_owned(), |inner| inner.name.clone()),
+            // An inner net is in its first generation for as long as it
+            // exists (§12.3).
+            generation: if view.inner.is_some() {
+                1
+            } else {
+                self.generation
+            },
+            marking_version: view.marking_version,
             running: loaded.running,
-            topology: translate::topology(&loaded.topology, &loaded.names),
+            topology: translate::topology(view.topology, view.names),
             transitions,
             marking: protocol::Marking { places },
             progress: protocol::Progress {
                 step_count: net.fired_count(),
-                last_fired: loaded.progress.last_fired.clone(),
-                fired_counts: loaded.progress.fired_counts.clone(),
-                last_progress_at: loaded.progress.last_progress_at.map(iso8601),
+                last_fired: view.progress.last_fired.clone(),
+                fired_counts: view.progress.fired_counts.clone(),
+                last_progress_at: view.progress.last_progress_at.map(iso8601),
             },
-        }
+            path,
+            nested_id,
+            template: view.inner.as_ref().and_then(|inner| inner.template.clone()),
+        })
     }
 
-    fn token(&self, wanted: &str) -> Result<TokenValue, (ErrorCode, String)> {
-        let loaded = self.loaded_ref();
+    fn token(&self, target: &Target, wanted: &str) -> Result<TokenValue, (ErrorCode, String)> {
+        let view = self.view(target)?;
         let unknown = || (ErrorCode::UnknownToken, format!("no live token {wanted:?}"));
         let token: TokenId = wanted.parse().map_err(|_| unknown())?;
-        let net = &loaded.net;
-        let place = loaded
+        let net = view.net;
+        let place = view
             .topology
             .places
             .iter()
@@ -750,34 +1746,105 @@ impl Owner {
                 text: net.debug(place.id, token).unwrap_or_default(),
             },
         };
+        let (path, nested_id) = view.address();
         Ok(TokenValue {
             id: wanted.to_owned(),
             place: place.name.clone(),
             type_name: place.type_name.to_owned(),
             value,
+            path,
+            nested_id,
+            nets: translate::nets(net, &view.path, place.id, &place.name, token),
         })
     }
 
     // ----- the firing cycle --------------------------------------------------
 
+    /// One firing (PROTOCOL.md §6.3, §12.3): the outer net's own choice, or,
+    /// when it has none, the first inner firing in `step_deep`'s order.
     fn step(
         &mut self,
         id: &str,
         now: SystemTime,
         out: &mut Vec<Outgoing>,
     ) -> Result<(), (ErrorCode, String)> {
-        match self.loaded_ref().net.select() {
-            None => {
-                let running = self.loaded_ref().running;
-                respond(
-                    out,
-                    id,
-                    json!({"fired": false, "marking_version": self.marking_version, "running": running}),
-                );
-                Ok(())
-            }
-            Some(transition) => self.launch(transition, Some(id.to_owned()), now, out),
+        if let Some(transition) = self.loaded_ref().net.select() {
+            return self.launch(transition, Some(id.to_owned()), now, out);
         }
+        if !self.fire_inside(Some(id), now, out) {
+            let running = self.loaded_ref().running;
+            respond(
+                out,
+                id,
+                json!({"fired": false, "marking_version": self.marking_version, "running": running}),
+            );
+        }
+        Ok(())
+    }
+
+    /// One firing inside an inner net, inline, through `Net::step_inside`:
+    /// the outer selector has already been asked, so it is not asked again.
+    /// Reports it, `nested`, answers the `step` that asked for it if one
+    /// did, and stops a run on a failure. False if no inner net had
+    /// anything to fire.
+    fn fire_inside(
+        &mut self,
+        step_id: Option<&str>,
+        now: SystemTime,
+        out: &mut Vec<Outgoing>,
+    ) -> bool {
+        let loaded = self.loaded_mut();
+        let failure = match loaded.net.step_inside() {
+            Ok(None) => return false,
+            Ok(Some(_)) => None,
+            Err(failed) => Some(Failure::of(&failed)),
+        };
+        loaded.idle = false;
+        let flushed = self.flush_events(now, None, true, out);
+        let loaded = self.loaded_mut();
+        loaded.prune();
+        if let Some(failure) = &failure
+            && loaded.running
+        {
+            loaded.running = false;
+            push(
+                out,
+                Notification::ExecutionStopped {
+                    reason: "transition_failed".into(),
+                    error_type: failure.error_type.map(str::to_owned),
+                    message: Some(failure.message.clone()),
+                    marking_version: self.marking_version,
+                    running: false,
+                },
+            );
+        }
+        let Some(step_id) = step_id else {
+            return true;
+        };
+        // The firing's own line said where it was: the last inner firing
+        // the flush reported.
+        let Some(firing) = flushed.inner_firings.last() else {
+            respond_error(
+                out,
+                step_id,
+                ErrorCode::Internal,
+                "an inner firing left no event",
+            );
+            return true;
+        };
+        let mut answer = json!({
+            "fired": true,
+            "transition": firing.transition,
+            "path": firing.path,
+            "nested_id": firing.nested_id,
+            "marking_version": self.marking_version,
+            "running": self.loaded_ref().running,
+        });
+        if failure.is_some() {
+            answer["failed"] = json!(true);
+        }
+        respond(out, step_id, answer);
+        true
     }
 
     /// Launches `transition`. A detachable body goes out as
@@ -817,8 +1884,8 @@ impl Owner {
             // the launch's own change (this transition in flight) is
             // transient, and a `fireable` between `launched` and
             // `distributed` would split the pair a viewer folds into `fired`.
-            let events = self.flush_events(now, None, false, out);
-            let consumed = events.into_iter().find_map(|event| match event {
+            let flushed = self.flush_events(now, None, false, out);
+            let consumed = flushed.events.into_iter().find_map(|event| match event {
                 Event::Launched { consumed, .. } => Some(consumed),
                 _ => None,
             });
@@ -841,7 +1908,7 @@ impl Owner {
             .expect("land is only called with a firing in flight");
         let result = loaded.net.distribute(completed);
         *lock(&self.status) = None;
-        let events = self.flush_events(now, Some(&flight), true, out);
+        let events = self.flush_events(now, Some(&flight), true, out).events;
 
         let consumed = events.iter().find_map(|event| match event {
             Event::Launched { consumed, .. } | Event::Failed { consumed, .. } => {
@@ -877,20 +1944,16 @@ impl Owner {
             produced: loaded.names.pairs(&produced.unwrap_or_default()),
             error: failure.as_ref().map(|f| f.message.clone()),
             restored: failure.as_ref().map(|f| f.restored),
+            path: None,
+            nested_id: None,
         };
-        if loaded.log.len() == LOG_CAPACITY {
-            loaded.log.pop_front();
-        }
-        loaded.log.push_back(entry);
+        loaded.push_log(entry, Vec::new());
         if failure.is_none() {
-            loaded.progress.last_fired = Some(flight.name.clone());
-            *loaded
-                .progress
-                .fired_counts
-                .entry(flight.name.clone())
-                .or_default() += 1;
-            loaded.progress.last_progress_at = Some(now);
+            loaded.progress.fired(&flight.name, now);
         }
+        // A token this firing consumed and did not put back took its inner
+        // nets with it (§12.6).
+        loaded.prune();
 
         if let Some(failure) = &failure
             && loaded.running
@@ -930,9 +1993,10 @@ impl Owner {
         }
     }
 
-    /// Keeps a running net going: launches the next firing if it is free, or
-    /// handles quiescence — `idle` once per spell for a `"24/7"` net,
-    /// `execution_stopped` for any other.
+    /// Keeps a running net going: launches the next firing if it is free,
+    /// or makes the next inner firing when the outer net has none (§12.3),
+    /// or handles quiescence — nothing fireable anywhere — with `idle` once
+    /// per spell for a `"24/7"` net and `execution_stopped` for any other.
     fn drive(&mut self, now: SystemTime, out: &mut Vec<Outgoing>) {
         let Some(loaded) = &self.loaded else {
             return;
@@ -941,79 +2005,102 @@ impl Owner {
             return;
         }
         let continuous = self.nets[loaded.entry].hosting == Hosting::Continuous;
-        match loaded.net.select() {
-            Some(transition) => {
-                if let Err((code, message)) = self.launch(transition, None, now, out) {
-                    // `select` chose it, so `launch` cannot refuse it; if it
-                    // somehow does, stop rather than spin.
-                    self.loaded_mut().running = false;
-                    push(
-                        out,
-                        Notification::ExecutionStopped {
-                            reason: "transition_failed".into(),
-                            error_type: Some("error".into()),
-                            message: Some(format!("{code}: {message}")),
-                            marking_version: self.marking_version,
-                            running: false,
-                        },
-                    );
-                    return;
-                }
-                let loaded = self.loaded_ref();
-                self.poke = loaded.running && loaded.in_flight.is_none();
-            }
-            None if continuous => {
-                if !loaded.idle {
-                    self.loaded_mut().idle = true;
-                    push(
-                        out,
-                        Notification::Idle {
-                            idle_since: iso8601(now),
-                            marking_version: self.marking_version,
-                            running: true,
-                        },
-                    );
-                }
-            }
-            None => {
+        if let Some(transition) = loaded.net.select() {
+            if let Err((code, message)) = self.launch(transition, None, now, out) {
+                // `select` chose it, so `launch` cannot refuse it; if it
+                // somehow does, stop rather than spin.
                 self.loaded_mut().running = false;
                 push(
                     out,
                     Notification::ExecutionStopped {
-                        reason: "no_fireable_transitions".into(),
-                        error_type: None,
-                        message: None,
+                        reason: "transition_failed".into(),
+                        error_type: Some("error".into()),
+                        message: Some(format!("{code}: {message}")),
                         marking_version: self.marking_version,
                         running: false,
                     },
                 );
+                return;
             }
+            let loaded = self.loaded_ref();
+            self.poke = loaded.running && loaded.in_flight.is_none();
+            return;
         }
+        // Inline, like a mutate-edge body: one per `handle`, and a tick
+        // asked for so that a `stop` in between is heard.
+        if self.fire_inside(None, now, out) {
+            let loaded = self.loaded_ref();
+            self.poke = loaded.running && loaded.in_flight.is_none();
+            return;
+        }
+        if continuous {
+            if !self.loaded_ref().idle {
+                self.loaded_mut().idle = true;
+                push(
+                    out,
+                    Notification::Idle {
+                        idle_since: iso8601(now),
+                        marking_version: self.marking_version,
+                        running: true,
+                    },
+                );
+            }
+            return;
+        }
+        self.loaded_mut().running = false;
+        push(
+            out,
+            Notification::ExecutionStopped {
+                reason: "no_fireable_transitions".into(),
+                error_type: None,
+                message: None,
+                marking_version: self.marking_version,
+                running: false,
+            },
+        );
     }
 
     // ----- events ------------------------------------------------------------
 
-    /// Drains the net's log, writes one notification per event (each state
-    /// notification raising `marking_version` by one), and then, if asked
-    /// and anything happened, the `fireable` set if it changed. Returns the
-    /// events for the caller to read ids off.
+    /// Drains the net's log and writes one notification per event, in the
+    /// wire's order ([`wire_order`]): each state notification of the outer
+    /// net raising its `marking_version` by one, each inner event `nested`
+    /// and raising its own net's. Then, if asked and anything happened, the
+    /// outer `fireable` set if it changed, and each touched inner net's
+    /// after it. Returns the events for the caller to read ids off, and the
+    /// inner firings it reported.
     fn flush_events(
         &mut self,
         now: SystemTime,
         flight: Option<&InFlight>,
         compare_fireable: bool,
         out: &mut Vec<Outgoing>,
-    ) -> Vec<Event> {
+    ) -> Flushed {
+        let generation = self.generation;
+        let marking_version = &mut self.marking_version;
         let loaded = self.loaded.as_mut().expect("events need a net");
         let events: Vec<Event> = loaded.net.drain_events().collect();
         let running = loaded.running;
-        let names = &loaded.names;
-        let net = &loaded.net;
         let inline = flight.is_some_and(|f| f.inline);
         let duration = flight.map_or(0.0, |f| duration_ms(f.started_at, now));
         let mut inline_consumed: Vec<(PlaceId, TokenId)> = Vec::new();
-        for event in &events {
-            let version = self.marking_version + 1;
+        let mut inner_launched = HashMap::new();
+        let mut inner_firings = Vec::new();
+        for event in wire_order(&events) {
+            if matches!(event, Event::Nested { .. }) {
+                let line = loaded.lift(
+                    event,
+                    *marking_version,
+                    now,
+                    &mut inner_launched,
+                    &mut inner_firings,
+                );
+                push(out, line);
+                continue;
+            }
+            let names = &loaded.names;
+            let net = &loaded.net;
+            let version = *marking_version + 1;
             let notification = match event {
                 Event::Fired {
                     transition,
@@ -1104,48 +2191,72 @@ impl Owner {
                     marking_version: version,
                     running,
                 },
+                // The name the `set_param` being served used; for a change
+                // nobody asked for over the wire, the wire name the net
+                // registered, or the type name if it registered none.
                 Event::ParamChanged { type_name } => Notification::ParamChanged {
                     param: loaded
                         .pending_param
                         .clone()
+                        .or_else(|| net.param_name(type_name).map(str::to_owned))
                         .unwrap_or_else(|| (*type_name).to_owned()),
                     marking_version: version,
+                    running,
+                },
+                // An `import_marking`: the marking was replaced wholesale and
+                // is not told as events (DESIGN §8.1), so a reader refetches.
+                Event::Resynced => Notification::Reloaded {
+                    generation,
+                    reason: "resync".into(),
+                    marking_version: *marking_version,
                     running,
                 },
                 // An event this runner does not know: say the marking moved
                 // in a way it cannot describe.
                 _ => Notification::Reloaded {
-                    generation: self.generation,
+                    generation,
                     reason: "resync".into(),
-                    marking_version: self.marking_version,
+                    marking_version: *marking_version,
                     running,
                 },
             };
             if notification.is_state() {
-                self.marking_version = version;
+                *marking_version = version;
             }
             push(out, notification);
         }
         if compare_fireable && !events.is_empty() {
-            let fireable: Vec<String> = net
-                .fireable()
-                .into_iter()
-                .map(|t| names.transition(t))
-                .collect();
+            let fireable = fireable_names(&loaded.net, &loaded.names);
             if fireable != loaded.last_fireable {
                 loaded.last_fireable.clone_from(&fireable);
                 push(
                     out,
                     Notification::Fireable {
                         transitions: fireable,
-                        marking_version: self.marking_version,
+                        marking_version: *marking_version,
                         running,
                     },
                 );
             }
+            loaded.compare_inner_fireable(*marking_version, out);
         }
-        events
+        Flushed {
+            events,
+            inner_firings,
+        }
     }
+}
+
+/// Whether a read must wait for the airborne body to land: it names an inner
+/// net that does not resolve now, which may be inside the token the body
+/// holds (PROTOCOL.md §12.3). After the landing it resolves, or is
+/// `unknown_net` then.
+fn held_by_the_body(loaded: &Loaded, request: &Request) -> bool {
+    ADDRESSED_READS.contains(&request.method.as_str())
+        && matches!(
+            &request.params,
+            Value::Object(args) if matches!(loaded.resolve(args), Err((ErrorCode::UnknownNet, _)))
+        )
 }
 
 /// How a landing failed, for `execution_stopped` and the log.
@@ -1227,4 +2338,149 @@ fn page_limit(args: &Args, key: &str) -> Result<usize, (ErrorCode, String)> {
     Ok(u64_arg(args, key)?
         .unwrap_or(DEFAULT_TOKEN_LIMIT)
         .clamp(1, MAX_TOKEN_LIMIT) as usize)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use petritype::{MutateEdge, NetBuilder, TakeEdge};
+
+    /// A `Yard` of bare nets, each with a `Todo -Work-> Done`, and a second
+    /// level: a `Crate` place of bare nets inside each.
+    fn yard() -> (Net, Vec<NetId>) {
+        fn worker(todo: u32) -> Net {
+            let mut b = NetBuilder::new();
+            let pending = b.place::<u32>("Todo");
+            let done = b.place::<u32>("Done");
+            b.seed(pending, 0..todo);
+            b.transition("Work", (TakeEdge(pending),), (done,), |n: u32| (n,));
+            let inside = b.place_nested::<Net>("Crate");
+            let mut c = NetBuilder::new();
+            c.place::<u32>("Straw");
+            b.seed(inside, [c.build().unwrap()]);
+            b.build().unwrap()
+        }
+        let mut b = NetBuilder::new();
+        let yard = b.place_nested::<Net>("Yard");
+        b.seed(yard, [worker(1), worker(2)]);
+        let net = b.build().unwrap();
+        let mut ids = Vec::new();
+        walk(&net, &mut Vec::new(), "city", &mut |_, _, _, n| {
+            ids.push(n.id());
+            None::<()>
+        });
+        (net, ids)
+    }
+
+    #[test]
+    fn the_walk_goes_down_before_it_goes_on() {
+        let (net, ids) = yard();
+        assert_eq!(ids.len(), 4, "two workers, a crate in each");
+        let mut paths = Vec::new();
+        walk(&net, &mut Vec::new(), "city", &mut |_, path, _, _| {
+            paths.push(path.to_owned());
+            None::<()>
+        });
+        assert_eq!(
+            paths,
+            [
+                "city/Yard/#0/",
+                // The crate is seeded after the work, so it has the next id.
+                "city/Yard/#0//Crate/#1/",
+                "city/Yard/#1/",
+                "city/Yard/#1//Crate/#2/",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_path_resolves_level_by_level_and_names_the_segment_that_failed() {
+        let (net, ids) = yard();
+        let (found, inner) = resolve_path(&net, "city", "city/Yard/#1//Crate/#2/")
+            .unwrap()
+            .unwrap();
+        assert_eq!(found.nested_id, ids[3]);
+        assert_eq!(inner.id(), ids[3]);
+        assert_eq!(found.levels.len(), 2);
+        assert_eq!(found.name, "", "a bare net is unnamed");
+        assert!(resolve_path(&net, "city", "city").unwrap().is_none());
+        for (path, says) in [
+            ("town/Yard/#0/", "\"city\""),
+            ("city/Lot/#0/", "no place \"Lot\""),
+            ("city/Yard/#0", "stops after \"#0\""),
+            ("city/Yard/0/", "\"0\" is not a token"),
+            ("city/Yard/#9/", "no token #9"),
+            ("city/Yard/#0/cabin", "no net \"cabin\""),
+            ("city/Yard/#0//Crate/#1", "stops after \"#1\""),
+        ] {
+            let error = resolve_path(&net, "city", path).err().unwrap();
+            assert!(error.contains(says), "{path}: {error}");
+        }
+    }
+
+    #[test]
+    fn descending_mutably_lifts_at_every_level() {
+        let (mut net, ids) = yard();
+        let (found, _) = find(&net, "city", |n| n.id() == ids[1]).unwrap();
+        let added = descend_mut(&mut net, &found.levels, |crate_net| {
+            let straw = crate_net.place_ref::<u32>("Straw").unwrap();
+            crate_net.put(straw, 7)
+        })
+        .unwrap();
+        let events: Vec<Event> = net.drain_events().collect();
+        assert_eq!(events.len(), 1);
+        let lifted = Lifted::of(&events[0]).unwrap();
+        assert_eq!(lifted.chain(), [ids[0], ids[1]]);
+        assert!(matches!(lifted.event, Event::Added { token, .. } if *token == added));
+        assert!(lifted.live(&net).is_some_and(|n| n.id() == ids[1]));
+    }
+
+    #[test]
+    fn the_wire_tells_a_landing_s_inner_effects_before_the_landing() {
+        // A mutate edge and a produced nested token in one firing: the
+        // core's rules 2 and 4 put the inner events on both sides of the
+        // `Mutated` and after the `Distributed`.
+        let mut inner = NetBuilder::new();
+        let seen = inner.place::<u32>("Seen");
+        let inner = inner.build().unwrap();
+        let mut b = NetBuilder::new();
+        let here = b.place_nested::<Net>("Here");
+        let there = b.place_nested::<Net>("There");
+        let ticks = b.place::<u32>("Ticks");
+        b.seed(here, [inner]);
+        b.seed(ticks, [1]);
+        b.transition(
+            "Touch",
+            (TakeEdge(ticks), MutateEdge(here)),
+            (there,),
+            move |n: u32, held: &mut Net| {
+                held.put(seen, n);
+                let mut copy = NetBuilder::new();
+                let marks = copy.place::<u32>("Marks");
+                let mut copy = copy.build().unwrap();
+                copy.put(marks, n);
+                (copy,)
+            },
+        );
+        let mut net = b.build().unwrap();
+        net.step().unwrap();
+        let events: Vec<Event> = net.drain_events().collect();
+        let kinds = |events: &[&Event]| -> Vec<&'static str> {
+            events
+                .iter()
+                .map(|e| match e {
+                    Event::Nested { .. } => "nested",
+                    Event::Mutated { .. } => "mutated",
+                    Event::Fired { .. } => "fired",
+                    _ => "other",
+                })
+                .collect()
+        };
+        let core: Vec<&Event> = events.iter().collect();
+        assert_eq!(kinds(&core), ["nested", "mutated", "fired", "nested"]);
+        assert_eq!(
+            kinds(&wire_order(&events)),
+            ["nested", "nested", "mutated", "fired"]
+        );
+    }
 }

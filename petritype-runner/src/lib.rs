@@ -71,6 +71,15 @@
 //!   `inject` and `get_token`'s `kind: "json"` need.
 //! - `set_param` sets a net-wide parameter registered with
 //!   `NetBuilder::serializable_param`; its `transition` is ignored.
+//! - A token that carries nets of its own (`petritype::Nested`, a place
+//!   declared with `place_nested`) lists them in `nets` wherever a token is
+//!   given in full, and the reads and `inject` take a `path`
+//!   (`"transit/Depot/#0/cabin"`) or a `nested_id` to act on one of them
+//!   (PROTOCOL.md §12). What happens inside arrives as one `nested`
+//!   notification around the inner net's own, with that net's own
+//!   `marking_version`; the outer one does not move. `step` and a running
+//!   net fire the outer net's choice first and, when it has none, one
+//!   inner firing, inline.
 
 #![warn(missing_docs, missing_debug_implementations, unreachable_pub)]
 #![forbid(unsafe_code)]

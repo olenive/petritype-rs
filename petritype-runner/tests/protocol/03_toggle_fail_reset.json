@@ -75,7 +75,7 @@
     {
       "send": {"method": "set_param", "params": {"param": "speed", "value": 2}},
       "expect": [
-        {"id": "10", "error": {"code": "unsupported", "message": "<label>"}}
+        {"id": "10", "error": {"code": "invalid_params", "message": "<label>"}}
       ]
     },
     {

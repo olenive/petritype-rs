@@ -81,6 +81,10 @@ pub(crate) struct TransitionSlot {
     /// Output places in declaration order — the order of the slots in what
     /// the body returns.
     pub(crate) outputs: Vec<PlaceId>,
+    /// Whether the body returns its outputs by position, read off its return
+    /// type when the transition was declared, so that it survives the body
+    /// being out of its slot while in flight.
+    pub(crate) positional: bool,
     /// The erased body. `Option` because firing takes it out of the net: it
     /// travels with the [`Firing`](crate::Firing) from
     /// [`launch`](crate::Net::launch) until
@@ -125,6 +129,7 @@ impl fmt::Debug for TransitionSlot {
             // anywhere (DESIGN §10).
             .field("params", &self.params)
             .field("outputs", &self.outputs)
+            .field("positional", &self.positional)
             // The body, the guard and the priority are closures: all a reader
             // can be told is whether they are there.
             .field("in_flight", &self.body.is_none())
@@ -166,6 +171,21 @@ pub struct TransitionInfo<'a> {
     pub params: &'a [&'static str],
     /// Output places, in declaration order.
     pub outputs: &'a [PlaceId],
+    /// Whether the body returns its outputs by position: a tuple, one slot
+    /// per output place ([`PositionalOutputs`](crate::PositionalOutputs)),
+    /// `()` included. False for a body that routes its payloads by type
+    /// ([`RoutedOutput`](crate::RoutedOutput)) or names their places in a
+    /// [`Distribution`](crate::Distribution); a wrapped body is what its
+    /// [output distribution function](crate::OutputDistribution) returns,
+    /// and a `Result` what it wraps (DESIGN §4.5).
+    ///
+    /// It says what an output edge's [`slot`](crate::EdgeInfo::Output)
+    /// means. For a positional body the slot is the position in the
+    /// returned tuple the place is filled from, which a diagram may label;
+    /// otherwise it is only the order the places were declared in. The net
+    /// protocol writes `slot` for positional outputs alone, as Python
+    /// petritype writes its `return_index`.
+    pub positional: bool,
     /// The on/off switch, as
     /// [`Net::enable`](crate::Net::enable) and
     /// [`Net::disable`](crate::Net::disable) leave it.

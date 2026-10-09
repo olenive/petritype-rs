@@ -469,7 +469,7 @@ impl Net {
         if let Some(transition) = self.step()? {
             return Ok(Some(DeepStep::Here { transition }));
         }
-        self.step_inner()
+        self.step_inside()
     }
 
     /// Whether nothing can happen here or below: nothing fireable and nothing
@@ -488,14 +488,60 @@ impl Net {
                 .all(|(_, _, _, inner)| inner.is_quiescent_deep())
     }
 
-    // ----- internals ------------------------------------------------------
-
     /// The inner half of [`step_deep`](Net::step_deep): one firing in the
-    /// first inner net that has one, with its events lifted.
+    /// first inner net that has one, without asking this net's own selector
+    /// first.
     ///
-    /// Also what the concurrent driver calls when its launch sweep finds
-    /// nothing in the outer net, which is why it is apart from `step_deep`.
-    pub(crate) fn step_inner(&mut self) -> Result<Option<DeepStep>, FiringFailed> {
+    /// For a caller that has already asked it. A driver that runs this net's
+    /// own firings in stages — [`select`](Net::select), then
+    /// [`launch`](Net::launch) with the body on a thread of its own, then
+    /// [`distribute`](Net::distribute) — and wants the inner nets when that
+    /// selector picks nothing calls this, where
+    /// [`step_deep`](Net::step_deep) would ask the selector a second time
+    /// and fire inline whatever it chose. The concurrent driver does exactly
+    /// that when its launch sweep finds nothing out here, and so does the
+    /// protocol runner (`petritype-runner`) for `step` and a running net.
+    ///
+    /// The walk and the lifting are `step_deep`'s: nested places in place
+    /// order, [passive](crate::NetBuilder::passive) ones skipped, tokens
+    /// oldest first, each token's nets in [`Nested::nets`] order, `step_deep`
+    /// on each, the first firing found is the step, and its events are in
+    /// this net's log, as [`Event::Nested`], by the time this returns. `None`
+    /// when no inner net has anything to fire; this net's own fireable
+    /// transitions are never fired here, at this level.
+    ///
+    /// ```
+    /// use petritype::{DeepStep, NetBuilder, TakeEdge};
+    ///
+    /// let mut inner = NetBuilder::new();
+    /// let todo = inner.place::<u32>("Todo");
+    /// let done = inner.place::<u32>("Done");
+    /// inner.seed(todo, [1]);
+    /// inner.transition("Work", (TakeEdge(todo),), (done,), |n: u32| (n,));
+    /// let inner = inner.build()?;
+    ///
+    /// let mut b = NetBuilder::new();
+    /// let desk = b.place_nested::<petritype::Net>("Desk");
+    /// let inbox = b.place::<u32>("Inbox");
+    /// let outbox = b.place::<u32>("Outbox");
+    /// b.seed(desk, [inner]);
+    /// b.seed(inbox, [7]);
+    /// b.transition("Forward", (TakeEdge(inbox),), (outbox,), |n: u32| (n,));
+    /// let mut net = b.build()?;
+    ///
+    /// // `Forward` is fireable out here, and still the inner net goes first.
+    /// let step = net.step_inside()?.expect("the inner net had work");
+    /// assert!(matches!(step, DeepStep::Inside { place, .. } if place == desk.id()));
+    /// assert_eq!(net.count(inbox.id()), 1, "the outer net was not fired");
+    /// assert_eq!(net.step_inside()?, None, "and the inner net is done");
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// The inner failure's [`FiringFailed`], as from `step_deep`, its
+    /// [`path`](FiringFailed::path) saying where.
+    pub fn step_inside(&mut self) -> Result<Option<DeepStep>, FiringFailed> {
         for index in 0..self.places.len() {
             let meta = &self.places[index].meta;
             let Some(nested) = meta.nested else {
@@ -555,6 +601,8 @@ impl Net {
         }
         Ok(None)
     }
+
+    // ----- internals ------------------------------------------------------
 
     /// The first transition anywhere in the nesting that is fireable, with
     /// its name: this net's first, then the inner nets' in

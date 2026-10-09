@@ -13,6 +13,8 @@
             {"name": "parcel-distribution", "description": "Sort, stage and dispatch parcels", "mode": "manual",
              "params": []},
             {"name": "parcel-intake", "description": "Shelve parcels as they are injected", "mode": "24/7",
+             "params": []},
+            {"name": "transit", "description": "Vehicles board, carry and alight passengers", "mode": "manual",
              "params": []}
           ]
         }}

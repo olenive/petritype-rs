@@ -181,6 +181,7 @@ impl Net {
                 inputs: &slot.inputs,
                 params: &slot.params,
                 outputs: &slot.outputs,
+                positional: slot.positional,
                 enabled: slot.enabled,
                 // An empty body slot is the in-flight mark: there is no
                 // register of airborne firings to consult.
@@ -393,6 +394,45 @@ impl Net {
     /// ```
     pub fn param<T: 'static>(&self) -> Option<&T> {
         param_of::<T>(&self.params)
+    }
+
+    /// The wire name of this net's parameter whose type is `type_name`, as
+    /// given to
+    /// [`serializable_param`](crate::NetBuilder::serializable_param); `None`
+    /// for a parameter registered without one, or for a type this net has
+    /// no parameter of.
+    ///
+    /// [`Event::ParamChanged`] names a parameter by its type name alone, the
+    /// one thing about a parameter the log ever tells. A reader that speaks
+    /// a wire protocol says the name the parameter travels under instead,
+    /// and this is where it finds it — for a change it did not ask for
+    /// itself, such as an outer body setting an inner net's parameter.
+    ///
+    /// ```
+    /// # use petritype::{Event, NetBuilder};
+    /// #[derive(Clone, serde::Serialize, serde::Deserialize)]
+    /// struct Paused(bool);
+    ///
+    /// let mut b = NetBuilder::new();
+    /// b.param(Paused(false));
+    /// b.serializable_param::<Paused>("paused");
+    /// let mut net = b.build()?;
+    ///
+    /// net.set_param(Paused(true))?;
+    /// let Some(Event::ParamChanged { type_name }) = net.drain_events().next() else {
+    ///     unreachable!("one change, one event")
+    /// };
+    /// assert_eq!(net.param_name(type_name), Some("paused"));
+    /// assert_eq!(net.param_name("u32"), None, "no parameter of that type");
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    #[cfg(feature = "serde")]
+    pub fn param_name(&self, type_name: &str) -> Option<&str> {
+        self.params
+            .iter()
+            .find(|slot| slot.type_name == type_name)?
+            .name
+            .as_deref()
     }
 
     /// Increments when the net's connectivity changes. Nothing in this

@@ -1,0 +1,3121 @@
+{
+ "net": "transit",
+ "params": {},
+ "exchanges": [
+  {
+   "send": {
+    "method": "describe"
+   },
+   "expect": [
+    {
+     "id": "1",
+     "result": {
+      "protocol_version": 1,
+      "runtime": "<label>",
+      "runtime_version": "<label>",
+      "nets": [
+       {
+        "name": "transit",
+        "description": "Vehicles board, carry and alight passengers",
+        "mode": "manual",
+        "params": []
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "load",
+    "params": {
+     "net": "transit"
+    }
+   },
+   "expect": [
+    {
+     "method": "load_progress",
+     "params": {
+      "step": "build",
+      "message": "<label>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "reloaded",
+     "params": {
+      "generation": 1,
+      "reason": "load",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "2",
+     "result": {
+      "status": "loaded",
+      "generation": 1,
+      "marking_version": "<version>"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "get_state"
+   },
+   "expect": [
+    {
+     "id": "3",
+     "result": {
+      "protocol_version": 1,
+      "runtime": "<label>",
+      "net": "transit",
+      "generation": 1,
+      "marking_version": "<version>",
+      "running": false,
+      "topology": {
+       "places": [
+        {
+         "name": "Depot",
+         "type_name": "<label>",
+         "serializable": true,
+         "nested": true
+        },
+        {
+         "name": "Central",
+         "type_name": "<label>",
+         "serializable": true,
+         "nested": true
+        },
+        {
+         "name": "Harbour",
+         "type_name": "<label>",
+         "serializable": true,
+         "nested": true
+        },
+        {
+         "name": "Airport",
+         "type_name": "<label>",
+         "serializable": true,
+         "nested": true
+        },
+        {
+         "name": "Platform@Depot",
+         "type_name": "<label>",
+         "serializable": true
+        },
+        {
+         "name": "Platform@Central",
+         "type_name": "<label>",
+         "serializable": true
+        },
+        {
+         "name": "Platform@Harbour",
+         "type_name": "<label>",
+         "serializable": true
+        },
+        {
+         "name": "Platform@Airport",
+         "type_name": "<label>",
+         "serializable": true
+        },
+        {
+         "name": "In Transit",
+         "type_name": "<label>",
+         "serializable": true,
+         "nested": true
+        }
+       ],
+       "transitions": [
+        {
+         "name": "Board Depot",
+         "detail": "<any>"
+        },
+        {
+         "name": "Board Central",
+         "detail": "<any>"
+        },
+        {
+         "name": "Board Harbour",
+         "detail": "<any>"
+        },
+        {
+         "name": "Board Airport",
+         "detail": "<any>"
+        },
+        {
+         "name": "Alight Depot",
+         "detail": "<any>"
+        },
+        {
+         "name": "Alight Central",
+         "detail": "<any>"
+        },
+        {
+         "name": "Alight Harbour",
+         "detail": "<any>"
+        },
+        {
+         "name": "Alight Airport",
+         "detail": "<any>"
+        },
+        {
+         "name": "Depart Depot",
+         "detail": "<any>"
+        },
+        {
+         "name": "Depart Central",
+         "detail": "<any>"
+        },
+        {
+         "name": "Depart Harbour",
+         "detail": "<any>"
+        },
+        {
+         "name": "Depart Airport",
+         "detail": "<any>"
+        },
+        {
+         "name": "Arrive",
+         "detail": "<any>"
+        }
+       ],
+       "edges": {
+        "<unordered>": [
+         {
+          "place": "Platform@Depot",
+          "transition": "Board Depot",
+          "direction": "in",
+          "kind": "take"
+         },
+         {
+          "place": "Platform@Central",
+          "transition": "Board Central",
+          "direction": "in",
+          "kind": "take"
+         },
+         {
+          "place": "Platform@Harbour",
+          "transition": "Board Harbour",
+          "direction": "in",
+          "kind": "take"
+         },
+         {
+          "place": "Platform@Airport",
+          "transition": "Board Airport",
+          "direction": "in",
+          "kind": "take"
+         },
+         {
+          "place": "Depot",
+          "transition": "Depart Depot",
+          "direction": "in",
+          "kind": "take"
+         },
+         {
+          "place": "Central",
+          "transition": "Depart Central",
+          "direction": "in",
+          "kind": "take"
+         },
+         {
+          "place": "Harbour",
+          "transition": "Depart Harbour",
+          "direction": "in",
+          "kind": "take"
+         },
+         {
+          "place": "Airport",
+          "transition": "Depart Airport",
+          "direction": "in",
+          "kind": "take"
+         },
+         {
+          "place": "In Transit",
+          "transition": "Arrive",
+          "direction": "in",
+          "kind": "take"
+         },
+         {
+          "place": "Depot",
+          "transition": "Board Depot",
+          "direction": "in",
+          "kind": "mutate"
+         },
+         {
+          "place": "Central",
+          "transition": "Board Central",
+          "direction": "in",
+          "kind": "mutate"
+         },
+         {
+          "place": "Harbour",
+          "transition": "Board Harbour",
+          "direction": "in",
+          "kind": "mutate"
+         },
+         {
+          "place": "Airport",
+          "transition": "Board Airport",
+          "direction": "in",
+          "kind": "mutate"
+         },
+         {
+          "place": "Depot",
+          "transition": "Alight Depot",
+          "direction": "in",
+          "kind": "mutate"
+         },
+         {
+          "place": "Central",
+          "transition": "Alight Central",
+          "direction": "in",
+          "kind": "mutate"
+         },
+         {
+          "place": "Harbour",
+          "transition": "Alight Harbour",
+          "direction": "in",
+          "kind": "mutate"
+         },
+         {
+          "place": "Airport",
+          "transition": "Alight Airport",
+          "direction": "in",
+          "kind": "mutate"
+         },
+         {
+          "place": "Platform@Depot",
+          "transition": "Alight Depot",
+          "direction": "out"
+         },
+         {
+          "place": "Platform@Central",
+          "transition": "Alight Central",
+          "direction": "out"
+         },
+         {
+          "place": "Platform@Harbour",
+          "transition": "Alight Harbour",
+          "direction": "out"
+         },
+         {
+          "place": "Platform@Airport",
+          "transition": "Alight Airport",
+          "direction": "out"
+         },
+         {
+          "place": "In Transit",
+          "transition": "Depart Depot",
+          "direction": "out"
+         },
+         {
+          "place": "In Transit",
+          "transition": "Depart Central",
+          "direction": "out"
+         },
+         {
+          "place": "In Transit",
+          "transition": "Depart Harbour",
+          "direction": "out"
+         },
+         {
+          "place": "In Transit",
+          "transition": "Depart Airport",
+          "direction": "out"
+         },
+         {
+          "place": "Depot",
+          "transition": "Arrive",
+          "direction": "out"
+         },
+         {
+          "place": "Central",
+          "transition": "Arrive",
+          "direction": "out"
+         },
+         {
+          "place": "Harbour",
+          "transition": "Arrive",
+          "direction": "out"
+         },
+         {
+          "place": "Airport",
+          "transition": "Arrive",
+          "direction": "out"
+         }
+        ]
+       }
+      },
+      "transitions": {
+       "Board Depot": {
+        "enabled": true,
+        "fireable": true,
+        "in_flight": false,
+        "priority": 0.0
+       },
+       "Board Central": {
+        "enabled": true,
+        "fireable": false,
+        "in_flight": false,
+        "priority": 0.0
+       },
+       "Board Harbour": {
+        "enabled": true,
+        "fireable": false,
+        "in_flight": false,
+        "priority": 0.0
+       },
+       "Board Airport": {
+        "enabled": true,
+        "fireable": false,
+        "in_flight": false,
+        "priority": 0.0
+       },
+       "Alight Depot": {
+        "enabled": true,
+        "fireable": false,
+        "in_flight": false,
+        "priority": 0.0
+       },
+       "Alight Central": {
+        "enabled": true,
+        "fireable": false,
+        "in_flight": false,
+        "priority": 0.0
+       },
+       "Alight Harbour": {
+        "enabled": true,
+        "fireable": false,
+        "in_flight": false,
+        "priority": 0.0
+       },
+       "Alight Airport": {
+        "enabled": true,
+        "fireable": false,
+        "in_flight": false,
+        "priority": 0.0
+       },
+       "Depart Depot": {
+        "enabled": true,
+        "fireable": true,
+        "in_flight": false,
+        "priority": 0.0
+       },
+       "Depart Central": {
+        "enabled": true,
+        "fireable": false,
+        "in_flight": false,
+        "priority": 0.0
+       },
+       "Depart Harbour": {
+        "enabled": true,
+        "fireable": true,
+        "in_flight": false,
+        "priority": 0.0
+       },
+       "Depart Airport": {
+        "enabled": true,
+        "fireable": false,
+        "in_flight": false,
+        "priority": 0.0
+       },
+       "Arrive": {
+        "enabled": true,
+        "fireable": false,
+        "in_flight": false,
+        "priority": 0.0
+       }
+      },
+      "marking": {
+       "places": {
+        "Depot": {
+         "count": 1,
+         "tokens": [
+          {
+           "id": "<id:bus>",
+           "label": "<label>",
+           "nets": [
+            {
+             "name": "cabin",
+             "nested_id": "<id:cabin>",
+             "path": "<path>",
+             "template": "Cabin",
+             "count": 0
+            }
+           ]
+          }
+         ]
+        },
+        "Central": {
+         "count": 0,
+         "tokens": []
+        },
+        "Harbour": {
+         "count": 1,
+         "tokens": [
+          {
+           "id": "<id:ferry>",
+           "label": "<label>",
+           "nets": [
+            {
+             "name": "cabin",
+             "nested_id": "<id:deck>",
+             "path": "<path>",
+             "template": "Deck",
+             "count": 0
+            }
+           ]
+          }
+         ]
+        },
+        "Airport": {
+         "count": 0,
+         "tokens": []
+        },
+        "Platform@Depot": {
+         "count": 3,
+         "tokens": [
+          {
+           "id": "<id>",
+           "label": "<label>"
+          },
+          {
+           "id": "<id>",
+           "label": "<label>"
+          },
+          {
+           "id": "<id>",
+           "label": "<label>"
+          }
+         ]
+        },
+        "Platform@Central": {
+         "count": 0,
+         "tokens": []
+        },
+        "Platform@Harbour": {
+         "count": 0,
+         "tokens": []
+        },
+        "Platform@Airport": {
+         "count": 0,
+         "tokens": []
+        },
+        "In Transit": {
+         "count": 0,
+         "tokens": []
+        }
+       }
+      },
+      "progress": {
+       "step_count": 0,
+       "last_fired": null,
+       "fired_counts": {},
+       "last_progress_at": null
+      }
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "get_token",
+    "params": {
+     "id": "<id:bus>"
+    }
+   },
+   "expect": [
+    {
+     "id": "4",
+     "result": {
+      "id": "<id:bus>",
+      "place": "Depot",
+      "type_name": "<label>",
+      "kind": "json",
+      "value": {
+       "name": "Bus 1",
+       "kind": "Bus",
+       "destination": null,
+       "cabin": {
+        "template": "Cabin",
+        "marking": {
+         "Door": [],
+         "Seats": [],
+         "Standing": [],
+         "Announcements": []
+        },
+        "params": {
+         "stopped": true,
+         "seats": 2,
+         "capacity": 6
+        },
+        "enabled": {
+         "Sit": true,
+         "Stand": true,
+         "Go To Door": true,
+         "Go To Door From Standing": true,
+         "Clear Announcement": true
+        }
+       }
+      },
+      "nets": [
+       {
+        "name": "cabin",
+        "nested_id": "<id:cabin>",
+        "path": "<path>",
+        "template": "Cabin",
+        "count": 0
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "get_state",
+    "params": {
+     "nested_id": "<id:cabin>"
+    }
+   },
+   "expect": [
+    {
+     "id": "5",
+     "result": {
+      "protocol_version": 1,
+      "runtime": "<label>",
+      "net": "cabin",
+      "generation": 1,
+      "marking_version": "<version>",
+      "running": false,
+      "topology": {
+       "places": [
+        {
+         "name": "Door",
+         "type_name": "<label>",
+         "serializable": true
+        },
+        {
+         "name": "Seats",
+         "type_name": "<label>",
+         "serializable": true
+        },
+        {
+         "name": "Standing",
+         "type_name": "<label>",
+         "serializable": true
+        },
+        {
+         "name": "Announcements",
+         "type_name": "<label>",
+         "serializable": true
+        }
+       ],
+       "transitions": [
+        {
+         "name": "Sit",
+         "detail": "<any>"
+        },
+        {
+         "name": "Stand",
+         "detail": "<any>"
+        },
+        {
+         "name": "Go To Door",
+         "detail": "<any>"
+        },
+        {
+         "name": "Go To Door From Standing",
+         "detail": "<any>"
+        },
+        {
+         "name": "Clear Announcement",
+         "detail": "<any>"
+        }
+       ],
+       "edges": {
+        "<unordered>": [
+         {
+          "place": "Door",
+          "transition": "Sit",
+          "direction": "in",
+          "kind": "take"
+         },
+         {
+          "place": "Door",
+          "transition": "Stand",
+          "direction": "in",
+          "kind": "take"
+         },
+         {
+          "place": "Seats",
+          "transition": "Go To Door",
+          "direction": "in",
+          "kind": "take"
+         },
+         {
+          "place": "Standing",
+          "transition": "Go To Door From Standing",
+          "direction": "in",
+          "kind": "take"
+         },
+         {
+          "place": "Announcements",
+          "transition": "Clear Announcement",
+          "direction": "in",
+          "kind": "take"
+         },
+         {
+          "place": "Seats",
+          "transition": "Sit",
+          "direction": "out"
+         },
+         {
+          "place": "Standing",
+          "transition": "Stand",
+          "direction": "out"
+         },
+         {
+          "place": "Door",
+          "transition": "Go To Door",
+          "direction": "out"
+         },
+         {
+          "place": "Door",
+          "transition": "Go To Door From Standing",
+          "direction": "out"
+         }
+        ]
+       }
+      },
+      "transitions": {
+       "Sit": {
+        "enabled": true,
+        "fireable": false,
+        "in_flight": false,
+        "priority": 0.0
+       },
+       "Stand": {
+        "enabled": true,
+        "fireable": false,
+        "in_flight": false,
+        "priority": 0.0
+       },
+       "Go To Door": {
+        "enabled": true,
+        "fireable": false,
+        "in_flight": false,
+        "priority": 0.0
+       },
+       "Go To Door From Standing": {
+        "enabled": true,
+        "fireable": false,
+        "in_flight": false,
+        "priority": 0.0
+       },
+       "Clear Announcement": {
+        "enabled": true,
+        "fireable": false,
+        "in_flight": false,
+        "priority": 0.0
+       }
+      },
+      "marking": {
+       "places": {
+        "Door": {
+         "count": 0,
+         "tokens": []
+        },
+        "Seats": {
+         "count": 0,
+         "tokens": []
+        },
+        "Standing": {
+         "count": 0,
+         "tokens": []
+        },
+        "Announcements": {
+         "count": 0,
+         "tokens": []
+        }
+       }
+      },
+      "progress": {
+       "step_count": 0,
+       "last_fired": null,
+       "fired_counts": {},
+       "last_progress_at": null
+      },
+      "path": "<path>",
+      "nested_id": "<id:cabin>",
+      "template": "Cabin"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "get_state",
+    "params": {
+     "path": "transit/Depot/#<id:bus>/cabin",
+     "token_limit": 1
+    }
+   },
+   "expect": [
+    {
+     "id": "6",
+     "result": {
+      "protocol_version": 1,
+      "runtime": "<label>",
+      "net": "cabin",
+      "generation": 1,
+      "marking_version": "<version>",
+      "running": false,
+      "topology": {
+       "places": [
+        {
+         "name": "Door",
+         "type_name": "<label>",
+         "serializable": true
+        },
+        {
+         "name": "Seats",
+         "type_name": "<label>",
+         "serializable": true
+        },
+        {
+         "name": "Standing",
+         "type_name": "<label>",
+         "serializable": true
+        },
+        {
+         "name": "Announcements",
+         "type_name": "<label>",
+         "serializable": true
+        }
+       ],
+       "transitions": [
+        {
+         "name": "Sit",
+         "detail": "<any>"
+        },
+        {
+         "name": "Stand",
+         "detail": "<any>"
+        },
+        {
+         "name": "Go To Door",
+         "detail": "<any>"
+        },
+        {
+         "name": "Go To Door From Standing",
+         "detail": "<any>"
+        },
+        {
+         "name": "Clear Announcement",
+         "detail": "<any>"
+        }
+       ],
+       "edges": {
+        "<unordered>": [
+         {
+          "place": "Door",
+          "transition": "Sit",
+          "direction": "in",
+          "kind": "take"
+         },
+         {
+          "place": "Door",
+          "transition": "Stand",
+          "direction": "in",
+          "kind": "take"
+         },
+         {
+          "place": "Seats",
+          "transition": "Go To Door",
+          "direction": "in",
+          "kind": "take"
+         },
+         {
+          "place": "Standing",
+          "transition": "Go To Door From Standing",
+          "direction": "in",
+          "kind": "take"
+         },
+         {
+          "place": "Announcements",
+          "transition": "Clear Announcement",
+          "direction": "in",
+          "kind": "take"
+         },
+         {
+          "place": "Seats",
+          "transition": "Sit",
+          "direction": "out"
+         },
+         {
+          "place": "Standing",
+          "transition": "Stand",
+          "direction": "out"
+         },
+         {
+          "place": "Door",
+          "transition": "Go To Door",
+          "direction": "out"
+         },
+         {
+          "place": "Door",
+          "transition": "Go To Door From Standing",
+          "direction": "out"
+         }
+        ]
+       }
+      },
+      "transitions": {
+       "Sit": {
+        "enabled": true,
+        "fireable": false,
+        "in_flight": false,
+        "priority": 0.0
+       },
+       "Stand": {
+        "enabled": true,
+        "fireable": false,
+        "in_flight": false,
+        "priority": 0.0
+       },
+       "Go To Door": {
+        "enabled": true,
+        "fireable": false,
+        "in_flight": false,
+        "priority": 0.0
+       },
+       "Go To Door From Standing": {
+        "enabled": true,
+        "fireable": false,
+        "in_flight": false,
+        "priority": 0.0
+       },
+       "Clear Announcement": {
+        "enabled": true,
+        "fireable": false,
+        "in_flight": false,
+        "priority": 0.0
+       }
+      },
+      "marking": {
+       "places": {
+        "Door": {
+         "count": 0,
+         "tokens": []
+        },
+        "Seats": {
+         "count": 0,
+         "tokens": []
+        },
+        "Standing": {
+         "count": 0,
+         "tokens": []
+        },
+        "Announcements": {
+         "count": 0,
+         "tokens": []
+        }
+       }
+      },
+      "progress": {
+       "step_count": 0,
+       "last_fired": null,
+       "fired_counts": {},
+       "last_progress_at": null
+      },
+      "path": "<path>",
+      "nested_id": "<id:cabin>",
+      "template": "Cabin"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "disable",
+    "params": {
+     "transition": "Alight Depot"
+    }
+   },
+   "expect": [
+    {
+     "method": "toggled",
+     "params": {
+      "transition": "Alight Depot",
+      "enabled": false,
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "7",
+     "result": {
+      "marking_version": "<version>"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "disable",
+    "params": {
+     "transition": "Alight Central"
+    }
+   },
+   "expect": [
+    {
+     "method": "toggled",
+     "params": {
+      "transition": "Alight Central",
+      "enabled": false,
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "8",
+     "result": {
+      "marking_version": "<version>"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "disable",
+    "params": {
+     "transition": "Alight Harbour"
+    }
+   },
+   "expect": [
+    {
+     "method": "toggled",
+     "params": {
+      "transition": "Alight Harbour",
+      "enabled": false,
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "9",
+     "result": {
+      "marking_version": "<version>"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "disable",
+    "params": {
+     "transition": "Alight Airport"
+    }
+   },
+   "expect": [
+    {
+     "method": "toggled",
+     "params": {
+      "transition": "Alight Airport",
+      "enabled": false,
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "10",
+     "result": {
+      "marking_version": "<version>"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "disable",
+    "params": {
+     "transition": "Depart Depot"
+    }
+   },
+   "expect": [
+    {
+     "method": "toggled",
+     "params": {
+      "transition": "Depart Depot",
+      "enabled": false,
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "fireable",
+     "params": {
+      "transitions": [
+       "Board Depot",
+       "Depart Harbour"
+      ],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "11",
+     "result": {
+      "marking_version": "<version>"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "disable",
+    "params": {
+     "transition": "Depart Central"
+    }
+   },
+   "expect": [
+    {
+     "method": "toggled",
+     "params": {
+      "transition": "Depart Central",
+      "enabled": false,
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "12",
+     "result": {
+      "marking_version": "<version>"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "disable",
+    "params": {
+     "transition": "Depart Harbour"
+    }
+   },
+   "expect": [
+    {
+     "method": "toggled",
+     "params": {
+      "transition": "Depart Harbour",
+      "enabled": false,
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "fireable",
+     "params": {
+      "transitions": [
+       "Board Depot"
+      ],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "13",
+     "result": {
+      "marking_version": "<version>"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "disable",
+    "params": {
+     "transition": "Depart Airport"
+    }
+   },
+   "expect": [
+    {
+     "method": "toggled",
+     "params": {
+      "transition": "Depart Airport",
+      "enabled": false,
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "14",
+     "result": {
+      "marking_version": "<version>"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "disable",
+    "params": {
+     "transition": "Arrive"
+    }
+   },
+   "expect": [
+    {
+     "method": "toggled",
+     "params": {
+      "transition": "Arrive",
+      "enabled": false,
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "15",
+     "result": {
+      "marking_version": "<version>"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "step"
+   },
+   "expect": [
+    {
+     "method": "launched",
+     "params": {
+      "transition": "Board Depot",
+      "consumed": [
+       [
+        "Platform@Depot",
+        "<id>"
+       ]
+      ],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "nested",
+     "params": {
+      "path": "<path>",
+      "nested_id": "<id:cabin>",
+      "event": {
+       "method": "added",
+       "params": {
+        "place": "Door",
+        "id": "<id>",
+        "label": "<label>",
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "mutated",
+     "params": {
+      "place": "Depot",
+      "id": "<id:bus>",
+      "label": "<label>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "distributed",
+     "params": {
+      "transition": "Board Depot",
+      "produced": [],
+      "duration_ms": "<ms>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "nested",
+     "params": {
+      "path": "<path>",
+      "nested_id": "<id:cabin>",
+      "event": {
+       "method": "fireable",
+       "params": {
+        "transitions": [
+         "Sit"
+        ],
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "16",
+     "result": {
+      "fired": true,
+      "transition": "Board Depot",
+      "marking_version": "<version>",
+      "running": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "step"
+   },
+   "expect": [
+    {
+     "method": "launched",
+     "params": {
+      "transition": "Board Depot",
+      "consumed": [
+       [
+        "Platform@Depot",
+        "<id>"
+       ]
+      ],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "nested",
+     "params": {
+      "path": "<path>",
+      "nested_id": "<id:cabin>",
+      "event": {
+       "method": "added",
+       "params": {
+        "place": "Door",
+        "id": "<id>",
+        "label": "<label>",
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "mutated",
+     "params": {
+      "place": "Depot",
+      "id": "<id:bus>",
+      "label": "<label>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "distributed",
+     "params": {
+      "transition": "Board Depot",
+      "produced": [],
+      "duration_ms": "<ms>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "17",
+     "result": {
+      "fired": true,
+      "transition": "Board Depot",
+      "marking_version": "<version>",
+      "running": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "step"
+   },
+   "expect": [
+    {
+     "method": "launched",
+     "params": {
+      "transition": "Board Depot",
+      "consumed": [
+       [
+        "Platform@Depot",
+        "<id>"
+       ]
+      ],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "nested",
+     "params": {
+      "path": "<path>",
+      "nested_id": "<id:cabin>",
+      "event": {
+       "method": "added",
+       "params": {
+        "place": "Door",
+        "id": "<id>",
+        "label": "<label>",
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "mutated",
+     "params": {
+      "place": "Depot",
+      "id": "<id:bus>",
+      "label": "<label>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "distributed",
+     "params": {
+      "transition": "Board Depot",
+      "produced": [],
+      "duration_ms": "<ms>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "fireable",
+     "params": {
+      "transitions": [],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "18",
+     "result": {
+      "fired": true,
+      "transition": "Board Depot",
+      "marking_version": "<version>",
+      "running": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "step"
+   },
+   "expect": [
+    {
+     "method": "nested",
+     "params": {
+      "path": "<path>",
+      "nested_id": "<id:cabin>",
+      "event": {
+       "method": "fired",
+       "params": {
+        "transition": "Sit",
+        "consumed": [
+         [
+          "Door",
+          "<id>"
+         ]
+        ],
+        "produced": [
+         [
+          "Seats",
+          "<id:ada_seated>",
+          "<label>"
+         ]
+        ],
+        "duration_ms": "<ms>",
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "19",
+     "result": {
+      "fired": true,
+      "transition": "Sit",
+      "path": "<path>",
+      "nested_id": "<id:cabin>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "step"
+   },
+   "expect": [
+    {
+     "method": "nested",
+     "params": {
+      "path": "<path>",
+      "nested_id": "<id:cabin>",
+      "event": {
+       "method": "fired",
+       "params": {
+        "transition": "Sit",
+        "consumed": [
+         [
+          "Door",
+          "<id>"
+         ]
+        ],
+        "produced": [
+         [
+          "Seats",
+          "<id>",
+          "<label>"
+         ]
+        ],
+        "duration_ms": "<ms>",
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "nested",
+     "params": {
+      "path": "<path>",
+      "nested_id": "<id:cabin>",
+      "event": {
+       "method": "fireable",
+       "params": {
+        "transitions": [
+         "Stand"
+        ],
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "20",
+     "result": {
+      "fired": true,
+      "transition": "Sit",
+      "path": "<path>",
+      "nested_id": "<id:cabin>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "step"
+   },
+   "expect": [
+    {
+     "method": "nested",
+     "params": {
+      "path": "<path>",
+      "nested_id": "<id:cabin>",
+      "event": {
+       "method": "fired",
+       "params": {
+        "transition": "Stand",
+        "consumed": [
+         [
+          "Door",
+          "<id>"
+         ]
+        ],
+        "produced": [
+         [
+          "Standing",
+          "<id>",
+          "<label>"
+         ]
+        ],
+        "duration_ms": "<ms>",
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "nested",
+     "params": {
+      "path": "<path>",
+      "nested_id": "<id:cabin>",
+      "event": {
+       "method": "fireable",
+       "params": {
+        "transitions": [],
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "21",
+     "result": {
+      "fired": true,
+      "transition": "Stand",
+      "path": "<path>",
+      "nested_id": "<id:cabin>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "step"
+   },
+   "expect": [
+    {
+     "id": "22",
+     "result": {
+      "fired": false,
+      "marking_version": "<version>",
+      "running": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "get_place_tokens",
+    "params": {
+     "place": "Seats",
+     "nested_id": "<id:cabin>"
+    }
+   },
+   "expect": [
+    {
+     "id": "23",
+     "result": {
+      "place": "Seats",
+      "marking_version": "<version>",
+      "count": 2,
+      "offset": 0,
+      "limit": 200,
+      "tokens": [
+       {
+        "id": "<id:ada_seated>",
+        "label": "<label>"
+       },
+       {
+        "id": "<id>",
+        "label": "<label>"
+       }
+      ],
+      "has_more": false,
+      "path": "<path>",
+      "nested_id": "<id:cabin>"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "get_token",
+    "params": {
+     "id": "<id:ada_seated>",
+     "nested_id": "<id:cabin>"
+    }
+   },
+   "expect": [
+    {
+     "id": "24",
+     "result": {
+      "id": "<id:ada_seated>",
+      "place": "Seats",
+      "type_name": "<label>",
+      "kind": "json",
+      "value": "Ada",
+      "path": "<path>",
+      "nested_id": "<id:cabin>"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "enable",
+    "params": {
+     "transition": "Depart Depot"
+    }
+   },
+   "expect": [
+    {
+     "method": "toggled",
+     "params": {
+      "transition": "Depart Depot",
+      "enabled": true,
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "fireable",
+     "params": {
+      "transitions": [
+       "Depart Depot"
+      ],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "25",
+     "result": {
+      "marking_version": "<version>"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "step"
+   },
+   "expect": [
+    {
+     "method": "launched",
+     "params": {
+      "transition": "Depart Depot",
+      "consumed": [
+       [
+        "Depot",
+        "<id:bus>"
+       ]
+      ],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "nested",
+     "params": {
+      "path": "<path>",
+      "nested_id": "<id:cabin>",
+      "event": {
+       "method": "param_changed",
+       "params": {
+        "param": "stopped",
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "distributed",
+     "params": {
+      "transition": "Depart Depot",
+      "produced": [
+       [
+        "In Transit",
+        "<id>",
+        "<label>"
+       ]
+      ],
+      "duration_ms": "<ms>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "fireable",
+     "params": {
+      "transitions": [],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "26",
+     "result": {
+      "fired": true,
+      "transition": "Depart Depot",
+      "marking_version": "<version>",
+      "running": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "get_state",
+    "params": {
+     "nested_id": "<id:cabin>",
+     "token_limit": 1
+    }
+   },
+   "expect": [
+    {
+     "id": "27",
+     "result": {
+      "protocol_version": 1,
+      "runtime": "<label>",
+      "net": "cabin",
+      "generation": 1,
+      "marking_version": "<version>",
+      "running": false,
+      "topology": {
+       "places": [
+        {
+         "name": "Door",
+         "type_name": "<label>",
+         "serializable": true
+        },
+        {
+         "name": "Seats",
+         "type_name": "<label>",
+         "serializable": true
+        },
+        {
+         "name": "Standing",
+         "type_name": "<label>",
+         "serializable": true
+        },
+        {
+         "name": "Announcements",
+         "type_name": "<label>",
+         "serializable": true
+        }
+       ],
+       "transitions": [
+        {
+         "name": "Sit",
+         "detail": "<any>"
+        },
+        {
+         "name": "Stand",
+         "detail": "<any>"
+        },
+        {
+         "name": "Go To Door",
+         "detail": "<any>"
+        },
+        {
+         "name": "Go To Door From Standing",
+         "detail": "<any>"
+        },
+        {
+         "name": "Clear Announcement",
+         "detail": "<any>"
+        }
+       ],
+       "edges": {
+        "<unordered>": [
+         {
+          "place": "Door",
+          "transition": "Sit",
+          "direction": "in",
+          "kind": "take"
+         },
+         {
+          "place": "Door",
+          "transition": "Stand",
+          "direction": "in",
+          "kind": "take"
+         },
+         {
+          "place": "Seats",
+          "transition": "Go To Door",
+          "direction": "in",
+          "kind": "take"
+         },
+         {
+          "place": "Standing",
+          "transition": "Go To Door From Standing",
+          "direction": "in",
+          "kind": "take"
+         },
+         {
+          "place": "Announcements",
+          "transition": "Clear Announcement",
+          "direction": "in",
+          "kind": "take"
+         },
+         {
+          "place": "Seats",
+          "transition": "Sit",
+          "direction": "out"
+         },
+         {
+          "place": "Standing",
+          "transition": "Stand",
+          "direction": "out"
+         },
+         {
+          "place": "Door",
+          "transition": "Go To Door",
+          "direction": "out"
+         },
+         {
+          "place": "Door",
+          "transition": "Go To Door From Standing",
+          "direction": "out"
+         }
+        ]
+       }
+      },
+      "transitions": {
+       "Sit": {
+        "enabled": true,
+        "fireable": false,
+        "in_flight": false,
+        "priority": 0.0
+       },
+       "Stand": {
+        "enabled": true,
+        "fireable": false,
+        "in_flight": false,
+        "priority": 0.0
+       },
+       "Go To Door": {
+        "enabled": true,
+        "fireable": false,
+        "in_flight": false,
+        "priority": 0.0
+       },
+       "Go To Door From Standing": {
+        "enabled": true,
+        "fireable": false,
+        "in_flight": false,
+        "priority": 0.0
+       },
+       "Clear Announcement": {
+        "enabled": true,
+        "fireable": false,
+        "in_flight": false,
+        "priority": 0.0
+       }
+      },
+      "marking": {
+       "places": {
+        "Door": {
+         "count": 0,
+         "tokens": []
+        },
+        "Seats": {
+         "count": 2,
+         "tokens": [
+          {
+           "id": "<id:ada_seated>",
+           "label": "<label>"
+          }
+         ]
+        },
+        "Standing": {
+         "count": 1,
+         "tokens": [
+          {
+           "id": "<id>",
+           "label": "<label>"
+          }
+         ]
+        },
+        "Announcements": {
+         "count": 0,
+         "tokens": []
+        }
+       }
+      },
+      "progress": {
+       "step_count": 3,
+       "last_fired": "Stand",
+       "fired_counts": {
+        "Sit": 2,
+        "Stand": 1
+       },
+       "last_progress_at": "<time>"
+      },
+      "path": "<path>",
+      "nested_id": "<id:cabin>",
+      "template": "Cabin"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "enable",
+    "params": {
+     "transition": "Arrive"
+    }
+   },
+   "expect": [
+    {
+     "method": "toggled",
+     "params": {
+      "transition": "Arrive",
+      "enabled": true,
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "fireable",
+     "params": {
+      "transitions": [
+       "Arrive"
+      ],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "28",
+     "result": {
+      "marking_version": "<version>"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "step"
+   },
+   "expect": [
+    {
+     "method": "launched",
+     "params": {
+      "transition": "Arrive",
+      "consumed": [
+       [
+        "In Transit",
+        "<id>"
+       ]
+      ],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "nested",
+     "params": {
+      "path": "<path>",
+      "nested_id": "<id:cabin>",
+      "event": {
+       "method": "param_changed",
+       "params": {
+        "param": "stopped",
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "nested",
+     "params": {
+      "path": "<path>",
+      "nested_id": "<id:cabin>",
+      "event": {
+       "method": "added",
+       "params": {
+        "place": "Announcements",
+        "id": "<id>",
+        "label": "<label>",
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "distributed",
+     "params": {
+      "transition": "Arrive",
+      "produced": [
+       [
+        "Central",
+        "<id:bus_at_central>",
+        "<label>"
+       ]
+      ],
+      "duration_ms": "<ms>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "fireable",
+     "params": {
+      "transitions": [],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "nested",
+     "params": {
+      "path": "<path>",
+      "nested_id": "<id:cabin>",
+      "event": {
+       "method": "fireable",
+       "params": {
+        "transitions": [
+         "Go To Door",
+         "Go To Door From Standing"
+        ],
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "29",
+     "result": {
+      "fired": true,
+      "transition": "Arrive",
+      "marking_version": "<version>",
+      "running": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "step"
+   },
+   "expect": [
+    {
+     "method": "nested",
+     "params": {
+      "path": "<path>",
+      "nested_id": "<id:cabin>",
+      "event": {
+       "method": "fired",
+       "params": {
+        "transition": "Go To Door",
+        "consumed": [
+         [
+          "Seats",
+          "<id:ada_seated>"
+         ]
+        ],
+        "produced": [
+         [
+          "Door",
+          "<id>",
+          "<label>"
+         ]
+        ],
+        "duration_ms": "<ms>",
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "30",
+     "result": {
+      "fired": true,
+      "transition": "Go To Door",
+      "path": "<path>",
+      "nested_id": "<id:cabin>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "step"
+   },
+   "expect": [
+    {
+     "method": "nested",
+     "params": {
+      "path": "<path>",
+      "nested_id": "<id:cabin>",
+      "event": {
+       "method": "fired",
+       "params": {
+        "transition": "Go To Door",
+        "consumed": [
+         [
+          "Seats",
+          "<id>"
+         ]
+        ],
+        "produced": [
+         [
+          "Door",
+          "<id>",
+          "<label>"
+         ]
+        ],
+        "duration_ms": "<ms>",
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "nested",
+     "params": {
+      "path": "<path>",
+      "nested_id": "<id:cabin>",
+      "event": {
+       "method": "fireable",
+       "params": {
+        "transitions": [
+         "Go To Door From Standing"
+        ],
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "31",
+     "result": {
+      "fired": true,
+      "transition": "Go To Door",
+      "path": "<path>",
+      "nested_id": "<id:cabin>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "step"
+   },
+   "expect": [
+    {
+     "method": "nested",
+     "params": {
+      "path": "<path>",
+      "nested_id": "<id:cabin>",
+      "event": {
+       "method": "fired",
+       "params": {
+        "transition": "Go To Door From Standing",
+        "consumed": [
+         [
+          "Standing",
+          "<id>"
+         ]
+        ],
+        "produced": [
+         [
+          "Door",
+          "<id>",
+          "<label>"
+         ]
+        ],
+        "duration_ms": "<ms>",
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "nested",
+     "params": {
+      "path": "<path>",
+      "nested_id": "<id:cabin>",
+      "event": {
+       "method": "fireable",
+       "params": {
+        "transitions": [],
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "32",
+     "result": {
+      "fired": true,
+      "transition": "Go To Door From Standing",
+      "path": "<path>",
+      "nested_id": "<id:cabin>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "step"
+   },
+   "expect": [
+    {
+     "id": "33",
+     "result": {
+      "fired": false,
+      "marking_version": "<version>",
+      "running": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "get_token",
+    "params": {
+     "id": "<id:bus_at_central>"
+    }
+   },
+   "expect": [
+    {
+     "id": "34",
+     "result": {
+      "id": "<id:bus_at_central>",
+      "place": "Central",
+      "type_name": "<label>",
+      "kind": "json",
+      "value": {
+       "name": "Bus 1",
+       "kind": "Bus",
+       "destination": null,
+       "cabin": {
+        "template": "Cabin",
+        "marking": {
+         "Door": [
+          "Ada",
+          "Bram",
+          "Cato"
+         ],
+         "Seats": [],
+         "Standing": [],
+         "Announcements": [
+          "Arrived at Central"
+         ]
+        },
+        "params": {
+         "stopped": true,
+         "seats": 2,
+         "capacity": 6
+        },
+        "enabled": {
+         "Sit": true,
+         "Stand": true,
+         "Go To Door": true,
+         "Go To Door From Standing": true,
+         "Clear Announcement": true
+        }
+       }
+      },
+      "nets": [
+       {
+        "name": "cabin",
+        "nested_id": "<id:cabin>",
+        "path": "<path>",
+        "template": "Cabin",
+        "count": 4
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "enable",
+    "params": {
+     "transition": "Alight Central"
+    }
+   },
+   "expect": [
+    {
+     "method": "toggled",
+     "params": {
+      "transition": "Alight Central",
+      "enabled": true,
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "fireable",
+     "params": {
+      "transitions": [
+       "Alight Central"
+      ],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "35",
+     "result": {
+      "marking_version": "<version>"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "step"
+   },
+   "expect": [
+    {
+     "method": "launched",
+     "params": {
+      "transition": "Alight Central",
+      "consumed": [],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "nested",
+     "params": {
+      "path": "<path>",
+      "nested_id": "<id:cabin>",
+      "event": {
+       "method": "removed",
+       "params": {
+        "place": "Door",
+        "id": "<id>",
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "mutated",
+     "params": {
+      "place": "Central",
+      "id": "<id:bus_at_central>",
+      "label": "<label>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "distributed",
+     "params": {
+      "transition": "Alight Central",
+      "produced": [
+       [
+        "Platform@Central",
+        "<id>",
+        "<label>"
+       ]
+      ],
+      "duration_ms": "<ms>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "fireable",
+     "params": {
+      "transitions": [
+       "Board Central",
+       "Alight Central"
+      ],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "36",
+     "result": {
+      "fired": true,
+      "transition": "Alight Central",
+      "marking_version": "<version>",
+      "running": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "step"
+   },
+   "expect": [
+    {
+     "method": "launched",
+     "params": {
+      "transition": "Board Central",
+      "consumed": [
+       [
+        "Platform@Central",
+        "<id>"
+       ]
+      ],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "nested",
+     "params": {
+      "path": "<path>",
+      "nested_id": "<id:cabin>",
+      "event": {
+       "method": "added",
+       "params": {
+        "place": "Door",
+        "id": "<id>",
+        "label": "<label>",
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "mutated",
+     "params": {
+      "place": "Central",
+      "id": "<id:bus_at_central>",
+      "label": "<label>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "distributed",
+     "params": {
+      "transition": "Board Central",
+      "produced": [],
+      "duration_ms": "<ms>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "fireable",
+     "params": {
+      "transitions": [
+       "Alight Central"
+      ],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "37",
+     "result": {
+      "fired": true,
+      "transition": "Board Central",
+      "marking_version": "<version>",
+      "running": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "get_log",
+    "params": {
+     "nested_id": "<id:cabin>"
+    }
+   },
+   "expect": [
+    {
+     "id": "38",
+     "result": {
+      "entries": [
+       {
+        "seq": 4,
+        "transition": "Sit",
+        "started_at": "<time>",
+        "duration_ms": "<ms>",
+        "outcome": "fired",
+        "consumed": [
+         [
+          "Door",
+          "<id>"
+         ]
+        ],
+        "produced": [
+         [
+          "Seats",
+          "<id:ada_seated>"
+         ]
+        ],
+        "path": "<path>",
+        "nested_id": "<id:cabin>"
+       },
+       {
+        "seq": 5,
+        "transition": "Sit",
+        "started_at": "<time>",
+        "duration_ms": "<ms>",
+        "outcome": "fired",
+        "consumed": [
+         [
+          "Door",
+          "<id>"
+         ]
+        ],
+        "produced": [
+         [
+          "Seats",
+          "<id>"
+         ]
+        ],
+        "path": "<path>",
+        "nested_id": "<id:cabin>"
+       },
+       {
+        "seq": 6,
+        "transition": "Stand",
+        "started_at": "<time>",
+        "duration_ms": "<ms>",
+        "outcome": "fired",
+        "consumed": [
+         [
+          "Door",
+          "<id>"
+         ]
+        ],
+        "produced": [
+         [
+          "Standing",
+          "<id>"
+         ]
+        ],
+        "path": "<path>",
+        "nested_id": "<id:cabin>"
+       },
+       {
+        "seq": 9,
+        "transition": "Go To Door",
+        "started_at": "<time>",
+        "duration_ms": "<ms>",
+        "outcome": "fired",
+        "consumed": [
+         [
+          "Seats",
+          "<id:ada_seated>"
+         ]
+        ],
+        "produced": [
+         [
+          "Door",
+          "<id>"
+         ]
+        ],
+        "path": "<path>",
+        "nested_id": "<id:cabin>"
+       },
+       {
+        "seq": 10,
+        "transition": "Go To Door",
+        "started_at": "<time>",
+        "duration_ms": "<ms>",
+        "outcome": "fired",
+        "consumed": [
+         [
+          "Seats",
+          "<id>"
+         ]
+        ],
+        "produced": [
+         [
+          "Door",
+          "<id>"
+         ]
+        ],
+        "path": "<path>",
+        "nested_id": "<id:cabin>"
+       },
+       {
+        "seq": 11,
+        "transition": "Go To Door From Standing",
+        "started_at": "<time>",
+        "duration_ms": "<ms>",
+        "outcome": "fired",
+        "consumed": [
+         [
+          "Standing",
+          "<id>"
+         ]
+        ],
+        "produced": [
+         [
+          "Door",
+          "<id>"
+         ]
+        ],
+        "path": "<path>",
+        "nested_id": "<id:cabin>"
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "get_log",
+    "params": {
+     "after": 10
+    }
+   },
+   "expect": [
+    {
+     "id": "39",
+     "result": {
+      "entries": [
+       {
+        "seq": 11,
+        "transition": "Go To Door From Standing",
+        "started_at": "<time>",
+        "duration_ms": "<ms>",
+        "outcome": "fired",
+        "consumed": [
+         [
+          "Standing",
+          "<id>"
+         ]
+        ],
+        "produced": [
+         [
+          "Door",
+          "<id>"
+         ]
+        ],
+        "path": "<path>",
+        "nested_id": "<id:cabin>"
+       },
+       {
+        "seq": 12,
+        "transition": "Alight Central",
+        "started_at": "<time>",
+        "duration_ms": "<ms>",
+        "outcome": "fired",
+        "consumed": [],
+        "produced": [
+         [
+          "Platform@Central",
+          "<id>"
+         ]
+        ]
+       },
+       {
+        "seq": 13,
+        "transition": "Board Central",
+        "started_at": "<time>",
+        "duration_ms": "<ms>",
+        "outcome": "fired",
+        "consumed": [
+         [
+          "Platform@Central",
+          "<id>"
+         ]
+        ],
+        "produced": []
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "inject",
+    "params": {
+     "place": "Door",
+     "nested_id": "<id:cabin>",
+     "token": "Dan"
+    }
+   },
+   "expect": [
+    {
+     "method": "nested",
+     "params": {
+      "path": "<path>",
+      "nested_id": "<id:cabin>",
+      "event": {
+       "method": "added",
+       "params": {
+        "place": "Door",
+        "id": "<id>",
+        "label": "<label>",
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "40",
+     "result": {
+      "status": "injected",
+      "id": "<id>",
+      "marking_version": "<version>"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "inject",
+    "params": {
+     "place": "Depot",
+     "token": {
+      "name": "Shuttle 1",
+      "kind": "Shuttle",
+      "destination": null,
+      "cabin": {
+       "template": "Pod",
+       "marking": {
+        "Seats": [
+         "Eve"
+        ]
+       },
+       "params": {},
+       "enabled": {}
+      }
+     }
+    }
+   },
+   "expect": [
+    {
+     "method": "added",
+     "params": {
+      "place": "Depot",
+      "id": "<id:shuttle>",
+      "label": "<label>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "fireable",
+     "params": {
+      "transitions": [
+       "Alight Central",
+       "Depart Depot"
+      ],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "41",
+     "result": {
+      "status": "injected",
+      "id": "<id:shuttle>",
+      "marking_version": "<version>"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "get_token",
+    "params": {
+     "id": "<id:shuttle>"
+    }
+   },
+   "expect": [
+    {
+     "id": "42",
+     "result": {
+      "id": "<id:shuttle>",
+      "place": "Depot",
+      "type_name": "<label>",
+      "kind": "json",
+      "value": {
+       "name": "Shuttle 1",
+       "kind": "Shuttle",
+       "destination": null,
+       "cabin": {
+        "template": "Pod",
+        "marking": {
+         "Door": [],
+         "Seats": [
+          "Eve"
+         ],
+         "Announcements": []
+        },
+        "params": {
+         "stopped": true,
+         "seats": 4,
+         "capacity": 4
+        },
+        "enabled": {
+         "Sit": true,
+         "Go To Door": true,
+         "Clear Announcement": true
+        }
+       }
+      },
+      "nets": [
+       {
+        "name": "cabin",
+        "nested_id": "<id>",
+        "path": "<path>",
+        "template": "Pod",
+        "count": 1
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "get_state",
+    "params": {
+     "path": "transit/Nowhere/#1/cabin"
+    }
+   },
+   "expect": [
+    {
+     "id": "43",
+     "error": {
+      "code": "unknown_net",
+      "message": "<label>"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "get_state",
+    "params": {
+     "path": "transit/Depot/#1"
+    }
+   },
+   "expect": [
+    {
+     "id": "44",
+     "error": {
+      "code": "unknown_net",
+      "message": "<label>"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "get_state",
+    "params": {
+     "nested_id": "999"
+    }
+   },
+   "expect": [
+    {
+     "id": "45",
+     "error": {
+      "code": "unknown_net",
+      "message": "<label>"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "get_state",
+    "params": {
+     "nested_id": "<id:cabin>",
+     "path": "transit"
+    }
+   },
+   "expect": [
+    {
+     "id": "46",
+     "error": {
+      "code": "invalid_params",
+      "message": "<label>"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "enable",
+    "params": {
+     "transition": "Sit",
+     "nested_id": "<id:cabin>"
+    }
+   },
+   "expect": [
+    {
+     "id": "47",
+     "error": {
+      "code": "invalid_params",
+      "message": "<label>"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "set_param",
+    "params": {
+     "param": "destination",
+     "value": "Airport"
+    }
+   },
+   "expect": [
+    {
+     "method": "param_changed",
+     "params": {
+      "param": "destination",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "48",
+     "result": {
+      "marking_version": "<version>"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "set_param",
+    "params": {
+     "param": "destination",
+     "value": 3
+    }
+   },
+   "expect": [
+    {
+     "id": "49",
+     "error": {
+      "code": "invalid_params",
+      "message": "<label>"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "set_param",
+    "params": {
+     "param": "speed",
+     "value": 3
+    }
+   },
+   "expect": [
+    {
+     "id": "50",
+     "error": {
+      "code": "invalid_params",
+      "message": "<label>"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "reset"
+   },
+   "expect": [
+    {
+     "method": "reloaded",
+     "params": {
+      "generation": 2,
+      "reason": "reset",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "51",
+     "result": {
+      "status": "reset",
+      "generation": 2,
+      "marking_version": "<version>"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "get_state",
+    "params": {
+     "nested_id": "<id:cabin>"
+    }
+   },
+   "expect": [
+    {
+     "id": "52",
+     "error": {
+      "code": "unknown_net",
+      "message": "<label>"
+     }
+    }
+   ]
+  }
+ ]
+}

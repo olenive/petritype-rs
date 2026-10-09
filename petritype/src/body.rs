@@ -228,6 +228,10 @@ impl<Outputs, O: PositionalOutputs<Outputs>> OutcomeSealed<Outputs, marker::Posi
         Ok(RouteTable::empty())
     }
 
+    fn positional() -> bool {
+        true
+    }
+
     fn into_outcome(self, _routes: &RouteTable) -> ErasedOutcome {
         let mut tokens = Vec::new();
         PositionalSealed::push_erased(self, &mut tokens);
@@ -258,6 +262,10 @@ where
         RouteTable::resolve(spec.payloads(), &outputs)
     }
 
+    fn positional() -> bool {
+        false
+    }
+
     fn into_outcome(self, routes: &RouteTable) -> ErasedOutcome {
         let mut tokens = Vec::new();
         self.emit(&mut RouteSink::new(routes, &mut tokens));
@@ -281,6 +289,11 @@ where
     /// nothing about where they go.
     fn routing() -> Result<RouteTable, RoutingProblem> {
         <O as OutcomeSealed<Outputs, M>>::routing()
+    }
+
+    /// The inner form's, likewise.
+    fn positional() -> bool {
+        <O as OutcomeSealed<Outputs, M>>::positional()
     }
 
     fn into_outcome(self, routes: &RouteTable) -> ErasedOutcome {
@@ -388,6 +401,10 @@ macro_rules! impl_body {
                 });
                 (body, problem)
             }
+
+            fn positional() -> bool {
+                <R as OutcomeSealed<Outputs, M>>::positional()
+            }
         }
 
         impl<F, R, M, Outputs, $($t,)*> TransitionBody<($($t,)*), Outputs, (M, R)> for F
@@ -430,6 +447,10 @@ macro_rules! impl_body {
                     OutcomeSealed::into_outcome((self.distribute)(returned), &routes)
                 });
                 (body, problem)
+            }
+
+            fn positional() -> bool {
+                <R2 as OutcomeSealed<Outputs, M>>::positional()
             }
         }
 
@@ -480,6 +501,10 @@ macro_rules! impl_body {
                     }
                 });
                 (body, problem)
+            }
+
+            fn positional() -> bool {
+                <R2 as OutcomeSealed<Outputs, M>>::positional()
             }
         }
 

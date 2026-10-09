@@ -91,6 +91,7 @@ impl Net {
                 inputs: slot.inputs.clone(),
                 params: slot.params.clone(),
                 outputs: slot.outputs.clone(),
+                positional: slot.positional,
                 enabled: slot.enabled,
                 // An empty body slot is the in-flight mark, here as in the
                 // net: what the snapshot keeps is the answer, since the body
@@ -190,6 +191,7 @@ struct SnapshotTransition {
     inputs: Vec<(PlaceId, crate::EdgeKind)>,
     params: Vec<&'static str>,
     outputs: Vec<PlaceId>,
+    positional: bool,
     enabled: bool,
     in_flight: bool,
     detachable: bool,
@@ -281,6 +283,7 @@ impl Snapshot {
                 inputs: &slot.inputs,
                 params: &slot.params,
                 outputs: &slot.outputs,
+                positional: slot.positional,
                 enabled: slot.enabled,
                 in_flight: slot.in_flight,
                 detachable: slot.detachable,
@@ -452,6 +455,7 @@ impl Clone for Snapshot {
                     inputs: slot.inputs.clone(),
                     params: slot.params.clone(),
                     outputs: slot.outputs.clone(),
+                    positional: slot.positional,
                     enabled: slot.enabled,
                     in_flight: slot.in_flight,
                     detachable: slot.detachable,

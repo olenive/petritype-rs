@@ -649,7 +649,7 @@ fn run_concurrent(
                             summary: tally.summary(net, false),
                         });
                     }
-                    match net.step_inner() {
+                    match net.step_inside() {
                         Ok(Some(step)) => tally.landed(&step),
                         Ok(None) => return Ok(tally.summary(net, true)),
                         Err(error) => {
@@ -798,7 +798,7 @@ where
             // Nothing out here to launch and nothing airborne: one inner
             // firing this tick, inline, in `step_deep`'s order.
             if launched_this_sweep == 0 && airborne == 0 && !stop.load(Ordering::Relaxed) {
-                match net.step_inner() {
+                match net.step_inside() {
                     Ok(Some(step)) => tally.landed(&step),
                     Ok(None) => {}
                     Err(error) => {

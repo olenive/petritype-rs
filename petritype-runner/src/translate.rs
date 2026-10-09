@@ -32,7 +32,8 @@ pub(crate) fn label(net: &Net, place: PlaceId, token: TokenId) -> String {
 }
 
 /// The name tables of one generation, taken from its [`Topology`] once.
-#[derive(Debug)]
+/// Empty by default: every id then prints as its number.
+#[derive(Debug, Default)]
 pub(crate) struct Names {
     places: HashMap<PlaceId, String>,
     transitions: HashMap<TransitionId, String>,
@@ -95,14 +96,21 @@ impl Names {
     }
 }
 
-/// The topology keyed by names (PROTOCOL.md §5.1): edges with a direction,
-/// `kind` on inputs, `slot` only for a transition with more than one output,
-/// `detail: {params, detachable}`, and no `hints`.
+/// The topology keyed by names (PROTOCOL.md §5.1): places with `nested` and
+/// `passive` when true (§12.2), edges with a direction, `kind` on inputs,
+/// `slot` only for a transition with more than one output that returns
+/// them by position, `detail: {params, detachable}`, and no `hints`.
+///
+/// A routed or distributing body has no slots to speak of: its outputs find
+/// their places by type or by name, and the declared order is the author's
+/// only. Python petritype writes `slot` from a return edge's `return_index`,
+/// which an output distribution function's edges do not have, so the two
+/// runtimes draw `transit`'s `Arrive` alike.
 pub(crate) fn topology(topology: &Topology, names: &Names) -> protocol::Topology {
-    let outputs: HashMap<TransitionId, usize> = topology
+    let slotted: HashMap<TransitionId, bool> = topology
         .transitions
         .iter()
-        .map(|t| (t.id, t.outputs.len()))
+        .map(|t| (t.id, t.positional && t.outputs.len() > 1))
         .collect();
     protocol::Topology {
         places: topology
@@ -112,6 +120,8 @@ pub(crate) fn topology(topology: &Topology, names: &Names) -> protocol::Topology
                 name: p.name.clone(),
                 type_name: p.type_name.to_owned(),
                 serializable: p.serializable,
+                nested: p.nested,
+                passive: p.passive,
             })
             .collect(),
         transitions: topology
@@ -149,7 +159,11 @@ pub(crate) fn topology(topology: &Topology, names: &Names) -> protocol::Topology
                     transition: names.transition(transition),
                     direction: protocol::Direction::Out,
                     kind: None,
-                    slot: (outputs.get(&transition).copied().unwrap_or(0) > 1).then_some(slot),
+                    slot: slotted
+                        .get(&transition)
+                        .copied()
+                        .unwrap_or(false)
+                        .then_some(slot),
                 }),
                 // A kind of edge this runner does not know yet: left out, as
                 // a reader of the protocol would skip it.
@@ -169,10 +183,13 @@ fn edge_kind(kind: petritype::EdgeKind) -> protocol::EdgeKind {
 }
 
 /// Up to `limit` tokens of `place` from `offset`, oldest first, as wire
-/// tokens.
+/// tokens, each with the nets it holds. `path` is the wire path of `net`
+/// itself, which the paths in `nets` extend; `place_name` is the place's.
 pub(crate) fn tokens(
     net: &Net,
+    path: &str,
     place: PlaceId,
+    place_name: &str,
     offset: usize,
     limit: usize,
 ) -> Vec<protocol::Token> {
@@ -182,13 +199,59 @@ pub(crate) fn tokens(
         .map(|(token, _)| protocol::Token {
             id: token.to_string(),
             label: label(net, place, token),
+            nets: nets(net, path, place, place_name, token),
         })
         .collect()
+}
+
+/// The `nets` of a token entry (PROTOCOL.md §12.2): each net the token
+/// holds, in the token's order, with its nested id, its path as of now, its
+/// template and how many tokens it holds. Empty for a token of a place that
+/// is not nested.
+pub(crate) fn nets(
+    net: &Net,
+    path: &str,
+    place: PlaceId,
+    place_name: &str,
+    token: TokenId,
+) -> Vec<protocol::InnerNet> {
+    net.nested(place, token)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(name, inner)| protocol::InnerNet {
+            name: name.to_owned(),
+            nested_id: inner.id().to_string(),
+            path: level(path, place_name, token, name),
+            template: inner.template().map(str::to_owned),
+            count: inner.places().map(|(_, info)| info.count).sum(),
+        })
+        .collect()
+}
+
+/// `path` one level further down (PROTOCOL.md §12.1): the place, the token
+/// with `#` in front, and the net's name within the token, which is empty
+/// for a token that is a net, so that such a path ends in `/`.
+pub(crate) fn level(path: &str, place_name: &str, token: TokenId, net: &str) -> String {
+    format!("{path}/{place_name}/#{token}/{net}")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_level_is_place_token_and_net_and_a_bare_net_ends_in_a_slash() {
+        let token: TokenId = "17".parse().unwrap();
+        assert_eq!(
+            level("City", "Depot", token, "cabin"),
+            "City/Depot/#17/cabin"
+        );
+        assert_eq!(level("City", "Yard", token, ""), "City/Yard/#17/");
+        assert_eq!(
+            level("City/Depot/#17/cabin", "Door", token, "luggage"),
+            "City/Depot/#17/cabin/Door/#17/luggage"
+        );
+    }
 
     #[test]
     fn a_short_label_is_untouched() {

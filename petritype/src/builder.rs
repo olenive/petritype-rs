@@ -667,6 +667,7 @@ impl NetBuilder {
 
         // Wrapping the body also resolves its routing, if it has any; the
         // problem it may find is kept until `build`.
+        let positional = <Body as BodySealed<Edges, Outputs, Marker>>::positional();
         let (body, problem) = BodySealed::into_erased(body);
         let id = TransitionId(self.transitions.len() as u32);
         self.routing.push(problem);
@@ -676,6 +677,7 @@ impl NetBuilder {
             params,
             args,
             outputs: targets,
+            positional,
             // The one place where both the typed body and the erased engine
             // are in scope, so the one place the wrapper can be built.
             body: Some(body),

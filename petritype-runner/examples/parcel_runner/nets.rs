@@ -1,6 +1,10 @@
 //! The nets the `parcel_runner` example carries, in a module of their own so
 //! that the transcript tests can load the very same registry without a
 //! process.
+//!
+//! Besides the parcel nets it carries the protocol's second conformance net,
+//! `transit` (PROTOCOL.md §11, §12): the core's own example net, included
+//! from `petritype/examples/transit/net.rs` as it is, not copied.
 
 use std::fmt;
 
@@ -192,6 +196,40 @@ pub mod conformance {
     }
 }
 
+/// The protocol's conformance net `transit` (PROTOCOL.md §11): a city whose
+/// vehicles carry nets of their own, the nested-nets net of §12. The file is
+/// the core's example (`petritype/examples/transit/net.rs`), which depends
+/// on `petritype`, `serde` and `serde_json` only so that it can be included
+/// here as it is; whatever of it this binary does not call is the core
+/// example's script.
+#[path = "../../../petritype/examples/transit/net.rs"]
+#[allow(dead_code)]
+pub mod transit_net;
+
+/// The city as §11 seeds it: one bus at `Depot`, one ferry at `Harbour`,
+/// three passengers on `Platform@Depot`, every transition switched on. Its
+/// one parameter, `destination`, is a net parameter set with `set_param`,
+/// not a load parameter, so the entry declares none.
+pub fn transit(_: &petritype_runner::Params) -> Result<Net, LoadError> {
+    transit_net::build_city()
+        .map(|city| city.net)
+        .map_err(|error| LoadError::Other(error.to_string()))
+}
+
+/// The `transit` entry, as PROTOCOL.md §11 names and describes it.
+fn transit_entry() -> NetEntry {
+    NetEntry::new("transit", transit)
+        .description("Vehicles board, carry and alight passengers")
+        .hosting(Hosting::Manual)
+}
+
+/// The `transit` net alone, for the transcripts over it (PROTOCOL.md §11:
+/// replayed against a runner carrying the transcript's own net alone).
+#[allow(dead_code)]
+pub fn transit_registry() -> Vec<NetEntry> {
+    vec![transit_entry()]
+}
+
 /// The conformance net's entry, as PROTOCOL.md §11 names and describes it.
 fn conformance_entry() -> NetEntry {
     NetEntry::new("parcel-distribution", conformance::parcel_distribution)
@@ -218,5 +256,6 @@ pub fn registry() -> Vec<NetEntry> {
         NetEntry::new("parcel-intake", parcel_intake)
             .description("Shelve parcels as they are injected")
             .hosting(Hosting::Continuous),
+        transit_entry(),
     ]
 }

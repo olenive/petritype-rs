@@ -112,6 +112,12 @@ pub struct TopologyTransition {
     pub params: Vec<&'static str>,
     /// Output places, in declaration order: [`TransitionInfo::outputs`].
     pub outputs: Vec<PlaceId>,
+    /// Whether the body returns its outputs by position:
+    /// [`TransitionInfo::positional`]. With `serde`, written only when
+    /// false, so that the shape of a net of positional bodies is what it
+    /// always was.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "is_true"))]
+    pub positional: bool,
     /// Whether a firing can leave the net: [`TransitionInfo::detachable`].
     /// Derived from the edge kinds, so it is shape, not state.
     pub detachable: bool,
@@ -146,6 +152,7 @@ impl Topology {
                     inputs: info.inputs.to_vec(),
                     params: info.params.to_vec(),
                     outputs: info.outputs.to_vec(),
+                    positional: info.positional,
                     detachable: info.detachable,
                 })
                 .collect(),
@@ -153,4 +160,10 @@ impl Topology {
             topology_counter,
         }
     }
+}
+
+/// For `skip_serializing_if`, which hands the field over by reference.
+#[cfg(feature = "serde")]
+fn is_true(value: &bool) -> bool {
+    *value
 }

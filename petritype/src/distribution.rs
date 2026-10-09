@@ -236,6 +236,10 @@ impl<Outputs: OutputPlaces> OutcomeSealed<Outputs, marker::Distributed> for Dist
         Ok(RouteTable::empty())
     }
 
+    fn positional() -> bool {
+        false
+    }
+
     fn into_outcome(self, _routes: &RouteTable) -> ErasedOutcome {
         ErasedOutcome::Ok(
             self.pairs

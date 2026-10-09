@@ -349,6 +349,16 @@ Rules common to all forms:
 - Fan-out of one value to two places is an explicit `.clone()`. A
   `Broadcast(value)` helper (clone into every output place of that type) is
   deferred until asked for.
+- **Which form, read back** (slice 17): `TransitionInfo::positional` and
+  `TopologyTransition::positional` say whether the body (or its output
+  distribution function) returns by position, `()` included, read off the
+  return type when the transition is declared. It is what an output edge's
+  `slot` means: a position in what the body returns only for a positional
+  body, the declared order and nothing more otherwise, so the protocol
+  runner writes `slot` for positional outputs alone (§19.3.11), as Python
+  writes its `return_index`. A flag rather than an enum of the three forms:
+  a variant called `Positional` beside `marker::Positional` makes rustc
+  spell the marker's whole path in every error that names a body.
 
 ## 5. Builder API (the author's view)
 
@@ -533,6 +543,7 @@ b.passive(place)                                      // BuildError::NotNested o
 net.nested(place, token) -> Option<Vec<(&str, &Net)>>
 net.nested_scope(place, token, f: impl FnOnce(&mut [(&str, &mut Net)]) -> R) -> Option<R>
 net.step_deep() -> Result<Option<DeepStep>, FiringFailed>
+net.step_inside() -> Result<Option<DeepStep>, FiringFailed>   // slice 17: step_deep without this net's own step
 net.is_quiescent_deep() -> bool
 net.place_ref::<T>(name) -> Option<PlaceRef<T>>       // a typed handle by name, checked by TypeId
 
@@ -556,6 +567,13 @@ pub enum DeepStep {
   Deterministic given the selectors. `is_quiescent_deep()` is §3's
   quiescence here plus every non-passive inner net quiescent deep;
   `fireable()` stays shallow. The drivers step deep (§13).
+  `step_inside()` (public since slice 17, `pub(crate) step_inner` before)
+  is the second half alone: the walk, without asking this net's selector.
+  It is for a driver that has already asked `select()` because it fires
+  this net's own transitions in stages — the concurrent driver, and the
+  protocol runner, whose outer bodies run on threads of their own while its
+  inner firings are inline (§19.3.11) — and would otherwise ask the
+  selector twice and fire inline whatever it chose.
 - **Passive.** `step_deep` never descends into a passive place, and its
   inner nets do not count against `is_quiescent_deep`. An outer body steps
   them itself: `vehicle.inner.step()`, or `drivers::run` on it, inside a
@@ -611,10 +629,11 @@ pub enum DeepStep {
   in only through the token, and no inner guard or body sees the outer net.
   Depth is unbounded; the tests go two deep (a passenger carrying luggage).
   Adding a vehicle is adding a token, never a place.
-- **Not yet.** Addressing inner nets on the runner protocol is phase 3
-  (PROTOCOL.md §12). Until then the runner reports an `Event::Nested` as a
-  variant it does not know (`reloaded {reason: "resync"}`, §19.3.10), and
-  `petritype-dot` draws the outer net only.
+- **On the wire** (phase 3, slice 17): the protocol runner addresses inner
+  nets by path or nested id, reports their events wrapped in `nested`
+  notifications with versions of their own, and steps them with
+  `step_inside` (PROTOCOL.md §12; §19.3.11). `petritype-dot` draws the outer
+  net only.
 
 **Phase 2, 2026-10-09: saving and forking** (slice 16; the proposal's R5a,
 R5b, R5, R6 and step 6 of its script). Everything here is behind the `serde`
@@ -870,14 +889,15 @@ once, instead of a `Removed` and an `Added` per token, and moves
 `state_counter` by one; every token after it has an id the reader has not
 seen, so a view re-reads the marking. Python records one per place, with the
 place's name; an import here replaces every place at once, so it is one,
-with no fields. The runner already reports a variant it does not know as
-`reloaded {reason: "resync"}`, which is what this one means.
+with no fields. The runner already reported a variant it does not know as
+`reloaded {reason: "resync"}`, which is what this one means, and since
+slice 17 maps it so by name, inside an inner net as `nested` around it.
 
 ### 8.2 Read API
 
 ```rust
 net.places()      -> impl Iterator<Item = (PlaceId, PlaceInfo<'_>)>    // by value: name, type_name, serializable, nested, passive, count (count is live, never stored)
-net.transitions() -> impl Iterator<Item = (TransitionId, TransitionInfo<'_>)>  // by value: name, inputs, outputs, enabled, in_flight, detachable
+net.transitions() -> impl Iterator<Item = (TransitionId, TransitionInfo<'_>)>  // by value: name, inputs, outputs, positional (slice 17), enabled, in_flight, detachable
 net.edges()       -> impl Iterator<Item = EdgeInfo>   // Input { place, transition, kind } | Output { transition, place, slot }; transition order, inputs then outputs
 net.topology()    -> Topology   // places, transitions, edges and topology_counter as owned values; shape only, no counts or switches (slice 14)
 net.place_named(&str) -> Option<PlaceId>;  net.transition_named(&str) -> Option<TransitionId>
@@ -885,6 +905,9 @@ net.place_ref::<T>(&str) -> Option<PlaceRef<T>>   // slice 15: a typed handle by
 net.nested(place, token) -> Option<Vec<(&str, &Net)>>   // slice 15: a nested token's inner nets (§6.6)
 net.nested_scope(place, token, f) -> Option<R>    // slice 15: the same, mutably, lifting on return
 net.is_quiescent_deep() -> bool                   // slice 15: quiescent here and in every non-passive inner net
+net.step_inside() -> Result<Option<DeepStep>, FiringFailed>   // slice 17: step_deep's inner half, for a driver that asked select() itself (§6.6)
+#[cfg(feature = "serde")]
+net.param_name(type_name) -> Option<&str>         // slice 17: the wire name behind a ParamChanged's type name, from serializable_param
 net.fireable() -> Vec<TransitionId>;  net.is_fireable(t) -> bool;  net.is_enabled(t) -> bool;  net.priority_of(t) -> f64
 net.count(place)  -> usize
 net.tokens(place) -> impl Iterator<Item = (TokenId, &dyn Any)>
@@ -1189,7 +1212,8 @@ drivers::run_indefinitely(&mut net, mode, tick: Duration, stop: &AtomicBool, on_
   `run_indefinitely` asks `is_quiescent_deep`.
 - `Mode::Concurrent` keeps its launch sweep for the outer net. When a sweep
   launches nothing and nothing is airborne, it makes one inner firing
-  inline, as `step_deep` would choose it, and sweeps again (an outer guard
+  inline with `step_inside`, as `step_deep` would choose it, and sweeps
+  again (an outer guard
   may read an inner marking). Inner nets never get threads of their own in
   this version, and the ordering guarantee is the sequential driver's.
 - Both limits count every launch, inner ones included, and the fuse blames
@@ -1434,6 +1458,16 @@ Slices, each with tests, in order:
     `NetError` variants and `TemplateError`. The transit example became the
     protocol's conformance net (PROTOCOL.md §11) in `examples/transit/net.rs`
     and runs the acceptance script's step 6; `tests/slice16.rs`.
+17. Nets as tokens, phase 3 (§19.3.11), 2026-10-09, the proposal's R8 on
+    PROTOCOL.md §12: the runner addresses inner nets by `path` or
+    `nested_id`, keeps a record per inner net (its own `marking_version`,
+    names, progress, fireable set), wraps inner events in `nested` in the
+    wire's order, steps inner nets inline, lists `nets` on token entries,
+    filters `get_log` by the chain of nets, and carries the conformance net
+    `transit` (the core example, included by path); the shared transcript
+    `05_nested_nets.json` replays unchanged. The core gained
+    `Net::step_inside`, `Net::param_name` and `TransitionInfo::positional`;
+    `tests/slice17.rs`.
 
 ## 19. Interop: one protocol, two runtimes, two viewers
 
@@ -1476,7 +1510,13 @@ The decisions that shape it, all of 2026-10-03:
 |---|---|
 | `topology.places` | `net.places()`: `name`, `type_name`, and `serializable` (new field, §19.2) |
 | `topology.transitions[].detail` | `TransitionInfo::params` (type names) and `detachable` |
-| `topology.edges` | `net.edges()`: `EdgeKind::{Take, TakeAll, Snapshot, Mutate}` as `"take"`, `"take_all"`, `"snapshot"`, `"mutate"`; `Output { slot }` as `slot` |
+| `topology.edges` | `net.edges()`: `EdgeKind::{Take, TakeAll, Snapshot, Mutate}` as `"take"`, `"take_all"`, `"snapshot"`, `"mutate"`; `Output { slot }` as `slot` where the transition has more than one output and `TransitionInfo::positional` (slice 17; a routed or distributing body has no slots to speak of) |
+| `topology.places[].nested`, `passive` (§12.2) | `TopologyPlace::nested`, `passive`, written only when true |
+| `path`, `nested_id` (§12.1) | a path walked through `net.nested(place, token)` level by level; a nested id is the inner net's `NetId` printed with its `Display`, found by walking every nested place at every depth; mutable reach (`inject`) through `nested_scope` at each level |
+| a token's `nets` (§12.2) | `net.nested(place, token)`: each net's name, `id()`, its path, `template()`, and the sum of its places' counts |
+| `nested` notification (§12.4) | `Event::Nested`, unwrapped to the event the innermost net logged: one wrapper with the full path, the inner notification built with that net's names and version |
+| inner `marking_version` (§12.3) | the runner's counter per inner net, one per state notification of that net; the outer one does not move |
+| `step` or a running net, inside (§12.3) | `select()`; when it picks nothing, `step_inside()`, inline: `nested` around `fired` |
 | `transitions[name]` | `is_enabled`, `is_in_flight`, membership of `fireable()`, `priority_of` |
 | `marking` | `tokens(place)` ids; the wire `label` is `debug(place, token)` cut by the runner at the protocol's 1000 characters, whatever the net's own `label_limit` |
 | token id `"17"` | `TokenId` printed with its `Display` (the bare number) |
@@ -1489,7 +1529,7 @@ The decisions that shape it, all of 2026-10-03:
 | `step`, `start` | `select()`, `launch`, the body on a thread of its own, `distribute`; one firing at a time, so `Launched` then `Distributed` |
 | `inject {place, token}` | `apply_json` of `JsonCommand::Extend` with one token; the new id is read off the `Added` event. Needs a `serializable` place, else `not_serializable` |
 | `enable`, `disable` | `net.enable(t)`, `net.disable(t)` (`Toggled`) |
-| `set_param {param, value}` | `JsonCommand::SetParam`; `transition` ignored; `unsupported` if the net registers no parameter by name |
+| `set_param {param, value}` | `JsonCommand::SetParam`; `transition` ignored; `invalid_params` for a name the net has no parameter under (slice 17; `unsupported` before), `unsupported` for a parameter with no wire name |
 | `get_token {id}` | `net.json()` gives `kind: "json"`; otherwise `debug()` gives `kind: "text"`, untruncated |
 | `reset` | rebuild from the same factory and parameters |
 
@@ -1531,12 +1571,19 @@ a wire format they do not own. `Snapshot` stays unserialisable; tokens are
 
 ### 19.3 The `petritype-runner` crate
 
-**Designed and built 2026-10-03**; as-built notes in §19.3.10. A library crate in this
+**Designed and built 2026-10-03**; as-built notes in §19.3.10, nested nets in §19.3.11. A library crate in this
 workspace plus an example binary. A net's bodies are the user's code, so the
 binary is always the user's own: it lists its nets and hands over to the
 crate. Dependencies: `petritype` with `serde`, `serde`, `serde_json`, and
 `rustix` (Unix only, for the stdout guard). No async runtime: the protocol
 is one line in, some lines out, and a body runs on a thread of its own.
+
+The example binary (`examples/parcel_runner.rs`, its nets in
+`parcel_runner/nets.rs`) carries the demo nets, the conformance net
+`parcel-distribution` of PROTOCOL.md §11 and, since slice 17, the second
+conformance net `transit`, which is not a copy: `nets.rs` includes the
+core's own example net, `petritype/examples/transit/net.rs`, with
+`#[path]`, and registers `build_city` as the entry's factory.
 
 #### 19.3.1 What the user writes
 
@@ -1629,7 +1676,9 @@ The core dropped these on purpose (§2); the runner keeps them:
 | `in_flight: Option<{transition, started_at, step_id: Option<String>}>` | the one firing airborne, for `heartbeat`, `duration_ms`, and the deferred `step` response |
 | `deferred: VecDeque<Request>` | requests that must wait for the firing to land (§19.3.5) |
 | `last_fireable: Vec<String>` | the last `fireable` notification sent, compared after every batch |
-| `log: VecDeque<LogEntry>` (1000) | `get_log` |
+| `log: VecDeque<LogEntry>` (1000) | `get_log`; each entry keeps, off the wire, the chain of nested ids it happened in (slice 17) |
+| `inner: HashMap<NetId, Inner>` | slice 17: per inner net, its own `marking_version`, `Topology` and `Names`, progress, last fireable set, template and last path (§19.3.11) |
+| `touched: Vec<NetId>` | slice 17: inner nets with events since their fireable set was last compared |
 | `progress: {step_count, last_fired, fired_counts, last_progress_at}` | `progress` |
 | `idle: bool` | one `idle` per idle spell |
 | `factory`, `params` | `reset` rebuilds from them |
@@ -1650,7 +1699,9 @@ last set sent. Only then does it write the response, which is the protocol's
 | `Failed` | `failed`; the log gets a `"failed"` entry |
 | `Added` / `Removed` / `Mutated` | `added` / `removed` / `mutated` |
 | `Toggled` | `toggled` |
-| `ParamChanged` | `param_changed {param}`, the name taken from the `set_param` request being served, because the owner is the only writer and the event carries only a type name |
+| `ParamChanged` | `param_changed {param}`, the name taken from the `set_param` request being served, because the owner is the only writer and the event carries only a type name; since slice 17, otherwise `Net::param_name` (an outer body setting an inner net's parameter) |
+| `Resynced` | `reloaded {reason: "resync"}` (slice 16's `import_marking`), which moves no version |
+| `Nested` | `nested {path, nested_id, event}` around the inner net's own notification (slice 17, §19.3.11) |
 
 A token on the wire is `{id, label}`: the id is `TokenId`'s `Display`, the
 label `debug()` cut at 1000 characters on a character boundary with `"..."`
@@ -1724,7 +1775,8 @@ Input::Completed:    distribute(done) -> Distributed or Failed written;
   token; the id is read off the `Added` event. A place without `from_json`
   is `not_serializable`; a value that does not decode is `invalid_token`.
 - `set_param {param, value}`: `JsonCommand::SetParam`; `transition` is
-  ignored; a name the net did not register is `unsupported`.
+  ignored; a name the net did not register is `unsupported` (since slice 17
+  `invalid_params`, §19.3.11).
 - `enable` / `disable`: `net.enable` / `net.disable`; `toggled` only if the
   switch moved.
 - `shutdown`: answer `{status: "ok"}`, then `Exit`. An airborne body is
@@ -1736,8 +1788,11 @@ Input::Completed:    distribute(done) -> Distributed or Failed written;
 `CommandError` and `NetError` variants map onto the protocol's closed set:
 unknown place or transition names and ids to `unknown_place`,
 `unknown_transition`, `unknown_token`; a place without a JSON form to
-`not_serializable`; a decode failure to `invalid_token`; a parameter the net
-does not know to `unsupported`; a request before `load` to `not_loaded`;
+`not_serializable`; a decode failure to `invalid_token`, a nested token
+whose saved net the core refuses included (§12.5); a parameter name the net
+does not know to `invalid_params` (`unsupported` until slice 17) and a
+parameter type with no wire name to `unsupported`; an address that names no
+live inner net to `unknown_net`; a request before `load` to `not_loaded`;
 malformed params to `invalid_params`; anything else to `internal` with the
 error's `Display` as the message. The mapping is one function with a test
 per arm.
@@ -1832,6 +1887,141 @@ differently, with the reason:
 - The crate is `#![forbid(unsafe_code)]`; the fd swap is `rustix`'s
   `fcntl_dupfd_cloexec` and `dup2_stdout`. The non-Unix path compiles and
   is untested.
+
+#### 19.3.11 Nested nets on the wire, 2026-10-09
+
+Phase 3 of nets as tokens, slice 17: the proposal's R8, on PROTOCOL.md §12,
+which the Python track wrote first and this runner conforms to. The shared
+transcript `05_nested_nets.json`, over the conformance net `transit`,
+replays here unchanged, both from the Python repository and from a verbatim
+copy in `tests/protocol/`.
+
+- **Addressing** (§12.1). Every read and `inject` takes `path` or
+  `nested_id`; both is `invalid_params`, neither the outer net. A path is
+  walked level by level through `Net::nested`: the first segment must be
+  the entry's name, then per level the place, `#` and the token id, and the
+  net's name in the token, so that an unnamed inner net (a bare `Net`
+  token) ends its level in `/`; the entry's name alone is the outer net. A
+  nested id is the inner net's `NetId` as its `Display` prints it, found by
+  walking every nested place, passive ones included, at every depth. No
+  match is `unknown_net`, and the message names the segment that failed
+  (the place, the token, the net, a level cut short) or the id. `step`,
+  `start`, `stop`, `reset`, `enable`, `disable` and `set_param` act on the
+  outer net alone, and a `path` or `nested_id` on one is `invalid_params`
+  (`step` too, as in the Python runner). An `inject` into an inner net goes
+  through `nested_scope` at every level, so its `added` is lifted level by
+  level as each scope closes.
+- **A record per inner net** (`Loaded::inner`, by `NetId`; §12.3): its own
+  `marking_version` (0 when first seen, one more per state notification of
+  that net), its `Topology` and `Names` (taken once: an inner net's
+  topology never changes), its progress, its last fireable set, its
+  template and the path it was last seen at. Made at `load` and `reset` by
+  walking the marking, or when a request names the net (in both cases the
+  fireable set is taken silently, as `load` takes the outer one), or when
+  one of its events arrives first (its fireable set empty, so a non-empty
+  one is announced). Dropped eagerly, at the first landing or inner firing
+  after which its id no longer resolves: one walk of the nested places per
+  landing, never while a body holds a token, so a vehicle in transit keeps
+  its record and its version. `load` and `reset` drop them all.
+- **Versions are per net.** A `nested` line carries the outer
+  `marking_version`, unchanged; the inner net's is inside its `event`.
+  `nets[].count` is a hint read with the outer state.
+- **The `nested` wrapper** (§12.4). `flush_events` unwraps an
+  `Event::Nested` to the event the innermost net logged and writes one
+  `nested {path, nested_id, event}` whatever the depth: the inner
+  notification built as the outer net's would be, with that net's names,
+  version and labels. The path is the places and tokens the event was
+  lifted under, place names taken from the records of the nets above.
+  Labels come from the inner net when it can be reached. Under rule 3 of
+  §6.6 (lifted at launch, the token in the body's hands) it cannot, and an
+  inner `added`'s label is `""` (a `mutated`'s is left out). An inner
+  `ParamChanged` is named by `Net::param_name` on the inner net, else by
+  its type name. `Resynced` inside is `nested` around `reloaded
+  {generation: 1, reason: "resync"}`; outside it is `reloaded {reason:
+  "resync"}`, mapped explicitly now, as an unknown variant still is.
+- **The wire tells a firing's inner effects before the firing's landing,
+  as it tells its `mutated`s.** The core lifts a produced token's inner
+  events after the firing's `Distributed` or `Fired`, under the token's new
+  place and id (rule 4), and a mutated token's just before its `Mutated`
+  (rule 2). `wire_order` reorders one batch: of a landing, every `Nested`
+  (those for mutated tokens, then those for produced ones, each in the
+  order logged), then the `Mutated`s, then the event that ends the firing.
+  So `Depart` reads `launched`, `nested` `param_changed`, `distributed`,
+  and `Board` `nested` `added`, `mutated`, `fired`. The path on those lines
+  is the token's place once the firing has placed it (`In Transit` for a
+  `Depart`), which is what the core stamps. The core's own log keeps its
+  rules; only the wire is reordered.
+- **Inner firings are inline.** `step` asks the outer selector
+  (`select()`) and, when it picks nothing, makes the first inner firing in
+  `step_deep`'s order with `Net::step_inside()` (§6.6), inline: the inner
+  net logs `Fired`, and the wire says `nested` around `fired`, one of the
+  two shapes §12.4 allows; a harness folds the other into it. The `step`
+  result is `{fired: true, transition, path, nested_id, marking_version:
+  <outer>, running}`, with `failed: true` after a `nested` `failed`;
+  `fired: false` means nothing fireable anywhere outside passive places. A
+  running net does the same, one inner firing per `handle` with
+  `wants_tick` asking for the next, so `execution_stopped {reason:
+  "no_fireable_transitions"}` and `idle` mean deep quiescence, and an inner
+  failure stops a run as an outer one does. The outer net's `progress`
+  counts its own firings only; an inner net's counts its own (its
+  `step_count` is its `fired_count`). Python counts inner firings in the
+  outer `fired_counts` under path keys; the shared transcript pins neither.
+- **Inner `fireable`** (§7.2, §12.4). After a batch, after the outer
+  `fireable`, each inner net that had events (in that batch, or since the
+  last compare, across a launch) is compared with the last set sent for it,
+  and `nested` around `fireable` goes out when it differs. It moves no
+  version. As `05_nested_nets.json` has it: the cabin's `["Sit"]` after the
+  first board, nothing at load.
+- **Reads** (§12.2, §12.3). `topology.places[]` carry `nested` and
+  `passive` when true. Every token entry (`get_state`, `get_place_tokens`,
+  `get_token`) carries `nets: [{name, nested_id, path, template?, count}]`
+  when its token holds nets; `produced`, `added` and `mutated` carry none.
+  An inner `get_state` is that net's state: `net` its name in its token,
+  `generation` 1, its own version, topology, transitions, marking and
+  progress, plus `path`, `nested_id` and `template`; `get_place_tokens` and
+  `get_token` echo `path` and `nested_id`. `inject` into an inner net
+  answers with that net's version and no address, as the shared transcript
+  has it. While a body is airborne, a read whose address does not resolve
+  waits for the landing (the net may be inside the token the body took) and
+  is answered then, or `unknown_net`; every other inner net is read at
+  once. Inner bodies run inline on the owner thread, so nothing is read
+  during one.
+- **The log** (§8) is one ring. An inner firing's entry, written when its
+  `Fired`, `Distributed` or `Failed` is flushed (`started_at` the handle's
+  `now`, `duration_ms` 0, since it ran inline), carries `path` and
+  `nested_id` and the inner net's place names and ids; `seq` is shared.
+  Each entry keeps, off the wire, the chain of nested ids from the outer
+  net down, and `get_log` with an address keeps the entries whose chain
+  holds that net: its own and those of the nets inside it.
+- **Errors.** `set_param` naming a parameter the net does not have is
+  `invalid_params`, as `05_nested_nets.json` pins (it was `unsupported`):
+  the runtime does set parameters, the request named one that is not there.
+  `unsupported` stays for a parameter type with no wire name. A nested
+  token the core refuses on `inject` (an unknown template, a parameter the
+  template does not declare, an unknown inner place or transition, an inner
+  token that does not decode) comes back from the core as `InvalidToken`,
+  so `invalid_token` (§12.5) with no new arm.
+- **What the core gained**: `Net::step_inside` (§6.6); `Net::param_name`
+  (§8.2); `TransitionInfo::positional` and `TopologyTransition::positional`
+  (§4.5), so that `slot` is written for positional outputs alone —
+  `transit`'s `Arrive` distributes to one of four stations, and the shared
+  transcript has no slots on its edges.
+- **The harness** (`tests/transcripts.rs`) replays a transcript over a
+  conformance net against that net alone, wherever the file is. It gained
+  the `<path>` mask, captures substituted inside a longer string when
+  sending (`"transit/Depot/#<id:bus>/cabin"`), and two folds: a `nested`
+  `launched` followed by its `nested` `distributed` into a `nested`
+  `fired`, and a `launched` … `distributed` pair with only the firing's own
+  `nested` and `mutated` lines between into those lines and a `fired`. The
+  folds apply to the expected lines as well as the actual ones; the second
+  is what this runner's inline firings need, which it reports as one
+  `fired` after their `mutated`s where the Python runner reports `launched`
+  first. Our transcript 01's `describe` lists `transit` too, since the
+  example binary carries it, and 03 has `invalid_params` for the unknown
+  parameter.
+- **Deferred.** Keys, queries and filters (§13 of the protocol; the shared
+  `06_keys_query_filter.json` fails at its `load` until they are built);
+  inner firings on threads of their own; an id-preserving import.
 
 ### 19.4 Who spawns it
 

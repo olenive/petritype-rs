@@ -10,7 +10,9 @@
 //! ```
 //!
 //! The nets are in `parcel_runner/nets.rs`, which the transcript tests load
-//! too. This file is the whole of what an author writes besides them.
+//! too: the parcel nets, and the protocol's conformance net `transit`, whose
+//! vehicles carry nets of their own (`get_state {"nested_id": ...}` reads
+//! one). This file is the whole of what an author writes besides them.
 
 use std::process::ExitCode;
 

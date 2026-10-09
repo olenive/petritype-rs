@@ -102,6 +102,10 @@ pub trait OutcomeSealed<Out, M> {
     /// name.
     fn routing() -> Result<RouteTable, RoutingProblem>;
 
+    /// Whether this is the positional form, for the read API
+    /// ([`TransitionInfo::positional`](crate::TransitionInfo::positional)).
+    fn positional() -> bool;
+
     /// Consumes the body's return value, sending each token to the output
     /// place the form says it belongs to.
     fn into_outcome(self, routes: &RouteTable) -> ErasedOutcome;
@@ -119,4 +123,9 @@ pub trait BodySealed<E, O, M> {
     /// be resolved comes back as the second half of the pair, for
     /// [`build`](crate::NetBuilder::build) to refuse the net with.
     fn into_erased(self) -> (ErasedBody, Option<RoutingProblem>);
+
+    /// Whether what the body returns — what its output distribution
+    /// function returns, for a wrapped body — is the positional form, read
+    /// where the return type is still known, so that the net can report it.
+    fn positional() -> bool;
 }

@@ -72,6 +72,8 @@ saves as `{"template", "marking", "params", "enabled"}` inside its token, `expor
 `import_marking` save and load a whole outer net through JSON text, and `net.fork()` rebuilds a copy,
 so `net.snapshot()` works on a net of vehicles too. `petritype/examples/transit.rs` is a city of buses
 and ferries built this way (`cargo run -p petritype --example transit --features serde`); `DESIGN.md` §6.6 has the rules.
+Served by `petritype-runner`, an inner net is addressed by its path (`transit/Depot/#0/cabin`) or its
+stable nested id, and its events arrive wrapped in `nested` notifications (PROTOCOL.md §12, `DESIGN.md` §19.3.11).
 
 ## Crates
 

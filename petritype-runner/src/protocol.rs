@@ -409,6 +409,25 @@ pub enum Notification {
         /// See the type's documentation.
         running: bool,
     },
+    /// An event inside an inner net (PROTOCOL.md §12.4): the notification
+    /// that net would send on its own, wrapped once whatever the depth.
+    ///
+    /// `event` carries the inner net's own `marking_version`; the wrapper
+    /// carries the outer net's, which an inner event never moves, so this
+    /// is not a state notification of the outer net.
+    Nested {
+        /// The inner net's path as the marking stood when the event was
+        /// lifted (§12.1).
+        path: String,
+        /// The inner net's nested id.
+        nested_id: String,
+        /// The inner notification, `{method, params}`.
+        event: Box<Notification>,
+        /// The outer net's version, unchanged.
+        marking_version: u64,
+        /// See the type's documentation.
+        running: bool,
+    },
 }
 
 impl Notification {
@@ -490,9 +509,10 @@ pub struct State {
     pub protocol_version: u32,
     /// `"rust"`.
     pub runtime: String,
-    /// The loaded net's registered name.
+    /// The loaded net's registered name; for an inner net, its name within
+    /// the token that holds it (`""` for a bare net).
     pub net: String,
-    /// See PROTOCOL.md §4.
+    /// See PROTOCOL.md §4; always 1 for an inner net.
     pub generation: u64,
     /// See PROTOCOL.md §4.
     pub marking_version: u64,
@@ -506,6 +526,15 @@ pub struct State {
     pub marking: Marking,
     /// Firing statistics kept by the runner.
     pub progress: Progress,
+    /// The inner net's path, for the state of an inner net (§12.3).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    /// The inner net's nested id, for the state of an inner net.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nested_id: Option<String>,
+    /// The template that built the inner net, when it has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub template: Option<String>,
 }
 
 /// The net's shape keyed by names (PROTOCOL.md §5.1). No `hints`: nothing in
@@ -529,6 +558,14 @@ pub struct Place {
     pub type_name: String,
     /// Whether its tokens have a JSON form.
     pub serializable: bool,
+    /// Whether its tokens may hold nets of their own (§12.2); written only
+    /// when true.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub nested: bool,
+    /// Whether those inner nets are stepped only by an outer body (§12.3);
+    /// written only when true.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub passive: bool,
 }
 
 /// A transition in [`Topology`].
@@ -561,7 +598,8 @@ pub struct Edge {
     /// How an input edge reads its place.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kind: Option<EdgeKind>,
-    /// The output slot, for a transition with more than one output.
+    /// The output slot, for a transition with more than one output that
+    /// returns them by position.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub slot: Option<usize>,
 }
@@ -620,14 +658,35 @@ pub struct PlaceMarking {
     pub tokens: Vec<Token>,
 }
 
-/// A token on the wire: its id and a label of at most 1000 characters (plus
-/// `"..."` when cut).
+/// A token on the wire: its id, a label of at most 1000 characters (plus
+/// `"..."` when cut), and the nets it holds, if any.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Token {
     /// The decimal id.
     pub id: String,
     /// The token's `Debug`, cut.
     pub label: String,
+    /// The nets the token holds (§12.2), in the token's own order; omitted
+    /// for a token that holds none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub nets: Vec<InnerNet>,
+}
+
+/// One net a token holds, as a token entry lists it (`nets[]`, §12.2).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InnerNet {
+    /// The net's name within the token; `""` for a token that is a net.
+    pub name: String,
+    /// Its nested id: stable while the token moves.
+    pub nested_id: String,
+    /// Its path as the marking stands now.
+    pub path: String,
+    /// The template that built it, when it has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub template: Option<String>,
+    /// How many tokens it holds, over all its places: a hint for a badge,
+    /// read with the outer state.
+    pub count: usize,
 }
 
 /// Firing statistics (PROTOCOL.md §5.4).
@@ -662,6 +721,12 @@ pub struct PlaceTokens {
     pub tokens: Vec<Token>,
     /// Whether tokens follow this page.
     pub has_more: bool,
+    /// The inner net's path, for a page of an inner net.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    /// The inner net's nested id, for a page of an inner net.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nested_id: Option<String>,
 }
 
 /// The answer to `get_token`.
@@ -676,6 +741,15 @@ pub struct TokenValue {
     /// The value, as JSON or as text.
     #[serde(flatten)]
     pub value: TokenBody,
+    /// The inner net's path, for a token of an inner net.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    /// The inner net's nested id, for a token of an inner net.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nested_id: Option<String>,
+    /// The nets the token holds, if any (§12.2).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub nets: Vec<InnerNet>,
 }
 
 /// A token's full value: JSON on a serializable place, `Debug` text
@@ -718,6 +792,12 @@ pub struct LogEntry {
     /// Whether the inputs went back, for `"failed"`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub restored: Option<bool>,
+    /// For a firing inside an inner net: its path when it fired (§8).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    /// For a firing inside an inner net: its nested id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nested_id: Option<String>,
 }
 
 #[cfg(test)]
@@ -770,6 +850,80 @@ mod tests {
         );
         let back: Notification = serde_json::from_value(to_value(&n)).unwrap();
         assert_eq!(back, n);
+    }
+
+    #[test]
+    fn a_nested_notification_wraps_the_inner_one_and_moves_no_outer_version() {
+        let n = Notification::Nested {
+            path: "City/Depot/#17/cabin".into(),
+            nested_id: "3".into(),
+            event: Box::new(Notification::Added {
+                place: "Door".into(),
+                id: "1".into(),
+                label: "\"Ada\"".into(),
+                marking_version: 4,
+                running: false,
+            }),
+            marking_version: 42,
+            running: false,
+        };
+        assert!(!n.is_state(), "the outer version does not move");
+        assert_eq!(
+            to_value(&n),
+            json!({"method": "nested", "params": {
+                "path": "City/Depot/#17/cabin", "nested_id": "3",
+                "event": {"method": "added", "params": {
+                    "place": "Door", "id": "1", "label": "\"Ada\"",
+                    "marking_version": 4, "running": false}},
+                "marking_version": 42, "running": false}})
+        );
+        let back: Notification = serde_json::from_value(to_value(&n)).unwrap();
+        assert_eq!(back, n);
+    }
+
+    #[test]
+    fn the_nested_fields_are_omitted_where_nothing_is_nested() {
+        let token = Token {
+            id: "1".into(),
+            label: "x".into(),
+            nets: Vec::new(),
+        };
+        assert_eq!(to_value(&token), json!({"id": "1", "label": "x"}));
+        let place = Place {
+            name: "P".into(),
+            type_name: "u32".into(),
+            serializable: false,
+            nested: false,
+            passive: false,
+        };
+        assert_eq!(
+            to_value(&place),
+            json!({"name": "P", "type_name": "u32", "serializable": false})
+        );
+        let place = Place {
+            nested: true,
+            passive: true,
+            ..place
+        };
+        assert_eq!(
+            to_value(&place),
+            json!({"name": "P", "type_name": "u32", "serializable": false,
+                   "nested": true, "passive": true})
+        );
+        let held = Token {
+            nets: vec![InnerNet {
+                name: "cabin".into(),
+                nested_id: "3".into(),
+                path: "City/Depot/#1/cabin".into(),
+                template: None,
+                count: 0,
+            }],
+            ..token
+        };
+        assert_eq!(
+            to_value(&held)["nets"],
+            json!([{"name": "cabin", "nested_id": "3", "path": "City/Depot/#1/cabin", "count": 0}])
+        );
     }
 
     #[test]

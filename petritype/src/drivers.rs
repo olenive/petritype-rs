@@ -2,12 +2,13 @@
 //!
 //! A driver is *thin* (DESIGN §13). It owns no state of its own and adds no
 //! semantics: it is a loop over the stages [`Net`] already exposes —
-//! [`step`](Net::step) for the sequential one, [`launch`](Net::launch) /
-//! [`Firing::run`](crate::Firing::run) / [`distribute`](Net::distribute) for
-//! the concurrent one — plus a decision about when to stop and what to do
-//! about a failure. Everything it knows is in its arguments and everything it
-//! did is in the [`RunSummary`] it returns, so two calls in a row continue
-//! each other exactly as far as the net's own marking says they do.
+//! [`step_deep`](Net::step_deep) for the sequential one,
+//! [`launch`](Net::launch) / [`Firing::run`](crate::Firing::run) /
+//! [`distribute`](Net::distribute) for the concurrent one — plus a decision
+//! about when to stop and what to do about a failure. Everything it knows is
+//! in its arguments and everything it did is in the [`RunSummary`] it
+//! returns, so two calls in a row continue each other exactly as far as the
+//! net's own marking says they do.
 //!
 //! ```
 //! use petritype::drivers::{self, Limits, Mode, OnFailure};
@@ -32,12 +33,14 @@
 //!
 //! # The two modes
 //!
-//! [`Mode::Sequential`] is [`Net::step`] in a loop: one transition at a time,
-//! chosen by the net's [`Selector`](crate::Selector), each firing complete
-//! before the next begins. It is **deterministic given the selector**, which
-//! is what makes a sequential run the thing to write a test or a replay
-//! against — and what makes [`Net::set_selector`] a way to shape a whole run
-//! rather than one step.
+//! [`Mode::Sequential`] is [`Net::step_deep`] in a loop: one transition at a
+//! time, chosen by the net's [`Selector`](crate::Selector), each firing
+//! complete before the next begins — and, when the net has nothing to fire
+//! itself, one firing in the first inner net that has, if its tokens carry
+//! nets of their own ([`Nested`](crate::Nested)). It is **deterministic given
+//! the selectors**, which is what makes a sequential run the thing to write a
+//! test or a replay against — and what makes [`Net::set_selector`] a way to
+//! shape a whole run rather than one step.
 //!
 //! [`Mode::Concurrent`] sweeps [`Net::fireable`] in declaration order and
 //! [`launch`](Net::launch)es **every** transition it finds, each detachable
@@ -62,10 +65,18 @@
 //! the concurrent driver distributes it on the spot and sweeps again rather
 //! than calling the net quiescent: the marking moved.
 //!
+//! Inner nets do not get threads of their own. When a sweep launches nothing
+//! and nothing is airborne, the concurrent driver makes **one** inner firing
+//! inline, exactly as [`Net::step_deep`] would choose it, and sweeps again,
+//! since a guard out here may read the marking in there. The ordering
+//! guarantee of the inner nets is therefore the sequential one, but only the
+//! sequential driver promises an order for the whole run.
+//!
 //! # Limits: pacing and the fuse
 //!
 //! [`Limits`] holds two caps, and both count **launches** — attempts,
-//! including ones that go on to fail — rather than successes.
+//! including ones that go on to fail, inside inner nets as well as in the net
+//! itself — rather than successes.
 //!
 //! - [`stop_after_n_firings`](Limits::stop_after_n_firings) is *pacing*: the
 //!   driver stops launching and returns `Ok`, with
@@ -148,7 +159,8 @@ use std::time::{Duration, Instant};
 
 use crate::error::{FiringFailed, NetError};
 use crate::firing::Completed;
-use crate::ids::TransitionId;
+use crate::ids::{PlaceId, TokenId, TransitionId};
+use crate::nested::DeepStep;
 use crate::net::Net;
 
 /// Why a blocking `recv` cannot fail here: the driver holds a sender of its
@@ -162,15 +174,17 @@ const SENDER_ALIVE: &str = "the driver's own sender is alive for the whole scope
 /// reproducible one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Mode {
-    /// [`Net::step`] in a loop: the net's [`Selector`](crate::Selector)
+    /// [`Net::step_deep`] in a loop: the net's [`Selector`](crate::Selector)
     /// picks one of the fireable transitions, it fires to completion, and the
-    /// loop asks again. Deterministic given the selector.
+    /// loop asks again; when the net itself has nothing to fire, the first
+    /// inner net that has fires once. Deterministic given the selectors.
     #[default]
     Sequential,
     /// Launch everything fireable, in declaration order, and run each
     /// detachable body on its own thread inside a
     /// [`std::thread::scope`]. The selector is not consulted and completion
-    /// order is wall-clock order.
+    /// order is wall-clock order. Inner nets are stepped inline, one firing
+    /// at a time, whenever a sweep finds nothing to launch.
     Concurrent,
 }
 
@@ -240,13 +254,15 @@ pub enum OnFailure {
 /// What one call of [`run`] or [`run_indefinitely`] did.
 ///
 /// Counts are for **this call**: `fired_count` is the delta of
-/// [`Net::fired_count`] across it, and `failed_count` counts the failures the
-/// driver handled. `Default` is the zero summary of a call that did nothing
+/// [`Net::fired_count`] across it plus the firings it made inside inner nets,
+/// and `failed_count` counts the failures the driver handled, wherever they
+/// were. `Default` is the zero summary of a call that did nothing
 /// and found nothing to do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct RunSummary {
     /// True: there was nothing left to fire when the call returned — the net
-    /// is quiescent and nothing is in flight.
+    /// is quiescent and nothing is in flight, inner nets included
+    /// ([`Net::is_quiescent_deep`]).
     ///
     /// False: a limit or, for [`run_indefinitely`], the `stop` flag ended the
     /// call, and work may remain. Note the asymmetry: a call capped by
@@ -255,7 +271,8 @@ pub struct RunSummary {
     /// stopped before it could find out. The summary carried by a
     /// [`DriverError`] is always false.
     pub quiesced: bool,
-    /// Firings that completed successfully during this call.
+    /// Firings that completed successfully during this call, in the net and
+    /// in its inner nets.
     pub fired_count: u64,
     /// Firings that failed during this call, whatever [`OnFailure`] then did
     /// about them. Each one is an [`Event::Failed`](crate::Event::Failed) in
@@ -330,7 +347,8 @@ pub enum DriverError {
 /// rest of the run — see the [module docs](self) for all three.
 ///
 /// A returned [`RunSummary`] with [`quiesced`](RunSummary::quiesced) true is
-/// the net's own finish line: nothing is fireable and nothing is in flight.
+/// the net's own finish line: nothing is fireable and nothing is in flight,
+/// in the net or in the inner nets its tokens carry.
 /// False means a limit ended the call and another call continues it.
 ///
 /// ```
@@ -497,21 +515,22 @@ fn run_sequential(
         }
         // The selector is deliberately not consulted: an enabled net with a
         // spent fuse counts as attempting to fire, as in Python's
-        // `_check_fuse`. An empty fireable list falls through to the `step`
-        // below, which reports the quiescence.
+        // `_check_fuse`, and so does an inner net with something fireable.
+        // Nothing fireable anywhere falls through to the `step_deep` below,
+        // which reports the quiescence.
         if let Some(limit) = limits.error_after_n_firings
             && tally.launched >= limit
-            && let Some(&transition) = net.fireable().first()
+            && let Some((transition, name)) = net.first_fireable_deep()
         {
             return Err(DriverError::TooManyFirings {
                 limit,
                 transition,
-                name: net.transition_name(transition),
+                name,
                 summary: tally.summary(net, false),
             });
         }
-        match net.step() {
-            Ok(Some(_)) => tally.launched += 1,
+        match net.step_deep() {
+            Ok(Some(step)) => tally.landed(&step),
             // Nothing fireable, or the selector declined: either way this
             // driver would do nothing more.
             Ok(None) => return Ok(tally.summary(net, true)),
@@ -525,7 +544,7 @@ fn run_sequential(
                             error,
                         });
                     }
-                    OnFailure::Disable => disable(net, error.transition),
+                    OnFailure::Disable => disable(net, &error),
                     OnFailure::Continue => {}
                 }
             }
@@ -616,7 +635,38 @@ fn run_concurrent(
             }
             if airborne == 0 {
                 if launched_this_sweep == 0 {
-                    return Ok(tally.summary(net, true));
+                    // The outer net has nothing to launch: one inner firing,
+                    // inline and in `step_deep`'s order, then sweep again,
+                    // since a guard out here may read the marking in there.
+                    if let Some(limit) = limits.error_after_n_firings
+                        && tally.launched >= limit
+                        && let Some((transition, name)) = net.first_fireable_deep()
+                    {
+                        return Err(DriverError::TooManyFirings {
+                            limit,
+                            transition,
+                            name,
+                            summary: tally.summary(net, false),
+                        });
+                    }
+                    match net.step_inner() {
+                        Ok(Some(step)) => tally.landed(&step),
+                        Ok(None) => return Ok(tally.summary(net, true)),
+                        Err(error) => {
+                            tally.launched += 1;
+                            tally.failed += 1;
+                            match on_failure {
+                                OnFailure::Stop => {
+                                    return Err(DriverError::FiringFailed {
+                                        summary: tally.summary(net, false),
+                                        error,
+                                    });
+                                }
+                                OnFailure::Disable => disable(net, &error),
+                                OnFailure::Continue => {}
+                            }
+                        }
+                    }
                 }
                 // Inline firings only, and they moved the marking: sweep
                 // again before calling the net quiescent.
@@ -669,8 +719,8 @@ where
         if stop.load(Ordering::Relaxed) {
             break;
         }
-        match net.step() {
-            Ok(Some(_)) => tally.launched += 1,
+        match net.step_deep() {
+            Ok(Some(step)) => tally.landed(&step),
             // An idle tick is not a finish line here: the net is waiting.
             Ok(None) => {}
             Err(error) => {
@@ -683,14 +733,14 @@ where
                             error,
                         });
                     }
-                    OnFailure::Disable => disable(net, error.transition),
+                    OnFailure::Disable => disable(net, &error),
                     OnFailure::Continue => {}
                 }
             }
         }
         thread::sleep(tick);
     }
-    let quiesced = net.fireable().is_empty();
+    let quiesced = net.is_quiescent_deep();
     Ok(tally.summary(net, quiesced))
 }
 
@@ -717,6 +767,7 @@ where
             if stop.load(Ordering::Relaxed) {
                 break;
             }
+            let mut launched_this_sweep = 0_usize;
             for transition in net.fireable() {
                 if stop.load(Ordering::Relaxed) {
                     break;
@@ -727,6 +778,7 @@ where
                     Err(misuse) => unreachable!("{}: {misuse}", LAUNCHABLE),
                 };
                 tally.launched += 1;
+                launched_this_sweep += 1;
                 if firing.is_pending() {
                     let tx = tx.clone();
                     scope.spawn(move || {
@@ -742,6 +794,26 @@ where
             }
             if first_failure.is_some() {
                 break;
+            }
+            // Nothing out here to launch and nothing airborne: one inner
+            // firing this tick, inline, in `step_deep`'s order.
+            if launched_this_sweep == 0 && airborne == 0 && !stop.load(Ordering::Relaxed) {
+                match net.step_inner() {
+                    Ok(Some(step)) => tally.landed(&step),
+                    Ok(None) => {}
+                    Err(error) => {
+                        tally.launched += 1;
+                        tally.failed += 1;
+                        match on_failure {
+                            OnFailure::Stop => first_failure = Some(error),
+                            OnFailure::Disable => disable(net, &error),
+                            OnFailure::Continue => {}
+                        }
+                    }
+                }
+                if first_failure.is_some() {
+                    break;
+                }
             }
 
             // The rest of the tick, spent waiting on the channel rather than
@@ -776,7 +848,7 @@ where
                 error,
             });
         }
-        let quiesced = net.fireable().is_empty();
+        let quiesced = net.is_quiescent_deep();
         Ok(tally.summary(net, quiesced))
     })
 }
@@ -813,7 +885,7 @@ fn absorb(
                         *first_failure = Some(error);
                     }
                 }
-                OnFailure::Disable => disable(net, error.transition),
+                OnFailure::Disable => disable(net, &error),
                 OnFailure::Continue => {}
             }
         }
@@ -827,9 +899,28 @@ fn absorb(
 
 /// [`OnFailure::Disable`], written once: switch off the transition that just
 /// failed, which appends a [`Toggled`](crate::Event::Toggled) event.
-fn disable(net: &mut Net, transition: TransitionId) {
-    net.disable(transition)
-        .expect("the transition that just failed is a transition of this net");
+///
+/// A transition of an inner net is switched off where it is, found by the
+/// failure's [`path`](FiringFailed::path); its `Toggled` comes out here as an
+/// [`Event::Nested`](crate::Event::Nested), like anything else an inner net
+/// logs.
+fn disable(net: &mut Net, failure: &FiringFailed) {
+    disable_at(net, &failure.path, failure.transition);
+}
+
+/// [`disable`] one level at a time, outer to inner.
+fn disable_at(net: &mut Net, path: &[(PlaceId, TokenId, String)], transition: TransitionId) {
+    let Some(((place, token, name), rest)) = path.split_first() else {
+        net.disable(transition)
+            .expect("the transition that just failed is a transition of this net");
+        return;
+    };
+    // The token has not moved: an inner failure changes nothing out here.
+    net.nested_scope(*place, *token, |nets| {
+        if let Some(entry) = nets.iter_mut().find(|entry| entry.0 == name.as_str()) {
+            disable_at(&mut *entry.1, rest, transition);
+        }
+    });
 }
 
 /// The per-call bookkeeping every loop keeps: where [`Net::fired_count`]
@@ -839,11 +930,15 @@ fn disable(net: &mut Net, transition: TransitionId) {
 /// Successes are read back off the net rather than counted here, so the
 /// summary cannot drift from what the net thinks happened; failures are the
 /// driver's own tally, because the net counts only completed firings.
+///
+/// An inner net's successes are not in the outer net's
+/// [`fired_count`](Net::fired_count), so they are counted here as they land.
 #[derive(Debug)]
 struct Tally {
     fired_at_entry: u64,
     launched: u64,
     failed: u64,
+    inner_fired: u64,
 }
 
 impl Tally {
@@ -852,6 +947,16 @@ impl Tally {
             fired_at_entry: net.fired_count(),
             launched: 0,
             failed: 0,
+            inner_fired: 0,
+        }
+    }
+
+    /// One successful [`step_deep`](Net::step_deep) or inner step: a launch,
+    /// and an inner success if it happened inside.
+    fn landed(&mut self, step: &DeepStep) {
+        self.launched += 1;
+        if matches!(step, DeepStep::Inside { .. }) {
+            self.inner_fired += 1;
         }
     }
 
@@ -866,7 +971,7 @@ impl Tally {
     fn summary(&self, net: &Net, quiesced: bool) -> RunSummary {
         RunSummary {
             quiesced,
-            fired_count: net.fired_count() - self.fired_at_entry,
+            fired_count: net.fired_count() - self.fired_at_entry + self.inner_fired,
             failed_count: self.failed,
         }
     }

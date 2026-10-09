@@ -91,6 +91,9 @@ Dropped, and why:
   input place is non-empty and whose guard passes.
 - **Firing**: consume inputs, run body, distribute outputs.
 - **Quiescent**: nothing fireable and nothing in flight.
+- **Inner net**: a net carried by a token, in a *nested* place; the net
+  holding the token is the **outer net** (§6.6, slice 15). *Quiescent deep*:
+  quiescent here and in every inner net that is not passive.
 
 ## 4. Representation
 
@@ -101,7 +104,7 @@ pub struct PlaceId(u32);        // erased; used in events and the read API
 pub struct TransitionId(u32);
 pub struct TokenId(u64);        // monotonic per Net
 
-pub struct NetId(u32);          // process-unique, minted per NetBuilder
+pub struct NetId(u32);          // process-unique, minted per NetBuilder; also names an inner net (§6.6)
 
 pub struct PlaceRef<T> { place: PlaceId, net: NetId, _t: PhantomData<fn() -> T> }  // typed handle, 8 bytes
 ```
@@ -129,12 +132,18 @@ pub struct PlaceRef<T> { place: PlaceId, net: NetId, _t: PhantomData<fn() -> T> 
     (`Fired`) plus one per `MutateEdge` (`Mutated`); a failed firing likewise
     (`Mutated`s then `Failed`); a toggle by one.
 - `PlaceRef` is stamped with its net's `NetId` (an `AtomicU32` counter, one
-  per process; not stable across runs, never serialised). Every method that
+  per process; not stable across runs). Every method that
   takes a `PlaceRef` compares the stamp first, so a handle from another net
   cannot index this one: infallible methods (`put`, `seed`, `transition`, ..)
   panic with both net ids in the message; fallible ones return
   `NetError::NoSuchPlace`. Needed because composition (§6.6) puts two nets'
   handles in one scope. `PlaceId` and `TransitionId` stay unstamped.
+- **Changed 2026-10-09 (slice 15).** `NetId` was never serialised; it now
+  is, one way. It is the stable id of an inner net in `Event::Nested`
+  (§6.6), which a consumer follows a token by while its `TokenId` changes,
+  so it has `get()`, prints as its bare number and, with `serde`, is
+  `Serialize` (not `Deserialize`) as that number: an opaque, process-local
+  id, not something to store and read back.
 
 ### 4.2 Places and tokens
 
@@ -156,6 +165,13 @@ struct PlaceMeta {
     to_json: Option<fn(&dyn Any) -> serde_json::Value>,          // Some iff marked serializable
     #[cfg(feature = "serde")]
     from_json: Option<fn(serde_json::Value) -> Result<Box<dyn Any + Send + Sync>, _>>,
+    nested: Option<NestedVtable>,   // Some iff place_nested (§6.6)
+    passive: bool,                  // step_deep leaves its inner nets alone; never true without nested
+}
+
+struct NestedVtable {               // slice 15: T::nets and T::nets_mut of the token's Nested impl
+    nets: fn(&dyn Any) -> Vec<(&str, &Net)>,
+    nets_mut: fn(&mut dyn Any) -> Vec<(&str, &mut Net)>,
 }
 ```
 
@@ -179,6 +195,11 @@ Escape hatch: `place_no_clone::<T>()` drops the `Clone` bound (for `File`,
 sockets, handles). Such a place cannot be the source of a `SnapshotEdge` or
 a consuming input to a `restore_tokens_on_failure` transition (build errors;
 a `MutateEdge` from it is fine), and makes `Net::snapshot()` return `Err`.
+
+`place_nested::<T>()` (slice 15, §6.6) is the second: `T: Nested + Debug +
+Send + Sync + 'static`, no `Clone`, because a `Net` cannot be cloned. It is a
+no-clone place with all of the above, until phase 2 of nets as tokens
+(templates, a fork) gives it a cloner.
 
 Big data idiom: put heavy fields in `Arc`. Moves are free (a `Vec` is 24
 bytes to move); `Arc::clone` is a counter bump; `Arc::make_mut` is
@@ -444,6 +465,8 @@ Select, launch, run, distribute, inline. `Ok(None)` = nothing fireable, or
 the selector declined. Deterministic given the selector: the basis for tests
 and replay. `net.fire(t) -> Result<(), NetError>` fires a named transition
 regardless of the selector (`NotFireable` if it cannot fire right now).
+`net.step_deep()` (slice 15) is `step` and, when that fires nothing, one
+firing inside a token that carries nets of its own (§6.6).
 
 ### 6.4 Concurrent
 
@@ -469,18 +492,120 @@ loop:
 
 The core has no clock. Time-based guards call `Instant::now()` themselves.
 
-### 6.6 Composition: a net as a transition
+### 6.6 Composition: nets as tokens
 
-A `Net` can be the body of a transition in a larger net, as in Python where a
-net is used as a function. No engine support is needed: a body is a stateful
-closure (`FnMut`, `Send + Sync`) and `Net` is `Send + Sync`, so the closure
-owns the inner net, puts its inputs into the inner net's input places, runs it
-to completion with `drivers::run`, drains the inner output places and returns
-the results. Planned sugar: `inner.as_transition(inputs, outputs)` that
-writes that closure. Observability stops at the boundary: the outer net's
-events do not describe the inner firing; a visualiser that wants to look
-inside must be handed the inner net (for example via `Arc<Mutex<Net>>` shared
-with the closure). See §17.
+**Built 2026-10-09, slice 15.** A token may carry Petri nets of its own,
+*inner nets*; the net holding the token is the *outer net*. The engine runs,
+reads and reports on inner nets through the token. Asked for by a consumer
+whose entities (a vehicle, a body, a building) move between the places of a
+larger process and have life cycles of their own, of differing shapes
+(`Cyberpunk2020-Simulation/dev-docs/NETS_AS_TOKENS.md`; this slice is its R1
+to R4). The example is `petritype/examples/transit.rs`: a city whose
+vehicles carry a cabin, a deck or a pod, and the proposal's acceptance
+script as its tests.
+
+```rust
+pub trait Nested: Send + Sync + 'static {
+    fn nets(&self) -> Vec<(&str, &Net)>;              // each inner net with a name, in a fixed order
+    fn nets_mut(&mut self) -> Vec<(&str, &mut Net)>;  // the same, mutably
+}
+impl Nested for Net { .. }                            // one inner net, itself, named ""
+
+b.place_nested::<T: Nested + Debug + Send + Sync + 'static>(name) -> PlaceRef<T>
+b.passive(place)                                      // BuildError::NotNested on any other place
+net.nested(place, token) -> Option<Vec<(&str, &Net)>>
+net.nested_scope(place, token, f: impl FnOnce(&mut [(&str, &mut Net)]) -> R) -> Option<R>
+net.step_deep() -> Result<Option<DeepStep>, FiringFailed>
+net.is_quiescent_deep() -> bool
+net.place_ref::<T>(name) -> Option<PlaceRef<T>>       // a typed handle by name, checked by TypeId
+
+pub enum DeepStep {
+    Here   { transition: TransitionId },
+    Inside { place: PlaceId, token: TokenId, net: String, nested_id: NetId, step: Box<DeepStep> },
+}
+```
+
+- **Declaring.** A token type says which nets it owns; one without
+  `Nested` is a compile error (`#[diagnostic::on_unimplemented]`).
+  `place_nested` records `T::nets` and `T::nets_mut` in the place's vtable
+  (§4.2). The place is no-clone (§4.3) until phase 2.
+- **Running.** `step()` keeps its meaning: one firing of this net.
+  `step_deep()` tries `step()` and, when it fires nothing, walks the nested
+  places in place order, passive ones skipped, their tokens oldest first,
+  each token's nets in `nets()` order, calling `step_deep` on each; the
+  first firing found is the step. In a loop that is the policy (the
+  proposal's default 1): the outer net until it is quiet, then the inner nets
+  in place order then token order, repeated until everything is quiet.
+  Deterministic given the selectors. `is_quiescent_deep()` is §3's
+  quiescence here plus every non-passive inner net quiescent deep;
+  `fireable()` stays shallow. The drivers step deep (§13).
+- **Passive.** `step_deep` never descends into a passive place, and its
+  inner nets do not count against `is_quiescent_deep`. An outer body steps
+  them itself: `vehicle.inner.step()`, or `drivers::run` on it, inside a
+  `MutateEdge` body.
+- **Reaching inside** adds nothing to the engine beyond reading. A
+  `MutateEdge` body is handed `&mut T` and uses the inner net's own API
+  (`put`, `remove`, `set_param`, `apply`, `drivers::run`). A guard reads
+  `net.nested(place, token)` of the front token (`net.tokens(place).next()`),
+  which is the one a `MutateEdge` is handed. A caller that is not a body uses
+  `nested_scope`. A body knows the inner places by name, so
+  `place_ref::<T>(name)` turns a name into the handle the inner net's typed
+  API wants (stamped with that net's id), rather than every token type
+  storing handles beside its net.
+- **An outer firing is one unit** (the proposal's default 4).
+  `restore_tokens_on_failure` restores the outer tokens the firing consumed
+  and nothing else: what a failing body already did inside an inner net
+  stands. A body that reaches inside should be infallible after its first
+  inner write, or write with `Command`s, each of which is atomic.
+- **Observability.** An inner net's events come out in the outer log
+  wrapped (the proposal's default 3), so consumers that know nothing of
+  nesting are untouched: `Event::Nested { place, token, net, nested_id,
+  event: Box<Event> }`, a `Nested` inside a `Nested` one level further down.
+  The *net* lifts them, not the driver, so every driver and every caller of
+  `fire` or `put` gets the same log; `drain_events` does not sweep tokens.
+  The rules, each under the place and token id the token has at that moment:
+  1. an inner firing made by `step_deep`: straight after it, where the token
+     sits;
+  2. a `MutateEdge` body on a nested token: before the firing's `Mutated`
+     for that token, so `Nested`*, `Mutated`, then `Fired`, `Distributed`
+     or `Failed`;
+  3. a consuming edge (`TakeEdge`, `TakeAllEdge`) from a nested place: at
+     launch, before `Launched` or `Fired`, under the source place and the
+     old id, so nothing logged inside a token that is never put back is lost;
+  4. a token produced into a nested place: after `Fired` or `Distributed`,
+     under the destination and the *new* id, which the reader has then seen;
+  5. external input: `put`, `extend`, `set_tokens`, `replace` into a nested
+     place after the `Added` or `Mutated`; `remove`, `set_tokens`, `replace`
+     of an outgoing token before the `Removed` or `Mutated`;
+  6. `nested_scope`: when the closure returns.
+
+  Every lifted event goes through `emit`, so `state_counter` moves once per
+  lifted event. Seeds are setup: `build()` drops what a seeded token's inner
+  nets logged while they were being made. As built, rule 2 lifts when the
+  firing lands rather than when the body returns: the token never left its
+  place, and landing is where the `Mutated` is written.
+- **The stable id.** `nested_id` is the inner net's own `NetId`, which does
+  not change when the outer token is taken and put back under a new
+  `TokenId`; a consumer follows a vehicle by it from station to station.
+  Hence `NetId`'s new `Display` and `Serialize` (§4.1).
+- **Failures say where.** A failure inside is the inner net's
+  `FiringFailed`, its `path` filled in level by level on the way up (§7).
+- **Limits** (the proposal's R10). No shared places: the outer net reaches
+  in only through the token, and no inner guard or body sees the outer net.
+  Depth is unbounded; the tests go two deep (a passenger carrying luggage).
+  Adding a vehicle is adding a token, never a place.
+- **Not yet.** Serialising nested tokens, templates, marking export and
+  import, and a fork that makes a nested place cloneable are phase 2;
+  addressing inner nets on the runner protocol is phase 3. Until then the
+  runner reports an `Event::Nested` as a variant it does not know
+  (`reloaded {reason: "resync"}`, §19.3.10), and `petritype-dot` draws the
+  outer net only.
+
+The plan this section held before — a net as the *body* of a transition,
+run to completion by a stateful closure, with `inner.as_transition(..)`
+sugar — is superseded rather than forbidden: a body may still own a net, but
+the engine sees nothing of it. A token is where an inner net lives when the
+outer net should see it.
 
 ## 7. Failure semantics
 
@@ -508,6 +633,9 @@ with the closure). See §17.
   (`RestoreOfNoClonePlace`) if a consuming input place is `no_clone`.
 - **The net stays consistent** after any failure: body returned to its slot,
   transition not in flight, nothing distributed.
+- **Inner changes are not rolled back** (slice 15, §6.6). A body that wrote
+  into a token's inner net before it failed has written: restoring puts back
+  the outer tokens the firing consumed, not the inner nets' markings.
 - Drivers apply a policy on `FiringFailed`: `Stop` (default), `Disable` the
   transition and continue, or `Continue`.
 
@@ -520,7 +648,12 @@ Error types (`thiserror`, all `#[non_exhaustive]`):
   `FiringFailed` transparently so that `net.fire(t)` and
   `net.distribute(done)` return one error type.
 - `FiringFailed` — a body returned `Err` or panicked; carries the transition,
-  the boxed error, and whether inputs were restored.
+  the boxed error, and whether inputs were restored. Since slice 15 also
+  `path: Vec<(PlaceId, TokenId, String)>`: where the transition is when it is
+  inside a token's inner net, one `(place, token, net name)` per level, outer
+  to inner, empty for the net's own. `step_deep` fills it in on the way up,
+  and the message names it (`transition "Sit" (TransitionId(0)) inside
+  PlaceId(0) #5 "cabin" failed: ..`).
 - `CommandError` — external input rejected. Wraps `NetError` transparently
   (unknown place, transition or token; type mismatch); with `serde`, also
   `NotSerializable`, `InvalidToken`, `NoSuchPlaceName`,
@@ -563,6 +696,7 @@ pub enum Event {
     Mutated     { place: PlaceId, token: TokenId },      // MutateEdge, or replace()
     Toggled     { transition: TransitionId, enabled: bool },
     ParamChanged { type_name: &'static str },
+    Nested      { place: PlaceId, token: TokenId, net: String, nested_id: NetId, event: Box<Event> },  // slice 15
 }
 ```
 
@@ -573,14 +707,23 @@ the order is `Launched`, `Mutated`*, then `Distributed` or `Failed`; the
 `state_counter` therefore moves once more on the staged path than on the
 inline one.
 
+`Nested` (slice 15) is an inner net's event, lifted into this log with the
+place and token it happened in, the inner net's name and its stable id; the
+six rules for when are in §6.6. With `serde` the wrapped event is under
+`"inner"`, since `"event"` is the tag.
+
 ### 8.2 Read API
 
 ```rust
-net.places()      -> impl Iterator<Item = (PlaceId, PlaceInfo<'_>)>    // by value: name, type_name, serializable, count (count is live, never stored)
+net.places()      -> impl Iterator<Item = (PlaceId, PlaceInfo<'_>)>    // by value: name, type_name, serializable, nested, passive, count (count is live, never stored)
 net.transitions() -> impl Iterator<Item = (TransitionId, TransitionInfo<'_>)>  // by value: name, inputs, outputs, enabled, in_flight, detachable
 net.edges()       -> impl Iterator<Item = EdgeInfo>   // Input { place, transition, kind } | Output { transition, place, slot }; transition order, inputs then outputs
 net.topology()    -> Topology   // places, transitions, edges and topology_counter as owned values; shape only, no counts or switches (slice 14)
 net.place_named(&str) -> Option<PlaceId>;  net.transition_named(&str) -> Option<TransitionId>
+net.place_ref::<T>(&str) -> Option<PlaceRef<T>>   // slice 15: a typed handle by name, checked by TypeId
+net.nested(place, token) -> Option<Vec<(&str, &Net)>>   // slice 15: a nested token's inner nets (§6.6)
+net.nested_scope(place, token, f) -> Option<R>    // slice 15: the same, mutably, lifting on return
+net.is_quiescent_deep() -> bool                   // slice 15: quiescent here and in every non-passive inner net
 net.fireable() -> Vec<TransitionId>;  net.is_fireable(t) -> bool;  net.is_enabled(t) -> bool;  net.priority_of(t) -> f64
 net.count(place)  -> usize
 net.tokens(place) -> impl Iterator<Item = (TokenId, &dyn Any)>
@@ -604,7 +747,8 @@ the builder. What it is for: a renderer or inspector on another thread owns
 a consistent copy while the driver keeps `&mut Net`, and a test keeps the
 state at one moment to compare with another. The fireable set is not stored
 (guards are closures on the live net). Snapshotting emits nothing and moves
-no counter.
+no counter. A net with a nested place cannot be snapshotted yet (§6.6), so
+`Snapshot` has no `nested`.
 
 There is no observer callback. The driver holds `&mut Net` between steps and
 is the observer.
@@ -667,7 +811,7 @@ net.apply(cmd) -> Result<(), CommandError>   // the one runtime TypeId check in 
   `serializable` only; `NotSerializable` otherwise), `Command::to_json(&net)`
   is the inverse, `net.apply_json(json)` is decode-then-apply. `PlaceId`,
   `TransitionId` and `TokenId` derive `Serialize`/`Deserialize` transparently;
-  `NetId` does not.
+  `NetId` only `Serialize`, since slice 15 (§4.1).
 
 Input may arrive whenever the caller holds `&mut Net`, including while
 firings are in flight.
@@ -749,6 +893,9 @@ run or that a reader of the net should know about.
 
 Always:
 - Duplicate place or transition names.
+- `passive` on a place not declared with `place_nested` (`NotNested`, the
+  first one marked; slice 15). `passive` itself stays infallible, as the
+  other per-place options are.
 - One input edge per place per transition (`DuplicateInputPlace`).
 - `SnapshotEdge` from a `no_clone` place.
 - `restore_tokens_on_failure` on a transition with a consuming (`TakeEdge`,
@@ -836,6 +983,24 @@ drivers::run_indefinitely(&mut net, mode, tick: Duration, stop: &AtomicBool, on_
 - `step` (one firing) is on `Net` itself; `clear_selector` undoes
   `set_selector`.
 
+**Done, slice 15** (nets as tokens, §6.6):
+
+- `Mode::Sequential`, in `run` and `run_indefinitely`, is `step_deep` in a
+  loop rather than `step`, so running a net runs its inner nets, in §6.6's
+  order and deterministically. `quiesced` is deep quiescence; the end of
+  `run_indefinitely` asks `is_quiescent_deep`.
+- `Mode::Concurrent` keeps its launch sweep for the outer net. When a sweep
+  launches nothing and nothing is airborne, it makes one inner firing
+  inline, as `step_deep` would choose it, and sweeps again (an outer guard
+  may read an inner marking). Inner nets never get threads of their own in
+  this version, and the ordering guarantee is the sequential driver's.
+- Both limits count every launch, inner ones included, and the fuse blames
+  the first fireable transition at any depth. `RunSummary.fired_count`
+  counts inner successes as well as the outer net's: an inner firing is not
+  in the outer `fired_count`, so the driver counts it as it lands.
+- `OnFailure::Disable` switches off an inner transition where it is, found
+  by the failure's `path`; its `Toggled` is lifted like any inner event.
+
 ## 14. Crate layout
 
 Cargo workspace, edition 2024, MSRV = current stable minus two (must be
@@ -854,7 +1019,9 @@ Examples (each also an integration test), mirroring the Python acceptance set:
 quickstart, parcel distribution, caching (union return → routed enum),
 match-up tokens (`TakeAllEdge` + guard + positional), coloured balls
 (`Distribution`), web scrape (routed enums), execution modes (sequential vs
-concurrent), read-edge scaler (`SnapshotEdge` + `MutateEdge`).
+concurrent), read-edge scaler (`SnapshotEdge` + `MutateEdge`). A ninth,
+transit (slice 15), is no port: it is the nets-as-tokens proposal's example
+and acceptance script (§6.6).
 
 **Done, slice 12.**
 
@@ -958,6 +1125,8 @@ version it already holds instead of calling it a gap (protocol §9).
 | forward-compatible enums | `#[non_exhaustive]` on `Event` and errors |
 | errors | `thiserror` |
 | surviving user panics | `std::panic::catch_unwind` + `AssertUnwindSafe` |
+| finding the nets inside a token whose type the net has forgotten | trait `Nested`; `T::nets` / `T::nets_mut` monomorphised into `PlaceMeta` as `fn` pointers, as `debug` and `clone` are (slice 15) |
+| an event inside an event inside an event | `Box<Event>` in `Event::Nested`: one level per box, depth unbounded |
 | FIFO places | `VecDeque` |
 
 ## 17. Open questions
@@ -969,7 +1138,14 @@ version it already holds instead of calling it a gap (protocol §9).
 - `Broadcast(value)` sugar: deferred.
 - Stamped net id in `PlaceRef`: **done, slice 2** (§4.1).
 - Observability of an inner net used as a transition (§6.6): how a visualiser
-  reaches inside. Deferred until the Bevy adapter needs it.
+  reaches inside. Deferred until the Bevy adapter needs it; **answered
+  2026-10-09, slice 15**, by moving the inner net from a body into a token.
+  The net lifts every inner event into its own log as `Event::Nested`, with
+  the place and token id of the moment and the inner net's stable
+  `NetId`; a visualiser reads an inner net with `net.nested(place, token)`
+  and follows one by `nested_id` across moves. Paths on the runner protocol
+  and a "descend" view in the Bevy adapter are phases 3 and 4 of the
+  proposal.
 - Stranded in-flight transitions: a `Firing`/`Completed` dropped without
   being distributed, or a rejected `distribute` (`ForeignFiring`,
   `NotInFlight`, which consume their argument), loses the body for good.
@@ -1035,6 +1211,16 @@ Slices, each with tests, in order:
     example carries that net under the shared name (the demo net became
     `parcel-fleet`), the harness has the §11 masks, and all four shared
     files hold against this runner (§19.3.10).
+15. Nets as tokens (§6.6), 2026-10-09, phase 1 of
+    `Cyberpunk2020-Simulation/dev-docs/NETS_AS_TOKENS.md` (its R1 to R4):
+    `Nested` and `place_nested`, passive places, `step_deep` and
+    `is_quiescent_deep`, `nested` and `nested_scope`, `place_ref`,
+    `Event::Nested` and the six lifting rules, `NetId` as the stable id,
+    `FiringFailed.path`, `BuildError::NotNested`, the drivers stepping deep;
+    the `transit` example running the acceptance script's steps 1 to 5 and
+    7, and `tests/slice15.rs`. Phase 2 (serialising nested tokens,
+    templates, marking export, a cloneable nested place, step 6) and phase 3
+    (the runner protocol) follow.
 
 ## 19. Interop: one protocol, two runtimes, two viewers
 

@@ -239,6 +239,19 @@
 //!   [`Net::is_in_flight`] naming the transitions whose bodies are out.
 //!   Dropping a [`Firing`] or a [`Completed`] instead of distributing it
 //!   strands its transition in flight for good.
+//! - [`Nested`] is a token type that carries Petri nets of its own, and
+//!   [`NetBuilder::place_nested`] the place that holds such tokens (DESIGN
+//!   §6.6). [`Net::nested`] reads a token's inner nets, [`Net::step_deep`]
+//!   fires the net and then, when it has nothing to fire, its inner nets,
+//!   with a [`DeepStep`] saying where, and [`Net::is_quiescent_deep`] asks
+//!   whether anything can happen at any depth.
+//!   [`NetBuilder::passive`] leaves a place's inner nets to the outer bodies
+//!   that reach into them, and [`Net::nested_scope`] is that reach for a
+//!   caller that is not a body. Whatever an inner net logs comes out in the
+//!   outer log as an [`Event::Nested`], with the place and token it
+//!   happened in and the inner net's own [`NetId`], which does not change as
+//!   the token moves; [`Net::place_ref`] finds an inner place's typed handle
+//!   by name.
 //! - [`drivers::run`] drives a net until it has nothing left to fire, and
 //!   [`drivers::run_indefinitely`] drives it on a clock until a flag says
 //!   stop. [`Mode`](drivers::Mode) picks the loop — sequential, where the
@@ -274,8 +287,9 @@
 //!   `NetBuilder::serializable_param` is the parameter half of that, giving a
 //!   parameter type the wire name a `set_param` command addresses it by. [`PlaceId`],
 //!   [`TransitionId`] and [`TokenId`] become `Serialize`/`Deserialize` as
-//!   bare numbers; [`NetId`] does not, being meaningless outside the process
-//!   that minted it. [`Event`], [`EdgeInfo`], [`EdgeKind`] and [`Topology`]
+//!   bare numbers; [`NetId`] becomes `Serialize` only, as the opaque,
+//!   process-local id an [`Event::Nested`] names its inner net by, never
+//!   something to read back. [`Event`], [`EdgeInfo`], [`EdgeKind`] and [`Topology`]
 //!   become `Serialize` (never `Deserialize`) in that id form, for logs and
 //!   tests; [`PlaceInfo::serializable`] says which places were marked. (All of these are hidden from this page unless the
 //!   feature is on.)
@@ -295,6 +309,7 @@ mod error;
 mod event;
 mod firing;
 mod ids;
+mod nested;
 mod net;
 mod param;
 mod place;
@@ -319,6 +334,7 @@ pub use error::{BodyPanicked, BuildError, CommandError, FiringFailed, NetError};
 pub use event::Event;
 pub use firing::{Completed, Firing, Selector, TieBreak};
 pub use ids::{NetId, PlaceId, PlaceRef, TokenId, TransitionId};
+pub use nested::{DeepStep, Nested};
 pub use net::{Net, PlaceInfo};
 pub use param::Param;
 pub use routing::{Either, RoutedOutput};

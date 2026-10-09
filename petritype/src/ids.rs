@@ -16,9 +16,17 @@ use std::sync::atomic::{AtomicU32, Ordering};
 /// the body of a transition in another.
 ///
 /// The id is unique within one process run only. It is not stable across
-/// runs, is never serialised, and means nothing outside the process that
-/// minted it.
+/// runs and means nothing outside the process that minted it.
+///
+/// It is also the id of an inner net, in a net whose tokens carry nets of
+/// their own: [`Event::Nested`](crate::Event::Nested) names the inner net it
+/// lifted an event from by its `NetId`, which stays the same while the token
+/// moves and its [`TokenId`] does not. So it prints as its bare number and,
+/// with the `serde` feature, serialises as one (never deserialises) — as an
+/// opaque, process-local id to follow a token by, not as something to keep.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(transparent))]
 pub struct NetId(pub(crate) u32);
 
 /// The source of [`NetId`]s. `Relaxed` is enough: the only requirement is
@@ -30,6 +38,12 @@ impl NetId {
     /// Mints the next id. Called once per [`NetBuilder`](crate::NetBuilder).
     pub(crate) fn mint() -> NetId {
         NetId(NEXT_NET_ID.fetch_add(1, Ordering::Relaxed))
+    }
+
+    /// The number this id is: what `Display` prints and the `serde` feature
+    /// writes.
+    pub const fn get(self) -> u32 {
+        self.0
     }
 }
 
@@ -45,8 +59,8 @@ impl NetId {
 ///
 /// With the `serde` feature it is a bare JSON number, so that a
 /// `JsonCommand` and an event log read as data rather than as wrappers.
-/// [`NetId`] is deliberately *not* serialisable: it means nothing outside
-/// the process that minted it.
+/// [`NetId`] serialises too, but only one way: it means nothing outside the
+/// process that minted it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(transparent))]
@@ -90,7 +104,7 @@ macro_rules! display_as_number {
         }
     )*};
 }
-display_as_number!(PlaceId, TransitionId, TokenId);
+display_as_number!(NetId, PlaceId, TransitionId, TokenId);
 
 /// The ids parse from their bare number, the inverse of `Display` and the
 /// spelling a wire protocol uses for a token id (`"17"`).
@@ -301,5 +315,7 @@ mod tests {
         assert_eq!(PlaceId(3).to_string(), "3");
         assert_eq!(TransitionId(4).to_string(), "4");
         assert_eq!(format!("#{}", TokenId(7)), "#7");
+        assert_eq!(NetId(5).to_string(), "5");
+        assert_eq!(NetId(5).get(), 5);
     }
 }

@@ -81,6 +81,15 @@ pub struct TopologyPlace {
     /// [`PlaceInfo::serializable`]: whether the place was marked
     /// serializable, and so has a JSON view of its tokens.
     pub serializable: bool,
+    /// [`PlaceInfo::nested`]: whether the place's tokens carry nets of their
+    /// own. With `serde`, written only when true, so that the shape of a net
+    /// without nesting is what it always was.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "std::ops::Not::not"))]
+    pub nested: bool,
+    /// [`PlaceInfo::passive`]: whether those inner nets are left to an outer
+    /// body. Written only when true, like `nested`.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "std::ops::Not::not"))]
+    pub passive: bool,
 }
 
 /// One transition of a [`Topology`]: what [`TransitionInfo`] reports, owned,
@@ -126,6 +135,8 @@ impl Topology {
                     name: info.name.to_owned(),
                     type_name: info.type_name,
                     serializable: info.serializable,
+                    nested: info.nested,
+                    passive: info.passive,
                 })
                 .collect(),
             transitions: transitions

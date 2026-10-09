@@ -85,6 +85,16 @@ rename backlog.
 | parameter on the wire | `b.serializable_param::<T>("name")`, `JsonCommand::SetParam { param, value }`, `Command::set_param(v)` | `SetParam(transition, kwargs)` (by transition, merged) | — |
 | declared parameter without a value | `BuildError::MissingParam { transition, type_name }` | missing kwarg at call time | — |
 | owned copy of a net's state | `Snapshot`, `net.snapshot()` → `NetError::NoClonePlace { place }` | `dict(graph.fired_counts)` copies only | — |
+| a net carried by a token / the net holding that token | **inner net** / **outer net** (DESIGN §6.6) | — | same words (nets-as-tokens Python track) |
+| a token type that owns nets | trait `Nested` (`nets`, `nets_mut`: each net with a name, `""` for a bare `Net`) | — | `__petritype_nets__` (proposal) |
+| place whose tokens carry nets | **nested place**, `b.place_nested::<T>(name)`, `PlaceInfo::nested` | — | `nested=True` on the place (proposal) |
+| nested place whose inner nets only an outer body steps | **passive**, `b.passive(place)`, `PlaceInfo::passive` → `BuildError::NotNested` on a plain place | — | — |
+| one firing here, or else in the first inner net that has one | **deep step**, `net.step_deep()` → `DeepStep::{Here, Inside}`; `net.is_quiescent_deep()` | — | — |
+| moving an inner net's events into the outer log | **lift** (the net does it, at six fixed moments) | — | — |
+| an inner net's event in the outer log | `Event::Nested { place, token, net, nested_id, event }` | — | wrapping `Nested` record (proposal) |
+| the id that follows a token's inner net across moves | `nested_id`: the inner net's own `NetId` (`Display` and `Serialize` as a bare number) | — | — |
+| where an inner failure happened | `FiringFailed::path`: `(place, token, net name)` per level, outer to inner | — | — |
+| mutable reach into a token's nets from outside a body | `net.nested_scope(place, token, f)` (lifts when `f` returns); read-only `net.nested(place, token)` | — | — |
 
 ## Rust-specific conventions
 

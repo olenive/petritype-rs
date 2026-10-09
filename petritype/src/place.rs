@@ -5,6 +5,7 @@ use std::collections::VecDeque;
 use std::fmt;
 
 use crate::ids::TokenId;
+use crate::nested::NestedVtable;
 
 /// A token as the net stores it: owned, type-erased, and safe to move to
 /// another thread with the net.
@@ -81,6 +82,16 @@ pub(crate) struct PlaceMeta {
     /// token with.
     #[cfg(feature = "serde")]
     pub(crate) from_json: Option<FromJsonFn>,
+    /// `T::nets` and `T::nets_mut`, `Some` only for a place declared with
+    /// [`place_nested`](crate::NetBuilder::place_nested): what lets the
+    /// engine find, step and drain the inner nets of a token whose type it
+    /// has forgotten (DESIGN §6.6). Such a place is also a no-clone place,
+    /// so `clone` is `None` beside it.
+    pub(crate) nested: Option<NestedVtable>,
+    /// Whether [`step_deep`](crate::Net::step_deep) leaves this nested
+    /// place's inner nets alone, as asked for by
+    /// [`passive`](crate::NetBuilder::passive). Never true without `nested`.
+    pub(crate) passive: bool,
 }
 
 impl fmt::Debug for PlaceMeta {

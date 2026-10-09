@@ -12,6 +12,7 @@ use crate::error::NetError;
 use crate::event::Event;
 use crate::firing::{Selector, TieBreak};
 use crate::ids::{NetId, PlaceId, PlaceRef, TokenId, TransitionId, foreign_place};
+use crate::nested::lift_from;
 use crate::param::{ParamSlot, param_of, param_slot_index};
 use crate::place::{ErasedToken, PlaceSlot, erase_all};
 use crate::topology::Topology;
@@ -102,6 +103,17 @@ pub struct PlaceInfo<'a> {
     /// itself, and it is always `false` without the `serde` feature, which is
     /// the only way to mark a place.
     pub serializable: bool,
+    /// Whether the place was declared with
+    /// [`NetBuilder::place_nested`](crate::NetBuilder::place_nested): its
+    /// tokens carry nets of their own, which [`Net::nested`] reads and
+    /// [`Net::step_deep`] runs (DESIGN §6.6). A renderer may badge such a
+    /// place, or offer to open a token.
+    pub nested: bool,
+    /// Whether the place was marked
+    /// [`NetBuilder::passive`](crate::NetBuilder::passive): its inner nets
+    /// fire only when an outer body steps them. Never true unless `nested`
+    /// is.
+    pub passive: bool,
 }
 
 impl Net {
@@ -252,6 +264,35 @@ impl Net {
     /// unique: [`build`](crate::NetBuilder::build) rejects duplicates.
     pub fn place_named(&self, name: &str) -> Option<PlaceId> {
         place_named_in(&self.places, name)
+    }
+
+    /// A typed handle to the place with this name, if the net has one and it
+    /// holds `T`; stamped with this net's id, exactly as the builder's own
+    /// handle was.
+    ///
+    /// For code that holds a net it did not build: a body handed a token
+    /// whose inner net it reaches into (DESIGN §6.6), which knows the inner
+    /// places by name and type but was never given their handles. The type
+    /// is checked by [`TypeId`], so a wrong guess is `None` rather than a
+    /// handle that would panic later.
+    ///
+    /// ```
+    /// # use petritype::NetBuilder;
+    /// let mut b = NetBuilder::new();
+    /// let door = b.place::<String>("Door");
+    /// let mut net = b.build()?;
+    ///
+    /// let found = net.place_ref::<String>("Door").expect("a String place");
+    /// assert_eq!(found, door, "the same handle the builder gave out");
+    /// assert_eq!(net.place_ref::<u32>("Door"), None, "the wrong type");
+    /// assert_eq!(net.place_ref::<String>("Roof"), None, "no such place");
+    /// net.put(found, "Ada".to_owned());
+    /// # Ok::<(), petritype::BuildError>(())
+    /// ```
+    pub fn place_ref<T: 'static>(&self, name: &str) -> Option<PlaceRef<T>> {
+        let place = self.place_named(name)?;
+        (self.places[place.0 as usize].meta.type_id == TypeId::of::<T>())
+            .then(|| PlaceRef::new(self.id, place))
     }
 
     /// How many tokens a place holds. An unknown place counts zero, so this is
@@ -488,7 +529,7 @@ impl Net {
     /// [`NetError::NoSuchPlace`] or [`NetError::NoSuchToken`]; the net is
     /// unchanged in both cases.
     pub fn remove(&mut self, place: PlaceId, token: TokenId) -> Result<(), NetError> {
-        {
+        let lifted = {
             let slot = self
                 .places
                 .get_mut(place.0 as usize)
@@ -498,8 +539,18 @@ impl Net {
                 name: slot.meta.name.clone(),
                 token,
             })?;
-            slot.tokens.remove(index);
-        }
+            let (_, mut value) = slot
+                .tokens
+                .remove(index)
+                .expect("the position was just found");
+            // A nested token's last words, before it is reported gone
+            // (DESIGN §6.6, rule 5).
+            match slot.meta.nested {
+                Some(nested) => lift_from(nested, &mut value, place, token),
+                None => Vec::new(),
+            }
+        };
+        self.emit_all(lifted);
         self.emit(Event::Removed { place, token });
         Ok(())
     }
@@ -679,6 +730,9 @@ impl Net {
     ) -> Result<TokenId, NetError> {
         let token = self.insert_erased(place, value, found)?;
         self.emit(Event::Added { place, token });
+        // A nested token says what its inner nets did before it arrived only
+        // once its arrival has been announced (DESIGN §6.6, rule 5).
+        self.lift(place, token);
         Ok(token)
     }
 
@@ -777,7 +831,7 @@ impl Net {
         value: ErasedToken,
         found: &'static str,
     ) -> Result<(), NetError> {
-        {
+        let outgoing = {
             let slot = self
                 .places
                 .get_mut(place.0 as usize)
@@ -795,9 +849,18 @@ impl Net {
                 name: slot.meta.name.clone(),
                 token,
             })?;
+            // The value going out speaks before the `Mutated`, the one coming
+            // in after it, both under the id they share (DESIGN §6.6, rule 5).
+            let outgoing = match slot.meta.nested {
+                Some(nested) => lift_from(nested, &mut slot.tokens[index].1, place, token),
+                None => Vec::new(),
+            };
             slot.tokens[index].1 = value;
-        }
+            outgoing
+        };
+        self.emit_all(outgoing);
         self.emit(Event::Mutated { place, token });
+        self.lift(place, token);
         Ok(())
     }
 
@@ -854,13 +917,27 @@ impl Net {
     }
 
     /// Removes every token of a place, emitting one
-    /// [`Removed`](Event::Removed) each. An unknown place is a no-op.
+    /// [`Removed`](Event::Removed) each, preceded by whatever a nested
+    /// token's inner nets had logged (DESIGN §6.6, rule 5). An unknown place
+    /// is a no-op.
     fn clear(&mut self, place: PlaceId) {
         let Some(slot) = self.places.get_mut(place.0 as usize) else {
             return;
         };
-        let removed: Vec<TokenId> = slot.tokens.drain(..).map(|(id, _)| id).collect();
-        for token in removed {
+        let nested = slot.meta.nested;
+        let removed: Vec<(TokenId, Vec<Event>)> = slot
+            .tokens
+            .drain(..)
+            .map(|(token, mut value)| {
+                let lifted = match nested {
+                    Some(nested) => lift_from(nested, &mut value, place, token),
+                    None => Vec::new(),
+                };
+                (token, lifted)
+            })
+            .collect();
+        for (token, lifted) in removed {
+            self.emit_all(lifted);
             self.emit(Event::Removed { place, token });
         }
     }
@@ -910,6 +987,8 @@ pub(crate) fn places_of(places: &[PlaceSlot]) -> impl Iterator<Item = (PlaceId, 
             serializable: slot.meta.to_json.is_some(),
             #[cfg(not(feature = "serde"))]
             serializable: false,
+            nested: slot.meta.nested.is_some(),
+            passive: slot.meta.passive,
         };
         (id, info)
     })

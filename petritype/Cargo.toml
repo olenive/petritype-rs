@@ -26,7 +26,7 @@ petritype-dot = { path = "../petritype-dot" }
 [features]
 serde = ["dep:serde", "dep:serde_json"]
 
-# The eight examples port the Python acceptance set (DESIGN §14). Each one is
+# The first eight examples port the Python acceptance set (DESIGN §14). Each one is
 # a program that runs its net and a test module that asserts what the Python
 # example asserted, so `cargo test` covers them as well as `cargo run`.
 [[example]]
@@ -59,6 +59,12 @@ test = true
 
 [[example]]
 name = "read_edge_scaler"
+test = true
+
+# Nets as tokens (DESIGN §6.6): vehicles carrying nets of their own, and the
+# acceptance script of the proposal that asked for them.
+[[example]]
+name = "transit"
 test = true
 
 [package.metadata.docs.rs]

@@ -1,6 +1,6 @@
 //! The event log: what changed, in order.
 
-use crate::ids::{PlaceId, TokenId, TransitionId};
+use crate::ids::{NetId, PlaceId, TokenId, TransitionId};
 
 /// One change to the net, appended by the net and drained by the driver with
 /// [`Net::drain_events`](crate::Net::drain_events).
@@ -29,6 +29,10 @@ use crate::ids::{PlaceId, TokenId, TransitionId};
 /// and a [`ParamChanged`](Event::ParamChanged)
 /// `{"event":"param_changed","type_name":"..."}`. Shapes keyed by name, for a
 /// wire protocol, live outside this crate.
+///
+/// A net whose tokens carry nets of their own ([`Nested`](crate::Nested))
+/// reports what happens inside them here too, each inner event wrapped in a
+/// [`Nested`](Event::Nested) that says where it happened.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[cfg_attr(feature = "serde", serde(tag = "event", rename_all = "snake_case"))]
@@ -145,5 +149,66 @@ pub enum Event {
     ParamChanged {
         /// The parameter type whose value changed.
         type_name: &'static str,
+    },
+    /// Something happened inside an inner net of one of this net's tokens
+    /// (DESIGN §6.6): `event` is what that net logged, and the other fields
+    /// say where it was. Deeper levels nest: an event two nets down is a
+    /// `Nested` inside a `Nested`.
+    ///
+    /// An inner net's events are *lifted* into this log by the net itself,
+    /// never by a driver, at fixed moments, each with the place and the token
+    /// id the token has at that moment:
+    ///
+    /// 1. after an inner firing made by [`step_deep`](crate::Net::step_deep),
+    ///    straight away, under the place the token sits in;
+    /// 2. after a [`MutateEdge`](crate::MutateEdge) body ran on the token,
+    ///    just before that firing's [`Mutated`](Event::Mutated) for it — so a
+    ///    firing reads `Nested`*, `Mutated`, then
+    ///    [`Fired`](Event::Fired), [`Distributed`](Event::Distributed) or
+    ///    [`Failed`](Event::Failed);
+    /// 3. when a firing consumes the token, at launch, before its
+    ///    [`Launched`](Event::Launched) or [`Fired`](Event::Fired), under the
+    ///    place it was taken from and the id it had there — nothing is lost
+    ///    with a token that is not put back;
+    /// 4. when a firing produces the token, after its
+    ///    [`Fired`](Event::Fired) or [`Distributed`](Event::Distributed),
+    ///    under the place it landed in and its *new* id, so that a reader has
+    ///    seen the id before anything is said about it;
+    /// 5. when a token arrives from outside ([`put`](crate::Net::put),
+    ///    [`extend`](crate::Net::extend), [`set_tokens`](crate::Net::set_tokens),
+    ///    [`replace`](crate::Net::replace), and their
+    ///    [`Command`](crate::Command)s), after its [`Added`](Event::Added) or
+    ///    [`Mutated`](Event::Mutated); when one leaves ([`remove`](crate::Net::remove),
+    ///    [`set_tokens`](crate::Net::set_tokens), [`replace`](crate::Net::replace)),
+    ///    before its [`Removed`](Event::Removed) or [`Mutated`](Event::Mutated);
+    /// 6. when the closure given to [`nested_scope`](crate::Net::nested_scope)
+    ///    returns.
+    ///
+    /// Each lifted event is one change here, and moves
+    /// [`state_counter`](crate::Net::state_counter) by one. Seeded tokens are
+    /// setup: whatever their inner nets logged before the net was built is
+    /// dropped by [`build`](crate::NetBuilder::build).
+    ///
+    /// With the `serde` feature the wrapped event is under `"inner"`, since
+    /// `"event"` is the tag: `{"event":"nested","place":0,"token":3,
+    /// "net":"cabin","nested_id":7,"inner":{"event":"fired",...}}`.
+    Nested {
+        /// The nested place the token was in when this was lifted.
+        place: PlaceId,
+        /// The token, by the id it had in that place when this was lifted.
+        /// A token taken and put back gets a new id; `nested_id` does not
+        /// change.
+        token: TokenId,
+        /// The inner net's name, as [`Nested::nets`](crate::Nested::nets)
+        /// gave it; `""` for a bare [`Net`](crate::Net) token.
+        net: String,
+        /// The inner net's own [`Net::id`](crate::Net::id): stable while the
+        /// token moves from place to place and its [`TokenId`] changes, so it
+        /// is the id to follow one token's inner life by. Process-local,
+        /// like every [`NetId`].
+        nested_id: NetId,
+        /// What the inner net logged.
+        #[cfg_attr(feature = "serde", serde(rename = "inner"))]
+        event: Box<Event>,
     },
 }

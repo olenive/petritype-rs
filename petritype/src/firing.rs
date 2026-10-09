@@ -92,6 +92,7 @@ use crate::erased::{ErasedBody, ErasedInput, ErasedInputs, ErasedOutcome, Output
 use crate::error::{BodyPanicked, FiringFailed, NetError};
 use crate::event::Event;
 use crate::ids::{NetId, PlaceId, TokenId, TransitionId};
+use crate::nested::lift_from;
 use crate::net::Net;
 use crate::param::{ParamSlot, param_slot};
 use crate::place::{ErasedToken, PlaceMeta, PlaceSlot};
@@ -649,6 +650,9 @@ impl Net {
 
         let mut consumed = Vec::new();
         let mut mutated = Vec::new();
+        // What the inner nets of consumed nested tokens had logged, lifted
+        // under the place and id each token had (DESIGN §6.6, rule 3).
+        let mut lifted = Vec::new();
         // `Some`, empty, for a transition that restores its inputs: the
         // clones are taken by `consume`, below, before the body sees a thing.
         // `None` for every other transition, which is also what says that
@@ -675,6 +679,7 @@ impl Net {
                 inputs,
                 &mut consumed,
                 &mut mutated,
+                &mut lifted,
                 restore.as_mut(),
             );
             if transitions[index].detachable {
@@ -689,6 +694,9 @@ impl Net {
             }
         };
 
+        // Before the firing says anything of its own: these are the last
+        // words of tokens that may never be seen again.
+        self.emit_all(lifted);
         if report == Report::Staged {
             self.emit(Event::Launched {
                 transition,
@@ -762,6 +770,7 @@ impl Net {
                     name: self.transitions[transition.0 as usize].name.clone(),
                     error,
                     restored,
+                    path: Vec::new(),
                 });
             }
         };
@@ -808,6 +817,7 @@ impl Net {
                                 name: self.transitions[transition.0 as usize].name.clone(),
                                 error: Box::new(error),
                                 restored,
+                                path: Vec::new(),
                             });
                         }
                     }
@@ -827,6 +837,14 @@ impl Net {
         }
 
         self.emit_mutations(&mutated);
+        // Rule 4 of DESIGN §6.6: a nested token that landed speaks under its
+        // new id, after the event that announces the id. Only those are kept
+        // for the loop below, so a net without nesting allocates nothing.
+        let arrivals: Vec<(PlaceId, TokenId)> = landed
+            .iter()
+            .copied()
+            .filter(|(place, _)| self.places[place.0 as usize].meta.nested.is_some())
+            .collect();
         self.emit(match report {
             // The sequential path: consumed and produced together, because
             // nothing happened between them.
@@ -841,6 +859,9 @@ impl Net {
                 produced: landed,
             },
         });
+        for (place, token) in arrivals {
+            self.lift(place, token);
+        }
         self.fired_count += 1;
         Ok(())
     }
@@ -933,9 +954,16 @@ impl Net {
         true
     }
 
-    /// One [`Event::Mutated`] per mutating edge, in edge order.
+    /// One [`Event::Mutated`] per mutating edge, in edge order, each
+    /// preceded by whatever the body did inside the token's inner nets if it
+    /// is a nested one (DESIGN §6.6, rule 2).
+    ///
+    /// Lifted here rather than when the body returned because the token never
+    /// left its place, so here is where it can be found, and here is where
+    /// the order the rule promises is written.
     fn emit_mutations(&mut self, mutated: &[(PlaceId, TokenId)]) {
         for &(place, token) in mutated {
+            self.lift(place, token);
             self.emit(Event::Mutated { place, token });
         }
     }
@@ -1293,6 +1321,12 @@ pub(crate) fn default_selector(net: &Net, fireable: &[TransitionId]) -> Option<T
 ///
 /// `sources` is the tuple order — one entry per argument, saying which input
 /// edge or which parameter fills it — because `inputs` is the edges alone.
+///
+/// A token taken from a [nested](crate::NetBuilder::place_nested) place has
+/// its inner nets' logs emptied into `lifted` on its way out, under the place
+/// and the id it had there: the body owns it from the next line, and may
+/// never put it back (DESIGN §6.6, rule 3).
+#[allow(clippy::too_many_arguments)]
 fn consume(
     places: &mut [PlaceSlot],
     params: &[ParamSlot],
@@ -1300,6 +1334,7 @@ fn consume(
     inputs: &[(PlaceId, EdgeKind)],
     consumed: &mut Vec<(PlaceId, TokenId)>,
     mutated: &mut Vec<(PlaceId, TokenId)>,
+    lifted: &mut Vec<Event>,
     mut restore: Option<&mut Vec<(PlaceId, TokenId, ErasedToken)>>,
 ) -> Vec<ErasedInput<'static>> {
     let mut args = Vec::with_capacity(sources.len());
@@ -1318,19 +1353,26 @@ fn consume(
         match kind {
             EdgeKind::Take => {
                 let slot = &mut places[index];
-                let (token, value) = slot.tokens.pop_front().expect(NON_EMPTY);
+                let (token, mut value) = slot.tokens.pop_front().expect(NON_EMPTY);
                 if let Some(restore) = restore.as_deref_mut() {
                     restore.push((place, token, restore_clone(&slot.meta, &value)));
+                }
+                if let Some(nested) = slot.meta.nested {
+                    lifted.extend(lift_from(nested, &mut value, place, token));
                 }
                 consumed.push((place, token));
                 args.push(ErasedInput::Token(value));
             }
             EdgeKind::TakeAll => {
                 let slot = &mut places[index];
+                let nested = slot.meta.nested;
                 let mut values = Vec::with_capacity(slot.tokens.len());
-                for (token, value) in slot.tokens.drain(..) {
+                for (token, mut value) in slot.tokens.drain(..) {
                     if let Some(restore) = restore.as_deref_mut() {
                         restore.push((place, token, restore_clone(&slot.meta, &value)));
+                    }
+                    if let Some(nested) = nested {
+                        lifted.extend(lift_from(nested, &mut value, place, token));
                     }
                     consumed.push((place, token));
                     values.push(value);

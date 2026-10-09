@@ -2,6 +2,8 @@
 
 use std::any::Any;
 
+use std::fmt::Write as _;
+
 use crate::ids::{NetId, PlaceId, TokenId, TransitionId};
 
 /// A net that cannot be built, returned by
@@ -125,6 +127,20 @@ pub enum BuildError {
         /// The transition whose flag it is.
         transition: String,
         /// The place it consumes.
+        place: String,
+    },
+    /// A place was marked [`passive`](crate::NetBuilder::passive) that was
+    /// not declared with
+    /// [`place_nested`](crate::NetBuilder::place_nested).
+    ///
+    /// Passive is a choice about inner nets — that
+    /// [`step_deep`](crate::Net::step_deep) leaves them to an outer body —
+    /// and an ordinary place has none, so the mark would say nothing. Declare
+    /// the place with `place_nested`, or drop the mark. Reported for the
+    /// first such place marked.
+    #[error("place {place:?} is marked passive but was not declared with place_nested")]
+    NotNested {
+        /// The place that was marked.
         place: String,
     },
     /// A transition declared a [`Param<T>`](crate::Param) and no value of
@@ -526,9 +542,14 @@ pub enum CommandError {
 /// likely to leave the net behind — a `?` in `main` prints it and exits — and
 /// by then `TransitionId(2)` says nothing to the person reading the log. The
 /// id is still the field to match on; the name is for the message.
+///
+/// A firing inside an inner net, made by
+/// [`step_deep`](crate::Net::step_deep), fails the same way and says where
+/// in [`path`](FiringFailed::path); its transition and name are the inner
+/// net's.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
-#[error("transition {name:?} ({transition:?}) failed: {error}")]
+#[error("transition {name:?} ({transition:?}){} failed: {error}", inside(.path))]
 pub struct FiringFailed {
     /// The transition whose body failed.
     pub transition: TransitionId,
@@ -549,6 +570,27 @@ pub struct FiringFailed {
     /// default, because the body owned them and may have changed or dropped
     /// them before it failed.
     pub restored: bool,
+    /// Where the transition is, when it is not in the net that was stepped:
+    /// one `(place, token, net name)` per level, outer to inner, each naming
+    /// the nested place, the token in it and the inner net of that token, as
+    /// [`Event::Nested`](crate::Event::Nested) does. Empty for a firing of
+    /// the net's own.
+    ///
+    /// Filled in by [`step_deep`](crate::Net::step_deep) as the failure comes
+    /// up through each level, and printed in the message as
+    /// `inside PlaceId(0) #5 "cabin"`.
+    pub path: Vec<(PlaceId, TokenId, String)>,
+}
+
+/// The part of a [`FiringFailed`] message that says which inner net the
+/// transition is in, or nothing for a transition of the net itself.
+fn inside(path: &[(PlaceId, TokenId, String)]) -> String {
+    let mut text = String::new();
+    for (level, (place, token, net)) in path.iter().enumerate() {
+        text.push_str(if level == 0 { " inside " } else { " / " });
+        let _ = write!(text, "{place:?} #{token} {net:?}");
+    }
+    text
 }
 
 /// A body that panicked, as the failure its firing reports.

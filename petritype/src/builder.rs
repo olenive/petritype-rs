@@ -44,6 +44,7 @@ use crate::erased::RoutingProblem;
 use crate::error::BuildError;
 use crate::firing::TieBreak;
 use crate::ids::{NetId, PlaceId, PlaceRef, TransitionId, foreign_place};
+use crate::nested::{Nested, NestedVtable, forget_inner_events};
 use crate::net::Net;
 use crate::param::ParamSlot;
 use crate::place::{CloneFn, DebugFn, ErasedToken, PlaceMeta, PlaceSlot, clone_of, debug_of};
@@ -196,6 +197,11 @@ pub struct NetBuilder {
     /// Whether the author declared the net resettable, with
     /// [`resettable`](NetBuilder::resettable).
     resettable: bool,
+    /// The first place [`passive`](NetBuilder::passive) was asked of that
+    /// was not declared with [`place_nested`](NetBuilder::place_nested),
+    /// kept until [`build`](NetBuilder::build) reports it as
+    /// [`BuildError::NotNested`]: the per-place options are infallible.
+    not_nested: Option<PlaceId>,
 }
 
 impl NetBuilder {
@@ -214,6 +220,7 @@ impl NetBuilder {
             assert_no_source_transitions: false,
             tie_break: TieBreak::FirstDeclared,
             resettable: false,
+            not_nested: None,
         }
     }
 
@@ -252,6 +259,98 @@ impl NetBuilder {
         T: fmt::Debug + Send + Sync + 'static,
     {
         self.insert::<T>(name.into(), None)
+    }
+
+    /// Declares a place whose tokens carry Petri nets of their own: inner
+    /// nets, which the engine runs, reads and reports on through the token
+    /// (DESIGN §6.6).
+    ///
+    /// The token type says which nets it owns by implementing [`Nested`]; a
+    /// type that does not is refused when the program compiles. What the
+    /// place adds over an ordinary one:
+    ///
+    /// - [`Net::nested`] reads a token's inner nets, for a guard or a viewer;
+    /// - [`Net::step_deep`] and the [`drivers`](crate::drivers) fire them,
+    ///   after the outer net has nothing to fire, unless the place is
+    ///   [`passive`](NetBuilder::passive);
+    /// - everything they log comes out in this net's log as an
+    ///   [`Event::Nested`](crate::Event::Nested), with this place and the
+    ///   token's id.
+    ///
+    /// The place is a [no-clone](NetBuilder::place_no_clone) place, with
+    /// everything that implies: no snapshot edge from it, no consuming edge
+    /// from it on a transition that restores its inputs, and no
+    /// [`Net::snapshot`] of the net. A [`MutateEdge`](crate::MutateEdge) on it
+    /// is the way an outer body reaches inside.
+    ///
+    /// ```
+    /// use petritype::{Nested, Net, NetBuilder};
+    ///
+    /// #[derive(Debug)]
+    /// struct Vehicle {
+    ///     inner: Net,
+    /// }
+    ///
+    /// impl Nested for Vehicle {
+    ///     fn nets(&self) -> Vec<(&str, &Net)> {
+    ///         vec![("cabin", &self.inner)]
+    ///     }
+    ///     fn nets_mut(&mut self) -> Vec<(&str, &mut Net)> {
+    ///         vec![("cabin", &mut self.inner)]
+    ///     }
+    /// }
+    ///
+    /// let cabin = NetBuilder::new().build()?;
+    /// let mut b = NetBuilder::new();
+    /// let depot = b.place_nested::<Vehicle>("Depot");
+    /// b.seed(depot, [Vehicle { inner: cabin }]);
+    /// let net = b.build()?;
+    ///
+    /// let (token, _) = net.tokens(depot.id()).next().unwrap();
+    /// let nets = net.nested(depot.id(), token).expect("a nested place");
+    /// assert_eq!(nets[0].0, "cabin");
+    /// assert!(net.places().next().unwrap().1.nested);
+    /// # Ok::<(), petritype::BuildError>(())
+    /// ```
+    pub fn place_nested<T>(&mut self, name: impl Into<String>) -> PlaceRef<T>
+    where
+        T: Nested + fmt::Debug + Send + Sync + 'static,
+    {
+        let place = self.insert::<T>(name.into(), None);
+        self.places[place.id().0 as usize].meta.nested = Some(NestedVtable::of::<T>());
+        place
+    }
+
+    /// Marks a nested place passive: [`Net::step_deep`], and so the
+    /// drivers, never step the inner nets of its tokens.
+    ///
+    /// For an outer net that wants manual control of what happens inside: a
+    /// body with a [`MutateEdge`](crate::MutateEdge) on the place steps the
+    /// inner net itself — `vehicle.inner.step()`, or
+    /// [`drivers::run`](crate::drivers::run) on it — and what that does is
+    /// reported in the outer log as for any body that reaches inside. A
+    /// passive place's inner nets also do not count against
+    /// [`Net::is_quiescent_deep`].
+    ///
+    /// # Errors
+    ///
+    /// [`BuildError::NotNested`] from [`build`](NetBuilder::build) if the
+    /// place was not declared with
+    /// [`place_nested`](NetBuilder::place_nested): only inner nets can be
+    /// left alone. The call itself is infallible, as the other per-place
+    /// options are.
+    ///
+    /// # Panics
+    ///
+    /// If `place` came from a different builder.
+    pub fn passive<T: 'static>(&mut self, place: PlaceRef<T>) {
+        let index = self.index_of(place, "passive");
+        let meta = &mut self.places[index].meta;
+        if meta.nested.is_some() {
+            meta.passive = true;
+        } else {
+            self.not_nested.get_or_insert(place.id());
+        }
     }
 
     /// Gives a place its initial tokens. Repeated calls append.
@@ -672,6 +771,9 @@ impl NetBuilder {
     ///
     /// [`BuildError::DuplicatePlaceName`] or
     /// [`BuildError::DuplicateTransitionName`] if two of either share a name;
+    /// [`BuildError::NotNested`] if a place marked
+    /// [`passive`](NetBuilder::passive) was not declared with
+    /// [`place_nested`](NetBuilder::place_nested);
     /// [`BuildError::SnapshotOfNoClonePlace`] if a snapshot edge reads a
     /// place that cannot clone its tokens;
     /// [`BuildError::RestoreOfNoClonePlace`] if a transition that
@@ -704,6 +806,11 @@ impl NetBuilder {
                     name: slot.meta.name.clone(),
                 });
             }
+        }
+        if let Some(place) = self.not_nested {
+            return Err(BuildError::NotNested {
+                place: self.places[place.0 as usize].meta.name.clone(),
+            });
         }
 
         let mut seen = HashSet::with_capacity(self.transitions.len());
@@ -882,7 +989,13 @@ impl NetBuilder {
         };
         for (index, tokens) in self.seeds.into_iter().enumerate() {
             let place = PlaceId(index as u32);
-            for token in tokens {
+            let nested = net.places[index].meta.nested;
+            for mut token in tokens {
+                // Whatever a seeded token's inner nets logged while they were
+                // being set up is setup too (DESIGN §6.6).
+                if let Some(nested) = nested {
+                    forget_inner_events(nested, &mut token);
+                }
                 // `insert_erased`, not `push_erased`: the initial marking is
                 // where the net starts, not a change to report.
                 net.insert_erased(place, token, "<seed>")
@@ -1045,6 +1158,8 @@ impl NetBuilder {
                 to_json: None,
                 #[cfg(feature = "serde")]
                 from_json: None,
+                nested: None,
+                passive: false,
             },
             tokens: VecDeque::new(),
         });
@@ -1122,6 +1237,7 @@ impl fmt::Debug for NetBuilder {
             .field("assert_acyclic", &self.assert_acyclic)
             .field("tie_break", &self.tie_break)
             .field("resettable", &self.resettable)
+            .field("not_nested", &self.not_nested)
             .field(
                 "assert_no_source_transitions",
                 &self.assert_no_source_transitions,

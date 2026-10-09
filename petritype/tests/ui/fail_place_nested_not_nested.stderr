@@ -1,0 +1,28 @@
+error[E0277]: `Vehicle` does not say which nets it owns, so it cannot be the token of a nested place
+  --> tests/ui/fail_place_nested_not_nested.rs:14:35
+   |
+14 |     let _depot = b.place_nested::<Vehicle>("Depot");
+   |                    ------------   ^^^^^^^ not `Nested`
+   |                    |
+   |                    required by a bound introduced by this call
+   |
+help: the trait `petritype::Nested` is not implemented for `Vehicle`
+  --> tests/ui/fail_place_nested_not_nested.rs:8:1
+   |
+ 8 | struct Vehicle {
+   | ^^^^^^^^^^^^^^
+   = note: implement `petritype::Nested` for `Vehicle`: `nets` and `nets_mut` list the inner nets a token owns, each under a name
+   = note: a token that owns no net goes in an ordinary `place`
+help: the trait `petritype::Nested` is implemented for `petritype::Net`
+  --> src/nested.rs
+   |
+   | impl Nested for Net {
+   | ^^^^^^^^^^^^^^^^^^^
+note: required by a bound in `NetBuilder::place_nested`
+  --> src/builder.rs
+   |
+   |     pub fn place_nested<T>(&mut self, name: impl Into<String>) -> PlaceRef<T>
+   |            ------------ required by a bound in this associated function
+   |     where
+   |         T: Nested + fmt::Debug + Send + Sync + 'static,
+   |            ^^^^^^ required by this bound in `NetBuilder::place_nested`

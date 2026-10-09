@@ -13,7 +13,9 @@ declare per-run `Param::<T>` values that never appear in the diagram, and
 `net.snapshot()` hands another thread an owned copy of the state, and
 `petritype-dot` draws a net or a snapshot as Graphviz DOT (slices 1–12 of
 `DESIGN.md` §18, including the opt-in `assert_acyclic` /
-`assert_no_source_transitions` checks). The Bevy visualiser lives in its own
+`assert_no_source_transitions` checks). A token may carry Petri nets of its
+own, which the net runs after its own transitions and reports on in its event
+log (slice 15, nets as tokens). The Bevy visualiser lives in its own
 repository, `petritype-bevy`, and depends on this crate. See `DESIGN.md` for the design and
 `dev-docs/NAMING_CONVENTIONS.md` for vocabulary shared with the Python library.*
 
@@ -49,6 +51,21 @@ Condensed from `petritype/examples/quickstart.rs`; `cargo run -p petritype
 Python acceptance set (parcel distribution, caching, match-up tokens,
 coloured balls, web scrape, execution modes, read-edge scaler); each is also
 a test.
+
+## Nets as tokens
+
+A token can carry nets of its own: say which, and declare its place with `place_nested`.
+
+```rust
+impl Nested for Vehicle {
+    fn nets(&self) -> Vec<(&str, &Net)> { vec![("cabin", &self.inner)] }
+    fn nets_mut(&mut self) -> Vec<(&str, &mut Net)> { vec![("cabin", &mut self.inner)] }
+}
+let depot = b.place_nested::<Vehicle>("Depot");   // run by `step_deep` and the drivers, read by `net.nested(place, token)`
+```
+
+Inner events arrive in the outer log as `Event::Nested`, with the place, the token and the inner
+net's id. `petritype/examples/transit.rs` is a city of buses and ferries built this way; `DESIGN.md` §6.6 has the rules.
 
 ## Crates
 

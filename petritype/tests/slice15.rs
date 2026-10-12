@@ -5,7 +5,8 @@
 //! them (`nested`, a `MutateEdge` body, `nested_scope`), and *lifts* what
 //! they log into the outer log as `Event::Nested`, at moments fixed by six
 //! rules. Most of what is tested here is those moments and that order; the
-//! transit example (`examples/transit.rs`) is the acceptance script.
+//! transit example (`examples/transit.rs`) is a city built on them, whose
+//! journey runs under plain `step_deep`.
 
 use std::fmt;
 

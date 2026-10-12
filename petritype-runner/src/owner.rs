@@ -202,7 +202,8 @@ struct Loaded {
 /// DESIGN §19.3.11): what it keeps about the outer net, per net.
 ///
 /// Made when the net is first seen — at `load` and `reset` by walking the
-/// marking, when a request names it, or when one of its events arrives —
+/// marking, at an `inject` for the nets inside the token it brings, when a
+/// request names it, or when one of its events arrives —
 /// and dropped at the first landing (or inner firing) after which its
 /// nested id no longer resolves: the token that held it was consumed and
 /// not put back.
@@ -813,6 +814,27 @@ impl Loaded {
             self.name,
             &mut |_, path, _, net| {
                 seen.push((net.id(), Inner::new(Some(net), path.to_owned(), true)));
+                None::<()>
+            },
+        );
+        self.inner.extend(seen);
+    }
+
+    /// A record for every inner net the marking holds that has none, its
+    /// fireable set taken silently: what an `inject` adds, the nets inside
+    /// the token it brought, which the owner sees from then on as it saw
+    /// those the marking held at `load`. Records already kept stay as they
+    /// are.
+    fn know_new(&mut self) {
+        let mut seen = Vec::new();
+        walk(
+            &self.net,
+            &mut Vec::new(),
+            self.name,
+            &mut |_, path, _, net| {
+                if !self.inner.contains_key(&net.id()) {
+                    seen.push((net.id(), Inner::new(Some(net), path.to_owned(), true)));
+                }
                 None::<()>
             },
         );
@@ -1724,6 +1746,7 @@ impl Owner {
         match self.target(args)? {
             Target::Outer => {
                 self.apply(command)?;
+                self.loaded_mut().know_new();
                 let flushed = self.flush_events(now, None, true, out);
                 let added = flushed
                     .events
@@ -1751,6 +1774,7 @@ impl Owner {
                 })?;
                 applied
                     .map_err(|error| (code_of(CoreError::Command(&error)), error.to_string()))?;
+                self.loaded_mut().know_new();
                 let flushed = self.flush_events(now, None, true, out);
                 let added = flushed
                     .events

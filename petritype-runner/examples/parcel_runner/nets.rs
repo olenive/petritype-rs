@@ -198,19 +198,22 @@ pub mod conformance {
 }
 
 /// The protocol's conformance net `transit` (PROTOCOL.md §11): a city whose
-/// vehicles carry nets of their own, the nested-nets net of §12. The file is
+/// vehicles carry nets of their own, the nested-nets net of §12, which runs
+/// its journey under a plain `step` with nothing switched off. The file is
 /// the core's example (`petritype/examples/transit/net.rs`), which depends
 /// on `petritype`, `serde` and `serde_json` only so that it can be included
-/// here as it is; whatever of it this binary does not call is the core
-/// example's script.
+/// here as it is; whatever of it this binary does not call is there for the
+/// core example and its tests.
 #[path = "../../../petritype/examples/transit/net.rs"]
 #[allow(dead_code)]
 pub mod transit_net;
 
-/// The city as §11 seeds it: one bus at `Depot`, one ferry at `Harbour`,
-/// three passengers on `Platform@Depot`, every transition switched on. Its
-/// one parameter, `destination`, is a net parameter set with `set_param`,
-/// not a load parameter, so the entry declares none.
+/// The city as §11 seeds it: one bus at `Depot` and one ferry at `Harbour`,
+/// every door open, seven passengers on the platforms of `Depot`,
+/// `Central` and `Harbour`, every transition switched on. Its one
+/// parameter, `destination` (`null`, or a station every departure goes to
+/// instead of the next on the loop), is a net parameter set with
+/// `set_param`, not a load parameter, so the entry declares none.
 pub fn transit(_: &petritype_runner::Params) -> Result<Net, LoadError> {
     transit_net::build_city()
         .map(|city| city.net)

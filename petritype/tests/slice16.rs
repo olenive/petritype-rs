@@ -5,8 +5,8 @@
 //! one `Resynced`; a template builds a net by name and stamps it, so that the
 //! net can be saved (`Serialize`), restored (`Deserialize`, through a
 //! registry in scope) and forked; and a snapshot copies a nested place's
-//! tokens by forking them. The transit example (`examples/transit.rs`) is the
-//! acceptance script's step 6 on top of this.
+//! tokens by forking them. The transit example (`examples/transit.rs`) saves
+//! its city mid-journey on top of this, loads it and carries on.
 
 #![cfg(feature = "serde")]
 

@@ -1514,6 +1514,37 @@ fn an_inner_fireable_set_follows_the_outer_one_and_only_when_it_changed() {
 }
 
 #[test]
+fn an_injected_tokens_inner_nets_are_known_from_the_inject_on() {
+    // An inner net that arrives with an injected token has its fireable set
+    // taken silently, as the marking's are at `load`, so its first firing
+    // announces the set it left behind (`05_nested_nets.json`, the shuttle).
+    let mut h = loaded_over("depot");
+    h.send("disable", json!({"transition": "Drive"}));
+    h.send("disable", json!({"transition": "Crush"}));
+    h.send("step", json!({}));
+    h.send("step", json!({}));
+    let truck = json!({"name": "T2", "bin": {"template": "Bin", "marking": {"In": [9]},
+                                            "params": {}, "enabled": {}}});
+    let lines = h.send("inject", json!({"place": "Gate", "token": truck}));
+    assert_eq!(
+        tags(&lines),
+        ["added", "#6"],
+        "nothing announced for the bin"
+    );
+    let bin = held(&h.result("get_state", json!({})), "Gate");
+    let lines = h.send("step", json!({}));
+    assert_eq!(tags(&lines), ["nested", "nested", "#8"]);
+    assert_eq!(lines[0]["params"]["nested_id"], bin["nested_id"]);
+    assert_eq!(lines[0]["params"]["event"]["params"]["transition"], "Move");
+    assert_eq!(lines[1]["params"]["nested_id"], bin["nested_id"]);
+    assert_eq!(
+        lines[1]["params"]["event"]["params"]["transitions"],
+        json!([]),
+        "Move was fireable from the inject on"
+    );
+}
+
+#[test]
 fn a_moved_token_keeps_its_nested_id_and_a_consumed_one_takes_it_away() {
     let mut h = loaded_over("depot");
     let truck = held(&h.result("get_state", json!({})), "Lot");

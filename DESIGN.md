@@ -553,8 +553,9 @@ whose entities (a vehicle, a body, a building) move between the places of a
 larger process and have life cycles of their own, of differing shapes
 (`Cyberpunk2020-Simulation/dev-docs/NETS_AS_TOKENS.md`; this slice is its R1
 to R4). The example is `petritype/examples/transit.rs`: a city whose
-vehicles carry a cabin, a deck or a pod, and the proposal's acceptance
-script as its tests.
+vehicles carry a cabin, a deck or a pod, and whose journey runs under plain
+`step_deep` (until 2026-10-10 it ran the proposal's acceptance script
+instead; §18 says why that changed).
 
 ```rust
 pub trait Nested: Send + Sync + 'static {
@@ -589,7 +590,11 @@ pub enum DeepStep {
   first firing found is the step. In a loop that is the policy (the
   proposal's default 1): the outer net until it is quiet, then the inner nets
   in place order then token order, repeated until everything is quiet.
-  Deterministic given the selectors. `is_quiescent_deep()` is §3's
+  Deterministic given the selectors. So an outer net that can always fire
+  starves its inner nets: a net meant to be stepped this way gives its outer
+  transitions guards that wait on what is inside, as the transit example's
+  city waits on where each vehicle's doors are, in `Doors Open` or `Doors
+  Closed`. `is_quiescent_deep()` is §3's
   quiescence here plus every non-passive inner net quiescent deep;
   `fireable()` stays shallow. The drivers step deep (§13).
   `step_inside()` (public since slice 17, `pub(crate) step_inner` before)
@@ -773,18 +778,35 @@ snapshot.nested(place, token) -> Option<Vec<(&str, &Net)>>
 - **The example** became the protocol's conformance net `transit`
   (PROTOCOL.md §11): the net lives in `petritype/examples/transit/net.rs`,
   which depends on `petritype`, `serde` and `serde_json` only so that the
-  runner's example can include it in phase 3, and `transit.rs` holds the
-  script and its tests; the example needs the `serde` feature. Its inner net
-  is called `cabin` whatever the template (`Cabin`, `Deck`, `Pod`), its
+  runner's example can include it in phase 3, and `transit.rs` steps it and
+  holds its tests; the example needs the `serde` feature. Its inner net is
+  called `cabin` whatever the template (`Cabin`, `Deck`, `Pod`), its
   parameters are `stopped` (starting true), `seats` and `capacity`, the
-  city's is `destination`, and every transition is built switched on (the
-  script holds them back). Two guards follow §11 rather than the proposal:
-  nobody sits or stands while an announcement stands, and the announcement
-  is cleared only once nobody is aboard, so after step 4 it is not cleared,
-  as the proposal's §6 has it, but stands until the vehicle is empty. Step 6
-  saves the city's marking as JSON text after steps 3 and 5, loads each
-  into a freshly built city, carries on, and compares the two cities'
-  exported markings, which reach inside the vehicles.
+  city's is `destination`, and every transition is built switched on.
+  **Since 2026-10-10 it runs on its own** (§18 has why): every template
+  has two control places, `Doors Open` and `Doors Closed`, holding one
+  token per door, the door's name (`Front` in a `Cabin` or a `Pod`, `Bow`
+  and `Stern` in a `Deck`), every door open as built. With the
+  announcement they are the vehicle's phase: a door open and no
+  announcement standing is boarding, a door open and an announcement
+  standing alighting, every door closed under way. The city's guards count
+  them (`Board` wants a door open and no announcement, `Alight` an
+  announcement, `Depart` no door open); inside, `Close Doors` moves one
+  door from open to closed once nobody is at the `Door` and no
+  announcement stands, so a ferry fires it twice, and `Clear Announcement`
+  takes the announcement down once nobody is aboard; outside, `Arrive`
+  opens every door, in order, as it puts the announcement up. Alighted
+  passengers go to `Arrived`; vehicles follow a fixed loop, `destination`
+  (`null` as built) an override. `main` calls `step_deep` until all seven
+  passengers have arrived (45 firings from the seed) and prints each firing
+  under its path; nothing is switched off and nothing fired by name. The
+  two guards §11 had changed from the proposal are said with the doors and
+  the announcement now: nobody sits or stands unless the vehicle is
+  boarding, and the announcement comes down only once nobody is aboard. Of
+  the script's steps, step 6 survives as a save the first time a vehicle
+  is between stations, loaded into a freshly built city and stepped to the
+  end, the two cities' exported markings, which reach inside the vehicles,
+  compared; the others are what the journey does, and its tests check it.
 
 The plan this section held before — a net as the *body* of a transition,
 run to completion by a stateful closure, with `inner.as_transition(..)`
@@ -1562,9 +1584,10 @@ match-up tokens (`TakeAllEdge` + guard + positional), coloured balls
 (`Distribution`), web scrape (routed enums), execution modes (sequential vs
 concurrent), read-edge scaler (`SnapshotEdge` + `MutateEdge`). A ninth,
 transit (slice 15), is no port: it is the nets-as-tokens proposal's example
-and acceptance script (§6.6). Since slice 16 it is also the protocol's
+(§6.6), which ran the proposal's acceptance script until 2026-10-10 and has
+run its journey on its own since. Since slice 16 it is also the protocol's
 conformance net `transit`, in two files (`examples/transit.rs` for the
-script and its tests, `examples/transit/net.rs` for the net, which a
+journey and its tests, `examples/transit/net.rs` for the net, which a
 runner's example can include), and needs the `serde` feature
 (`required-features`), since its vehicles save their cabins as JSON.
 A tenth, wildlife (slice 18), is the token-keys proposal's example and the
@@ -1653,7 +1676,13 @@ filters on the wire and in the mirror, a `TokenFilter` that composes with
 counts read `matching / count`; a banner clears), a filter bar with
 toggles and tabs (`K`), `distinct` asked only when the mirror knows fewer
 tokens than the net holds, keyed edges dashed; the `set_filter` projection
-deferred (bevy DESIGN §3.6); 213 tests with `http`.
+deferred (bevy DESIGN §3.6); 213 tests with `http`. **2026-10-10:** inner views (bevy DESIGN §3.5): one
+`RemoteNet` follows the outer net and any number of inner nets by `nested_id`,
+shown in place (`Enter`, double-click), in a side panel (`P`), in windows of
+their own and as a peek (`get_state {nested_id, token_limit: 0}`), with outer
+firings that touch an inner net named and flashed inside; none over HTTP; the
+example runner reports a step's firing as a one-piece `fired` after its inner
+effects, which the viewer attributes; 232 tests with `http`.
 
 - `NetRes(Net)` newtype `Resource` (orphan rule; the newtype lives in the
   adapter).
@@ -1787,7 +1816,8 @@ Slices, each with tests, in order:
     `Event::Nested` and the six lifting rules, `NetId` as the stable id,
     `FiringFailed.path`, `BuildError::NotNested`, the drivers stepping deep;
     the `transit` example running the acceptance script's steps 1 to 5 and
-    7, and `tests/slice15.rs`. Phase 2 (serialising nested tokens,
+    7 (a script that gave way on 2026-10-10 to a city that runs on its own,
+    below), and `tests/slice15.rs`. Phase 2 (serialising nested tokens,
     templates, marking export, a cloneable nested place, step 6) and phase 3
     (the runner protocol) follow.
 16. Nets as tokens, phase 2 (§6.6), 2026-10-09, the proposal's R5a, R5b,
@@ -1849,6 +1879,39 @@ Slices, each with tests, in order:
     still do. The outer `progress` counts inner firings under their paths,
     as Python's does. The core gained `Net::query_ids` and
     `Snapshot::query_ids`; `tests/slice20.rs`.
+
+**2026-10-10: the `transit` example runs its own journey** (no slice: an
+example, a conformance net and a transcript changed, the crates' API did not).
+The Bevy viewer surfaced it: stepped there with nothing switched off, the city
+of slices 15 to 17 boarded its three passengers at `Depot` and alighted them
+again in turn, for ever, and no cabin fired once. `step_deep` fires the outer
+net first and an inner net only when the outer has nothing; the default
+tie-break took the first declared of `Board Depot` and `Alight Depot`, and the
+two kept each other fireable, the passengers going between the platform and
+the bus's `Door`. The script had hidden it by holding `Alight`, `Depart` and
+`Arrive` back and firing them by hand, and an example is meant to show a net
+that runs its process correctly on its own, not a net and a script that makes
+it work. So a vehicle's state became what the Petri net idiom makes it, where
+tokens are in its cabin: every template has two places, `Doors Open` and
+`Doors Closed`, holding one token per door (a ferry has two), and with the
+announcement they are the vehicle's phase. The city's guards count them, and
+`Close Doors` and `Arrive` move the doors from one to the other, `Arrive` in
+its own body because a cabin that opened its own doors would leave `Depart`
+fireable until the cabin's turn came. (The first cut, the same day, kept the
+phase as a word in one token of a single place; the viewer drew that place
+holding one token, `Close Doors` a loop on it, and showed nothing of the
+phase. As two places the phase is where the tokens are, each change of phase
+is an arrow, and more doors are more tokens.) Alighted passengers go to a new
+place `Arrived` rather than back to a platform, where they would board again;
+vehicles follow a fixed loop, the parameter `destination` now an override
+(`null` as built); Dara, Eve, Finn and Gwen wait at `Central` and `Harbour`.
+From the seed all seven arrive in 45 firings of plain `step_deep`, under
+either tie-break; `City::hold_back`, `City::order` and `City::run_to_quiet`
+are gone (§6.6). PROTOCOL.md §11 changed with it, the Python track recorded
+the shared `05_nested_nets.json` again with nothing held back, and it replays
+here after one runner fix: an injected token's inner nets have their fireable
+sets taken silently at the inject (§19.3.11). Recorded again for the doors as
+two places, it replays here with no runner change.
 
 ## 19. Interop: one protocol, two runtimes, two viewers
 
@@ -2294,7 +2357,12 @@ Phase 3 of nets as tokens, slice 17: the proposal's R8, on PROTOCOL.md §12,
 which the Python track wrote first and this runner conforms to. The shared
 transcript `05_nested_nets.json`, over the conformance net `transit`,
 replays here unchanged, both from the Python repository and from a verbatim
-copy in `tests/protocol/`.
+copy in `tests/protocol/`. It was recorded again on 2026-10-10 for the net
+that runs its own journey (§6.6, §18), with nothing held back, and replays
+unchanged too, after one runner fix: an injected token's inner nets get
+their records at the inject (below). Recorded again the same day for the
+doors as two places, `Doors Open` and `Doors Closed`, it replays with no
+runner change.
 
 - **Addressing** (§12.1). Every read and `inject` takes `path` or
   `nested_id`; both is `invalid_params`, neither the outer net. A path is
@@ -2316,13 +2384,16 @@ copy in `tests/protocol/`.
   that net), its `Topology` and `Names` (taken once: an inner net's
   topology never changes), its progress, its last fireable set, its
   template and the path it was last seen at. Made at `load` and `reset` by
-  walking the marking, or when a request names the net (in both cases the
-  fireable set is taken silently, as `load` takes the outer one), or when
-  one of its events arrives first (its fireable set empty, so a non-empty
-  one is announced). Dropped eagerly, at the first landing or inner firing
-  after which its id no longer resolves: one walk of the nested places per
-  landing, never while a body holds a token, so a vehicle in transit keeps
-  its record and its version. `load` and `reset` drop them all.
+  walking the marking, at an `inject` for the nets inside the token it
+  brings (since 2026-10-10, as the Python owner does: the transcript's
+  injected shuttle announces the empty set its first firing leaves), or
+  when a request names the net (in each case the fireable set is taken
+  silently, as `load` takes the outer one), or when one of its events
+  arrives first (its fireable set empty, so a non-empty one is announced).
+  Dropped eagerly, at the first landing or inner firing after which its id
+  no longer resolves: one walk of the nested places per landing, never
+  while a body holds a token, so a vehicle in transit keeps its record and
+  its version. `load` and `reset` drop them all.
 - **Versions are per net.** A `nested` line carries the outer
   `marking_version`, unchanged; the inner net's is inside its `event`.
   `nets[].count` is a hint read with the outer state.

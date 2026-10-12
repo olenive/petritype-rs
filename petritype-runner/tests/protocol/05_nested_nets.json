@@ -126,6 +126,11 @@
          "type_name": "<label>",
          "serializable": true,
          "nested": true
+        },
+        {
+         "name": "Arrived",
+         "type_name": "<label>",
+         "serializable": true
         }
        ],
        "transitions": [
@@ -287,22 +292,22 @@
           "kind": "mutate"
          },
          {
-          "place": "Platform@Depot",
+          "place": "Arrived",
           "transition": "Alight Depot",
           "direction": "out"
          },
          {
-          "place": "Platform@Central",
+          "place": "Arrived",
           "transition": "Alight Central",
           "direction": "out"
          },
          {
-          "place": "Platform@Harbour",
+          "place": "Arrived",
           "transition": "Alight Harbour",
           "direction": "out"
          },
          {
-          "place": "Platform@Airport",
+          "place": "Arrived",
           "transition": "Alight Airport",
           "direction": "out"
          },
@@ -364,7 +369,7 @@
        },
        "Board Harbour": {
         "enabled": true,
-        "fireable": false,
+        "fireable": true,
         "in_flight": false,
         "priority": 0.0
        },
@@ -400,7 +405,7 @@
        },
        "Depart Depot": {
         "enabled": true,
-        "fireable": true,
+        "fireable": false,
         "in_flight": false,
         "priority": 0.0
        },
@@ -412,7 +417,7 @@
        },
        "Depart Harbour": {
         "enabled": true,
-        "fireable": true,
+        "fireable": false,
         "in_flight": false,
         "priority": 0.0
        },
@@ -440,10 +445,10 @@
            "nets": [
             {
              "name": "cabin",
-             "nested_id": "<id:cabin>",
+             "nested_id": "<id:bus_cabin>",
              "path": "<path>",
              "template": "Cabin",
-             "count": 0
+             "count": 1
             }
            ]
           }
@@ -462,10 +467,10 @@
            "nets": [
             {
              "name": "cabin",
-             "nested_id": "<id:deck>",
+             "nested_id": "<id:ferry_cabin>",
              "path": "<path>",
              "template": "Deck",
-             "count": 0
+             "count": 2
             }
            ]
           }
@@ -479,32 +484,54 @@
          "count": 3,
          "tokens": [
           {
-           "id": "<id>",
+           "id": "<id:ada>",
            "label": "<label>"
           },
           {
-           "id": "<id>",
+           "id": "<id:bram>",
            "label": "<label>"
           },
           {
-           "id": "<id>",
+           "id": "<id:cato>",
            "label": "<label>"
           }
          ]
         },
         "Platform@Central": {
-         "count": 0,
-         "tokens": []
+         "count": 2,
+         "tokens": [
+          {
+           "id": "<id:dara>",
+           "label": "<label>"
+          },
+          {
+           "id": "<id:eve>",
+           "label": "<label>"
+          }
+         ]
         },
         "Platform@Harbour": {
-         "count": 0,
-         "tokens": []
+         "count": 2,
+         "tokens": [
+          {
+           "id": "<id:finn>",
+           "label": "<label>"
+          },
+          {
+           "id": "<id:gwen>",
+           "label": "<label>"
+          }
+         ]
         },
         "Platform@Airport": {
          "count": 0,
          "tokens": []
         },
         "In Transit": {
+         "count": 0,
+         "tokens": []
+        },
+        "Arrived": {
          "count": 0,
          "tokens": []
         }
@@ -545,7 +572,11 @@
          "Door": [],
          "Seats": [],
          "Standing": [],
-         "Announcements": []
+         "Announcements": [],
+         "Doors Open": [
+          "Front"
+         ],
+         "Doors Closed": []
         },
         "params": {
          "stopped": true,
@@ -557,6 +588,7 @@
          "Stand": true,
          "Go To Door": true,
          "Go To Door From Standing": true,
+         "Close Doors": true,
          "Clear Announcement": true
         }
        }
@@ -564,10 +596,10 @@
       "nets": [
        {
         "name": "cabin",
-        "nested_id": "<id:cabin>",
+        "nested_id": "<id:bus_cabin>",
         "path": "<path>",
         "template": "Cabin",
-        "count": 0
+        "count": 1
        }
       ]
      }
@@ -578,7 +610,7 @@
    "send": {
     "method": "get_state",
     "params": {
-     "nested_id": "<id:cabin>"
+     "nested_id": "<id:bus_cabin>"
     }
    },
    "expect": [
@@ -612,6 +644,16 @@
          "name": "Announcements",
          "type_name": "<label>",
          "serializable": true
+        },
+        {
+         "name": "Doors Open",
+         "type_name": "<label>",
+         "serializable": true
+        },
+        {
+         "name": "Doors Closed",
+         "type_name": "<label>",
+         "serializable": true
         }
        ],
        "transitions": [
@@ -629,6 +671,10 @@
         },
         {
          "name": "Go To Door From Standing",
+         "detail": "<any>"
+        },
+        {
+         "name": "Close Doors",
          "detail": "<any>"
         },
         {
@@ -663,6 +709,12 @@
           "kind": "take"
          },
          {
+          "place": "Doors Open",
+          "transition": "Close Doors",
+          "direction": "in",
+          "kind": "take"
+         },
+         {
           "place": "Announcements",
           "transition": "Clear Announcement",
           "direction": "in",
@@ -686,6 +738,11 @@
          {
           "place": "Door",
           "transition": "Go To Door From Standing",
+          "direction": "out"
+         },
+         {
+          "place": "Doors Closed",
+          "transition": "Close Doors",
           "direction": "out"
          }
         ]
@@ -716,6 +773,12 @@
         "in_flight": false,
         "priority": 0.0
        },
+       "Close Doors": {
+        "enabled": true,
+        "fireable": true,
+        "in_flight": false,
+        "priority": 0.0
+       },
        "Clear Announcement": {
         "enabled": true,
         "fireable": false,
@@ -740,6 +803,19 @@
         "Announcements": {
          "count": 0,
          "tokens": []
+        },
+        "Doors Open": {
+         "count": 1,
+         "tokens": [
+          {
+           "id": "<id:bus_front>",
+           "label": "<label>"
+          }
+         ]
+        },
+        "Doors Closed": {
+         "count": 0,
+         "tokens": []
         }
        }
       },
@@ -750,7 +826,7 @@
        "last_progress_at": null
       },
       "path": "<path>",
-      "nested_id": "<id:cabin>",
+      "nested_id": "<id:bus_cabin>",
       "template": "Cabin"
      }
     }
@@ -795,6 +871,16 @@
          "name": "Announcements",
          "type_name": "<label>",
          "serializable": true
+        },
+        {
+         "name": "Doors Open",
+         "type_name": "<label>",
+         "serializable": true
+        },
+        {
+         "name": "Doors Closed",
+         "type_name": "<label>",
+         "serializable": true
         }
        ],
        "transitions": [
@@ -812,6 +898,10 @@
         },
         {
          "name": "Go To Door From Standing",
+         "detail": "<any>"
+        },
+        {
+         "name": "Close Doors",
          "detail": "<any>"
         },
         {
@@ -846,6 +936,12 @@
           "kind": "take"
          },
          {
+          "place": "Doors Open",
+          "transition": "Close Doors",
+          "direction": "in",
+          "kind": "take"
+         },
+         {
           "place": "Announcements",
           "transition": "Clear Announcement",
           "direction": "in",
@@ -869,6 +965,11 @@
          {
           "place": "Door",
           "transition": "Go To Door From Standing",
+          "direction": "out"
+         },
+         {
+          "place": "Doors Closed",
+          "transition": "Close Doors",
           "direction": "out"
          }
         ]
@@ -899,6 +1000,12 @@
         "in_flight": false,
         "priority": 0.0
        },
+       "Close Doors": {
+        "enabled": true,
+        "fireable": true,
+        "in_flight": false,
+        "priority": 0.0
+       },
        "Clear Announcement": {
         "enabled": true,
         "fireable": false,
@@ -923,6 +1030,19 @@
         "Announcements": {
          "count": 0,
          "tokens": []
+        },
+        "Doors Open": {
+         "count": 1,
+         "tokens": [
+          {
+           "id": "<id:bus_front>",
+           "label": "<label>"
+          }
+         ]
+        },
+        "Doors Closed": {
+         "count": 0,
+         "tokens": []
         }
        }
       },
@@ -933,7 +1053,7 @@
        "last_progress_at": null
       },
       "path": "<path>",
-      "nested_id": "<id:cabin>",
+      "nested_id": "<id:bus_cabin>",
       "template": "Cabin"
      }
     }
@@ -941,246 +1061,227 @@
   },
   {
    "send": {
-    "method": "disable",
+    "method": "get_state",
     "params": {
-     "transition": "Alight Depot"
+     "nested_id": "<id:ferry_cabin>",
+     "token_limit": 1
     }
    },
    "expect": [
-    {
-     "method": "toggled",
-     "params": {
-      "transition": "Alight Depot",
-      "enabled": false,
-      "marking_version": "<version>",
-      "running": false
-     }
-    },
     {
      "id": "7",
      "result": {
-      "marking_version": "<version>"
-     }
-    }
-   ]
-  },
-  {
-   "send": {
-    "method": "disable",
-    "params": {
-     "transition": "Alight Central"
-    }
-   },
-   "expect": [
-    {
-     "method": "toggled",
-     "params": {
-      "transition": "Alight Central",
-      "enabled": false,
+      "protocol_version": 1,
+      "runtime": "<label>",
+      "net": "cabin",
+      "generation": 1,
       "marking_version": "<version>",
-      "running": false
-     }
-    },
-    {
-     "id": "8",
-     "result": {
-      "marking_version": "<version>"
-     }
-    }
-   ]
-  },
-  {
-   "send": {
-    "method": "disable",
-    "params": {
-     "transition": "Alight Harbour"
-    }
-   },
-   "expect": [
-    {
-     "method": "toggled",
-     "params": {
-      "transition": "Alight Harbour",
-      "enabled": false,
-      "marking_version": "<version>",
-      "running": false
-     }
-    },
-    {
-     "id": "9",
-     "result": {
-      "marking_version": "<version>"
-     }
-    }
-   ]
-  },
-  {
-   "send": {
-    "method": "disable",
-    "params": {
-     "transition": "Alight Airport"
-    }
-   },
-   "expect": [
-    {
-     "method": "toggled",
-     "params": {
-      "transition": "Alight Airport",
-      "enabled": false,
-      "marking_version": "<version>",
-      "running": false
-     }
-    },
-    {
-     "id": "10",
-     "result": {
-      "marking_version": "<version>"
-     }
-    }
-   ]
-  },
-  {
-   "send": {
-    "method": "disable",
-    "params": {
-     "transition": "Depart Depot"
-    }
-   },
-   "expect": [
-    {
-     "method": "toggled",
-     "params": {
-      "transition": "Depart Depot",
-      "enabled": false,
-      "marking_version": "<version>",
-      "running": false
-     }
-    },
-    {
-     "method": "fireable",
-     "params": {
-      "transitions": [
-       "Board Depot",
-       "Depart Harbour"
-      ],
-      "marking_version": "<version>",
-      "running": false
-     }
-    },
-    {
-     "id": "11",
-     "result": {
-      "marking_version": "<version>"
-     }
-    }
-   ]
-  },
-  {
-   "send": {
-    "method": "disable",
-    "params": {
-     "transition": "Depart Central"
-    }
-   },
-   "expect": [
-    {
-     "method": "toggled",
-     "params": {
-      "transition": "Depart Central",
-      "enabled": false,
-      "marking_version": "<version>",
-      "running": false
-     }
-    },
-    {
-     "id": "12",
-     "result": {
-      "marking_version": "<version>"
-     }
-    }
-   ]
-  },
-  {
-   "send": {
-    "method": "disable",
-    "params": {
-     "transition": "Depart Harbour"
-    }
-   },
-   "expect": [
-    {
-     "method": "toggled",
-     "params": {
-      "transition": "Depart Harbour",
-      "enabled": false,
-      "marking_version": "<version>",
-      "running": false
-     }
-    },
-    {
-     "method": "fireable",
-     "params": {
-      "transitions": [
-       "Board Depot"
-      ],
-      "marking_version": "<version>",
-      "running": false
-     }
-    },
-    {
-     "id": "13",
-     "result": {
-      "marking_version": "<version>"
-     }
-    }
-   ]
-  },
-  {
-   "send": {
-    "method": "disable",
-    "params": {
-     "transition": "Depart Airport"
-    }
-   },
-   "expect": [
-    {
-     "method": "toggled",
-     "params": {
-      "transition": "Depart Airport",
-      "enabled": false,
-      "marking_version": "<version>",
-      "running": false
-     }
-    },
-    {
-     "id": "14",
-     "result": {
-      "marking_version": "<version>"
-     }
-    }
-   ]
-  },
-  {
-   "send": {
-    "method": "disable",
-    "params": {
-     "transition": "Arrive"
-    }
-   },
-   "expect": [
-    {
-     "method": "toggled",
-     "params": {
-      "transition": "Arrive",
-      "enabled": false,
-      "marking_version": "<version>",
-      "running": false
-     }
-    },
-    {
-     "id": "15",
-     "result": {
-      "marking_version": "<version>"
+      "running": false,
+      "topology": {
+       "places": [
+        {
+         "name": "Door",
+         "type_name": "<label>",
+         "serializable": true
+        },
+        {
+         "name": "Lower Deck",
+         "type_name": "<label>",
+         "serializable": true
+        },
+        {
+         "name": "Upper Deck",
+         "type_name": "<label>",
+         "serializable": true
+        },
+        {
+         "name": "Announcements",
+         "type_name": "<label>",
+         "serializable": true
+        },
+        {
+         "name": "Doors Open",
+         "type_name": "<label>",
+         "serializable": true
+        },
+        {
+         "name": "Doors Closed",
+         "type_name": "<label>",
+         "serializable": true
+        }
+       ],
+       "transitions": [
+        {
+         "name": "Go Below",
+         "detail": "<any>"
+        },
+        {
+         "name": "Go Up",
+         "detail": "<any>"
+        },
+        {
+         "name": "Go To Door",
+         "detail": "<any>"
+        },
+        {
+         "name": "Go To Door From Upper Deck",
+         "detail": "<any>"
+        },
+        {
+         "name": "Close Doors",
+         "detail": "<any>"
+        },
+        {
+         "name": "Clear Announcement",
+         "detail": "<any>"
+        }
+       ],
+       "edges": {
+        "<unordered>": [
+         {
+          "place": "Door",
+          "transition": "Go Below",
+          "direction": "in",
+          "kind": "take"
+         },
+         {
+          "place": "Lower Deck",
+          "transition": "Go Up",
+          "direction": "in",
+          "kind": "take"
+         },
+         {
+          "place": "Lower Deck",
+          "transition": "Go To Door",
+          "direction": "in",
+          "kind": "take"
+         },
+         {
+          "place": "Upper Deck",
+          "transition": "Go To Door From Upper Deck",
+          "direction": "in",
+          "kind": "take"
+         },
+         {
+          "place": "Doors Open",
+          "transition": "Close Doors",
+          "direction": "in",
+          "kind": "take"
+         },
+         {
+          "place": "Announcements",
+          "transition": "Clear Announcement",
+          "direction": "in",
+          "kind": "take"
+         },
+         {
+          "place": "Lower Deck",
+          "transition": "Go Below",
+          "direction": "out"
+         },
+         {
+          "place": "Upper Deck",
+          "transition": "Go Up",
+          "direction": "out"
+         },
+         {
+          "place": "Door",
+          "transition": "Go To Door",
+          "direction": "out"
+         },
+         {
+          "place": "Door",
+          "transition": "Go To Door From Upper Deck",
+          "direction": "out"
+         },
+         {
+          "place": "Doors Closed",
+          "transition": "Close Doors",
+          "direction": "out"
+         }
+        ]
+       }
+      },
+      "transitions": {
+       "Go Below": {
+        "enabled": true,
+        "fireable": false,
+        "in_flight": false,
+        "priority": 0.0
+       },
+       "Go Up": {
+        "enabled": true,
+        "fireable": false,
+        "in_flight": false,
+        "priority": 0.0
+       },
+       "Go To Door": {
+        "enabled": true,
+        "fireable": false,
+        "in_flight": false,
+        "priority": 0.0
+       },
+       "Go To Door From Upper Deck": {
+        "enabled": true,
+        "fireable": false,
+        "in_flight": false,
+        "priority": 0.0
+       },
+       "Close Doors": {
+        "enabled": true,
+        "fireable": true,
+        "in_flight": false,
+        "priority": 0.0
+       },
+       "Clear Announcement": {
+        "enabled": true,
+        "fireable": false,
+        "in_flight": false,
+        "priority": 0.0
+       }
+      },
+      "marking": {
+       "places": {
+        "Door": {
+         "count": 0,
+         "tokens": []
+        },
+        "Lower Deck": {
+         "count": 0,
+         "tokens": []
+        },
+        "Upper Deck": {
+         "count": 0,
+         "tokens": []
+        },
+        "Announcements": {
+         "count": 0,
+         "tokens": []
+        },
+        "Doors Open": {
+         "count": 2,
+         "tokens": [
+          {
+           "id": "<id:ferry_bow>",
+           "label": "<label>"
+          }
+         ]
+        },
+        "Doors Closed": {
+         "count": 0,
+         "tokens": []
+        }
+       }
+      },
+      "progress": {
+       "step_count": 0,
+       "last_fired": null,
+       "fired_counts": {},
+       "last_progress_at": null
+      },
+      "path": "<path>",
+      "nested_id": "<id:ferry_cabin>",
+      "template": "Deck"
      }
     }
    ]
@@ -1197,7 +1298,7 @@
       "consumed": [
        [
         "Platform@Depot",
-        "<id>"
+        "<id:ada>"
        ]
       ],
       "marking_version": "<version>",
@@ -1208,12 +1309,12 @@
      "method": "nested",
      "params": {
       "path": "<path>",
-      "nested_id": "<id:cabin>",
+      "nested_id": "<id:bus_cabin>",
       "event": {
        "method": "added",
        "params": {
         "place": "Door",
-        "id": "<id>",
+        "id": "<id:bus_ada>",
         "label": "<label>",
         "marking_version": "<version>",
         "running": false
@@ -1247,7 +1348,7 @@
      "method": "nested",
      "params": {
       "path": "<path>",
-      "nested_id": "<id:cabin>",
+      "nested_id": "<id:bus_cabin>",
       "event": {
        "method": "fireable",
        "params": {
@@ -1263,7 +1364,7 @@
      }
     },
     {
-     "id": "16",
+     "id": "8",
      "result": {
       "fired": true,
       "transition": "Board Depot",
@@ -1285,7 +1386,7 @@
       "consumed": [
        [
         "Platform@Depot",
-        "<id>"
+        "<id:bram>"
        ]
       ],
       "marking_version": "<version>",
@@ -1296,12 +1397,12 @@
      "method": "nested",
      "params": {
       "path": "<path>",
-      "nested_id": "<id:cabin>",
+      "nested_id": "<id:bus_cabin>",
       "event": {
        "method": "added",
        "params": {
         "place": "Door",
-        "id": "<id>",
+        "id": "<id:bus_bram>",
         "label": "<label>",
         "marking_version": "<version>",
         "running": false
@@ -1332,7 +1433,7 @@
      }
     },
     {
-     "id": "17",
+     "id": "9",
      "result": {
       "fired": true,
       "transition": "Board Depot",
@@ -1354,7 +1455,7 @@
       "consumed": [
        [
         "Platform@Depot",
-        "<id>"
+        "<id:cato>"
        ]
       ],
       "marking_version": "<version>",
@@ -1365,12 +1466,12 @@
      "method": "nested",
      "params": {
       "path": "<path>",
-      "nested_id": "<id:cabin>",
+      "nested_id": "<id:bus_cabin>",
       "event": {
        "method": "added",
        "params": {
         "place": "Door",
-        "id": "<id>",
+        "id": "<id:bus_cato>",
         "label": "<label>",
         "marking_version": "<version>",
         "running": false
@@ -1394,6 +1495,173 @@
      "method": "distributed",
      "params": {
       "transition": "Board Depot",
+      "produced": [],
+      "duration_ms": "<ms>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "fireable",
+     "params": {
+      "transitions": [
+       "Board Harbour"
+      ],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "10",
+     "result": {
+      "fired": true,
+      "transition": "Board Depot",
+      "marking_version": "<version>",
+      "running": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "step"
+   },
+   "expect": [
+    {
+     "method": "launched",
+     "params": {
+      "transition": "Board Harbour",
+      "consumed": [
+       [
+        "Platform@Harbour",
+        "<id:finn>"
+       ]
+      ],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "nested",
+     "params": {
+      "path": "<path>",
+      "nested_id": "<id:ferry_cabin>",
+      "event": {
+       "method": "added",
+       "params": {
+        "place": "Door",
+        "id": "<id:ferry_finn>",
+        "label": "<label>",
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "mutated",
+     "params": {
+      "place": "Harbour",
+      "id": "<id:ferry>",
+      "label": "<label>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "distributed",
+     "params": {
+      "transition": "Board Harbour",
+      "produced": [],
+      "duration_ms": "<ms>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "nested",
+     "params": {
+      "path": "<path>",
+      "nested_id": "<id:ferry_cabin>",
+      "event": {
+       "method": "fireable",
+       "params": {
+        "transitions": [
+         "Go Below"
+        ],
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "11",
+     "result": {
+      "fired": true,
+      "transition": "Board Harbour",
+      "marking_version": "<version>",
+      "running": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "step"
+   },
+   "expect": [
+    {
+     "method": "launched",
+     "params": {
+      "transition": "Board Harbour",
+      "consumed": [
+       [
+        "Platform@Harbour",
+        "<id:gwen>"
+       ]
+      ],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "nested",
+     "params": {
+      "path": "<path>",
+      "nested_id": "<id:ferry_cabin>",
+      "event": {
+       "method": "added",
+       "params": {
+        "place": "Door",
+        "id": "<id:ferry_gwen>",
+        "label": "<label>",
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "mutated",
+     "params": {
+      "place": "Harbour",
+      "id": "<id:ferry>",
+      "label": "<label>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "distributed",
+     "params": {
+      "transition": "Board Harbour",
       "produced": [],
       "duration_ms": "<ms>",
       "marking_version": "<version>",
@@ -1409,10 +1677,10 @@
      }
     },
     {
-     "id": "18",
+     "id": "12",
      "result": {
       "fired": true,
-      "transition": "Board Depot",
+      "transition": "Board Harbour",
       "marking_version": "<version>",
       "running": false
      }
@@ -1428,7 +1696,7 @@
      "method": "nested",
      "params": {
       "path": "<path>",
-      "nested_id": "<id:cabin>",
+      "nested_id": "<id:bus_cabin>",
       "event": {
        "method": "fired",
        "params": {
@@ -1436,13 +1704,13 @@
         "consumed": [
          [
           "Door",
-          "<id>"
+          "<id:bus_ada>"
          ]
         ],
         "produced": [
          [
           "Seats",
-          "<id:ada_seated>",
+          "<id:bus_ada_seats>",
           "<label>"
          ]
         ],
@@ -1456,12 +1724,12 @@
      }
     },
     {
-     "id": "19",
+     "id": "13",
      "result": {
       "fired": true,
       "transition": "Sit",
       "path": "<path>",
-      "nested_id": "<id:cabin>",
+      "nested_id": "<id:bus_cabin>",
       "marking_version": "<version>",
       "running": false
      }
@@ -1477,7 +1745,7 @@
      "method": "nested",
      "params": {
       "path": "<path>",
-      "nested_id": "<id:cabin>",
+      "nested_id": "<id:bus_cabin>",
       "event": {
        "method": "fired",
        "params": {
@@ -1485,13 +1753,13 @@
         "consumed": [
          [
           "Door",
-          "<id>"
+          "<id:bus_bram>"
          ]
         ],
         "produced": [
          [
           "Seats",
-          "<id>",
+          "<id:bus_bram_seats>",
           "<label>"
          ]
         ],
@@ -1508,7 +1776,7 @@
      "method": "nested",
      "params": {
       "path": "<path>",
-      "nested_id": "<id:cabin>",
+      "nested_id": "<id:bus_cabin>",
       "event": {
        "method": "fireable",
        "params": {
@@ -1524,12 +1792,12 @@
      }
     },
     {
-     "id": "20",
+     "id": "14",
      "result": {
       "fired": true,
       "transition": "Sit",
       "path": "<path>",
-      "nested_id": "<id:cabin>",
+      "nested_id": "<id:bus_cabin>",
       "marking_version": "<version>",
       "running": false
      }
@@ -1545,7 +1813,7 @@
      "method": "nested",
      "params": {
       "path": "<path>",
-      "nested_id": "<id:cabin>",
+      "nested_id": "<id:bus_cabin>",
       "event": {
        "method": "fired",
        "params": {
@@ -1553,13 +1821,13 @@
         "consumed": [
          [
           "Door",
-          "<id>"
+          "<id:bus_cato>"
          ]
         ],
         "produced": [
          [
           "Standing",
-          "<id>",
+          "<id:bus_cato_standing>",
           "<label>"
          ]
         ],
@@ -1576,11 +1844,13 @@
      "method": "nested",
      "params": {
       "path": "<path>",
-      "nested_id": "<id:cabin>",
+      "nested_id": "<id:bus_cabin>",
       "event": {
        "method": "fireable",
        "params": {
-        "transitions": [],
+        "transitions": [
+         "Close Doors"
+        ],
         "marking_version": "<version>",
         "running": false
        }
@@ -1590,12 +1860,12 @@
      }
     },
     {
-     "id": "21",
+     "id": "15",
      "result": {
       "fired": true,
       "transition": "Stand",
       "path": "<path>",
-      "nested_id": "<id:cabin>",
+      "nested_id": "<id:bus_cabin>",
       "marking_version": "<version>",
       "running": false
      }
@@ -1608,85 +1878,32 @@
    },
    "expect": [
     {
-     "id": "22",
-     "result": {
-      "fired": false,
-      "marking_version": "<version>",
-      "running": false
-     }
-    }
-   ]
-  },
-  {
-   "send": {
-    "method": "get_place_tokens",
-    "params": {
-     "place": "Seats",
-     "nested_id": "<id:cabin>"
-    }
-   },
-   "expect": [
-    {
-     "id": "23",
-     "result": {
-      "place": "Seats",
-      "marking_version": "<version>",
-      "count": 2,
-      "offset": 0,
-      "limit": 200,
-      "tokens": [
-       {
-        "id": "<id:ada_seated>",
-        "label": "<label>"
-       },
-       {
-        "id": "<id>",
-        "label": "<label>"
-       }
-      ],
-      "has_more": false,
-      "path": "<path>",
-      "nested_id": "<id:cabin>"
-     }
-    }
-   ]
-  },
-  {
-   "send": {
-    "method": "get_token",
-    "params": {
-     "id": "<id:ada_seated>",
-     "nested_id": "<id:cabin>"
-    }
-   },
-   "expect": [
-    {
-     "id": "24",
-     "result": {
-      "id": "<id:ada_seated>",
-      "place": "Seats",
-      "type_name": "<label>",
-      "kind": "json",
-      "value": "Ada",
-      "path": "<path>",
-      "nested_id": "<id:cabin>"
-     }
-    }
-   ]
-  },
-  {
-   "send": {
-    "method": "enable",
-    "params": {
-     "transition": "Depart Depot"
-    }
-   },
-   "expect": [
-    {
-     "method": "toggled",
+     "method": "nested",
      "params": {
-      "transition": "Depart Depot",
-      "enabled": true,
+      "path": "<path>",
+      "nested_id": "<id:bus_cabin>",
+      "event": {
+       "method": "fired",
+       "params": {
+        "transition": "Close Doors",
+        "consumed": [
+         [
+          "Doors Open",
+          "<id:bus_front>"
+         ]
+        ],
+        "produced": [
+         [
+          "Doors Closed",
+          "<id:bus_front_doors_closed>",
+          "<label>"
+         ]
+        ],
+        "duration_ms": "<ms>",
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
       "marking_version": "<version>",
       "running": false
      }
@@ -1702,9 +1919,88 @@
      }
     },
     {
-     "id": "25",
+     "method": "nested",
+     "params": {
+      "path": "<path>",
+      "nested_id": "<id:bus_cabin>",
+      "event": {
+       "method": "fireable",
+       "params": {
+        "transitions": [],
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "16",
      "result": {
-      "marking_version": "<version>"
+      "fired": true,
+      "transition": "Close Doors",
+      "path": "<path>",
+      "nested_id": "<id:bus_cabin>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "get_place_tokens",
+    "params": {
+     "place": "Seats",
+     "nested_id": "<id:bus_cabin>"
+    }
+   },
+   "expect": [
+    {
+     "id": "17",
+     "result": {
+      "place": "Seats",
+      "marking_version": "<version>",
+      "count": 2,
+      "offset": 0,
+      "limit": 200,
+      "tokens": [
+       {
+        "id": "<id:bus_ada_seats>",
+        "label": "<label>"
+       },
+       {
+        "id": "<id:bus_bram_seats>",
+        "label": "<label>"
+       }
+      ],
+      "has_more": false,
+      "path": "<path>",
+      "nested_id": "<id:bus_cabin>"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "get_token",
+    "params": {
+     "id": "<id:bus_ada_seats>",
+     "nested_id": "<id:bus_cabin>"
+    }
+   },
+   "expect": [
+    {
+     "id": "18",
+     "result": {
+      "id": "<id:bus_ada_seats>",
+      "place": "Seats",
+      "type_name": "<label>",
+      "kind": "json",
+      "value": "Ada",
+      "path": "<path>",
+      "nested_id": "<id:bus_cabin>"
      }
     }
    ]
@@ -1732,7 +2028,7 @@
      "method": "nested",
      "params": {
       "path": "<path>",
-      "nested_id": "<id:cabin>",
+      "nested_id": "<id:bus_cabin>",
       "event": {
        "method": "param_changed",
        "params": {
@@ -1752,7 +2048,7 @@
       "produced": [
        [
         "In Transit",
-        "<id>",
+        "<id:bus_in_transit>",
         "<label>"
        ]
       ],
@@ -1764,13 +2060,15 @@
     {
      "method": "fireable",
      "params": {
-      "transitions": [],
+      "transitions": [
+       "Arrive"
+      ],
       "marking_version": "<version>",
       "running": false
      }
     },
     {
-     "id": "26",
+     "id": "19",
      "result": {
       "fired": true,
       "transition": "Depart Depot",
@@ -1784,13 +2082,13 @@
    "send": {
     "method": "get_state",
     "params": {
-     "nested_id": "<id:cabin>",
+     "nested_id": "<id:bus_cabin>",
      "token_limit": 1
     }
    },
    "expect": [
     {
-     "id": "27",
+     "id": "20",
      "result": {
       "protocol_version": 1,
       "runtime": "<label>",
@@ -1819,6 +2117,16 @@
          "name": "Announcements",
          "type_name": "<label>",
          "serializable": true
+        },
+        {
+         "name": "Doors Open",
+         "type_name": "<label>",
+         "serializable": true
+        },
+        {
+         "name": "Doors Closed",
+         "type_name": "<label>",
+         "serializable": true
         }
        ],
        "transitions": [
@@ -1836,6 +2144,10 @@
         },
         {
          "name": "Go To Door From Standing",
+         "detail": "<any>"
+        },
+        {
+         "name": "Close Doors",
          "detail": "<any>"
         },
         {
@@ -1870,6 +2182,12 @@
           "kind": "take"
          },
          {
+          "place": "Doors Open",
+          "transition": "Close Doors",
+          "direction": "in",
+          "kind": "take"
+         },
+         {
           "place": "Announcements",
           "transition": "Clear Announcement",
           "direction": "in",
@@ -1893,6 +2211,11 @@
          {
           "place": "Door",
           "transition": "Go To Door From Standing",
+          "direction": "out"
+         },
+         {
+          "place": "Doors Closed",
+          "transition": "Close Doors",
           "direction": "out"
          }
         ]
@@ -1923,6 +2246,12 @@
         "in_flight": false,
         "priority": 0.0
        },
+       "Close Doors": {
+        "enabled": true,
+        "fireable": false,
+        "in_flight": false,
+        "priority": 0.0
+       },
        "Clear Announcement": {
         "enabled": true,
         "fireable": false,
@@ -1940,7 +2269,7 @@
          "count": 2,
          "tokens": [
           {
-           "id": "<id:ada_seated>",
+           "id": "<id:bus_ada_seats>",
            "label": "<label>"
           }
          ]
@@ -1949,7 +2278,7 @@
          "count": 1,
          "tokens": [
           {
-           "id": "<id>",
+           "id": "<id:bus_cato_standing>",
            "label": "<label>"
           }
          ]
@@ -1957,20 +2286,34 @@
         "Announcements": {
          "count": 0,
          "tokens": []
+        },
+        "Doors Open": {
+         "count": 0,
+         "tokens": []
+        },
+        "Doors Closed": {
+         "count": 1,
+         "tokens": [
+          {
+           "id": "<id:bus_front_doors_closed>",
+           "label": "<label>"
+          }
+         ]
         }
        }
       },
       "progress": {
-       "step_count": 3,
-       "last_fired": "Stand",
+       "step_count": 4,
+       "last_fired": "Close Doors",
        "fired_counts": {
         "Sit": 2,
-        "Stand": 1
+        "Stand": 1,
+        "Close Doors": 1
        },
        "last_progress_at": "<time>"
       },
       "path": "<path>",
-      "nested_id": "<id:cabin>",
+      "nested_id": "<id:bus_cabin>",
       "template": "Cabin"
      }
     }
@@ -1978,35 +2321,64 @@
   },
   {
    "send": {
-    "method": "enable",
+    "method": "get_token",
     "params": {
-     "transition": "Arrive"
+     "id": "<id:bus_in_transit>"
     }
    },
    "expect": [
     {
-     "method": "toggled",
-     "params": {
-      "transition": "Arrive",
-      "enabled": true,
-      "marking_version": "<version>",
-      "running": false
-     }
-    },
-    {
-     "method": "fireable",
-     "params": {
-      "transitions": [
-       "Arrive"
-      ],
-      "marking_version": "<version>",
-      "running": false
-     }
-    },
-    {
-     "id": "28",
+     "id": "21",
      "result": {
-      "marking_version": "<version>"
+      "id": "<id:bus_in_transit>",
+      "place": "In Transit",
+      "type_name": "<label>",
+      "kind": "json",
+      "value": {
+       "name": "Bus 1",
+       "kind": "Bus",
+       "destination": "Central",
+       "cabin": {
+        "template": "Cabin",
+        "marking": {
+         "Door": [],
+         "Seats": [
+          "Ada",
+          "Bram"
+         ],
+         "Standing": [
+          "Cato"
+         ],
+         "Announcements": [],
+         "Doors Open": [],
+         "Doors Closed": [
+          "Front"
+         ]
+        },
+        "params": {
+         "stopped": false,
+         "seats": 2,
+         "capacity": 6
+        },
+        "enabled": {
+         "Sit": true,
+         "Stand": true,
+         "Go To Door": true,
+         "Go To Door From Standing": true,
+         "Close Doors": true,
+         "Clear Announcement": true
+        }
+       }
+      },
+      "nets": [
+       {
+        "name": "cabin",
+        "nested_id": "<id:bus_cabin>",
+        "path": "<path>",
+        "template": "Cabin",
+        "count": 4
+       }
+      ]
      }
     }
    ]
@@ -2023,7 +2395,7 @@
       "consumed": [
        [
         "In Transit",
-        "<id>"
+        "<id:bus_in_transit>"
        ]
       ],
       "marking_version": "<version>",
@@ -2034,7 +2406,7 @@
      "method": "nested",
      "params": {
       "path": "<path>",
-      "nested_id": "<id:cabin>",
+      "nested_id": "<id:bus_cabin>",
       "event": {
        "method": "param_changed",
        "params": {
@@ -2051,12 +2423,49 @@
      "method": "nested",
      "params": {
       "path": "<path>",
-      "nested_id": "<id:cabin>",
+      "nested_id": "<id:bus_cabin>",
+      "event": {
+       "method": "removed",
+       "params": {
+        "place": "Doors Closed",
+        "id": "<id:bus_front_doors_closed>",
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "nested",
+     "params": {
+      "path": "<path>",
+      "nested_id": "<id:bus_cabin>",
+      "event": {
+       "method": "added",
+       "params": {
+        "place": "Doors Open",
+        "id": "<id:bus_front_doors_open>",
+        "label": "<label>",
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "nested",
+     "params": {
+      "path": "<path>",
+      "nested_id": "<id:bus_cabin>",
       "event": {
        "method": "added",
        "params": {
         "place": "Announcements",
-        "id": "<id>",
+        "id": "<id:bus_arrived_at_central>",
         "label": "<label>",
         "marking_version": "<version>",
         "running": false
@@ -2073,7 +2482,7 @@
       "produced": [
        [
         "Central",
-        "<id:bus_at_central>",
+        "<id:bus_central>",
         "<label>"
        ]
       ],
@@ -2094,7 +2503,7 @@
      "method": "nested",
      "params": {
       "path": "<path>",
-      "nested_id": "<id:cabin>",
+      "nested_id": "<id:bus_cabin>",
       "event": {
        "method": "fireable",
        "params": {
@@ -2111,7 +2520,7 @@
      }
     },
     {
-     "id": "29",
+     "id": "22",
      "result": {
       "fired": true,
       "transition": "Arrive",
@@ -2123,214 +2532,16 @@
   },
   {
    "send": {
-    "method": "step"
-   },
-   "expect": [
-    {
-     "method": "nested",
-     "params": {
-      "path": "<path>",
-      "nested_id": "<id:cabin>",
-      "event": {
-       "method": "fired",
-       "params": {
-        "transition": "Go To Door",
-        "consumed": [
-         [
-          "Seats",
-          "<id:ada_seated>"
-         ]
-        ],
-        "produced": [
-         [
-          "Door",
-          "<id>",
-          "<label>"
-         ]
-        ],
-        "duration_ms": "<ms>",
-        "marking_version": "<version>",
-        "running": false
-       }
-      },
-      "marking_version": "<version>",
-      "running": false
-     }
-    },
-    {
-     "id": "30",
-     "result": {
-      "fired": true,
-      "transition": "Go To Door",
-      "path": "<path>",
-      "nested_id": "<id:cabin>",
-      "marking_version": "<version>",
-      "running": false
-     }
-    }
-   ]
-  },
-  {
-   "send": {
-    "method": "step"
-   },
-   "expect": [
-    {
-     "method": "nested",
-     "params": {
-      "path": "<path>",
-      "nested_id": "<id:cabin>",
-      "event": {
-       "method": "fired",
-       "params": {
-        "transition": "Go To Door",
-        "consumed": [
-         [
-          "Seats",
-          "<id>"
-         ]
-        ],
-        "produced": [
-         [
-          "Door",
-          "<id>",
-          "<label>"
-         ]
-        ],
-        "duration_ms": "<ms>",
-        "marking_version": "<version>",
-        "running": false
-       }
-      },
-      "marking_version": "<version>",
-      "running": false
-     }
-    },
-    {
-     "method": "nested",
-     "params": {
-      "path": "<path>",
-      "nested_id": "<id:cabin>",
-      "event": {
-       "method": "fireable",
-       "params": {
-        "transitions": [
-         "Go To Door From Standing"
-        ],
-        "marking_version": "<version>",
-        "running": false
-       }
-      },
-      "marking_version": "<version>",
-      "running": false
-     }
-    },
-    {
-     "id": "31",
-     "result": {
-      "fired": true,
-      "transition": "Go To Door",
-      "path": "<path>",
-      "nested_id": "<id:cabin>",
-      "marking_version": "<version>",
-      "running": false
-     }
-    }
-   ]
-  },
-  {
-   "send": {
-    "method": "step"
-   },
-   "expect": [
-    {
-     "method": "nested",
-     "params": {
-      "path": "<path>",
-      "nested_id": "<id:cabin>",
-      "event": {
-       "method": "fired",
-       "params": {
-        "transition": "Go To Door From Standing",
-        "consumed": [
-         [
-          "Standing",
-          "<id>"
-         ]
-        ],
-        "produced": [
-         [
-          "Door",
-          "<id>",
-          "<label>"
-         ]
-        ],
-        "duration_ms": "<ms>",
-        "marking_version": "<version>",
-        "running": false
-       }
-      },
-      "marking_version": "<version>",
-      "running": false
-     }
-    },
-    {
-     "method": "nested",
-     "params": {
-      "path": "<path>",
-      "nested_id": "<id:cabin>",
-      "event": {
-       "method": "fireable",
-       "params": {
-        "transitions": [],
-        "marking_version": "<version>",
-        "running": false
-       }
-      },
-      "marking_version": "<version>",
-      "running": false
-     }
-    },
-    {
-     "id": "32",
-     "result": {
-      "fired": true,
-      "transition": "Go To Door From Standing",
-      "path": "<path>",
-      "nested_id": "<id:cabin>",
-      "marking_version": "<version>",
-      "running": false
-     }
-    }
-   ]
-  },
-  {
-   "send": {
-    "method": "step"
-   },
-   "expect": [
-    {
-     "id": "33",
-     "result": {
-      "fired": false,
-      "marking_version": "<version>",
-      "running": false
-     }
-    }
-   ]
-  },
-  {
-   "send": {
     "method": "get_token",
     "params": {
-     "id": "<id:bus_at_central>"
+     "id": "<id:bus_central>"
     }
    },
    "expect": [
     {
-     "id": "34",
+     "id": "23",
      "result": {
-      "id": "<id:bus_at_central>",
+      "id": "<id:bus_central>",
       "place": "Central",
       "type_name": "<label>",
       "kind": "json",
@@ -2341,16 +2552,21 @@
        "cabin": {
         "template": "Cabin",
         "marking": {
-         "Door": [
+         "Door": [],
+         "Seats": [
           "Ada",
-          "Bram",
+          "Bram"
+         ],
+         "Standing": [
           "Cato"
          ],
-         "Seats": [],
-         "Standing": [],
          "Announcements": [
           "Arrived at Central"
-         ]
+         ],
+         "Doors Open": [
+          "Front"
+         ],
+         "Doors Closed": []
         },
         "params": {
          "stopped": true,
@@ -2362,6 +2578,7 @@
          "Stand": true,
          "Go To Door": true,
          "Go To Door From Standing": true,
+         "Close Doors": true,
          "Clear Announcement": true
         }
        }
@@ -2369,10 +2586,10 @@
       "nets": [
        {
         "name": "cabin",
-        "nested_id": "<id:cabin>",
+        "nested_id": "<id:bus_cabin>",
         "path": "<path>",
         "template": "Cabin",
-        "count": 4
+        "count": 5
        }
       ]
      }
@@ -2381,17 +2598,36 @@
   },
   {
    "send": {
-    "method": "enable",
-    "params": {
-     "transition": "Alight Central"
-    }
+    "method": "step"
    },
    "expect": [
     {
-     "method": "toggled",
+     "method": "nested",
      "params": {
-      "transition": "Alight Central",
-      "enabled": true,
+      "path": "<path>",
+      "nested_id": "<id:bus_cabin>",
+      "event": {
+       "method": "fired",
+       "params": {
+        "transition": "Go To Door",
+        "consumed": [
+         [
+          "Seats",
+          "<id:bus_ada_seats>"
+         ]
+        ],
+        "produced": [
+         [
+          "Door",
+          "<id:bus_ada_door>",
+          "<label>"
+         ]
+        ],
+        "duration_ms": "<ms>",
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
       "marking_version": "<version>",
       "running": false
      }
@@ -2407,9 +2643,44 @@
      }
     },
     {
-     "id": "35",
+     "id": "24",
      "result": {
-      "marking_version": "<version>"
+      "fired": true,
+      "transition": "Go To Door",
+      "path": "<path>",
+      "nested_id": "<id:bus_cabin>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "get_place_tokens",
+    "params": {
+     "place": "Door",
+     "path": "transit/Central/#<id:bus_central>/cabin"
+    }
+   },
+   "expect": [
+    {
+     "id": "25",
+     "result": {
+      "place": "Door",
+      "marking_version": "<version>",
+      "count": 1,
+      "offset": 0,
+      "limit": 200,
+      "tokens": [
+       {
+        "id": "<id:bus_ada_door>",
+        "label": "<label>"
+       }
+      ],
+      "has_more": false,
+      "path": "<path>",
+      "nested_id": "<id:bus_cabin>"
      }
     }
    ]
@@ -2432,12 +2703,12 @@
      "method": "nested",
      "params": {
       "path": "<path>",
-      "nested_id": "<id:cabin>",
+      "nested_id": "<id:bus_cabin>",
       "event": {
        "method": "removed",
        "params": {
         "place": "Door",
-        "id": "<id>",
+        "id": "<id:bus_ada_door>",
         "marking_version": "<version>",
         "running": false
        }
@@ -2450,7 +2721,7 @@
      "method": "mutated",
      "params": {
       "place": "Central",
-      "id": "<id:bus_at_central>",
+      "id": "<id:bus_central>",
       "label": "<label>",
       "marking_version": "<version>",
       "running": false
@@ -2462,8 +2733,8 @@
       "transition": "Alight Central",
       "produced": [
        [
-        "Platform@Central",
-        "<id>",
+        "Arrived",
+        "<id:ada_arrived>",
         "<label>"
        ]
       ],
@@ -2475,8 +2746,62 @@
     {
      "method": "fireable",
      "params": {
+      "transitions": [],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "26",
+     "result": {
+      "fired": true,
+      "transition": "Alight Central",
+      "marking_version": "<version>",
+      "running": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "step"
+   },
+   "expect": [
+    {
+     "method": "nested",
+     "params": {
+      "path": "<path>",
+      "nested_id": "<id:bus_cabin>",
+      "event": {
+       "method": "fired",
+       "params": {
+        "transition": "Go To Door",
+        "consumed": [
+         [
+          "Seats",
+          "<id:bus_bram_seats>"
+         ]
+        ],
+        "produced": [
+         [
+          "Door",
+          "<id:bus_bram_door>",
+          "<label>"
+         ]
+        ],
+        "duration_ms": "<ms>",
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "fireable",
+     "params": {
       "transitions": [
-       "Board Central",
        "Alight Central"
       ],
       "marking_version": "<version>",
@@ -2484,10 +2809,352 @@
      }
     },
     {
-     "id": "36",
+     "method": "nested",
+     "params": {
+      "path": "<path>",
+      "nested_id": "<id:bus_cabin>",
+      "event": {
+       "method": "fireable",
+       "params": {
+        "transitions": [
+         "Go To Door From Standing"
+        ],
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "27",
+     "result": {
+      "fired": true,
+      "transition": "Go To Door",
+      "path": "<path>",
+      "nested_id": "<id:bus_cabin>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "step"
+   },
+   "expect": [
+    {
+     "method": "launched",
+     "params": {
+      "transition": "Alight Central",
+      "consumed": [],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "nested",
+     "params": {
+      "path": "<path>",
+      "nested_id": "<id:bus_cabin>",
+      "event": {
+       "method": "removed",
+       "params": {
+        "place": "Door",
+        "id": "<id:bus_bram_door>",
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "mutated",
+     "params": {
+      "place": "Central",
+      "id": "<id:bus_central>",
+      "label": "<label>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "distributed",
+     "params": {
+      "transition": "Alight Central",
+      "produced": [
+       [
+        "Arrived",
+        "<id:bram_arrived>",
+        "<label>"
+       ]
+      ],
+      "duration_ms": "<ms>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "fireable",
+     "params": {
+      "transitions": [],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "28",
      "result": {
       "fired": true,
       "transition": "Alight Central",
+      "marking_version": "<version>",
+      "running": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "step"
+   },
+   "expect": [
+    {
+     "method": "nested",
+     "params": {
+      "path": "<path>",
+      "nested_id": "<id:bus_cabin>",
+      "event": {
+       "method": "fired",
+       "params": {
+        "transition": "Go To Door From Standing",
+        "consumed": [
+         [
+          "Standing",
+          "<id:bus_cato_standing>"
+         ]
+        ],
+        "produced": [
+         [
+          "Door",
+          "<id:bus_cato_door>",
+          "<label>"
+         ]
+        ],
+        "duration_ms": "<ms>",
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "fireable",
+     "params": {
+      "transitions": [
+       "Alight Central"
+      ],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "nested",
+     "params": {
+      "path": "<path>",
+      "nested_id": "<id:bus_cabin>",
+      "event": {
+       "method": "fireable",
+       "params": {
+        "transitions": [],
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "29",
+     "result": {
+      "fired": true,
+      "transition": "Go To Door From Standing",
+      "path": "<path>",
+      "nested_id": "<id:bus_cabin>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "step"
+   },
+   "expect": [
+    {
+     "method": "launched",
+     "params": {
+      "transition": "Alight Central",
+      "consumed": [],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "nested",
+     "params": {
+      "path": "<path>",
+      "nested_id": "<id:bus_cabin>",
+      "event": {
+       "method": "removed",
+       "params": {
+        "place": "Door",
+        "id": "<id:bus_cato_door>",
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "mutated",
+     "params": {
+      "place": "Central",
+      "id": "<id:bus_central>",
+      "label": "<label>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "distributed",
+     "params": {
+      "transition": "Alight Central",
+      "produced": [
+       [
+        "Arrived",
+        "<id:cato_arrived>",
+        "<label>"
+       ]
+      ],
+      "duration_ms": "<ms>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "fireable",
+     "params": {
+      "transitions": [],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "nested",
+     "params": {
+      "path": "<path>",
+      "nested_id": "<id:bus_cabin>",
+      "event": {
+       "method": "fireable",
+       "params": {
+        "transitions": [
+         "Clear Announcement"
+        ],
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "30",
+     "result": {
+      "fired": true,
+      "transition": "Alight Central",
+      "marking_version": "<version>",
+      "running": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "step"
+   },
+   "expect": [
+    {
+     "method": "nested",
+     "params": {
+      "path": "<path>",
+      "nested_id": "<id:bus_cabin>",
+      "event": {
+       "method": "fired",
+       "params": {
+        "transition": "Clear Announcement",
+        "consumed": [
+         [
+          "Announcements",
+          "<id:bus_arrived_at_central>"
+         ]
+        ],
+        "produced": [],
+        "duration_ms": "<ms>",
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "fireable",
+     "params": {
+      "transitions": [
+       "Board Central"
+      ],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "nested",
+     "params": {
+      "path": "<path>",
+      "nested_id": "<id:bus_cabin>",
+      "event": {
+       "method": "fireable",
+       "params": {
+        "transitions": [
+         "Close Doors"
+        ],
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "31",
+     "result": {
+      "fired": true,
+      "transition": "Clear Announcement",
+      "path": "<path>",
+      "nested_id": "<id:bus_cabin>",
       "marking_version": "<version>",
       "running": false
      }
@@ -2506,7 +3173,7 @@
       "consumed": [
        [
         "Platform@Central",
-        "<id>"
+        "<id:dara>"
        ]
       ],
       "marking_version": "<version>",
@@ -2517,12 +3184,12 @@
      "method": "nested",
      "params": {
       "path": "<path>",
-      "nested_id": "<id:cabin>",
+      "nested_id": "<id:bus_cabin>",
       "event": {
        "method": "added",
        "params": {
         "place": "Door",
-        "id": "<id>",
+        "id": "<id:bus_dara>",
         "label": "<label>",
         "marking_version": "<version>",
         "running": false
@@ -2536,7 +3203,95 @@
      "method": "mutated",
      "params": {
       "place": "Central",
-      "id": "<id:bus_at_central>",
+      "id": "<id:bus_central>",
+      "label": "<label>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "distributed",
+     "params": {
+      "transition": "Board Central",
+      "produced": [],
+      "duration_ms": "<ms>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "nested",
+     "params": {
+      "path": "<path>",
+      "nested_id": "<id:bus_cabin>",
+      "event": {
+       "method": "fireable",
+       "params": {
+        "transitions": [
+         "Sit"
+        ],
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "32",
+     "result": {
+      "fired": true,
+      "transition": "Board Central",
+      "marking_version": "<version>",
+      "running": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "step"
+   },
+   "expect": [
+    {
+     "method": "launched",
+     "params": {
+      "transition": "Board Central",
+      "consumed": [
+       [
+        "Platform@Central",
+        "<id:eve>"
+       ]
+      ],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "nested",
+     "params": {
+      "path": "<path>",
+      "nested_id": "<id:bus_cabin>",
+      "event": {
+       "method": "added",
+       "params": {
+        "place": "Door",
+        "id": "<id:bus_eve>",
+        "label": "<label>",
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "mutated",
+     "params": {
+      "place": "Central",
+      "id": "<id:bus_central>",
       "label": "<label>",
       "marking_version": "<version>",
       "running": false
@@ -2555,15 +3310,13 @@
     {
      "method": "fireable",
      "params": {
-      "transitions": [
-       "Alight Central"
-      ],
+      "transitions": [],
       "marking_version": "<version>",
       "running": false
      }
     },
     {
-     "id": "37",
+     "id": "33",
      "result": {
       "fired": true,
       "transition": "Board Central",
@@ -2575,60 +3328,253 @@
   },
   {
    "send": {
+    "method": "step"
+   },
+   "expect": [
+    {
+     "method": "nested",
+     "params": {
+      "path": "<path>",
+      "nested_id": "<id:bus_cabin>",
+      "event": {
+       "method": "fired",
+       "params": {
+        "transition": "Sit",
+        "consumed": [
+         [
+          "Door",
+          "<id:bus_dara>"
+         ]
+        ],
+        "produced": [
+         [
+          "Seats",
+          "<id:bus_dara_seats>",
+          "<label>"
+         ]
+        ],
+        "duration_ms": "<ms>",
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "34",
+     "result": {
+      "fired": true,
+      "transition": "Sit",
+      "path": "<path>",
+      "nested_id": "<id:bus_cabin>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "step"
+   },
+   "expect": [
+    {
+     "method": "nested",
+     "params": {
+      "path": "<path>",
+      "nested_id": "<id:bus_cabin>",
+      "event": {
+       "method": "fired",
+       "params": {
+        "transition": "Sit",
+        "consumed": [
+         [
+          "Door",
+          "<id:bus_eve>"
+         ]
+        ],
+        "produced": [
+         [
+          "Seats",
+          "<id:bus_eve_seats>",
+          "<label>"
+         ]
+        ],
+        "duration_ms": "<ms>",
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "nested",
+     "params": {
+      "path": "<path>",
+      "nested_id": "<id:bus_cabin>",
+      "event": {
+       "method": "fireable",
+       "params": {
+        "transitions": [
+         "Close Doors"
+        ],
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "35",
+     "result": {
+      "fired": true,
+      "transition": "Sit",
+      "path": "<path>",
+      "nested_id": "<id:bus_cabin>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "step"
+   },
+   "expect": [
+    {
+     "method": "nested",
+     "params": {
+      "path": "<path>",
+      "nested_id": "<id:bus_cabin>",
+      "event": {
+       "method": "fired",
+       "params": {
+        "transition": "Close Doors",
+        "consumed": [
+         [
+          "Doors Open",
+          "<id:bus_front_doors_open>"
+         ]
+        ],
+        "produced": [
+         [
+          "Doors Closed",
+          "<id:bus_front_doors_closed_2>",
+          "<label>"
+         ]
+        ],
+        "duration_ms": "<ms>",
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "fireable",
+     "params": {
+      "transitions": [
+       "Depart Central"
+      ],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "nested",
+     "params": {
+      "path": "<path>",
+      "nested_id": "<id:bus_cabin>",
+      "event": {
+       "method": "fireable",
+       "params": {
+        "transitions": [],
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "36",
+     "result": {
+      "fired": true,
+      "transition": "Close Doors",
+      "path": "<path>",
+      "nested_id": "<id:bus_cabin>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
     "method": "get_log",
     "params": {
-     "nested_id": "<id:cabin>"
+     "nested_id": "<id:bus_cabin>"
     }
    },
    "expect": [
     {
-     "id": "38",
+     "id": "37",
      "result": {
       "entries": [
        {
-        "seq": 4,
-        "transition": "Sit",
-        "started_at": "<time>",
-        "duration_ms": "<ms>",
-        "outcome": "fired",
-        "consumed": [
-         [
-          "Door",
-          "<id>"
-         ]
-        ],
-        "produced": [
-         [
-          "Seats",
-          "<id:ada_seated>"
-         ]
-        ],
-        "path": "<path>",
-        "nested_id": "<id:cabin>"
-       },
-       {
-        "seq": 5,
-        "transition": "Sit",
-        "started_at": "<time>",
-        "duration_ms": "<ms>",
-        "outcome": "fired",
-        "consumed": [
-         [
-          "Door",
-          "<id>"
-         ]
-        ],
-        "produced": [
-         [
-          "Seats",
-          "<id>"
-         ]
-        ],
-        "path": "<path>",
-        "nested_id": "<id:cabin>"
-       },
-       {
         "seq": 6,
+        "transition": "Sit",
+        "started_at": "<time>",
+        "duration_ms": "<ms>",
+        "outcome": "fired",
+        "consumed": [
+         [
+          "Door",
+          "<id:bus_ada>"
+         ]
+        ],
+        "produced": [
+         [
+          "Seats",
+          "<id:bus_ada_seats>"
+         ]
+        ],
+        "path": "<path>",
+        "nested_id": "<id:bus_cabin>"
+       },
+       {
+        "seq": 7,
+        "transition": "Sit",
+        "started_at": "<time>",
+        "duration_ms": "<ms>",
+        "outcome": "fired",
+        "consumed": [
+         [
+          "Door",
+          "<id:bus_bram>"
+         ]
+        ],
+        "produced": [
+         [
+          "Seats",
+          "<id:bus_bram_seats>"
+         ]
+        ],
+        "path": "<path>",
+        "nested_id": "<id:bus_cabin>"
+       },
+       {
+        "seq": 8,
         "transition": "Stand",
         "started_at": "<time>",
         "duration_ms": "<ms>",
@@ -2636,20 +3582,41 @@
         "consumed": [
          [
           "Door",
-          "<id>"
+          "<id:bus_cato>"
          ]
         ],
         "produced": [
          [
           "Standing",
-          "<id>"
+          "<id:bus_cato_standing>"
          ]
         ],
         "path": "<path>",
-        "nested_id": "<id:cabin>"
+        "nested_id": "<id:bus_cabin>"
        },
        {
         "seq": 9,
+        "transition": "Close Doors",
+        "started_at": "<time>",
+        "duration_ms": "<ms>",
+        "outcome": "fired",
+        "consumed": [
+         [
+          "Doors Open",
+          "<id:bus_front>"
+         ]
+        ],
+        "produced": [
+         [
+          "Doors Closed",
+          "<id:bus_front_doors_closed>"
+         ]
+        ],
+        "path": "<path>",
+        "nested_id": "<id:bus_cabin>"
+       },
+       {
+        "seq": 12,
         "transition": "Go To Door",
         "started_at": "<time>",
         "duration_ms": "<ms>",
@@ -2657,20 +3624,20 @@
         "consumed": [
          [
           "Seats",
-          "<id:ada_seated>"
+          "<id:bus_ada_seats>"
          ]
         ],
         "produced": [
          [
           "Door",
-          "<id>"
+          "<id:bus_ada_door>"
          ]
         ],
         "path": "<path>",
-        "nested_id": "<id:cabin>"
+        "nested_id": "<id:bus_cabin>"
        },
        {
-        "seq": 10,
+        "seq": 14,
         "transition": "Go To Door",
         "started_at": "<time>",
         "duration_ms": "<ms>",
@@ -2678,20 +3645,20 @@
         "consumed": [
          [
           "Seats",
-          "<id>"
+          "<id:bus_bram_seats>"
          ]
         ],
         "produced": [
          [
           "Door",
-          "<id>"
+          "<id:bus_bram_door>"
          ]
         ],
         "path": "<path>",
-        "nested_id": "<id:cabin>"
+        "nested_id": "<id:bus_cabin>"
        },
        {
-        "seq": 11,
+        "seq": 16,
         "transition": "Go To Door From Standing",
         "started_at": "<time>",
         "duration_ms": "<ms>",
@@ -2699,17 +3666,96 @@
         "consumed": [
          [
           "Standing",
-          "<id>"
+          "<id:bus_cato_standing>"
          ]
         ],
         "produced": [
          [
           "Door",
-          "<id>"
+          "<id:bus_cato_door>"
          ]
         ],
         "path": "<path>",
-        "nested_id": "<id:cabin>"
+        "nested_id": "<id:bus_cabin>"
+       },
+       {
+        "seq": 18,
+        "transition": "Clear Announcement",
+        "started_at": "<time>",
+        "duration_ms": "<ms>",
+        "outcome": "fired",
+        "consumed": [
+         [
+          "Announcements",
+          "<id:bus_arrived_at_central>"
+         ]
+        ],
+        "produced": [],
+        "path": "<path>",
+        "nested_id": "<id:bus_cabin>"
+       },
+       {
+        "seq": 21,
+        "transition": "Sit",
+        "started_at": "<time>",
+        "duration_ms": "<ms>",
+        "outcome": "fired",
+        "consumed": [
+         [
+          "Door",
+          "<id:bus_dara>"
+         ]
+        ],
+        "produced": [
+         [
+          "Seats",
+          "<id:bus_dara_seats>"
+         ]
+        ],
+        "path": "<path>",
+        "nested_id": "<id:bus_cabin>"
+       },
+       {
+        "seq": 22,
+        "transition": "Sit",
+        "started_at": "<time>",
+        "duration_ms": "<ms>",
+        "outcome": "fired",
+        "consumed": [
+         [
+          "Door",
+          "<id:bus_eve>"
+         ]
+        ],
+        "produced": [
+         [
+          "Seats",
+          "<id:bus_eve_seats>"
+         ]
+        ],
+        "path": "<path>",
+        "nested_id": "<id:bus_cabin>"
+       },
+       {
+        "seq": 23,
+        "transition": "Close Doors",
+        "started_at": "<time>",
+        "duration_ms": "<ms>",
+        "outcome": "fired",
+        "consumed": [
+         [
+          "Doors Open",
+          "<id:bus_front_doors_open>"
+         ]
+        ],
+        "produced": [
+         [
+          "Doors Closed",
+          "<id:bus_front_doors_closed_2>"
+         ]
+        ],
+        "path": "<path>",
+        "nested_id": "<id:bus_cabin>"
        }
       ]
      }
@@ -2725,32 +3771,51 @@
    },
    "expect": [
     {
-     "id": "39",
+     "id": "38",
      "result": {
       "entries": [
        {
         "seq": 11,
-        "transition": "Go To Door From Standing",
+        "transition": "Arrive",
         "started_at": "<time>",
         "duration_ms": "<ms>",
         "outcome": "fired",
         "consumed": [
          [
-          "Standing",
-          "<id>"
+          "In Transit",
+          "<id:bus_in_transit>"
+         ]
+        ],
+        "produced": [
+         [
+          "Central",
+          "<id:bus_central>"
+         ]
+        ]
+       },
+       {
+        "seq": 12,
+        "transition": "Go To Door",
+        "started_at": "<time>",
+        "duration_ms": "<ms>",
+        "outcome": "fired",
+        "consumed": [
+         [
+          "Seats",
+          "<id:bus_ada_seats>"
          ]
         ],
         "produced": [
          [
           "Door",
-          "<id>"
+          "<id:bus_ada_door>"
          ]
         ],
         "path": "<path>",
-        "nested_id": "<id:cabin>"
+        "nested_id": "<id:bus_cabin>"
        },
        {
-        "seq": 12,
+        "seq": 13,
         "transition": "Alight Central",
         "started_at": "<time>",
         "duration_ms": "<ms>",
@@ -2758,13 +3823,99 @@
         "consumed": [],
         "produced": [
          [
-          "Platform@Central",
-          "<id>"
+          "Arrived",
+          "<id:ada_arrived>"
          ]
         ]
        },
        {
-        "seq": 13,
+        "seq": 14,
+        "transition": "Go To Door",
+        "started_at": "<time>",
+        "duration_ms": "<ms>",
+        "outcome": "fired",
+        "consumed": [
+         [
+          "Seats",
+          "<id:bus_bram_seats>"
+         ]
+        ],
+        "produced": [
+         [
+          "Door",
+          "<id:bus_bram_door>"
+         ]
+        ],
+        "path": "<path>",
+        "nested_id": "<id:bus_cabin>"
+       },
+       {
+        "seq": 15,
+        "transition": "Alight Central",
+        "started_at": "<time>",
+        "duration_ms": "<ms>",
+        "outcome": "fired",
+        "consumed": [],
+        "produced": [
+         [
+          "Arrived",
+          "<id:bram_arrived>"
+         ]
+        ]
+       },
+       {
+        "seq": 16,
+        "transition": "Go To Door From Standing",
+        "started_at": "<time>",
+        "duration_ms": "<ms>",
+        "outcome": "fired",
+        "consumed": [
+         [
+          "Standing",
+          "<id:bus_cato_standing>"
+         ]
+        ],
+        "produced": [
+         [
+          "Door",
+          "<id:bus_cato_door>"
+         ]
+        ],
+        "path": "<path>",
+        "nested_id": "<id:bus_cabin>"
+       },
+       {
+        "seq": 17,
+        "transition": "Alight Central",
+        "started_at": "<time>",
+        "duration_ms": "<ms>",
+        "outcome": "fired",
+        "consumed": [],
+        "produced": [
+         [
+          "Arrived",
+          "<id:cato_arrived>"
+         ]
+        ]
+       },
+       {
+        "seq": 18,
+        "transition": "Clear Announcement",
+        "started_at": "<time>",
+        "duration_ms": "<ms>",
+        "outcome": "fired",
+        "consumed": [
+         [
+          "Announcements",
+          "<id:bus_arrived_at_central>"
+         ]
+        ],
+        "produced": [],
+        "path": "<path>",
+        "nested_id": "<id:bus_cabin>"
+       },
+       {
+        "seq": 19,
         "transition": "Board Central",
         "started_at": "<time>",
         "duration_ms": "<ms>",
@@ -2772,10 +3923,87 @@
         "consumed": [
          [
           "Platform@Central",
-          "<id>"
+          "<id:dara>"
          ]
         ],
         "produced": []
+       },
+       {
+        "seq": 20,
+        "transition": "Board Central",
+        "started_at": "<time>",
+        "duration_ms": "<ms>",
+        "outcome": "fired",
+        "consumed": [
+         [
+          "Platform@Central",
+          "<id:eve>"
+         ]
+        ],
+        "produced": []
+       },
+       {
+        "seq": 21,
+        "transition": "Sit",
+        "started_at": "<time>",
+        "duration_ms": "<ms>",
+        "outcome": "fired",
+        "consumed": [
+         [
+          "Door",
+          "<id:bus_dara>"
+         ]
+        ],
+        "produced": [
+         [
+          "Seats",
+          "<id:bus_dara_seats>"
+         ]
+        ],
+        "path": "<path>",
+        "nested_id": "<id:bus_cabin>"
+       },
+       {
+        "seq": 22,
+        "transition": "Sit",
+        "started_at": "<time>",
+        "duration_ms": "<ms>",
+        "outcome": "fired",
+        "consumed": [
+         [
+          "Door",
+          "<id:bus_eve>"
+         ]
+        ],
+        "produced": [
+         [
+          "Seats",
+          "<id:bus_eve_seats>"
+         ]
+        ],
+        "path": "<path>",
+        "nested_id": "<id:bus_cabin>"
+       },
+       {
+        "seq": 23,
+        "transition": "Close Doors",
+        "started_at": "<time>",
+        "duration_ms": "<ms>",
+        "outcome": "fired",
+        "consumed": [
+         [
+          "Doors Open",
+          "<id:bus_front_doors_open>"
+         ]
+        ],
+        "produced": [
+         [
+          "Doors Closed",
+          "<id:bus_front_doors_closed_2>"
+         ]
+        ],
+        "path": "<path>",
+        "nested_id": "<id:bus_cabin>"
        }
       ]
      }
@@ -2784,25 +4012,204 @@
   },
   {
    "send": {
-    "method": "inject",
-    "params": {
-     "place": "Door",
-     "nested_id": "<id:cabin>",
-     "token": "Dan"
-    }
+    "method": "step"
    },
    "expect": [
+    {
+     "method": "launched",
+     "params": {
+      "transition": "Depart Central",
+      "consumed": [
+       [
+        "Central",
+        "<id:bus_central>"
+       ]
+      ],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
     {
      "method": "nested",
      "params": {
       "path": "<path>",
-      "nested_id": "<id:cabin>",
+      "nested_id": "<id:bus_cabin>",
+      "event": {
+       "method": "param_changed",
+       "params": {
+        "param": "stopped",
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "distributed",
+     "params": {
+      "transition": "Depart Central",
+      "produced": [
+       [
+        "In Transit",
+        "<id:bus_in_transit_2>",
+        "<label>"
+       ]
+      ],
+      "duration_ms": "<ms>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "fireable",
+     "params": {
+      "transitions": [
+       "Arrive"
+      ],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "39",
+     "result": {
+      "fired": true,
+      "transition": "Depart Central",
+      "marking_version": "<version>",
+      "running": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "step"
+   },
+   "expect": [
+    {
+     "method": "launched",
+     "params": {
+      "transition": "Arrive",
+      "consumed": [
+       [
+        "In Transit",
+        "<id:bus_in_transit_2>"
+       ]
+      ],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "nested",
+     "params": {
+      "path": "<path>",
+      "nested_id": "<id:bus_cabin>",
+      "event": {
+       "method": "param_changed",
+       "params": {
+        "param": "stopped",
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "nested",
+     "params": {
+      "path": "<path>",
+      "nested_id": "<id:bus_cabin>",
+      "event": {
+       "method": "removed",
+       "params": {
+        "place": "Doors Closed",
+        "id": "<id:bus_front_doors_closed_2>",
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "nested",
+     "params": {
+      "path": "<path>",
+      "nested_id": "<id:bus_cabin>",
       "event": {
        "method": "added",
        "params": {
-        "place": "Door",
-        "id": "<id>",
+        "place": "Doors Open",
+        "id": "<id:bus_front_doors_open_2>",
         "label": "<label>",
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "nested",
+     "params": {
+      "path": "<path>",
+      "nested_id": "<id:bus_cabin>",
+      "event": {
+       "method": "added",
+       "params": {
+        "place": "Announcements",
+        "id": "<id:bus_arrived_at_harbour>",
+        "label": "<label>",
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "distributed",
+     "params": {
+      "transition": "Arrive",
+      "produced": [
+       [
+        "Harbour",
+        "<id:bus_harbour>",
+        "<label>"
+       ]
+      ],
+      "duration_ms": "<ms>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "fireable",
+     "params": {
+      "transitions": [],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "nested",
+     "params": {
+      "path": "<path>",
+      "nested_id": "<id:bus_cabin>",
+      "event": {
+       "method": "fireable",
+       "params": {
+        "transitions": [
+         "Go To Door"
+        ],
         "marking_version": "<version>",
         "running": false
        }
@@ -2814,8 +4221,1759 @@
     {
      "id": "40",
      "result": {
+      "fired": true,
+      "transition": "Arrive",
+      "marking_version": "<version>",
+      "running": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "step"
+   },
+   "expect": [
+    {
+     "method": "nested",
+     "params": {
+      "path": "<path>",
+      "nested_id": "<id:ferry_cabin>",
+      "event": {
+       "method": "fired",
+       "params": {
+        "transition": "Go Below",
+        "consumed": [
+         [
+          "Door",
+          "<id:ferry_finn>"
+         ]
+        ],
+        "produced": [
+         [
+          "Lower Deck",
+          "<id:ferry_finn_lower_deck>",
+          "<label>"
+         ]
+        ],
+        "duration_ms": "<ms>",
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "nested",
+     "params": {
+      "path": "<path>",
+      "nested_id": "<id:ferry_cabin>",
+      "event": {
+       "method": "fireable",
+       "params": {
+        "transitions": [
+         "Go Below",
+         "Go Up"
+        ],
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "41",
+     "result": {
+      "fired": true,
+      "transition": "Go Below",
+      "path": "<path>",
+      "nested_id": "<id:ferry_cabin>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "step"
+   },
+   "expect": [
+    {
+     "method": "nested",
+     "params": {
+      "path": "<path>",
+      "nested_id": "<id:ferry_cabin>",
+      "event": {
+       "method": "fired",
+       "params": {
+        "transition": "Go Below",
+        "consumed": [
+         [
+          "Door",
+          "<id:ferry_gwen>"
+         ]
+        ],
+        "produced": [
+         [
+          "Lower Deck",
+          "<id:ferry_gwen_lower_deck>",
+          "<label>"
+         ]
+        ],
+        "duration_ms": "<ms>",
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "nested",
+     "params": {
+      "path": "<path>",
+      "nested_id": "<id:ferry_cabin>",
+      "event": {
+       "method": "fireable",
+       "params": {
+        "transitions": [
+         "Go Up",
+         "Close Doors"
+        ],
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "42",
+     "result": {
+      "fired": true,
+      "transition": "Go Below",
+      "path": "<path>",
+      "nested_id": "<id:ferry_cabin>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "step"
+   },
+   "expect": [
+    {
+     "method": "nested",
+     "params": {
+      "path": "<path>",
+      "nested_id": "<id:ferry_cabin>",
+      "event": {
+       "method": "fired",
+       "params": {
+        "transition": "Go Up",
+        "consumed": [
+         [
+          "Lower Deck",
+          "<id:ferry_finn_lower_deck>"
+         ]
+        ],
+        "produced": [
+         [
+          "Upper Deck",
+          "<id:ferry_finn_upper_deck>",
+          "<label>"
+         ]
+        ],
+        "duration_ms": "<ms>",
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "43",
+     "result": {
+      "fired": true,
+      "transition": "Go Up",
+      "path": "<path>",
+      "nested_id": "<id:ferry_cabin>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "step"
+   },
+   "expect": [
+    {
+     "method": "nested",
+     "params": {
+      "path": "<path>",
+      "nested_id": "<id:ferry_cabin>",
+      "event": {
+       "method": "fired",
+       "params": {
+        "transition": "Go Up",
+        "consumed": [
+         [
+          "Lower Deck",
+          "<id:ferry_gwen_lower_deck>"
+         ]
+        ],
+        "produced": [
+         [
+          "Upper Deck",
+          "<id:ferry_gwen_upper_deck>",
+          "<label>"
+         ]
+        ],
+        "duration_ms": "<ms>",
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "nested",
+     "params": {
+      "path": "<path>",
+      "nested_id": "<id:ferry_cabin>",
+      "event": {
+       "method": "fireable",
+       "params": {
+        "transitions": [
+         "Close Doors"
+        ],
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "44",
+     "result": {
+      "fired": true,
+      "transition": "Go Up",
+      "path": "<path>",
+      "nested_id": "<id:ferry_cabin>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "step"
+   },
+   "expect": [
+    {
+     "method": "nested",
+     "params": {
+      "path": "<path>",
+      "nested_id": "<id:ferry_cabin>",
+      "event": {
+       "method": "fired",
+       "params": {
+        "transition": "Close Doors",
+        "consumed": [
+         [
+          "Doors Open",
+          "<id:ferry_bow>"
+         ]
+        ],
+        "produced": [
+         [
+          "Doors Closed",
+          "<id:ferry_bow_doors_closed>",
+          "<label>"
+         ]
+        ],
+        "duration_ms": "<ms>",
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "45",
+     "result": {
+      "fired": true,
+      "transition": "Close Doors",
+      "path": "<path>",
+      "nested_id": "<id:ferry_cabin>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "step"
+   },
+   "expect": [
+    {
+     "method": "nested",
+     "params": {
+      "path": "<path>",
+      "nested_id": "<id:ferry_cabin>",
+      "event": {
+       "method": "fired",
+       "params": {
+        "transition": "Close Doors",
+        "consumed": [
+         [
+          "Doors Open",
+          "<id:ferry_doors_open>"
+         ]
+        ],
+        "produced": [
+         [
+          "Doors Closed",
+          "<id:ferry_stern>",
+          "<label>"
+         ]
+        ],
+        "duration_ms": "<ms>",
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "fireable",
+     "params": {
+      "transitions": [
+       "Depart Harbour"
+      ],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "nested",
+     "params": {
+      "path": "<path>",
+      "nested_id": "<id:ferry_cabin>",
+      "event": {
+       "method": "fireable",
+       "params": {
+        "transitions": [],
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "46",
+     "result": {
+      "fired": true,
+      "transition": "Close Doors",
+      "path": "<path>",
+      "nested_id": "<id:ferry_cabin>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "get_place_tokens",
+    "params": {
+     "place": "Upper Deck",
+     "nested_id": "<id:ferry_cabin>"
+    }
+   },
+   "expect": [
+    {
+     "id": "47",
+     "result": {
+      "place": "Upper Deck",
+      "marking_version": "<version>",
+      "count": 2,
+      "offset": 0,
+      "limit": 200,
+      "tokens": [
+       {
+        "id": "<id:ferry_finn_upper_deck>",
+        "label": "<label>"
+       },
+       {
+        "id": "<id:ferry_gwen_upper_deck>",
+        "label": "<label>"
+       }
+      ],
+      "has_more": false,
+      "path": "<path>",
+      "nested_id": "<id:ferry_cabin>"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "step"
+   },
+   "expect": [
+    {
+     "method": "launched",
+     "params": {
+      "transition": "Depart Harbour",
+      "consumed": [
+       [
+        "Harbour",
+        "<id:ferry>"
+       ]
+      ],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "nested",
+     "params": {
+      "path": "<path>",
+      "nested_id": "<id:ferry_cabin>",
+      "event": {
+       "method": "param_changed",
+       "params": {
+        "param": "stopped",
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "distributed",
+     "params": {
+      "transition": "Depart Harbour",
+      "produced": [
+       [
+        "In Transit",
+        "<id:ferry_in_transit>",
+        "<label>"
+       ]
+      ],
+      "duration_ms": "<ms>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "fireable",
+     "params": {
+      "transitions": [
+       "Arrive"
+      ],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "48",
+     "result": {
+      "fired": true,
+      "transition": "Depart Harbour",
+      "marking_version": "<version>",
+      "running": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "step"
+   },
+   "expect": [
+    {
+     "method": "launched",
+     "params": {
+      "transition": "Arrive",
+      "consumed": [
+       [
+        "In Transit",
+        "<id:ferry_in_transit>"
+       ]
+      ],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "nested",
+     "params": {
+      "path": "<path>",
+      "nested_id": "<id:ferry_cabin>",
+      "event": {
+       "method": "param_changed",
+       "params": {
+        "param": "stopped",
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "nested",
+     "params": {
+      "path": "<path>",
+      "nested_id": "<id:ferry_cabin>",
+      "event": {
+       "method": "removed",
+       "params": {
+        "place": "Doors Closed",
+        "id": "<id:ferry_bow_doors_closed>",
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "nested",
+     "params": {
+      "path": "<path>",
+      "nested_id": "<id:ferry_cabin>",
+      "event": {
+       "method": "removed",
+       "params": {
+        "place": "Doors Closed",
+        "id": "<id:ferry_stern>",
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "nested",
+     "params": {
+      "path": "<path>",
+      "nested_id": "<id:ferry_cabin>",
+      "event": {
+       "method": "added",
+       "params": {
+        "place": "Doors Open",
+        "id": "<id:ferry_bow_doors_open>",
+        "label": "<label>",
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "nested",
+     "params": {
+      "path": "<path>",
+      "nested_id": "<id:ferry_cabin>",
+      "event": {
+       "method": "added",
+       "params": {
+        "place": "Doors Open",
+        "id": "<id:ferry_stern_doors_open>",
+        "label": "<label>",
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "nested",
+     "params": {
+      "path": "<path>",
+      "nested_id": "<id:ferry_cabin>",
+      "event": {
+       "method": "added",
+       "params": {
+        "place": "Announcements",
+        "id": "<id:ferry_arrived_at_airport>",
+        "label": "<label>",
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "distributed",
+     "params": {
+      "transition": "Arrive",
+      "produced": [
+       [
+        "Airport",
+        "<id:ferry_airport>",
+        "<label>"
+       ]
+      ],
+      "duration_ms": "<ms>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "fireable",
+     "params": {
+      "transitions": [],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "nested",
+     "params": {
+      "path": "<path>",
+      "nested_id": "<id:ferry_cabin>",
+      "event": {
+       "method": "fireable",
+       "params": {
+        "transitions": [
+         "Go To Door From Upper Deck"
+        ],
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "49",
+     "result": {
+      "fired": true,
+      "transition": "Arrive",
+      "marking_version": "<version>",
+      "running": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "step"
+   },
+   "expect": [
+    {
+     "method": "nested",
+     "params": {
+      "path": "<path>",
+      "nested_id": "<id:bus_cabin>",
+      "event": {
+       "method": "fired",
+       "params": {
+        "transition": "Go To Door",
+        "consumed": [
+         [
+          "Seats",
+          "<id:bus_dara_seats>"
+         ]
+        ],
+        "produced": [
+         [
+          "Door",
+          "<id:bus_dara_door>",
+          "<label>"
+         ]
+        ],
+        "duration_ms": "<ms>",
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "fireable",
+     "params": {
+      "transitions": [
+       "Alight Harbour"
+      ],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "50",
+     "result": {
+      "fired": true,
+      "transition": "Go To Door",
+      "path": "<path>",
+      "nested_id": "<id:bus_cabin>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "step"
+   },
+   "expect": [
+    {
+     "method": "launched",
+     "params": {
+      "transition": "Alight Harbour",
+      "consumed": [],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "nested",
+     "params": {
+      "path": "<path>",
+      "nested_id": "<id:bus_cabin>",
+      "event": {
+       "method": "removed",
+       "params": {
+        "place": "Door",
+        "id": "<id:bus_dara_door>",
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "mutated",
+     "params": {
+      "place": "Harbour",
+      "id": "<id:bus_harbour>",
+      "label": "<label>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "distributed",
+     "params": {
+      "transition": "Alight Harbour",
+      "produced": [
+       [
+        "Arrived",
+        "<id:dara_arrived>",
+        "<label>"
+       ]
+      ],
+      "duration_ms": "<ms>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "fireable",
+     "params": {
+      "transitions": [],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "51",
+     "result": {
+      "fired": true,
+      "transition": "Alight Harbour",
+      "marking_version": "<version>",
+      "running": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "step"
+   },
+   "expect": [
+    {
+     "method": "nested",
+     "params": {
+      "path": "<path>",
+      "nested_id": "<id:bus_cabin>",
+      "event": {
+       "method": "fired",
+       "params": {
+        "transition": "Go To Door",
+        "consumed": [
+         [
+          "Seats",
+          "<id:bus_eve_seats>"
+         ]
+        ],
+        "produced": [
+         [
+          "Door",
+          "<id:bus_eve_door>",
+          "<label>"
+         ]
+        ],
+        "duration_ms": "<ms>",
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "fireable",
+     "params": {
+      "transitions": [
+       "Alight Harbour"
+      ],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "nested",
+     "params": {
+      "path": "<path>",
+      "nested_id": "<id:bus_cabin>",
+      "event": {
+       "method": "fireable",
+       "params": {
+        "transitions": [],
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "52",
+     "result": {
+      "fired": true,
+      "transition": "Go To Door",
+      "path": "<path>",
+      "nested_id": "<id:bus_cabin>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "step"
+   },
+   "expect": [
+    {
+     "method": "launched",
+     "params": {
+      "transition": "Alight Harbour",
+      "consumed": [],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "nested",
+     "params": {
+      "path": "<path>",
+      "nested_id": "<id:bus_cabin>",
+      "event": {
+       "method": "removed",
+       "params": {
+        "place": "Door",
+        "id": "<id:bus_eve_door>",
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "mutated",
+     "params": {
+      "place": "Harbour",
+      "id": "<id:bus_harbour>",
+      "label": "<label>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "distributed",
+     "params": {
+      "transition": "Alight Harbour",
+      "produced": [
+       [
+        "Arrived",
+        "<id:eve_arrived>",
+        "<label>"
+       ]
+      ],
+      "duration_ms": "<ms>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "fireable",
+     "params": {
+      "transitions": [],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "nested",
+     "params": {
+      "path": "<path>",
+      "nested_id": "<id:bus_cabin>",
+      "event": {
+       "method": "fireable",
+       "params": {
+        "transitions": [
+         "Clear Announcement"
+        ],
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "53",
+     "result": {
+      "fired": true,
+      "transition": "Alight Harbour",
+      "marking_version": "<version>",
+      "running": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "step"
+   },
+   "expect": [
+    {
+     "method": "nested",
+     "params": {
+      "path": "<path>",
+      "nested_id": "<id:bus_cabin>",
+      "event": {
+       "method": "fired",
+       "params": {
+        "transition": "Clear Announcement",
+        "consumed": [
+         [
+          "Announcements",
+          "<id:bus_arrived_at_harbour>"
+         ]
+        ],
+        "produced": [],
+        "duration_ms": "<ms>",
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "nested",
+     "params": {
+      "path": "<path>",
+      "nested_id": "<id:bus_cabin>",
+      "event": {
+       "method": "fireable",
+       "params": {
+        "transitions": [
+         "Close Doors"
+        ],
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "54",
+     "result": {
+      "fired": true,
+      "transition": "Clear Announcement",
+      "path": "<path>",
+      "nested_id": "<id:bus_cabin>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "step"
+   },
+   "expect": [
+    {
+     "method": "nested",
+     "params": {
+      "path": "<path>",
+      "nested_id": "<id:bus_cabin>",
+      "event": {
+       "method": "fired",
+       "params": {
+        "transition": "Close Doors",
+        "consumed": [
+         [
+          "Doors Open",
+          "<id:bus_front_doors_open_2>"
+         ]
+        ],
+        "produced": [
+         [
+          "Doors Closed",
+          "<id:bus_front_doors_closed_3>",
+          "<label>"
+         ]
+        ],
+        "duration_ms": "<ms>",
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "fireable",
+     "params": {
+      "transitions": [
+       "Depart Harbour"
+      ],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "nested",
+     "params": {
+      "path": "<path>",
+      "nested_id": "<id:bus_cabin>",
+      "event": {
+       "method": "fireable",
+       "params": {
+        "transitions": [],
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "55",
+     "result": {
+      "fired": true,
+      "transition": "Close Doors",
+      "path": "<path>",
+      "nested_id": "<id:bus_cabin>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "step"
+   },
+   "expect": [
+    {
+     "method": "launched",
+     "params": {
+      "transition": "Depart Harbour",
+      "consumed": [
+       [
+        "Harbour",
+        "<id:bus_harbour>"
+       ]
+      ],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "nested",
+     "params": {
+      "path": "<path>",
+      "nested_id": "<id:bus_cabin>",
+      "event": {
+       "method": "param_changed",
+       "params": {
+        "param": "stopped",
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "distributed",
+     "params": {
+      "transition": "Depart Harbour",
+      "produced": [
+       [
+        "In Transit",
+        "<id:bus_in_transit_3>",
+        "<label>"
+       ]
+      ],
+      "duration_ms": "<ms>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "fireable",
+     "params": {
+      "transitions": [
+       "Arrive"
+      ],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "56",
+     "result": {
+      "fired": true,
+      "transition": "Depart Harbour",
+      "marking_version": "<version>",
+      "running": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "step"
+   },
+   "expect": [
+    {
+     "method": "launched",
+     "params": {
+      "transition": "Arrive",
+      "consumed": [
+       [
+        "In Transit",
+        "<id:bus_in_transit_3>"
+       ]
+      ],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "nested",
+     "params": {
+      "path": "<path>",
+      "nested_id": "<id:bus_cabin>",
+      "event": {
+       "method": "param_changed",
+       "params": {
+        "param": "stopped",
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "nested",
+     "params": {
+      "path": "<path>",
+      "nested_id": "<id:bus_cabin>",
+      "event": {
+       "method": "removed",
+       "params": {
+        "place": "Doors Closed",
+        "id": "<id:bus_front_doors_closed_3>",
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "nested",
+     "params": {
+      "path": "<path>",
+      "nested_id": "<id:bus_cabin>",
+      "event": {
+       "method": "added",
+       "params": {
+        "place": "Doors Open",
+        "id": "<id:bus_front_doors_open_3>",
+        "label": "<label>",
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "nested",
+     "params": {
+      "path": "<path>",
+      "nested_id": "<id:bus_cabin>",
+      "event": {
+       "method": "added",
+       "params": {
+        "place": "Announcements",
+        "id": "<id:bus_arrived_at_airport>",
+        "label": "<label>",
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "distributed",
+     "params": {
+      "transition": "Arrive",
+      "produced": [
+       [
+        "Airport",
+        "<id:bus_airport>",
+        "<label>"
+       ]
+      ],
+      "duration_ms": "<ms>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "fireable",
+     "params": {
+      "transitions": [],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "nested",
+     "params": {
+      "path": "<path>",
+      "nested_id": "<id:bus_cabin>",
+      "event": {
+       "method": "fireable",
+       "params": {
+        "transitions": [
+         "Clear Announcement"
+        ],
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "57",
+     "result": {
+      "fired": true,
+      "transition": "Arrive",
+      "marking_version": "<version>",
+      "running": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "step"
+   },
+   "expect": [
+    {
+     "method": "nested",
+     "params": {
+      "path": "<path>",
+      "nested_id": "<id:ferry_cabin>",
+      "event": {
+       "method": "fired",
+       "params": {
+        "transition": "Go To Door From Upper Deck",
+        "consumed": [
+         [
+          "Upper Deck",
+          "<id:ferry_finn_upper_deck>"
+         ]
+        ],
+        "produced": [
+         [
+          "Door",
+          "<id:ferry_finn_door>",
+          "<label>"
+         ]
+        ],
+        "duration_ms": "<ms>",
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "fireable",
+     "params": {
+      "transitions": [
+       "Alight Airport"
+      ],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "58",
+     "result": {
+      "fired": true,
+      "transition": "Go To Door From Upper Deck",
+      "path": "<path>",
+      "nested_id": "<id:ferry_cabin>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "step"
+   },
+   "expect": [
+    {
+     "method": "launched",
+     "params": {
+      "transition": "Alight Airport",
+      "consumed": [],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "nested",
+     "params": {
+      "path": "<path>",
+      "nested_id": "<id:ferry_cabin>",
+      "event": {
+       "method": "removed",
+       "params": {
+        "place": "Door",
+        "id": "<id:ferry_finn_door>",
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "mutated",
+     "params": {
+      "place": "Airport",
+      "id": "<id:ferry_airport>",
+      "label": "<label>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "distributed",
+     "params": {
+      "transition": "Alight Airport",
+      "produced": [
+       [
+        "Arrived",
+        "<id:finn_arrived>",
+        "<label>"
+       ]
+      ],
+      "duration_ms": "<ms>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "fireable",
+     "params": {
+      "transitions": [],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "59",
+     "result": {
+      "fired": true,
+      "transition": "Alight Airport",
+      "marking_version": "<version>",
+      "running": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "step"
+   },
+   "expect": [
+    {
+     "method": "nested",
+     "params": {
+      "path": "<path>",
+      "nested_id": "<id:ferry_cabin>",
+      "event": {
+       "method": "fired",
+       "params": {
+        "transition": "Go To Door From Upper Deck",
+        "consumed": [
+         [
+          "Upper Deck",
+          "<id:ferry_gwen_upper_deck>"
+         ]
+        ],
+        "produced": [
+         [
+          "Door",
+          "<id:ferry_gwen_door>",
+          "<label>"
+         ]
+        ],
+        "duration_ms": "<ms>",
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "fireable",
+     "params": {
+      "transitions": [
+       "Alight Airport"
+      ],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "nested",
+     "params": {
+      "path": "<path>",
+      "nested_id": "<id:ferry_cabin>",
+      "event": {
+       "method": "fireable",
+       "params": {
+        "transitions": [],
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "60",
+     "result": {
+      "fired": true,
+      "transition": "Go To Door From Upper Deck",
+      "path": "<path>",
+      "nested_id": "<id:ferry_cabin>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "step"
+   },
+   "expect": [
+    {
+     "method": "launched",
+     "params": {
+      "transition": "Alight Airport",
+      "consumed": [],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "nested",
+     "params": {
+      "path": "<path>",
+      "nested_id": "<id:ferry_cabin>",
+      "event": {
+       "method": "removed",
+       "params": {
+        "place": "Door",
+        "id": "<id:ferry_gwen_door>",
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "mutated",
+     "params": {
+      "place": "Airport",
+      "id": "<id:ferry_airport>",
+      "label": "<label>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "distributed",
+     "params": {
+      "transition": "Alight Airport",
+      "produced": [
+       [
+        "Arrived",
+        "<id:gwen_arrived>",
+        "<label>"
+       ]
+      ],
+      "duration_ms": "<ms>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "fireable",
+     "params": {
+      "transitions": [],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "nested",
+     "params": {
+      "path": "<path>",
+      "nested_id": "<id:ferry_cabin>",
+      "event": {
+       "method": "fireable",
+       "params": {
+        "transitions": [
+         "Clear Announcement"
+        ],
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "61",
+     "result": {
+      "fired": true,
+      "transition": "Alight Airport",
+      "marking_version": "<version>",
+      "running": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "get_place_tokens",
+    "params": {
+     "place": "Arrived"
+    }
+   },
+   "expect": [
+    {
+     "id": "62",
+     "result": {
+      "place": "Arrived",
+      "marking_version": "<version>",
+      "count": 7,
+      "offset": 0,
+      "limit": 200,
+      "tokens": [
+       {
+        "id": "<id:ada_arrived>",
+        "label": "<label>"
+       },
+       {
+        "id": "<id:bram_arrived>",
+        "label": "<label>"
+       },
+       {
+        "id": "<id:cato_arrived>",
+        "label": "<label>"
+       },
+       {
+        "id": "<id:dara_arrived>",
+        "label": "<label>"
+       },
+       {
+        "id": "<id:eve_arrived>",
+        "label": "<label>"
+       },
+       {
+        "id": "<id:finn_arrived>",
+        "label": "<label>"
+       },
+       {
+        "id": "<id:gwen_arrived>",
+        "label": "<label>"
+       }
+      ],
+      "has_more": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "inject",
+    "params": {
+     "place": "Door",
+     "nested_id": "<id:bus_cabin>",
+     "token": "Hal"
+    }
+   },
+   "expect": [
+    {
+     "method": "nested",
+     "params": {
+      "path": "<path>",
+      "nested_id": "<id:bus_cabin>",
+      "event": {
+       "method": "added",
+       "params": {
+        "place": "Door",
+        "id": "<id:bus_hal>",
+        "label": "<label>",
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "nested",
+     "params": {
+      "path": "<path>",
+      "nested_id": "<id:bus_cabin>",
+      "event": {
+       "method": "fireable",
+       "params": {
+        "transitions": [],
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "63",
+     "result": {
       "status": "injected",
-      "id": "<id>",
+      "id": "<id:bus_hal>",
       "marking_version": "<version>"
      }
     }
@@ -2834,7 +5992,10 @@
        "template": "Pod",
        "marking": {
         "Seats": [
-         "Eve"
+         "Iris"
+        ],
+        "Doors Open": [
+         "Front"
         ]
        },
        "params": {},
@@ -2855,18 +6016,7 @@
      }
     },
     {
-     "method": "fireable",
-     "params": {
-      "transitions": [
-       "Alight Central",
-       "Depart Depot"
-      ],
-      "marking_version": "<version>",
-      "running": false
-     }
-    },
-    {
-     "id": "41",
+     "id": "64",
      "result": {
       "status": "injected",
       "id": "<id:shuttle>",
@@ -2884,7 +6034,7 @@
    },
    "expect": [
     {
-     "id": "42",
+     "id": "65",
      "result": {
       "id": "<id:shuttle>",
       "place": "Depot",
@@ -2899,9 +6049,13 @@
         "marking": {
          "Door": [],
          "Seats": [
-          "Eve"
+          "Iris"
          ],
-         "Announcements": []
+         "Announcements": [],
+         "Doors Open": [
+          "Front"
+         ],
+         "Doors Closed": []
         },
         "params": {
          "stopped": true,
@@ -2911,6 +6065,7 @@
         "enabled": {
          "Sit": true,
          "Go To Door": true,
+         "Close Doors": true,
          "Clear Announcement": true
         }
        }
@@ -2918,10 +6073,10 @@
       "nets": [
        {
         "name": "cabin",
-        "nested_id": "<id>",
+        "nested_id": "<id:shuttle_cabin>",
         "path": "<path>",
         "template": "Pod",
-        "count": 1
+        "count": 2
        }
       ]
      }
@@ -2937,10 +6092,10 @@
    },
    "expect": [
     {
-     "id": "43",
+     "id": "66",
      "error": {
-      "code": "unknown_net",
-      "message": "<label>"
+      "message": "<label>",
+      "code": "unknown_net"
      }
     }
    ]
@@ -2954,10 +6109,10 @@
    },
    "expect": [
     {
-     "id": "44",
+     "id": "67",
      "error": {
-      "code": "unknown_net",
-      "message": "<label>"
+      "message": "<label>",
+      "code": "unknown_net"
      }
     }
    ]
@@ -2971,10 +6126,10 @@
    },
    "expect": [
     {
-     "id": "45",
+     "id": "68",
      "error": {
-      "code": "unknown_net",
-      "message": "<label>"
+      "message": "<label>",
+      "code": "unknown_net"
      }
     }
    ]
@@ -2983,16 +6138,16 @@
    "send": {
     "method": "get_state",
     "params": {
-     "nested_id": "<id:cabin>",
+     "nested_id": "<id:bus_cabin>",
      "path": "transit"
     }
    },
    "expect": [
     {
-     "id": "46",
+     "id": "69",
      "error": {
-      "code": "invalid_params",
-      "message": "<label>"
+      "message": "<label>",
+      "code": "invalid_params"
      }
     }
    ]
@@ -3002,15 +6157,15 @@
     "method": "enable",
     "params": {
      "transition": "Sit",
-     "nested_id": "<id:cabin>"
+     "nested_id": "<id:bus_cabin>"
     }
    },
    "expect": [
     {
-     "id": "47",
+     "id": "70",
      "error": {
-      "code": "invalid_params",
-      "message": "<label>"
+      "message": "<label>",
+      "code": "invalid_params"
      }
     }
    ]
@@ -3033,7 +6188,7 @@
      }
     },
     {
-     "id": "48",
+     "id": "71",
      "result": {
       "marking_version": "<version>"
      }
@@ -3050,10 +6205,10 @@
    },
    "expect": [
     {
-     "id": "49",
+     "id": "72",
      "error": {
-      "code": "invalid_params",
-      "message": "<label>"
+      "message": "<label>",
+      "code": "invalid_params"
      }
     }
    ]
@@ -3068,10 +6223,401 @@
    },
    "expect": [
     {
-     "id": "50",
+     "id": "73",
      "error": {
-      "code": "invalid_params",
-      "message": "<label>"
+      "message": "<label>",
+      "code": "invalid_params"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "step"
+   },
+   "expect": [
+    {
+     "method": "nested",
+     "params": {
+      "path": "<path>",
+      "nested_id": "<id:shuttle_cabin>",
+      "event": {
+       "method": "fired",
+       "params": {
+        "transition": "Close Doors",
+        "consumed": [
+         [
+          "Doors Open",
+          "<id:shuttle_doors_open>"
+         ]
+        ],
+        "produced": [
+         [
+          "Doors Closed",
+          "<id:shuttle_front>",
+          "<label>"
+         ]
+        ],
+        "duration_ms": "<ms>",
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "fireable",
+     "params": {
+      "transitions": [
+       "Depart Depot"
+      ],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "nested",
+     "params": {
+      "path": "<path>",
+      "nested_id": "<id:shuttle_cabin>",
+      "event": {
+       "method": "fireable",
+       "params": {
+        "transitions": [],
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "74",
+     "result": {
+      "fired": true,
+      "transition": "Close Doors",
+      "path": "<path>",
+      "nested_id": "<id:shuttle_cabin>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "step"
+   },
+   "expect": [
+    {
+     "method": "launched",
+     "params": {
+      "transition": "Depart Depot",
+      "consumed": [
+       [
+        "Depot",
+        "<id:shuttle>"
+       ]
+      ],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "nested",
+     "params": {
+      "path": "<path>",
+      "nested_id": "<id:shuttle_cabin>",
+      "event": {
+       "method": "param_changed",
+       "params": {
+        "param": "stopped",
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "distributed",
+     "params": {
+      "transition": "Depart Depot",
+      "produced": [
+       [
+        "In Transit",
+        "<id:shuttle_in_transit>",
+        "<label>"
+       ]
+      ],
+      "duration_ms": "<ms>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "fireable",
+     "params": {
+      "transitions": [
+       "Arrive"
+      ],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "75",
+     "result": {
+      "fired": true,
+      "transition": "Depart Depot",
+      "marking_version": "<version>",
+      "running": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "get_token",
+    "params": {
+     "id": "<id:shuttle_in_transit>"
+    }
+   },
+   "expect": [
+    {
+     "id": "76",
+     "result": {
+      "id": "<id:shuttle_in_transit>",
+      "place": "In Transit",
+      "type_name": "<label>",
+      "kind": "json",
+      "value": {
+       "name": "Shuttle 1",
+       "kind": "Shuttle",
+       "destination": "Airport",
+       "cabin": {
+        "template": "Pod",
+        "marking": {
+         "Door": [],
+         "Seats": [
+          "Iris"
+         ],
+         "Announcements": [],
+         "Doors Open": [],
+         "Doors Closed": [
+          "Front"
+         ]
+        },
+        "params": {
+         "stopped": false,
+         "seats": 4,
+         "capacity": 4
+        },
+        "enabled": {
+         "Sit": true,
+         "Go To Door": true,
+         "Close Doors": true,
+         "Clear Announcement": true
+        }
+       }
+      },
+      "nets": [
+       {
+        "name": "cabin",
+        "nested_id": "<id:shuttle_cabin>",
+        "path": "<path>",
+        "template": "Pod",
+        "count": 2
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "step"
+   },
+   "expect": [
+    {
+     "method": "launched",
+     "params": {
+      "transition": "Arrive",
+      "consumed": [
+       [
+        "In Transit",
+        "<id:shuttle_in_transit>"
+       ]
+      ],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "nested",
+     "params": {
+      "path": "<path>",
+      "nested_id": "<id:shuttle_cabin>",
+      "event": {
+       "method": "param_changed",
+       "params": {
+        "param": "stopped",
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "nested",
+     "params": {
+      "path": "<path>",
+      "nested_id": "<id:shuttle_cabin>",
+      "event": {
+       "method": "removed",
+       "params": {
+        "place": "Doors Closed",
+        "id": "<id:shuttle_front>",
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "nested",
+     "params": {
+      "path": "<path>",
+      "nested_id": "<id:shuttle_cabin>",
+      "event": {
+       "method": "added",
+       "params": {
+        "place": "Doors Open",
+        "id": "<id:shuttle_front_doors_open>",
+        "label": "<label>",
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "nested",
+     "params": {
+      "path": "<path>",
+      "nested_id": "<id:shuttle_cabin>",
+      "event": {
+       "method": "added",
+       "params": {
+        "place": "Announcements",
+        "id": "<id:shuttle_arrived_at_airport>",
+        "label": "<label>",
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "distributed",
+     "params": {
+      "transition": "Arrive",
+      "produced": [
+       [
+        "Airport",
+        "<id:shuttle_airport>",
+        "<label>"
+       ]
+      ],
+      "duration_ms": "<ms>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "fireable",
+     "params": {
+      "transitions": [],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "nested",
+     "params": {
+      "path": "<path>",
+      "nested_id": "<id:shuttle_cabin>",
+      "event": {
+       "method": "fireable",
+       "params": {
+        "transitions": [
+         "Go To Door"
+        ],
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "77",
+     "result": {
+      "fired": true,
+      "transition": "Arrive",
+      "marking_version": "<version>",
+      "running": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "get_log",
+    "params": {
+     "nested_id": "<id:shuttle_cabin>"
+    }
+   },
+   "expect": [
+    {
+     "id": "78",
+     "result": {
+      "entries": [
+       {
+        "seq": 46,
+        "transition": "Close Doors",
+        "started_at": "<time>",
+        "duration_ms": "<ms>",
+        "outcome": "fired",
+        "consumed": [
+         [
+          "Doors Open",
+          "<id:shuttle_doors_open>"
+         ]
+        ],
+        "produced": [
+         [
+          "Doors Closed",
+          "<id:shuttle_front>"
+         ]
+        ],
+        "path": "<path>",
+        "nested_id": "<id:shuttle_cabin>"
+       }
+      ]
      }
     }
    ]
@@ -3091,7 +6637,7 @@
      }
     },
     {
-     "id": "51",
+     "id": "79",
      "result": {
       "status": "reset",
       "generation": 2,
@@ -3104,15 +6650,15 @@
    "send": {
     "method": "get_state",
     "params": {
-     "nested_id": "<id:cabin>"
+     "nested_id": "<id:bus_cabin>"
     }
    },
    "expect": [
     {
-     "id": "52",
+     "id": "80",
      "error": {
-      "code": "unknown_net",
-      "message": "<label>"
+      "message": "<label>",
+      "code": "unknown_net"
      }
     }
    ]

@@ -61,7 +61,10 @@
 //!
 //! Our own transcripts, over the example's demo nets, are in
 //! `tests/protocol/`, with verbatim copies of the shared
-//! `05_nested_nets.json` over `transit` and `06_keys_query_filter.json` over
+//! `05_nested_nets.json` over `transit` (recorded again on 2026-10-10, for
+//! the net that runs its journey with nothing held back, and again the same
+//! day for its doors as two places, `Doors Open` and `Doors Closed`, which
+//! replays with no runner change) and `06_keys_query_filter.json` over
 //! `wildlife`. The shared set of §11, over the conformance nets
 //! `parcel-distribution`, `transit` and `wildlife`, lives in the Python
 //! repository and is replayed here from a sibling checkout by

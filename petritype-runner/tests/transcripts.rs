@@ -55,7 +55,11 @@
 //!   mutation may be told as `hidden`, `added` or `removed`, and those may
 //!   stand between the pieces too. The folds are applied to the expected
 //!   lines as well as to the actual ones, so a transcript recorded either
-//!   way reads the same.
+//!   way reads the same. This is PROTOCOL.md §11's fold rule as written on
+//!   2026-10-12 (decision A1 of that phase), which the Python harness's
+//!   `fold()` follows too, and it says outright: "A firing that failed is
+//!   not folded: its `launched` stays, and its `failed` follows the lines
+//!   between."
 //! - Type names are the example's: the harness rewrites this test crate's
 //!   module path to `parcel_runner::nets::`, as the example binary spells it.
 //!
@@ -64,8 +68,12 @@
 //! `05_nested_nets.json` over `transit` (recorded again on 2026-10-10, for
 //! the net that runs its journey with nothing held back, and again the same
 //! day for its doors as two places, `Doors Open` and `Doors Closed`, which
-//! replays with no runner change) and `06_keys_query_filter.json` over
-//! `wildlife`. The shared set of §11, over the conformance nets
+//! replays with no runner change; and again on 2026-10-12, when an `inject`
+//! into an inner net came to answer with its `path` and `nested_id` and
+//! `transit`'s `destination` became a load parameter, as DESIGN §19.3.13
+//! has it) and `06_keys_query_filter.json` over
+//! `wildlife` (recorded again on 2026-10-13 for the net's second edition,
+//! which replays with no runner change). The shared set of §11, over the conformance nets
 //! `parcel-distribution`, `transit` and `wildlife`, lives in the Python
 //! repository and is replayed here from a sibling checkout by
 //! `the_shared_transcripts_hold`.
@@ -612,6 +620,16 @@ fn the_fold() {
                "produced": [], "duration_ms": 2.0, "marking_version": 2, "running": false}})
     );
     assert_eq!(folded[1]["method"], "launched", "no distributed follows it");
+
+    // A firing that failed is not folded (PROTOCOL.md §11): its `launched`
+    // stays, and its `failed` follows the lines between.
+    let folded = fold(vec![
+        json!({"method": "launched", "params": {"transition": "T", "consumed": [["A", "1"]], "marking_version": 1, "running": false}}),
+        json!({"method": "mutated", "params": {"place": "B", "id": "2", "label": "x", "marking_version": 2, "running": false}}),
+        json!({"method": "failed", "params": {"transition": "T", "error": "no", "restored": false, "consumed": [["A", "1"]], "marking_version": 3, "running": false}}),
+    ]);
+    let methods: Vec<&Value> = folded.iter().map(|line| &line["method"]).collect();
+    assert_eq!(methods, ["launched", "mutated", "failed"]);
 }
 
 #[test]
@@ -686,7 +704,7 @@ fn the_fold_lets_a_projected_mutation_stand_between_the_pieces() {
     // Under a connection's filter (PROTOCOL.md §13.4) a firing's mutation is
     // told as `hidden`, or as `added` or `removed` when it carries a token
     // across the filter: the firing's own lines all the same, as
-    // `06_keys_query_filter.json`'s `Spread` has it.
+    // `06_keys_query_filter.json`'s `Decline Forest` has it.
     for between in [
         json!({"method": "hidden", "params": {"kind": "mutated", "place": "Savanna"}}),
         json!({"method": "removed", "params": {"place": "Savanna", "id": "4"}}),

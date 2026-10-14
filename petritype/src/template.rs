@@ -348,9 +348,12 @@ impl Net {
     /// [`export_marking`](Net::export_marking) writes it, every parameter
     /// value is cloned across (all of them, not only the ones with wire
     /// names: a fork never leaves the process), and every switch, the
-    /// [label limit](Net::label_limit) and the
-    /// [tie-break](Net::set_tie_break) are copied. A custom
-    /// [selector](Net::set_selector) is a closure and is not.
+    /// [label limit](Net::label_limit), the
+    /// [tie-break](Net::set_tie_break) and the
+    /// [deep policy](Net::set_deep_policy) are copied. A custom
+    /// [selector](Net::set_selector) is a closure and is not, and neither
+    /// cursor is (the round robin's and the deep policy's): a copy starts
+    /// its rounds afresh.
     ///
     /// Every place must be serializable, since the marking crosses as JSON;
     /// so the tokens of this net's own nested places are rebuilt from their
@@ -423,6 +426,7 @@ impl Net {
         }
         fork.label_limit = self.label_limit;
         fork.tie_break = self.tie_break;
+        fork.deep_policy = self.deep_policy;
         fork.forget_setup();
         Ok(fork)
     }

@@ -2,12 +2,12 @@
 //!
 //! This is the conformance net `wildlife` of the shared protocol
 //! (`../petritype/PROTOCOL.md` §11), the example of the token-keys proposal
-//! (`Cyberpunk2020-Simulation/dev-docs/TOKEN_QUERYING_AND_FILTERING.md` §2):
-//! places, keys, transitions, guards, parameters, seed and JSON exactly as
-//! §11 fixes them, so that a transcript recorded against the Python runner
-//! can replay against this one. It depends on `petritype`, `serde` and
-//! `serde_json` only, so that a runner's example binary can include this
-//! file as it is.
+//! (`Cyberpunk2020-Simulation/dev-docs/TOKEN_QUERYING_AND_FILTERING.md` §2),
+//! in its second edition (2026-10-13): places, keys, transitions, guards,
+//! parameters, seed and JSON exactly as the two runtimes agreed them, so that
+//! a transcript recorded against the Python runner can replay against this
+//! one. It depends on `petritype`, `serde` and `serde_json` only, so that a
+//! runner's example binary can include this file as it is.
 //!
 //! A place is a habitat, and a token is one species occurring in one
 //! habitat: the same species in two habitats is two tokens with the same
@@ -16,26 +16,31 @@
 //! names. Every place declares the same three keys: `species` (the name),
 //! `class` and `diet`.
 //!
-//! Two transitions differ from the proposal's §2, as the Python track's "As
-//! built" records and §11 fixes. `Decline` halves a population through a
-//! mutate edge and never removes the token: a mutate edge removes nothing,
-//! and "at zero the token is removed" would need a consuming edge with a
-//! conditional put-back, which is the pattern keyed edges exist to avoid; its
-//! guard stops it at zero instead. And `Spread` leaves the original with half
-//! its population, rounded down, and gives the copy the rest.
+//! Every transition but `Settle` reads its habitat through one keyed edge,
+//! which picks the species it is about whoever stands in front of it, and
+//! every guard reads that same species (the oldest the edge's filter
+//! accepts, [`oldest`]), never the front token. Birds migrate to `Wetland`
+//! from `Forest` and from `Tundra` in autumn (`TakeWhereEdge`, filter
+//! `class in {Bird}`); the egret of `Savanna`, above `spread_threshold`,
+//! spreads to `Wetland`, keeping half and sending a copy with the rest (a
+//! `MutateWhereEdge` with an output); the deer of `Forest` thin while there
+//! are more than ten, and the lemmings of `Tundra` crash while there are
+//! more than a hundred (`MutateWhereEdge`, no output). A mutate edge removes
+//! nothing, so a decline is a halving with a floor and never takes a
+//! species to zero. Left alone, in autumn, the net fires nineteen times and
+//! stops.
 //!
-//! `Migrate Forest Wetland` reads `Forest` through one keyed edge, a
-//! `TakeWhereEdge` with the filter `class in {Bird}` (PROTOCOL §11's
-//! `take_where`): it takes the oldest bird and nothing else, and every other
-//! species stays where it is with its id. Its guard tests the `season`
-//! parameter, which is not a key and so not a clause.
+//! The first edition (2026-10-09) spread whatever stood first in `Savanna`
+//! (the zebra, onto the reef) and halved whatever stood first in `Forest`
+//! (the robin, down to nothing), and waited for autumn with summer the
+//! default.
 
 use std::error::Error;
 use std::fmt;
 
 use petritype::{
-    BuildError, Distribution, Filter, KeyValue, MutateEdge, Net, NetBuilder, PlaceRef, TakeEdge,
-    TakeWhereEdge, TransitionId,
+    BuildError, Distribution, Filter, KeyValue, MutateWhereEdge, Net, NetBuilder, PlaceRef,
+    TakeEdge, TakeWhereEdge, TransitionId,
 };
 use serde::{Deserialize, Serialize};
 
@@ -145,12 +150,13 @@ impl fmt::Display for Habitat {
     }
 }
 
-/// Net parameter `season` (`"Summer"`): birds migrate in `"Autumn"`. A
-/// string, as the protocol's parameter is, not an enum of four.
+/// Net parameter `season` (`"Autumn"`): birds migrate in `"Autumn"`, and
+/// in any other season stay where they are. A string, as the protocol's
+/// parameter is, not an enum of four.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Season(pub String);
 
-/// Net parameter `spread_threshold` (`1000`): a population above it spreads.
+/// Net parameter `spread_threshold` (`200`): a population above it spreads.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SpreadThreshold(pub u32);
 
@@ -186,10 +192,19 @@ pub struct Wildlife {
     pub net: Net,
     pub habitats: [PlaceRef<Species>; 5],
     pub migrating: PlaceRef<Species>,
-    pub migrate: TransitionId,
+    /// `Migrate Forest Wetland`: the oldest bird of `Forest` sets off.
+    pub migrate_forest: TransitionId,
+    /// `Migrate Tundra Wetland`: the oldest bird of `Tundra` sets off.
+    pub migrate_tundra: TransitionId,
+    /// `Settle`: the species at the front of `Migrating` arrives.
     pub settle: TransitionId,
+    /// `Spread Savanna Wetland`: the egret of `Savanna` spreads to
+    /// `Wetland`.
     pub spread: TransitionId,
-    pub decline: TransitionId,
+    /// `Decline Forest`: the deer of `Forest` thin.
+    pub decline_forest: TransitionId,
+    /// `Decline Tundra`: the lemmings of `Tundra` crash.
+    pub decline_tundra: TransitionId,
 }
 
 impl Wildlife {
@@ -199,10 +214,27 @@ impl Wildlife {
     }
 }
 
-/// The front species of a place: the one a `MutateEdge` on it is handed.
-pub fn front(net: &Net, place: PlaceRef<Species>) -> Option<&Species> {
-    let (token, _) = net.tokens(place.id()).next()?;
+/// The species of `place` a keyed edge with `filter` would take or be
+/// handed now: the oldest the filter accepts, wherever it stands
+/// ([`Net::first_match`]). What every guard of this net reads.
+pub fn oldest<'n>(net: &'n Net, place: PlaceRef<Species>, filter: &Filter) -> Option<&'n Species> {
+    let token = net.first_match(place.id(), filter)?;
     net.token::<Species>(place.id(), token)
+}
+
+/// `class in {Bird}`: what migrates, and what spreads.
+pub fn birds() -> Filter {
+    Filter::new().key_in("class", [Class::Bird])
+}
+
+/// `diet in {Herbivore}`: what thins in `Forest`.
+pub fn herbivores() -> Filter {
+    Filter::new().key_in("diet", [Diet::Herbivore])
+}
+
+/// `species in {Lemming}`: what crashes in `Tundra`.
+pub fn lemmings() -> Filter {
+    Filter::new().key_in("species", ["Lemming"])
 }
 
 fn season(net: &Net) -> &str {
@@ -214,9 +246,56 @@ fn spread_threshold(net: &Net) -> u32 {
         .map_or(u32::MAX, |threshold| threshold.0)
 }
 
-/// The net as PROTOCOL §11 seeds it: nine species in five habitats, nothing
-/// migrating, `season` `"Summer"`, `spread_threshold` 1000, every
-/// transition switched on.
+/// `Migrate <from> Wetland`: one keyed edge taking the oldest bird of
+/// `from`, whoever stands in front of it, into `Migrating` with `Wetland`
+/// for a destination. Fireable only while `from` holds a bird; the guard
+/// waits for autumn, and `season` is a parameter, not a key, so not a
+/// clause.
+fn migrate(
+    b: &mut NetBuilder,
+    from: Habitat,
+    place: PlaceRef<Species>,
+    migrating: PlaceRef<Species>,
+) -> TransitionId {
+    b.transition(
+        format!("Migrate {from} {}", Habitat::Wetland),
+        (TakeWhereEdge(place, birds()),),
+        (migrating,),
+        |mut bird: Species| {
+            bird.destination = Some(Habitat::Wetland.to_string());
+            (bird,)
+        },
+    )
+    .guard(|net| season(net) == "Autumn")
+    .id()
+}
+
+/// `Decline <habitat>`: one keyed mutate edge halving the oldest species of
+/// `place` that `filter` accepts, while there are more than `floor` of it,
+/// so that none ever reaches zero.
+fn decline(
+    b: &mut NetBuilder,
+    habitat: Habitat,
+    place: PlaceRef<Species>,
+    filter: Filter,
+    floor: u32,
+) -> TransitionId {
+    let guarded = filter.clone();
+    b.transition(
+        format!("Decline {habitat}"),
+        (MutateWhereEdge(place, filter),),
+        (),
+        |species: &mut Species| species.population /= 2,
+    )
+    .guard(move |net| {
+        oldest(net, place, &guarded).is_some_and(|species| species.population > floor)
+    })
+    .id()
+}
+
+/// The net as seeded: twenty species-in-a-habitat in five habitats, nothing
+/// migrating, `season` `"Autumn"`, `spread_threshold` 200, every transition
+/// switched on.
 pub fn build_wildlife() -> Result<Wildlife, BuildError> {
     let mut b = NetBuilder::new();
     let habitats = Habitat::ALL.map(|habitat| b.place::<Species>(habitat.to_string()));
@@ -225,9 +304,9 @@ pub fn build_wildlife() -> Result<Wildlife, BuildError> {
         b.serializable(place);
         b.keys(place, KEY_NAMES, keys_of);
     }
-    b.param(Season("Summer".to_owned()));
+    b.param(Season("Autumn".to_owned()));
     b.serializable_param::<Season>("season");
-    b.param(SpreadThreshold(1000));
+    b.param(SpreadThreshold(200));
     b.serializable_param::<SpreadThreshold>("spread_threshold");
 
     let [forest, wetland, savanna, reef, tundra] = habitats;
@@ -237,6 +316,8 @@ pub fn build_wildlife() -> Result<Wildlife, BuildError> {
         [
             Species::new("Robin", Bird, Insectivore, 120),
             Species::new("Fox", Mammal, Omnivore, 60),
+            Species::new("Deer", Mammal, Herbivore, 300),
+            Species::new("Woodpecker", Bird, Insectivore, 45),
         ],
     );
     b.seed(
@@ -244,6 +325,8 @@ pub fn build_wildlife() -> Result<Wildlife, BuildError> {
         [
             Species::new("Robin", Bird, Insectivore, 80),
             Species::new("Heron", Bird, Carnivore, 40),
+            Species::new("Pike", Fish, Carnivore, 150),
+            Species::new("Otter", Mammal, Carnivore, 25),
         ],
     );
     b.seed(
@@ -251,35 +334,31 @@ pub fn build_wildlife() -> Result<Wildlife, BuildError> {
         [
             Species::new("Zebra", Mammal, Herbivore, 5000),
             Species::new("Gecko", Reptile, Insectivore, 200),
+            Species::new("Lion", Mammal, Carnivore, 40),
+            Species::new("Egret", Bird, Insectivore, 1500),
         ],
     );
-    b.seed(reef, [Species::new("Clownfish", Fish, Omnivore, 300)]);
+    b.seed(
+        reef,
+        [
+            Species::new("Clownfish", Fish, Omnivore, 300),
+            Species::new("Parrotfish", Fish, Herbivore, 400),
+            Species::new("Reef Shark", Fish, Carnivore, 20),
+            Species::new("Sea Turtle", Reptile, Herbivore, 80),
+        ],
+    );
     b.seed(
         tundra,
         [
             Species::new("Fox", Mammal, Omnivore, 30),
             Species::new("Arctic Hare", Mammal, Herbivore, 90),
+            Species::new("Lemming", Mammal, Herbivore, 2000),
+            Species::new("Snowy Owl", Bird, Carnivore, 15),
         ],
     );
 
-    // One keyed edge: the oldest bird in Forest, whoever stands in front of
-    // it. Fireable only while Forest holds a bird; the guard, asked after,
-    // waits for autumn.
-    let migrate = b
-        .transition(
-            "Migrate Forest Wetland",
-            (TakeWhereEdge(
-                forest,
-                Filter::new().key_in("class", [Class::Bird]),
-            ),),
-            (migrating,),
-            |mut bird: Species| {
-                bird.destination = Some(Habitat::Wetland.to_string());
-                (bird,)
-            },
-        )
-        .guard(|net| season(net) == "Autumn")
-        .id();
+    let migrate_forest = migrate(&mut b, Habitat::Forest, forest, migrating);
+    let migrate_tundra = migrate(&mut b, Habitat::Tundra, tundra, migrating);
 
     let settle = b
         .transition(
@@ -304,11 +383,16 @@ pub fn build_wildlife() -> Result<Wildlife, BuildError> {
         )
         .id();
 
+    // Cattle egrets follow the herds and roost in wetlands: the oldest bird
+    // of Savanna, whoever stands in front of it, keeps half its population,
+    // rounded down, and a copy with the rest lands in Wetland. The egret
+    // keeps its id and its place.
+    let spreading = birds();
     let spread = b
         .transition(
-            "Spread Savanna Reef",
-            (MutateEdge(savanna),),
-            (reef,),
+            "Spread Savanna Wetland",
+            (MutateWhereEdge(savanna, birds()),),
+            (wetland,),
             |species: &mut Species| {
                 let kept = species.population / 2;
                 let moved = species.population - kept;
@@ -320,27 +404,23 @@ pub fn build_wildlife() -> Result<Wildlife, BuildError> {
             },
         )
         .guard(move |net| {
-            front(net, savanna).is_some_and(|species| species.population > spread_threshold(net))
+            oldest(net, savanna, &spreading)
+                .is_some_and(|species| species.population > spread_threshold(net))
         })
         .id();
 
-    let decline = b
-        .transition(
-            "Decline Forest",
-            (MutateEdge(forest),),
-            (),
-            |species: &mut Species| species.population /= 2,
-        )
-        .guard(move |net| front(net, forest).is_some_and(|species| species.population > 0))
-        .id();
+    let decline_forest = decline(&mut b, Habitat::Forest, forest, herbivores(), 10);
+    let decline_tundra = decline(&mut b, Habitat::Tundra, tundra, lemmings(), 100);
 
     Ok(Wildlife {
         net: b.build()?,
         habitats,
         migrating,
-        migrate,
+        migrate_forest,
+        migrate_tundra,
         settle,
         spread,
-        decline,
+        decline_forest,
+        decline_tundra,
     })
 }

@@ -4,7 +4,9 @@
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use petritype::{Firing, MutateEdge, Nested, Net, NetBuilder, Param, TakeEdge, Templates};
+use petritype::{
+    DeepPolicy, Firing, MutateEdge, Nested, Net, NetBuilder, Param, TakeEdge, Templates, TieBreak,
+};
 use petritype_runner::protocol::Request;
 use petritype_runner::{
     Hosting, Input, LoadError, NetEntry, Outgoing, Owner, ParamSpec, Params, StatusCell,
@@ -1337,6 +1339,7 @@ fn switches_parameters_and_runs_are_the_outer_net_s_alone() {
             json!({"param": "lid", "value": true, "nested_id": id}),
         ),
         ("step", json!({"nested_id": id})),
+        ("step", json!({"path": "depot/Lot/#0/bin"})),
         ("start", json!({"path": "depot/Lot/#0/bin"})),
         ("stop", json!({"nested_id": id})),
         ("reset", json!({"nested_id": id})),
@@ -1365,14 +1368,23 @@ fn an_inner_event_moves_its_own_net_s_version_and_not_the_outer_one() {
     );
     assert_eq!(
         lines[1]["result"],
-        json!({"status": "injected", "id": "2", "marking_version": 1}),
-        "the version of the net injected into"
+        json!({"status": "injected", "id": "2", "marking_version": 1,
+               "path": truck["path"], "nested_id": truck["nested_id"]}),
+        "the version of the net injected into, and its address (PROTOCOL.md §12.3)"
     );
     let lines = h.send(
         "inject",
         json!({"place": "In", "token": 4, "path": truck["path"]}),
     );
     assert_eq!(lines[0]["params"]["event"]["params"]["marking_version"], 2);
+    assert_eq!(
+        (
+            &lines[1]["result"]["path"],
+            &lines[1]["result"]["nested_id"]
+        ),
+        (&truck["path"], &truck["nested_id"]),
+        "addressed by its path, it answers with both"
+    );
     assert_eq!(lines[0]["params"]["marking_version"], outer);
     let state = h.result("get_state", json!({}));
     assert_eq!(
@@ -2427,4 +2439,295 @@ fn set_param_keeps_the_json_type_of_the_parameter() {
         tags(&h.send("set_param", json!({"param": "wanted", "value": "Fish"}))),
         ["param_changed", "#8"]
     );
+}
+
+// ----- protocol gaps and engine policies (2026-10-12) -------------------------
+
+#[test]
+fn null_for_an_optional_field_counts_as_absent() {
+    // PROTOCOL.md §2, §13.3: `query {filter: null}` is `query {}`,
+    // `get_state {token_limit: null}` is `get_state {}`, and so for every
+    // optional field of a request.
+    let mut h = zoo_with(&[]);
+    h.send("set_filter", json!({ "filter": birds() }));
+    let connection = h.result("query", json!({}));
+    assert_eq!(connection["count"], 2, "the connection's filter");
+    assert_eq!(
+        h.result("query", json!({"filter": null, "token_limit": null})),
+        connection,
+        "no filter given: the connection's, not none"
+    );
+    assert_eq!(
+        h.result("get_state", json!({"token_limit": null})),
+        h.result("get_state", json!({}))
+    );
+    assert_eq!(
+        h.result(
+            "get_place_tokens",
+            json!({"place": "Pen", "offset": null, "limit": null})
+        ),
+        h.result("get_place_tokens", json!({"place": "Pen"}))
+    );
+    assert_eq!(
+        h.result("distinct", json!({"key": "class", "places": null})),
+        h.result("distinct", json!({"key": "class"}))
+    );
+    assert_eq!(
+        h.result("get_log", json!({"after": null, "limit": null})),
+        h.result("get_log", json!({}))
+    );
+    assert_eq!(
+        h.result("get_state", json!({"path": null, "nested_id": null})),
+        h.result("get_state", json!({})),
+        "no address: the outer net"
+    );
+    let version = h.result("get_state", json!({}))["marking_version"].clone();
+    assert_eq!(
+        h.result("set_filter", json!({"filter": null})),
+        json!({ "marking_version": version }),
+        "cleared"
+    );
+    assert_eq!(h.result("query", json!({}))["count"], 5);
+
+    // Outer-only methods take a `null` address as none at all.
+    let mut h = H::loaded("pipeline");
+    let stepped = h.result("step", json!({"path": null, "nested_id": null}));
+    assert_eq!(stepped["fired"], true);
+    assert_eq!(
+        h.result(
+            "set_param",
+            json!({"param": "limit", "value": 3, "path": null})
+        )["marking_version"],
+        3
+    );
+    // And `null` params are `{}`.
+    let lines = h.send("get_state", Value::Null);
+    assert_eq!(lines.last().unwrap()["result"]["net"], "pipeline");
+    let mut h = H::new();
+    let lines = h.send(
+        "load",
+        json!({"net": "pipeline", "params": null, "module": null}),
+    );
+    assert_eq!(lines.last().unwrap()["result"]["status"], "loaded");
+}
+
+/// `hatchery`: `Spawn` takes an order from `Orders` and puts a new truck on
+/// `Lot`, its bin built there and then, holding the order: a token whose
+/// net nobody has seen before it lands.
+fn hatchery(_: &Params) -> Result<Net, LoadError> {
+    let mut templates = Templates::new();
+    templates.register("Bin", bin);
+    let mut b = NetBuilder::new();
+    b.templates(&templates);
+    let orders = b.place::<u32>("Orders");
+    let lot = b.place_nested::<Truck>("Lot");
+    b.serializable(orders);
+    b.serializable(lot);
+    b.transition("Spawn", (TakeEdge(orders),), (lot,), move |n: u32| {
+        (Truck {
+            name: format!("T{n}"),
+            bin: filled(&templates, &[n]),
+        },)
+    });
+    Ok(b.build()?)
+}
+
+#[test]
+fn a_produced_tokens_inner_nets_are_known_from_its_landing_on() {
+    // PROTOCOL.md §7.2, §12.3: an inner net's baseline fireable set is taken
+    // when the runtime first knows of it, here at the landing of the outer
+    // firing that produced its token. Nothing is sent for the baseline; the
+    // first `fireable` reports the first change from it.
+    let mut h = H::over(vec![NetEntry::new("hatchery", hatchery)]);
+    h.send("load", json!({"net": "hatchery"}));
+    h.send("inject", json!({"place": "Orders", "token": 4}));
+    let lines = h.send("step", json!({}));
+    assert_eq!(
+        tags(&lines),
+        ["launched", "nested", "distributed", "fireable", "#3"],
+        "the bin's own `added`, and no `fireable` for it"
+    );
+    let bin = held(&h.result("get_state", json!({})), "Lot");
+    let inner = h.result("get_state", json!({"nested_id": bin["nested_id"]}));
+    assert_eq!(inner["transitions"]["Move"]["fireable"], true);
+
+    let lines = h.send("step", json!({}));
+    assert_eq!(tags(&lines), ["nested", "nested", "#6"]);
+    assert_eq!(lines[0]["params"]["event"]["method"], "fired");
+    assert_eq!(
+        lines[1]["params"]["event"]["params"]["transitions"],
+        json!([]),
+        "Move was fireable from the landing on"
+    );
+}
+
+/// The transit net, the conformance net of PROTOCOL.md §11, included as
+/// the example binary includes it.
+#[path = "../../petritype/examples/transit/net.rs"]
+#[allow(dead_code)]
+mod transit_net;
+
+#[test]
+fn a_parameter_value_decodes_by_its_registered_type() {
+    // PROTOCOL.md §6.4, §11: `destination` is `Destination(Option<Location>)`,
+    // so a station or `null`, in either order, and never a number.
+    let mut h = H::over(vec![NetEntry::new("transit", |_: &Params| {
+        transit_net::build_city()
+            .map(|city| city.net)
+            .map_err(|error| LoadError::Other(error.to_string()))
+    })]);
+    h.send("load", json!({"net": "transit"}));
+    for value in [json!("Airport"), json!(null), json!("Harbour"), json!(null)] {
+        let lines = h.send("set_param", json!({"param": "destination", "value": value}));
+        assert_eq!(tags(&lines)[0], "param_changed", "{value}: {lines:#?}");
+        assert!(lines.last().unwrap().get("result").is_some(), "{value}");
+    }
+    for value in [json!(3), json!("Nowhere"), json!(["Airport"])] {
+        assert_eq!(
+            h.error("set_param", json!({"param": "destination", "value": value})),
+            "invalid_params",
+            "{value}"
+        );
+    }
+}
+
+/// `rivals`: `Left` and `Right` compete for `Pool`, which holds six tokens,
+/// under round robin.
+fn rivals(_: &Params) -> Result<Net, LoadError> {
+    let mut b = NetBuilder::new();
+    let pool = b.place::<u32>("Pool");
+    let out = b.place::<u32>("Out");
+    b.seed(pool, 0..6);
+    b.transition("Left", (TakeEdge(pool),), (out,), |n: u32| (n,));
+    b.transition("Right", (TakeEdge(pool),), (out,), |n: u32| (n,));
+    b.tie_break(TieBreak::RoundRobin);
+    Ok(b.build()?)
+}
+
+/// `carousel`: `Spin` can always fire, putting back what it takes, and
+/// `Desk` holds one bare worker, `Todo` (two jobs) `-Work-> Done`. The load
+/// parameter `interleaved` sets the deep policy.
+fn carousel(params: &Params) -> Result<Net, LoadError> {
+    let mut inner = NetBuilder::new();
+    let todo = inner.place::<u32>("Todo");
+    let done = inner.place::<u32>("Done");
+    inner.seed(todo, [1, 2]);
+    inner.transition("Work", (TakeEdge(todo),), (done,), |n: u32| (n,));
+    let worker = inner.build()?;
+    let mut b = NetBuilder::new();
+    let wheel = b.place::<u32>("Wheel");
+    let desk = b.place_nested::<Net>("Desk");
+    b.seed(wheel, [0]);
+    b.seed(desk, [worker]);
+    b.transition("Spin", (TakeEdge(wheel),), (wheel,), |n: u32| (n + 1,));
+    if params.get("interleaved").and_then(Value::as_bool) == Some(true) {
+        b.deep_policy(DeepPolicy::Interleaved);
+    }
+    Ok(b.build()?)
+}
+
+fn policies_registry() -> Vec<NetEntry> {
+    vec![
+        NetEntry::new("rivals", rivals),
+        NetEntry::new("carousel", carousel)
+            .param(ParamSpec::new("interleaved", "bool").default(false)),
+    ]
+}
+
+/// What each firing in `lines` was: an outer one by its transition, an
+/// inner one as `inside/` and its transition.
+fn firings(lines: &[Value]) -> Vec<String> {
+    lines
+        .iter()
+        .filter_map(|line| match line["method"].as_str()? {
+            "distributed" | "fired" => Some(line["params"]["transition"].as_str()?.to_owned()),
+            "nested" if line["params"]["event"]["method"] == "fired" => Some(format!(
+                "inside/{}",
+                line["params"]["event"]["params"]["transition"].as_str()?
+            )),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_step_follows_the_loaded_net_s_tie_break_and_deep_policy() {
+    // Round robin: the staged choice moves the cursor as `step` would.
+    let mut h = H::over(policies_registry());
+    h.send("load", json!({"net": "rivals"}));
+    let chosen: Vec<Value> = (0..4)
+        .map(|_| h.result("step", json!({}))["transition"].clone())
+        .collect();
+    assert_eq!(chosen, ["Left", "Right", "Left", "Right"]);
+
+    // The default deep policy: the outer net's choice first, every time.
+    h.send("load", json!({"net": "carousel"}));
+    let chosen: Vec<Value> = (0..4)
+        .map(|_| h.result("step", json!({}))["transition"].clone())
+        .collect();
+    assert_eq!(chosen, ["Spin"; 4]);
+
+    // Interleaved: the outer net, then the worker, in turn.
+    h.send(
+        "load",
+        json!({"net": "carousel", "params": {"interleaved": true}}),
+    );
+    let first = h.result("step", json!({}));
+    assert_eq!(first["transition"], "Spin");
+    assert!(first.get("path").is_none(), "an outer firing");
+    let second = h.result("step", json!({}));
+    assert_eq!(
+        (&second["transition"], &second["path"]),
+        (&json!("Work"), &json!("carousel/Desk/#1/"))
+    );
+    let rest: Vec<Value> = (0..4)
+        .map(|_| h.result("step", json!({}))["transition"].clone())
+        .collect();
+    assert_eq!(rest, ["Spin", "Work", "Spin", "Spin"]);
+
+    // A reset is a new net, whose round starts at the outer net.
+    h.send(
+        "load",
+        json!({"net": "carousel", "params": {"interleaved": true}}),
+    );
+    assert_eq!(h.result("step", json!({}))["transition"], "Spin");
+    h.send("reset", json!({}));
+    assert_eq!(
+        h.result("step", json!({}))["transition"],
+        "Spin",
+        "not the worker, whose turn it was"
+    );
+}
+
+#[test]
+fn a_run_follows_the_loaded_net_s_deep_policy() {
+    for (interleaved, expected) in [
+        (false, vec!["Spin"; 6]),
+        (
+            true,
+            vec!["Spin", "inside/Work", "Spin", "inside/Work", "Spin", "Spin"],
+        ),
+    ] {
+        let mut h = H::over(policies_registry());
+        h.send(
+            "load",
+            json!({"net": "carousel", "params": {"interleaved": interleaved}}),
+        );
+        h.auto = false;
+        let mut lines = h.send("start", json!({}));
+        assert_eq!(tags(&lines), ["#2", "launched"]);
+        while firings(&lines).len() < expected.len() {
+            if h.held.is_empty() {
+                assert!(h.owner.wants_tick(), "a running net asks to go on");
+                lines.extend(h.tick());
+            } else {
+                lines.extend(h.land());
+            }
+        }
+        assert_eq!(firings(&lines), expected, "interleaved: {interleaved}");
+        h.send("stop", json!({}));
+        while !h.held.is_empty() {
+            h.land();
+        }
+    }
 }

@@ -213,17 +213,27 @@ pub mod transit_net;
 /// `Central` and `Harbour`, every transition switched on. Its one
 /// parameter, `destination` (`null`, or a station every departure goes to
 /// instead of the next on the loop), is a net parameter set with
-/// `set_param`, not a load parameter, so the entry declares none.
-pub fn transit(_: &petritype_runner::Params) -> Result<Net, LoadError> {
-    transit_net::build_city()
+/// `set_param`, and since 2026-10-12 a load parameter too, its value as
+/// built, as the Python factory's keyword is (`TransitParams`).
+pub fn transit(params: TransitParams) -> Result<Net, LoadError> {
+    transit_net::build_city_with(params.destination)
         .map(|city| city.net)
         .map_err(|error| LoadError::Other(error.to_string()))
 }
 
+/// `transit`'s load parameters: `destination`, a station's name or `null`,
+/// decoded as the net parameter is, so a number is `invalid_params`.
+#[derive(Deserialize)]
+pub struct TransitParams {
+    #[serde(default)]
+    destination: Option<transit_net::Location>,
+}
+
 /// The `transit` entry, as PROTOCOL.md §11 names and describes it.
 fn transit_entry() -> NetEntry {
-    NetEntry::new("transit", transit)
+    NetEntry::typed("transit", transit)
         .description("Vehicles board, carry and alight passengers")
+        .param(ParamSpec::new("destination", "Option<Location>").default(serde_json::Value::Null))
         .hosting(Hosting::Manual)
 }
 
@@ -236,17 +246,19 @@ pub fn transit_registry() -> Vec<NetEntry> {
 
 /// The protocol's conformance net `wildlife` (PROTOCOL.md §11): species
 /// across habitats, each place declaring the keys `species`, `class` and
-/// `diet`, `Migrate Forest Wetland` a keyed edge — the keys net of §13. The
-/// file is the core's example (`petritype/examples/wildlife/net.rs`), which
-/// depends on `petritype`, `serde` and `serde_json` only, for this.
+/// `diet`, and every transition but `Settle` a keyed edge (two migrations
+/// taking the oldest bird, a spread and two declines mutating the species
+/// their filters name) — the keys net of §13. The file is the core's example
+/// (`petritype/examples/wildlife/net.rs`), which depends on `petritype`,
+/// `serde` and `serde_json` only, for this.
 #[path = "../../../petritype/examples/wildlife/net.rs"]
 #[allow(dead_code)]
 pub mod wildlife_net;
 
-/// The habitats as §11 seeds them: nine species in five habitats, nothing
-/// migrating. Its parameters, `season` and `spread_threshold`, are net
-/// parameters set with `set_param`, not load parameters, so the entry
-/// declares none.
+/// The habitats as §11 seeds them: twenty species-in-a-habitat, four to
+/// each of the five habitats, nothing migrating. Its parameters, `season`
+/// (`"Autumn"`) and `spread_threshold` (`200`), are net parameters set with
+/// `set_param`, not load parameters, so the entry declares none.
 pub fn wildlife(_: &petritype_runner::Params) -> Result<Net, LoadError> {
     wildlife_net::build_wildlife()
         .map(|wildlife| wildlife.net)

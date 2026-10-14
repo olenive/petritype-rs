@@ -120,8 +120,8 @@ const MATCHING: &str = "a fireable transition's keyed edges each have a token to
 ///
 /// A selector is given `&Net`, so it may look at the marking, and it is `Fn`
 /// rather than `FnMut` because choosing must not change the net. State of its
-/// own goes in a captured `Arc`, `Mutex` or atomic — a round-robin selector
-/// is the usual reason to want one.
+/// own goes in a captured `Arc`, `Mutex` or atomic. (Turn order needs none:
+/// it is the default selector's [`TieBreak::RoundRobin`].)
 pub type Selector = Box<dyn Fn(&Net, &[TransitionId]) -> Option<TransitionId> + Send + Sync>;
 
 /// How the default selector breaks a tie between fireable transitions of
@@ -137,6 +137,9 @@ pub type Selector = Box<dyn Fn(&Net, &[TransitionId]) -> Option<TransitionId> + 
 /// - [`LastDeclared`](TieBreak::LastDeclared) prefers the stage furthest
 ///   along, so each token **flows** all the way through before the next one
 ///   enters.
+/// - [`RoundRobin`](TieBreak::RoundRobin) takes the transitions in turn, so
+///   the stages **alternate**, `First`, `Second`, `First`, `Second`, for as
+///   long as both can fire.
 ///
 /// It is a setting rather than a rule for that reason, set with
 /// [`NetBuilder::tie_break`](crate::NetBuilder::tie_break) or
@@ -152,6 +155,24 @@ pub enum TieBreak {
     FirstDeclared,
     /// Ties go to the transition declared last: flow order.
     LastDeclared,
+    /// Ties go to the first transition declared *after* the one the default
+    /// selector chose last, wrapping round to the first declared when none
+    /// follows: turn order (DESIGN §6.1). Python petritype's
+    /// `tie_break="round_robin"`.
+    ///
+    /// That last choice is the *cursor*, one per net, inner nets included.
+    /// It moves whenever a choice of the default selector is taken to be
+    /// fired — by [`Net::step`] and [`Net::choose`], and so by
+    /// [`Net::step_deep`], the drivers and the protocol runner — under any
+    /// tie-break, though only this one reads it. [`Net::select`] reads it
+    /// without moving it, and a custom selector, [`Net::fire`] and a
+    /// concurrent sweep neither read nor move it. With no cursor yet the
+    /// first declared wins: in a fresh net, and in one restored from JSON or
+    /// forked (`Net::fork`, with the `serde` feature), since the cursor is
+    /// kept in memory only and a restored net starts its round afresh. A
+    /// switched-off transition is not fireable, so it is never a
+    /// candidate.
+    RoundRobin,
 }
 
 impl Net {
@@ -325,8 +346,10 @@ impl Net {
     ///
     /// The undo of [`set_selector`](Net::set_selector), and the way back to a
     /// deterministic sequential run after a phase that wanted a different
-    /// choice — a round-robin for a demo, a selector that declines while a
-    /// user is dragging something. A net that never had one is unchanged.
+    /// choice — a rule of the caller's own for a demo, a selector that
+    /// declines while a user is dragging something. A net that never had one
+    /// is unchanged, and the [round robin](TieBreak::RoundRobin)'s cursor
+    /// is where the default selector last left it.
     ///
     /// ```
     /// # use petritype::{NetBuilder, TakeEdge};
@@ -364,7 +387,9 @@ impl Net {
     ///
     /// One successful firing appends one [`Event::Fired`], preceded by an
     /// [`Event::Mutated`] per [`MutateEdge`](crate::MutateEdge), and adds one
-    /// to [`fired_count`](Net::fired_count).
+    /// to [`fired_count`](Net::fired_count). The choice is made as
+    /// [`choose`](Net::choose) makes it, so it moves the
+    /// [round robin](TieBreak::RoundRobin)'s cursor.
     ///
     /// ```
     /// # use petritype::{Event, NetBuilder, TakeEdge};
@@ -403,32 +428,71 @@ impl Net {
     /// would produce. Under `panic = "abort"` there is nothing to catch and
     /// the process dies, as that profile asked.
     pub fn step(&mut self) -> Result<Option<TransitionId>, FiringFailed> {
-        let fireable = self.fireable();
-        if fireable.is_empty() {
-            return Ok(None);
-        }
-
-        // Selection reads the net and nothing more, so it ends before the
-        // firing takes `&mut self`.
-        let Some(chosen) = self.select_from(&fireable) else {
+        let Some(chosen) = self.choose() else {
             return Ok(None);
         };
+        self.fire_now(chosen)?;
+        Ok(Some(chosen))
+    }
+
+    /// The transition [`step`](Net::step) would fire right now, chosen for a
+    /// firing the caller makes itself: [`select`](Net::select), and the
+    /// choice counts.
+    ///
+    /// It counts for the [round robin](TieBreak::RoundRobin): when the
+    /// default selector made the choice, its cursor moves to it, as `step`
+    /// would move it, so the next choice is the next in turn. `select` reads
+    /// the cursor and never moves it, which is why a driver that fires this
+    /// net's own transitions in stages — `launch(net.choose()?)`, the body on
+    /// a thread of its own, then [`distribute`](Net::distribute) — asks here
+    /// and not there. A custom selector is asked exactly as `select` asks
+    /// it, and nothing moves. `None` when nothing is fireable, when the
+    /// selector declines, or when it names a transition it was not offered.
+    ///
+    /// ```
+    /// # use petritype::{NetBuilder, TakeEdge, TieBreak};
+    /// # let mut b = NetBuilder::new();
+    /// # let inbox = b.place::<u32>("Inbox");
+    /// # let out = b.place::<u32>("Out");
+    /// b.seed(inbox, [1, 2, 3, 4]);
+    /// let first = b.transition("First", (TakeEdge(inbox),), (out,), |n: u32| (n,)).id();
+    /// let second = b.transition("Second", (TakeEdge(inbox),), (out,), |n: u32| (n,)).id();
+    /// b.tie_break(TieBreak::RoundRobin);
+    /// let mut net = b.build()?;
+    ///
+    /// assert_eq!(net.select(), Some(first), "no cursor yet: the first declared");
+    /// assert_eq!(net.select(), Some(first), "and asking moves nothing");
+    /// let chosen = net.choose().expect("both are fireable");
+    /// assert_eq!(chosen, first);
+    /// let firing = net.launch(chosen)?;
+    /// net.distribute(firing.run())?;
+    /// assert_eq!(net.select(), Some(second), "the next in turn");
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn choose(&mut self) -> Option<TransitionId> {
+        let fireable = self.fireable();
+        // Selection reads the net and nothing more, so it ends before the
+        // cursor is written.
+        let chosen = self.select_from(&fireable)?;
         debug_assert!(
             fireable.contains(&chosen),
             "a selector must return one of the transitions it was offered, or None"
         );
         if !fireable.contains(&chosen) {
-            return Ok(None);
+            return None;
         }
-
-        self.fire_now(chosen)?;
-        Ok(Some(chosen))
+        if self.selector.is_none() {
+            self.last_pick = Some(chosen);
+        }
+        Some(chosen)
     }
 
     /// Changes how the default selector breaks ties between transitions of
     /// equal priority; see [`TieBreak`] for what each choice does to a
-    /// pipeline. Takes effect from the next choice. A custom selector
-    /// installed with [`set_selector`](Net::set_selector) ignores it.
+    /// pipeline. Takes effect from the next choice, and leaves the
+    /// [round robin](TieBreak::RoundRobin)'s cursor where it is. A custom
+    /// selector installed with [`set_selector`](Net::set_selector) ignores
+    /// it.
     pub fn set_tie_break(&mut self, tie_break: TieBreak) {
         self.tie_break = tie_break;
     }
@@ -453,8 +517,10 @@ impl Net {
     ///
     /// `None` when nothing is fireable, or when the selector declines. Guards
     /// and the selector run, exactly as for `step`; nothing in the net is
-    /// changed. A selector that keeps state of its own, such as a
-    /// round-robin, counts every call as a choice, so ask once per firing.
+    /// changed — not even the [round robin](TieBreak::RoundRobin)'s cursor,
+    /// so a driver that fires the choice in stages asks
+    /// [`choose`](Net::choose) instead. A custom selector that keeps state
+    /// of its own counts every call as a choice, so ask it once per firing.
     ///
     /// ```
     /// # use petritype::{NetBuilder, TakeEdge};
@@ -649,7 +715,7 @@ impl Net {
     // ----- the stages, written once ---------------------------------------
 
     /// One firing, all three stages, with fireability already established.
-    fn fire_now(&mut self, transition: TransitionId) -> Result<(), FiringFailed> {
+    pub(crate) fn fire_now(&mut self, transition: TransitionId) -> Result<(), FiringFailed> {
         let completed = self.launch_now(transition, Report::Fired).run();
         self.distribute_completed(completed)
     }
@@ -1318,8 +1384,12 @@ impl fmt::Debug for Completed {
 ///
 /// `fireable` is in declaration order. A strict comparison keeps the first
 /// transition with the top score, and a non-strict one keeps the last, so
-/// the tie-break is nothing more than which comparison is used.
+/// the first two tie-breaks are nothing more than which comparison is used;
+/// the third is [`round_robin`].
 pub(crate) fn default_selector(net: &Net, fireable: &[TransitionId]) -> Option<TransitionId> {
+    if net.tie_break == TieBreak::RoundRobin {
+        return round_robin(net, fireable);
+    }
     let last = net.tie_break == TieBreak::LastDeclared;
     let mut best: Option<(TransitionId, f64)> = None;
     for &transition in fireable {
@@ -1329,6 +1399,30 @@ pub(crate) fn default_selector(net: &Net, fireable: &[TransitionId]) -> Option<T
         }
     }
     best.map(|(transition, _)| transition)
+}
+
+/// [`TieBreak::RoundRobin`]: of the fireable transitions with the top score,
+/// in declaration order, the first declared after the cursor, else the first.
+///
+/// A [`TransitionId`] is a declaration index, so "declared after" is a
+/// comparison of ids.
+fn round_robin(net: &Net, fireable: &[TransitionId]) -> Option<TransitionId> {
+    let scored: Vec<(TransitionId, f64)> = fireable
+        .iter()
+        .map(|&transition| (transition, net.priority_of(transition)))
+        .collect();
+    let top = scored
+        .iter()
+        .map(|&(_, score)| score)
+        .fold(f64::NEG_INFINITY, f64::max);
+    let mut tied = scored
+        .iter()
+        .filter(|&&(_, score)| score == top)
+        .map(|&(transition, _)| transition);
+    let after = net
+        .last_pick
+        .and_then(|cursor| tied.clone().find(|transition| transition.0 > cursor.0));
+    after.or_else(|| tied.next())
 }
 
 /// A token a mutating edge lends the body, beside its entry in `mutated`:

@@ -14,7 +14,7 @@ use crate::event::Event;
 use crate::firing::{Selector, TieBreak};
 use crate::ids::{NetId, PlaceId, PlaceRef, TokenId, TransitionId, foreign_place};
 use crate::index::KeyIndex;
-use crate::nested::lift_from;
+use crate::nested::{DeepPolicy, lift_from};
 use crate::param::{ParamSlot, param_of, param_slot_index};
 use crate::place::{ErasedToken, PlaceSlot, erase_all};
 use crate::topology::Topology;
@@ -60,6 +60,18 @@ pub struct Net {
     /// How the default selector breaks ties. Set by the builder or by
     /// [`set_tie_break`](Net::set_tie_break).
     pub(crate) tie_break: TieBreak,
+    /// The default selector's last choice taken to be fired: the cursor of
+    /// [`TieBreak::RoundRobin`], moved by [`step`](Net::step) and
+    /// [`choose`](Net::choose). In memory only: never saved or forked.
+    pub(crate) last_pick: Option<TransitionId>,
+    /// How [`step_deep`](Net::step_deep) shares its firings between this net
+    /// and its inner nets. Set by the builder or by
+    /// [`set_deep_policy`](Net::set_deep_policy).
+    pub(crate) deep_policy: DeepPolicy,
+    /// The net the last deep step fired in — this net's own id, or an inner
+    /// net's nested id — the cursor of [`DeepPolicy::Interleaved`]. In
+    /// memory only: never saved or forked.
+    pub(crate) deep_cursor: Option<NetId>,
     /// Whether the author declared the net safe to rebuild as a reset. See
     /// [`is_resettable`](Net::is_resettable).
     pub(crate) resettable: bool,
@@ -1038,6 +1050,9 @@ impl fmt::Debug for Net {
             // the net has one of its own.
             .field("custom_selector", &self.selector.is_some())
             .field("tie_break", &self.tie_break)
+            .field("last_pick", &self.last_pick)
+            .field("deep_policy", &self.deep_policy)
+            .field("deep_cursor", &self.deep_cursor)
             .field("resettable", &self.resettable)
             .field("pending_events", &self.events.len())
             .field("index", &self.index);

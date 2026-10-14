@@ -16,7 +16,7 @@ use std::time::{Duration, SystemTime};
 
 use petritype::{
     BodyPanicked, Completed, Event, Filter, Firing, FiringFailed, JsonCommand, Net, NetError,
-    NetId, PlaceId, TokenId, Topology, TransitionId,
+    NetId, PlaceId, StagedStep, TokenId, Topology, TransitionId,
 };
 use serde_json::{Map, Value, json};
 
@@ -845,8 +845,8 @@ impl Loaded {
     /// both is `invalid_params`, neither the outer net, and one that names
     /// no live inner net `unknown_net`.
     fn resolve(&self, args: &Args) -> Result<Target, (ErrorCode, String)> {
-        let path = args.get("path").filter(|v| !v.is_null());
-        let nested_id = args.get("nested_id").filter(|v| !v.is_null());
+        let path = optional(args, "path");
+        let nested_id = optional(args, "nested_id");
         match (path, nested_id) {
             (None, None) => Ok(Target::Outer),
             (Some(_), Some(_)) => Err((
@@ -1463,14 +1463,19 @@ impl Owner {
             );
             return false;
         }
-        let Value::Object(args) = params else {
-            respond_error(
-                out,
-                &id,
-                ErrorCode::InvalidParams,
-                "params must be an object",
-            );
-            return false;
+        // `null` params are `{}`, as an absent `params` is (PROTOCOL.md §2).
+        let args = match params {
+            Value::Object(args) => args,
+            Value::Null => Args::new(),
+            _ => {
+                respond_error(
+                    out,
+                    &id,
+                    ErrorCode::InvalidParams,
+                    "params must be an object",
+                );
+                return false;
+            }
         };
         match method.as_str() {
             "describe" => respond(out, &id, self.describe()),
@@ -1487,7 +1492,8 @@ impl Owner {
                 format!("{method} needs a loaded net"),
             ),
             _ if OUTER_ONLY.contains(&method.as_str())
-                && (args.contains_key("path") || args.contains_key("nested_id")) =>
+                && (optional(&args, "path").is_some()
+                    || optional(&args, "nested_id").is_some()) =>
             {
                 respond_error(
                     out,
@@ -1574,8 +1580,8 @@ impl Owner {
                 let key = string_arg(args, "key")?.to_owned();
                 let target = self.target(args)?;
                 let view = self.view(&target)?;
-                let places = match args.get("places") {
-                    None | Some(Value::Null) => None,
+                let places = match optional(args, "places") {
+                    None => None,
                     Some(Value::Array(names)) => {
                         let names: Vec<String> = names
                             .iter()
@@ -1599,7 +1605,7 @@ impl Owner {
             }
             "set_filter" => {
                 let target = self.target(args)?;
-                let projection = match args.get("filter").filter(|value| !value.is_null()) {
+                let projection = match optional(args, "filter") {
                     None => None,
                     Some(value) => {
                         let view = self.view(&target)?;
@@ -1718,7 +1724,8 @@ impl Owner {
     /// `inject {place, token, path?, nested_id?}`: the token decoded into
     /// the named net's place and appended (PROTOCOL.md §6.4, §12.3). Into an
     /// inner net it goes through `nested_scope` at every level, so its
-    /// `added` comes out `nested`, and the answer carries that net's version.
+    /// `added` comes out `nested`, and the answer carries that net's version
+    /// and its address, `path` and `nested_id`.
     fn inject(
         &mut self,
         id: &str,
@@ -1794,10 +1801,13 @@ impl Owner {
                     .inner
                     .get(&found.nested_id)
                     .map_or(0, |inner| inner.marking_version);
+                // A result about an inner net carries its address
+                // (PROTOCOL.md §12.3, §12.5).
                 respond(
                     out,
                     id,
-                    json!({"status": "injected", "id": added, "marking_version": version}),
+                    json!({"status": "injected", "id": added, "marking_version": version,
+                           "path": found.path, "nested_id": found.nested_id.to_string()}),
                 );
             }
         }
@@ -1819,7 +1829,7 @@ impl Owner {
         let target = self.target(args)?;
         let view = self.view(&target)?;
         let net = view.net;
-        let given = match args.get("filter").filter(|value| !value.is_null()) {
+        let given = match optional(args, "filter") {
             Some(value) => Some(translate::filter(value, net).map_err(filter_error)?),
             None => None,
         };
@@ -1883,10 +1893,10 @@ impl Owner {
     // ----- load and reset ----------------------------------------------------
 
     fn load(&mut self, id: &str, args: &Args, out: &mut Vec<Outgoing>) {
-        if !args.contains_key("net")
+        if optional(args, "net").is_none()
             && ["module", "function", "factory_params"]
                 .iter()
-                .any(|key| args.contains_key(*key))
+                .any(|key| optional(args, key).is_some())
         {
             respond_error(
                 out,
@@ -1917,8 +1927,8 @@ impl Owner {
             );
             return;
         };
-        let given = match args.get("params") {
-            None | Some(Value::Null) => Params::new(),
+        let given = match optional(args, "params") {
+            None => Params::new(),
             Some(Value::Object(params)) => params.clone(),
             Some(_) => {
                 respond_error(
@@ -2217,46 +2227,50 @@ impl Owner {
 
     // ----- the firing cycle --------------------------------------------------
 
-    /// One firing (PROTOCOL.md §6.3, §12.3): the outer net's own choice, or,
-    /// when it has none, the first inner firing in `step_deep`'s order.
+    /// One firing (PROTOCOL.md §6.3, §12.3), as the loaded net's deep policy
+    /// orders it (`Net::step_deep_staged`): the outer net's own choice,
+    /// launched in stages, or an inner firing, made inline. Under the
+    /// default policy the outer net's choice comes first, and an inner
+    /// firing only when it has none.
     fn step(
         &mut self,
         id: &str,
         now: SystemTime,
         out: &mut Vec<Outgoing>,
     ) -> Result<(), (ErrorCode, String)> {
-        if let Some(transition) = self.loaded_ref().net.select() {
-            return self.launch(transition, Some(id.to_owned()), now, out);
-        }
-        if !self.fire_inside(Some(id), now, out) {
-            let running = self.loaded_ref().running;
-            respond(
-                out,
-                id,
-                json!({"fired": false, "marking_version": self.marking_version, "running": running}),
-            );
+        match self.loaded_mut().net.step_deep_staged() {
+            Ok(Some(StagedStep::Chosen(transition))) => {
+                return self.launch(transition, Some(id.to_owned()), now, out);
+            }
+            Ok(Some(_)) => self.report_inside(None, Some(id), now, out),
+            Err(failed) => self.report_inside(Some(Failure::of(&failed)), Some(id), now, out),
+            Ok(None) => {
+                let running = self.loaded_ref().running;
+                respond(
+                    out,
+                    id,
+                    json!({"fired": false, "marking_version": self.marking_version, "running": running}),
+                );
+            }
         }
         Ok(())
     }
 
-    /// One firing inside an inner net, inline, through `Net::step_inside`:
-    /// the outer selector has already been asked, so it is not asked again.
-    /// Reports it, `nested`, answers the `step` that asked for it if one
-    /// did, and stops a run on a failure. False if no inner net had
-    /// anything to fire.
-    fn fire_inside(
+    /// Reports the inner firing a deep step just made inline: its events,
+    /// `nested`, the outer progress, the `step` that asked for it if one
+    /// did, and a stop of a run on a failure (`failure`).
+    fn report_inside(
         &mut self,
+        failure: Option<Failure>,
         step_id: Option<&str>,
         now: SystemTime,
         out: &mut Vec<Outgoing>,
-    ) -> bool {
+    ) {
         let loaded = self.loaded_mut();
-        let failure = match loaded.net.step_inside() {
-            Ok(None) => return false,
-            Ok(Some(_)) => None,
-            Err(failed) => Some(Failure::of(&failed)),
-        };
         loaded.idle = false;
+        // A token the firing put into a nested place may carry nets nobody
+        // has seen: their fireable sets are taken now, silently (§7.2).
+        loaded.know_new();
         let flushed = self.flush_events(now, None, true, out);
         let loaded = self.loaded_mut();
         // The outer net counts the firing too, under its path without the
@@ -2292,7 +2306,7 @@ impl Owner {
             );
         }
         let Some(step_id) = step_id else {
-            return true;
+            return;
         };
         // The firing's own line said where it was: the last inner firing
         // the flush reported.
@@ -2303,7 +2317,7 @@ impl Owner {
                 ErrorCode::Internal,
                 "an inner firing left no event",
             );
-            return true;
+            return;
         };
         let mut answer = json!({
             "fired": true,
@@ -2317,7 +2331,6 @@ impl Owner {
             answer["failed"] = json!(true);
         }
         respond(out, step_id, answer);
-        true
     }
 
     /// Launches `transition`. A detachable body goes out as
@@ -2380,6 +2393,10 @@ impl Owner {
             .take()
             .expect("land is only called with a firing in flight");
         let result = loaded.net.distribute(completed);
+        // A token the firing produced may carry nets nobody has seen: their
+        // fireable sets are taken at the landing, silently (§7.2), so the
+        // first `fireable` for one reports its first change.
+        loaded.know_new();
         *lock(&self.status) = None;
         let events = self.flush_events(now, Some(&flight), true, out).events;
 
@@ -2466,10 +2483,11 @@ impl Owner {
         }
     }
 
-    /// Keeps a running net going: launches the next firing if it is free,
-    /// or makes the next inner firing when the outer net has none (§12.3),
-    /// or handles quiescence — nothing fireable anywhere — with `idle` once
-    /// per spell for a `"24/7"` net and `execution_stopped` for any other.
+    /// Keeps a running net going: one firing in the loaded net's deep
+    /// policy's order, as `step` makes it — the outer net's next, launched,
+    /// or an inner one, inline (§12.3) — or handles quiescence — nothing
+    /// fireable anywhere — with `idle` once per spell for a `"24/7"` net and
+    /// `execution_stopped` for any other.
     fn drive(&mut self, now: SystemTime, out: &mut Vec<Outgoing>) {
         let Some(loaded) = &self.loaded else {
             return;
@@ -2478,34 +2496,42 @@ impl Owner {
             return;
         }
         let continuous = self.nets[loaded.entry].hosting == Hosting::Continuous;
-        if let Some(transition) = loaded.net.select() {
-            if let Err((code, message)) = self.launch(transition, None, now, out) {
-                // `select` chose it, so `launch` cannot refuse it; if it
-                // somehow does, stop rather than spin.
-                self.loaded_mut().running = false;
-                push(
-                    out,
-                    Notification::ExecutionStopped {
-                        reason: "transition_failed".into(),
-                        error_type: Some("error".into()),
-                        message: Some(format!("{code}: {message}")),
-                        marking_version: self.marking_version,
-                        running: false,
-                    },
-                );
+        match self.loaded_mut().net.step_deep_staged() {
+            Ok(Some(StagedStep::Chosen(transition))) => {
+                if let Err((code, message)) = self.launch(transition, None, now, out) {
+                    // The selector chose it, so `launch` cannot refuse it;
+                    // if it somehow does, stop rather than spin.
+                    self.loaded_mut().running = false;
+                    push(
+                        out,
+                        Notification::ExecutionStopped {
+                            reason: "transition_failed".into(),
+                            error_type: Some("error".into()),
+                            message: Some(format!("{code}: {message}")),
+                            marking_version: self.marking_version,
+                            running: false,
+                        },
+                    );
+                    return;
+                }
+            }
+            // Inline, like a mutate-edge body: one per `handle`, and a tick
+            // asked for so that a `stop` in between is heard.
+            Ok(Some(_)) => self.report_inside(None, None, now, out),
+            Err(failed) => self.report_inside(Some(Failure::of(&failed)), None, now, out),
+            Ok(None) => {
+                self.quiescent(continuous, now, out);
                 return;
             }
-            let loaded = self.loaded_ref();
-            self.poke = loaded.running && loaded.in_flight.is_none();
-            return;
         }
-        // Inline, like a mutate-edge body: one per `handle`, and a tick
-        // asked for so that a `stop` in between is heard.
-        if self.fire_inside(None, now, out) {
-            let loaded = self.loaded_ref();
-            self.poke = loaded.running && loaded.in_flight.is_none();
-            return;
-        }
+        let loaded = self.loaded_ref();
+        self.poke = loaded.running && loaded.in_flight.is_none();
+    }
+
+    /// A running net found nothing fireable anywhere: `idle` once per spell
+    /// for a `"24/7"` net, which keeps running, and `execution_stopped` for
+    /// any other, which stops.
+    fn quiescent(&mut self, continuous: bool, now: SystemTime, out: &mut Vec<Outgoing>) {
         if continuous {
             if !self.loaded_ref().idle {
                 self.loaded_mut().idle = true;
@@ -2828,9 +2854,17 @@ fn string_arg<'a>(args: &'a Args, key: &str) -> Result<&'a str, (ErrorCode, Stri
     }
 }
 
+/// An optional field of a request: `None` when it is absent *or* `null`,
+/// which counts as absent everywhere (PROTOCOL.md §2, §13.3). Every optional
+/// field is read through here; a required one (`place`, `token`, `value`)
+/// is read directly, and a `null` there is a value.
+fn optional<'a>(args: &'a Args, key: &str) -> Option<&'a Value> {
+    args.get(key).filter(|value| !value.is_null())
+}
+
 fn u64_arg(args: &Args, key: &str) -> Result<Option<u64>, (ErrorCode, String)> {
-    match args.get(key) {
-        None | Some(Value::Null) => Ok(None),
+    match optional(args, key) {
+        None => Ok(None),
         Some(value) => value.as_u64().map(Some).ok_or_else(|| {
             (
                 ErrorCode::InvalidParams,

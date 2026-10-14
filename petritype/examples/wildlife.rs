@@ -10,17 +10,21 @@
 //! habitat, and every place declares the keys `species`, `class` and `diet`.
 //!
 //! `main` asks the proposal's five questions on the seed, then again after
-//! one migration (`season` set to `"Autumn"`, `Migrate Forest Wetland`,
-//! `Settle`) and one spread (`Spread Savanna Reef`), and lists the classes,
-//! which is what a viewer would make its tabs of. The tests below hold the
-//! proposal's §6 answers.
+//! one migration (`Migrate Forest Wetland`, then `Settle`: it is autumn) and
+//! one spread (`Spread Savanna Wetland`, the egret), lists the classes,
+//! which is what a viewer would make its tabs of, shows the declines halving
+//! the deer and the lemmings, and on a fresh net shows the migrations
+//! waiting for autumn and runs it until nothing is fireable. The tests below
+//! hold the answers, and the plain run's nineteen firings.
 //!
-//! `Migrate` reads `Forest` through a keyed edge (DESIGN §8.3, slice 19):
-//! `TakeWhereEdge(forest, class in {Bird})` takes the oldest bird and leaves
-//! every other species where it is, under the id it had. Before keyed edges
-//! it took the whole of `Forest` and put back all but the bird, every one of
-//! them under a new id (the game's pattern P2); the tests below hold the
-//! difference: one token consumed, one produced, the fox untouched.
+//! Every transition but `Settle` reads its habitat through a keyed edge
+//! (DESIGN §8.3, slice 19): `TakeWhereEdge(forest, class in {Bird})` takes
+//! the oldest bird and leaves every other species where it is, under the id
+//! it had, and a `MutateWhereEdge` hands its body the species it is about
+//! wherever it stands, which is what its guard reads too. Before keyed edges
+//! `Migrate` took the whole of `Forest` and put back all but the bird, every
+//! one of them under a new id (the game's pattern P2); the tests below hold
+//! the difference: one token consumed, one produced, the fox untouched.
 
 // A crate root's `mod` looks beside it, so the path is spelled out: the net
 // lives in `wildlife/net.rs`, the file a runner's example can include too.
@@ -29,9 +33,9 @@ mod net;
 
 use std::error::Error;
 
-use petritype::{Filter, KeyValue, Net, PlaceId};
+use petritype::{Filter, KeyValue, Net, PlaceId, TransitionId};
 
-use net::{Habitat, Season, Wildlife, build_wildlife};
+use net::{Habitat, Season, Species, Wildlife, build_wildlife, herbivores, lemmings};
 
 /// The five questions of the proposal's §2, the places the last one names
 /// taken from the net.
@@ -69,6 +73,31 @@ fn place_name(net: &Net, place: PlaceId) -> String {
         .map_or_else(|| format!("{place:?}"), |(_, info)| info.name.to_owned())
 }
 
+/// The name of a transition of `net`.
+fn transition_name(net: &Net, transition: TransitionId) -> &str {
+    net.transitions()
+        .find(|(id, _)| *id == transition)
+        .map_or("", |(_, info)| info.name)
+}
+
+/// Places in place order, each with what `entry` writes of its tokens in
+/// token order: `"Forest: Robin, Fox; Wetland: Robin, Heron"`. Empty places
+/// are left out.
+fn by_place(net: &Net, found: impl IntoIterator<Item = (PlaceId, String)>) -> String {
+    let mut places: Vec<(PlaceId, Vec<String>)> = Vec::new();
+    for (place, entry) in found {
+        match places.last_mut() {
+            Some((at, entries)) if *at == place => entries.push(entry),
+            _ => places.push((place, vec![entry])),
+        }
+    }
+    places
+        .into_iter()
+        .map(|(place, entries)| format!("{}: {}", place_name(net, place), entries.join(", ")))
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
 /// What a query found, written as the proposal's §6 table writes it:
 /// `"Forest: Robin, Fox; Wetland: Robin, Heron"`, places in place order and
 /// species in token order; empty when nothing matched.
@@ -76,25 +105,62 @@ fn answer(net: &Net, filter: &Filter) -> String {
     let found = net
         .query(filter)
         .expect("every place a question names is in the net");
-    let mut places: Vec<(PlaceId, Vec<String>)> = Vec::new();
-    for found in found {
-        let species = found
-            .keys
-            .get("species")
-            .map_or_else(String::new, KeyValue::to_string);
-        match places.last_mut() {
-            Some((place, names)) if *place == found.place => names.push(species),
-            _ => places.push((found.place, vec![species])),
-        }
-    }
-    places
-        .into_iter()
-        .map(|(place, names)| format!("{}: {}", place_name(net, place), names.join(", ")))
-        .collect::<Vec<_>>()
-        .join("; ")
+    by_place(
+        net,
+        found.into_iter().map(|found| {
+            let species = found
+                .keys
+                .get("species")
+                .map_or_else(String::new, KeyValue::to_string);
+            (found.place, species)
+        }),
+    )
 }
 
-/// A list of key values as `Bird, Mammal, Reptile, Fish`.
+/// Every species with its population, place by place:
+/// `"Forest: Fox 60, Deer 9; ..."`.
+fn census(net: &Net) -> String {
+    by_place(
+        net,
+        net.places()
+            .flat_map(|(place, _)| net.tokens(place).map(move |(token, _)| (place, token)))
+            .filter_map(|(place, token)| {
+                let species = net.token::<Species>(place, token)?;
+                Some((place, format!("{} {}", species.name, species.population)))
+            }),
+    )
+}
+
+/// Steps `net` with the default selector until nothing is fireable, and
+/// returns what fired, in order.
+fn run_to_the_end(net: &mut Net) -> Result<Vec<TransitionId>, Box<dyn Error>> {
+    let mut fired = Vec::new();
+    while let Some(transition) = net.step()? {
+        fired.push(transition);
+    }
+    Ok(fired)
+}
+
+/// A firing sequence as runs of the same transition:
+/// `"Settle ×3, Spread Savanna Wetland"`.
+fn runs(net: &Net, fired: &[TransitionId]) -> String {
+    let mut runs: Vec<(TransitionId, usize)> = Vec::new();
+    for &transition in fired {
+        match runs.last_mut() {
+            Some((last, count)) if *last == transition => *count += 1,
+            _ => runs.push((transition, 1)),
+        }
+    }
+    runs.into_iter()
+        .map(|(transition, count)| match count {
+            1 => transition_name(net, transition).to_owned(),
+            _ => format!("{} ×{count}", transition_name(net, transition)),
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// A list of key values as `Bird, Mammal, Fish, Reptile`.
 fn list(values: &[KeyValue]) -> String {
     values
         .iter()
@@ -121,64 +187,102 @@ fn main() -> Result<(), Box<dyn Error>> {
         list(&wildlife.net.distinct_values("class", None))
     );
 
-    // Autumn: the oldest bird of Forest sets off, and settles in Wetland.
-    wildlife.net.set_param(Season("Autumn".to_owned()))?;
-    wildlife.net.fire(wildlife.migrate)?;
+    // Autumn, the default: the oldest bird of Forest sets off, and settles
+    // in Wetland.
+    wildlife.net.fire(wildlife.migrate_forest)?;
     let on_the_move = Filter::new().in_places([wildlife.migrating.id()]);
     println!(
         "\nMigrating after Migrate Forest Wetland: {}",
         answer(&wildlife.net, &on_the_move)
     );
     wildlife.net.fire(wildlife.settle)?;
-    // The zebra, above the threshold, spreads to Reef.
+    // The egret, above the threshold, spreads to Wetland; the zebra in front
+    // of it is not what the edge is about, and stays as it is.
     wildlife.net.fire(wildlife.spread)?;
 
     println!("\nAfter one migration and one spread:");
     ask(&wildlife);
 
-    // A decline halves a population and leaves the keys as they were.
-    let forest = wildlife.at(Habitat::Forest);
-    let (fox, _) = wildlife
-        .net
-        .tokens(forest.id())
-        .next()
-        .ok_or("Forest is empty")?;
-    let before = wildlife.net.keys(forest.id(), fox);
-    wildlife.net.fire(wildlife.decline)?;
+    // A decline halves the species its filter names, wherever it stands,
+    // and leaves the keys as they were.
+    println!();
+    for (decline, habitat, filter) in [
+        (wildlife.decline_forest, Habitat::Forest, herbivores()),
+        (wildlife.decline_tundra, Habitat::Tundra, lemmings()),
+    ] {
+        let place = wildlife.at(habitat).id();
+        let token = wildlife
+            .net
+            .first_match(place, &filter)
+            .ok_or("nothing to decline")?;
+        let before = wildlife.net.keys(place, token);
+        wildlife.net.fire(decline)?;
+        println!(
+            "{}: {}; keys unchanged: {}",
+            transition_name(&wildlife.net, decline),
+            wildlife.net.label(place, token).unwrap_or_default(),
+            wildlife.net.keys(place, token) == before,
+        );
+    }
+
+    // On a fresh net: in summer the birds stay, and in autumn, the default,
+    // they go; left alone, the net runs until nothing is fireable.
+    let mut fresh = build_wildlife()?;
+    let migrations = [fresh.migrate_forest, fresh.migrate_tundra];
+    let fireable = |net: &Net| {
+        let names: Vec<&str> = migrations
+            .into_iter()
+            .filter(|&migration| net.is_fireable(migration))
+            .map(|migration| transition_name(net, migration))
+            .collect();
+        if names.is_empty() {
+            "none".to_owned()
+        } else {
+            names.join(", ")
+        }
+    };
+    fresh.net.set_param(Season("Summer".to_owned()))?;
+    println!("\nMigrations fireable in summer: {}", fireable(&fresh.net));
+    fresh.net.set_param(Season("Autumn".to_owned()))?;
+    println!("Migrations fireable in autumn: {}", fireable(&fresh.net));
+    let fired = run_to_the_end(&mut fresh.net)?;
     println!(
-        "\nDecline Forest: {}; keys unchanged: {}",
-        wildlife.net.label(forest.id(), fox).unwrap_or_default(),
-        wildlife.net.keys(forest.id(), fox) == before,
+        "\nA plain run from the seed, {} firings: {}",
+        fired.len(),
+        runs(&fresh.net, &fired)
     );
+    println!("Then: {}", census(&fresh.net));
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use net::{Class, Diet, KEY_NAMES, Species, SpreadThreshold};
+    use net::{Class, Diet, KEY_NAMES, SpreadThreshold, birds};
     use petritype::serde_json::{self, json};
     use petritype::{Event, JsonCommand, NetError, TokenId};
 
-    /// The proposal's §6 table: the five answers on the seed.
+    /// The proposal's five questions on the seed.
     const ON_THE_SEED: [&str; 5] = [
         "Forest: Robin; Wetland: Robin",
-        "Forest: Robin; Wetland: Robin, Heron",
-        "Forest: Robin, Fox; Wetland: Robin, Heron; Savanna: Zebra; Tundra: Fox, Arctic Hare",
-        "Forest: Robin; Wetland: Robin",
-        "Forest: Fox; Tundra: Fox, Arctic Hare",
+        "Forest: Robin, Woodpecker; Wetland: Robin, Heron; Savanna: Egret; Tundra: Snowy Owl",
+        "Forest: Robin, Fox, Deer, Woodpecker; Wetland: Robin, Heron, Otter; \
+         Savanna: Zebra, Lion, Egret; Tundra: Fox, Arctic Hare, Lemming, Snowy Owl",
+        "Forest: Robin, Woodpecker; Wetland: Robin; Savanna: Egret",
+        "Forest: Fox, Deer; Tundra: Fox, Arctic Hare, Lemming",
     ];
 
-    /// The five answers after a migration has settled and the zebra has
-    /// spread: the Forest robin is in Wetland, behind the two already there,
-    /// and a second zebra token is in Reef.
+    /// The five answers after a migration has settled and the egret has
+    /// spread: the Forest robin is in Wetland, behind the four already
+    /// there, and a second egret token is behind it.
     const AFTER_MIGRATION_AND_SPREAD: [&str; 5] = [
         "Wetland: Robin, Robin",
-        "Wetland: Robin, Heron, Robin",
-        "Forest: Fox; Wetland: Robin, Heron, Robin; Savanna: Zebra; Reef: Zebra; \
-         Tundra: Fox, Arctic Hare",
-        "Wetland: Robin, Robin",
-        "Forest: Fox; Tundra: Fox, Arctic Hare",
+        "Forest: Woodpecker; Wetland: Robin, Heron, Robin, Egret; Savanna: Egret; \
+         Tundra: Snowy Owl",
+        "Forest: Fox, Deer, Woodpecker; Wetland: Robin, Heron, Otter, Robin, Egret; \
+         Savanna: Zebra, Lion, Egret; Tundra: Fox, Arctic Hare, Lemming, Snowy Owl",
+        "Forest: Woodpecker; Wetland: Robin, Robin, Egret; Savanna: Egret",
+        "Forest: Fox, Deer; Tundra: Fox, Arctic Hare, Lemming",
     ];
 
     fn answers(wildlife: &Wildlife) -> Vec<String> {
@@ -188,17 +292,13 @@ mod tests {
             .collect()
     }
 
-    /// The net after `season` is set to `"Autumn"` and the Forest robin has
-    /// migrated and settled.
+    /// The net after the Forest robin has migrated and settled (it is
+    /// autumn from the start).
     fn migrated() -> Wildlife {
         let mut wildlife = build_wildlife().expect("the net builds");
         wildlife
             .net
-            .set_param(Season("Autumn".to_owned()))
-            .expect("a parameter of the net");
-        wildlife
-            .net
-            .fire(wildlife.migrate)
+            .fire(wildlife.migrate_forest)
             .expect("a bird in Forest");
         wildlife.net.fire(wildlife.settle).expect("one on the move");
         wildlife
@@ -206,6 +306,11 @@ mod tests {
 
     fn species(net: &Net, place: PlaceId, token: TokenId) -> &Species {
         net.token::<Species>(place, token).expect("a species")
+    }
+
+    /// The token ids of a place, in token order.
+    fn ids(net: &Net, place: PlaceId) -> Vec<TokenId> {
+        net.tokens(place).map(|(id, _)| id).collect()
     }
 
     #[test]
@@ -233,14 +338,16 @@ mod tests {
             transitions,
             [
                 "Migrate Forest Wetland",
+                "Migrate Tundra Wetland",
                 "Settle",
-                "Spread Savanna Reef",
+                "Spread Savanna Wetland",
                 "Decline Forest",
+                "Decline Tundra",
             ],
         );
         assert!(net.transitions().all(|(_, info)| info.enabled));
-        assert_eq!(net.param::<Season>(), Some(&Season("Summer".to_owned())));
-        assert_eq!(net.param::<SpreadThreshold>(), Some(&SpreadThreshold(1000)));
+        assert_eq!(net.param::<Season>(), Some(&Season("Autumn".to_owned())));
+        assert_eq!(net.param::<SpreadThreshold>(), Some(&SpreadThreshold(200)));
         assert_eq!(
             net.param_name(std::any::type_name::<Season>()),
             Some("season")
@@ -265,44 +372,94 @@ mod tests {
             [
                 seed("Robin", "Bird", "Insectivore", 120),
                 seed("Fox", "Mammal", "Omnivore", 60),
+                seed("Deer", "Mammal", "Herbivore", 300),
+                seed("Woodpecker", "Bird", "Insectivore", 45),
                 seed("Robin", "Bird", "Insectivore", 80),
                 seed("Heron", "Bird", "Carnivore", 40),
+                seed("Pike", "Fish", "Carnivore", 150),
+                seed("Otter", "Mammal", "Carnivore", 25),
                 seed("Zebra", "Mammal", "Herbivore", 5000),
                 seed("Gecko", "Reptile", "Insectivore", 200),
+                seed("Lion", "Mammal", "Carnivore", 40),
+                seed("Egret", "Bird", "Insectivore", 1500),
                 seed("Clownfish", "Fish", "Omnivore", 300),
+                seed("Parrotfish", "Fish", "Herbivore", 400),
+                seed("Reef Shark", "Fish", "Carnivore", 20),
+                seed("Sea Turtle", "Reptile", "Herbivore", 80),
                 seed("Fox", "Mammal", "Omnivore", 30),
                 seed("Arctic Hare", "Mammal", "Herbivore", 90),
+                seed("Lemming", "Mammal", "Herbivore", 2000),
+                seed("Snowy Owl", "Bird", "Carnivore", 15),
             ],
         );
 
-        // Spread and Decline can fire from the start; Migrate waits for
-        // autumn (as PROTOCOL's transcript 06 has it).
-        assert_eq!(net.fireable(), [wildlife.spread, wildlife.decline]);
-        let mut wildlife = wildlife;
-        wildlife.net.set_param(Season("Autumn".to_owned())).unwrap();
+        // It is autumn: everything but Settle can fire from the start.
         assert_eq!(
-            wildlife.net.fireable(),
-            [wildlife.migrate, wildlife.spread, wildlife.decline]
+            net.fireable(),
+            [
+                wildlife.migrate_forest,
+                wildlife.migrate_tundra,
+                wildlife.spread,
+                wildlife.decline_forest,
+                wildlife.decline_tundra,
+            ]
         );
 
-        // The topology says which keys each place derives, and that Migrate
-        // reads Forest through a keyed edge with the filter of PROTOCOL §11,
-        // in the core's id form (a runner names the places).
+        // The topology says which keys each place derives, and which
+        // transitions read their place through a keyed edge with which
+        // filter, in the core's id form (a runner names the places).
         let topology = serde_json::to_value(wildlife.net.topology()).unwrap();
         assert_eq!(
             topology["places"][0]["key_names"],
             json!(["species", "class", "diet"])
         );
+        let edges = topology["edges"].as_array().unwrap();
+        let input = |transition: u32| {
+            edges
+                .iter()
+                .find(|edge| edge["edge"] == "input" && edge["transition"] == transition)
+                .unwrap()
+                .clone()
+        };
+        let outputs = |transition: u32| -> Vec<serde_json::Value> {
+            edges
+                .iter()
+                .filter(|edge| edge["edge"] == "output" && edge["transition"] == transition)
+                .map(|edge| edge["place"].clone())
+                .collect()
+        };
+        let clause = |key: &str, value: &str| json!({"clauses": [{"key": key, "values": [value]}]});
         assert_eq!(
-            topology["edges"][0],
+            input(0),
             json!({"edge": "input", "place": 0, "transition": 0, "kind": "take_where",
-                   "filter": {"clauses": [{"key": "class", "values": ["Bird"]}]}})
+                   "filter": clause("class", "Bird")})
         );
+        assert_eq!(outputs(0), [json!(5)], "into Migrating alone");
         assert_eq!(
-            topology["edges"][1],
-            json!({"edge": "output", "transition": 0, "place": 5, "slot": 0}),
-            "into Migrating alone: nothing goes back to Forest"
+            input(1),
+            json!({"edge": "input", "place": 4, "transition": 1, "kind": "take_where",
+                   "filter": clause("class", "Bird")})
         );
+        assert_eq!(outputs(1), [json!(5)], "into Migrating alone");
+        assert_eq!(input(2)["kind"], "take", "Settle takes the front");
+        assert_eq!(
+            input(3),
+            json!({"edge": "input", "place": 2, "transition": 3, "kind": "mutate_where",
+                   "filter": clause("class", "Bird")})
+        );
+        assert_eq!(outputs(3), [json!(1)], "the copy goes to Wetland");
+        assert_eq!(
+            input(4),
+            json!({"edge": "input", "place": 0, "transition": 4, "kind": "mutate_where",
+                   "filter": clause("diet", "Herbivore")})
+        );
+        assert!(outputs(4).is_empty());
+        assert_eq!(
+            input(5),
+            json!({"edge": "input", "place": 4, "transition": 5, "kind": "mutate_where",
+                   "filter": clause("species", "Lemming")})
+        );
+        assert!(outputs(5).is_empty());
     }
 
     #[test]
@@ -326,7 +483,7 @@ mod tests {
                 seen += 1;
             }
         }
-        assert_eq!(seen, 9, "nine tokens, seven species, five habitats");
+        assert_eq!(seen, 20, "twenty tokens, four to a habitat");
     }
 
     #[test]
@@ -338,22 +495,25 @@ mod tests {
     #[test]
     fn after_a_migration_the_forest_robin_is_in_wetland() {
         let wildlife = migrated();
-        let birds = wildlife
-            .net
-            .query(&Filter::new().key_in("class", ["Bird"]))
-            .unwrap();
-        assert_eq!(birds.len(), 3);
         let wetland = wildlife.at(Habitat::Wetland).id();
-        assert!(birds.iter().all(|found| found.place == wetland));
-        let settled = birds.last().expect("three birds");
+        let robins = wildlife
+            .net
+            .query(&Filter::new().key_in("species", ["Robin"]))
+            .unwrap();
+        assert_eq!(robins.len(), 2);
+        assert!(robins.iter().all(|found| found.place == wetland));
+        let settled = robins.last().expect("two robins");
         let robin = species(&wildlife.net, settled.place, settled.token);
         assert_eq!(
             (robin.name.as_str(), robin.population, &robin.destination),
             ("Robin", 120, &None),
             "the Forest robin, its destination cleared"
         );
-        assert_eq!(answers(&wildlife)[1], "Wetland: Robin, Heron, Robin");
         assert_eq!(answers(&wildlife)[0], "Wetland: Robin, Robin");
+        assert_eq!(
+            answers(&wildlife)[1],
+            "Forest: Woodpecker; Wetland: Robin, Heron, Robin; Savanna: Egret; Tundra: Snowy Owl"
+        );
     }
 
     #[test]
@@ -362,23 +522,195 @@ mod tests {
         wildlife
             .net
             .fire(wildlife.spread)
-            .expect("the zebra spreads");
+            .expect("the egret spreads");
         assert_eq!(answers(&wildlife), AFTER_MIGRATION_AND_SPREAD);
         assert_eq!(
-            answer(&wildlife.net, &Filter::new().key_in("species", ["Zebra"])),
-            "Savanna: Zebra; Reef: Zebra"
+            answer(&wildlife.net, &Filter::new().key_in("species", ["Egret"])),
+            "Wetland: Egret; Savanna: Egret"
         );
         let populations: Vec<u32> = wildlife
             .net
-            .query(&Filter::new().key_in("species", ["Zebra"]))
+            .query(&Filter::new().key_in("species", ["Egret"]))
+            .unwrap()
+            .iter()
+            .map(|found| species(&wildlife.net, found.place, found.token).population)
+            .collect();
+        assert_eq!(populations, [750, 750], "halved, the copy taking the rest");
+    }
+
+    /// The spread is about the egret, whoever stands in front of it: the
+    /// zebra, first in `Savanna` and far above the threshold, is neither
+    /// read nor touched. One firing: the egret mutated where it stands, under
+    /// its id, and one token produced, the copy in `Wetland`; nothing
+    /// consumed. An odd population leaves the copy the larger half.
+    #[test]
+    fn the_egret_spreads_and_the_zebra_stays() {
+        let mut wildlife = build_wildlife().expect("the net builds");
+        let (savanna, wetland) = (
+            wildlife.at(Habitat::Savanna).id(),
+            wildlife.at(Habitat::Wetland).id(),
+        );
+        let seeded = ids(&wildlife.net, savanna);
+        let [zebra, _, _, egret] = seeded[..] else {
+            panic!("four species in Savanna")
+        };
+        assert_eq!(wildlife.net.first_match(savanna, &birds()), Some(egret));
+        wildlife.net.drain_events().for_each(drop);
+
+        wildlife.net.fire(wildlife.spread).unwrap();
+        let events: Vec<Event> = wildlife.net.drain_events().collect();
+        let [
+            Event::Mutated { place, token },
+            Event::Fired {
+                consumed, produced, ..
+            },
+        ] = &events[..]
+        else {
+            panic!("the egret mutated, then the firing: {events:?}")
+        };
+        assert_eq!((*place, *token), (savanna, egret));
+        assert!(consumed.is_empty(), "a mutate edge consumes nothing");
+        let [(into, copy)] = produced[..] else {
+            panic!("one copy: {produced:?}")
+        };
+        assert_eq!(into, wetland);
+        assert_eq!(ids(&wildlife.net, savanna), seeded, "nobody moved");
+        assert_eq!(species(&wildlife.net, savanna, egret).population, 750);
+        assert_eq!(species(&wildlife.net, wetland, copy).name, "Egret");
+        assert_eq!(species(&wildlife.net, wetland, copy).population, 750);
+        assert_eq!(species(&wildlife.net, savanna, zebra).population, 5000);
+
+        wildlife.net.fire(wildlife.spread).unwrap();
+        wildlife.net.fire(wildlife.spread).unwrap();
+        let egrets: Vec<u32> = wildlife
+            .net
+            .query(&Filter::new().key_in("species", ["Egret"]))
             .unwrap()
             .iter()
             .map(|found| species(&wildlife.net, found.place, found.token).population)
             .collect();
         assert_eq!(
-            populations,
-            [2500, 2500],
-            "halved, the copy taking the rest"
+            egrets,
+            [750, 375, 188, 187],
+            "Wetland's copies, then Savanna's egret"
+        );
+        assert!(
+            !wildlife.net.is_fireable(wildlife.spread),
+            "187 is not above 200"
+        );
+        wildlife
+            .net
+            .set_param(SpreadThreshold(100))
+            .expect("a parameter of the net");
+        assert!(
+            wildlife.net.is_fireable(wildlife.spread),
+            "but it is above 100"
+        );
+    }
+
+    /// The declines halve the species their filters name, wherever it
+    /// stands, down to a floor and never to zero: the deer thin while there
+    /// are more than ten, the lemmings crash while there are more than a
+    /// hundred. The robin in front of the deer is not touched.
+    #[test]
+    fn the_declines_halve_down_to_a_floor() {
+        let mut wildlife = build_wildlife().expect("the net builds");
+        let (forest, tundra) = (
+            wildlife.at(Habitat::Forest).id(),
+            wildlife.at(Habitat::Tundra).id(),
+        );
+        let deer = wildlife.net.first_match(forest, &herbivores()).unwrap();
+        let lemming = wildlife.net.first_match(tundra, &lemmings()).unwrap();
+        let (robin, _) = wildlife.net.tokens(forest).next().unwrap();
+        let population = |net: &Net, place, token| species(net, place, token).population;
+
+        let mut thinned = Vec::new();
+        while wildlife.net.is_fireable(wildlife.decline_forest) {
+            wildlife.net.fire(wildlife.decline_forest).unwrap();
+            thinned.push(population(&wildlife.net, forest, deer));
+        }
+        assert_eq!(thinned, [150, 75, 37, 18, 9]);
+        assert_eq!(population(&wildlife.net, forest, robin), 120);
+
+        let mut crashed = Vec::new();
+        while wildlife.net.is_fireable(wildlife.decline_tundra) {
+            wildlife.net.fire(wildlife.decline_tundra).unwrap();
+            crashed.push(population(&wildlife.net, tundra, lemming));
+        }
+        assert_eq!(crashed, [1000, 500, 250, 125, 62]);
+    }
+
+    /// The firings of a plain run, by the default selector: the first
+    /// fireable transition declared fires, so each runs out before the next.
+    fn plain_run(wildlife: &Wildlife) -> Vec<TransitionId> {
+        let mut sequence = vec![wildlife.migrate_forest; 2];
+        sequence.push(wildlife.migrate_tundra);
+        sequence.extend([wildlife.settle; 3]);
+        sequence.extend([wildlife.spread; 3]);
+        sequence.extend([wildlife.decline_forest; 5]);
+        sequence.extend([wildlife.decline_tundra; 5]);
+        sequence
+    }
+
+    /// Left alone in autumn the net fires nineteen times and stops: three
+    /// birds migrate and settle in Wetland, the egret spreads three times,
+    /// the deer thin five times and the lemmings crash five times. The zebra
+    /// never leaves the savanna and no population reaches zero.
+    #[test]
+    fn a_plain_run_fires_nineteen_times_and_stops() {
+        let mut wildlife = build_wildlife().expect("the net builds");
+        let fired = run_to_the_end(&mut wildlife.net).unwrap();
+        assert_eq!(fired, plain_run(&wildlife));
+        assert_eq!(fired.len(), 19);
+        assert_eq!(
+            census(&wildlife.net),
+            "Forest: Fox 60, Deer 9; \
+             Wetland: Robin 80, Heron 40, Pike 150, Otter 25, Robin 120, Woodpecker 45, \
+             Snowy Owl 15, Egret 750, Egret 375, Egret 188; \
+             Savanna: Zebra 5000, Gecko 200, Lion 40, Egret 187; \
+             Reef: Clownfish 300, Parrotfish 400, Reef Shark 20, Sea Turtle 80; \
+             Tundra: Fox 30, Arctic Hare 90, Lemming 62"
+        );
+        assert!(wildlife.net.fireable().is_empty());
+    }
+
+    /// In summer the birds stay: the migrations leave `fireable`, and the
+    /// rest of the run is the same without them. Set back to autumn, they
+    /// return.
+    #[test]
+    fn in_summer_the_birds_stay() {
+        let mut wildlife = build_wildlife().expect("the net builds");
+        wildlife
+            .net
+            .set_param(Season("Summer".to_owned()))
+            .expect("a parameter of the net");
+        assert_eq!(
+            wildlife.net.fireable(),
+            [
+                wildlife.spread,
+                wildlife.decline_forest,
+                wildlife.decline_tundra
+            ]
+        );
+        let fired = run_to_the_end(&mut wildlife.net).unwrap();
+        let without_migrations: Vec<TransitionId> = plain_run(&wildlife)
+            .into_iter()
+            .filter(|&t| {
+                ![
+                    wildlife.migrate_forest,
+                    wildlife.migrate_tundra,
+                    wildlife.settle,
+                ]
+                .contains(&t)
+            })
+            .collect();
+        assert_eq!(fired, without_migrations);
+        assert_eq!(wildlife.net.count(wildlife.migrating.id()), 0);
+
+        wildlife.net.set_param(Season("Autumn".to_owned())).unwrap();
+        assert_eq!(
+            wildlife.net.fireable(),
+            [wildlife.migrate_forest, wildlife.migrate_tundra]
         );
     }
 
@@ -386,31 +718,33 @@ mod tests {
     /// settled: it is in `Migrating`, the last place.
     const ON_THE_MOVE: [&str; 5] = [
         "Wetland: Robin; Migrating: Robin",
-        "Wetland: Robin, Heron; Migrating: Robin",
-        "Forest: Fox; Wetland: Robin, Heron; Savanna: Zebra; Tundra: Fox, Arctic Hare; \
+        "Forest: Woodpecker; Wetland: Robin, Heron; Savanna: Egret; Tundra: Snowy Owl; \
          Migrating: Robin",
-        "Wetland: Robin; Migrating: Robin",
-        "Forest: Fox; Tundra: Fox, Arctic Hare",
+        "Forest: Fox, Deer, Woodpecker; Wetland: Robin, Heron, Otter; \
+         Savanna: Zebra, Lion, Egret; Tundra: Fox, Arctic Hare, Lemming, Snowy Owl; \
+         Migrating: Robin",
+        "Forest: Woodpecker; Wetland: Robin; Savanna: Egret; Migrating: Robin",
+        "Forest: Fox, Deer; Tundra: Fox, Arctic Hare, Lemming",
     ];
 
     /// The proposal's R5, done when: `Migrate`, one keyed edge, fires on a
-    /// `Forest` holding a fox and a robin, and its one `Fired` names exactly
-    /// one consumed token and one produced; the fox keeps its id and its
-    /// place, and the index still answers the five questions. Then `Settle`
-    /// is one more of each, which is the proposal's §6 "only events": one out
-    /// of Forest, one into Migrating, one out of it, one into Wetland.
+    /// `Forest` holding a robin in front of a fox, a deer and a woodpecker,
+    /// and its one `Fired` names exactly one consumed token and one
+    /// produced; the others keep their ids and their places, and the index
+    /// still answers the five questions. Then `Settle` is one more of each,
+    /// which is the proposal's §6 "only events": one out of Forest, one into
+    /// Migrating, one out of it, one into Wetland.
     #[test]
     fn migrate_takes_the_bird_and_leaves_the_fox_alone() {
         let mut wildlife = build_wildlife().expect("the net builds");
         let forest = wildlife.at(Habitat::Forest).id();
-        let seeded: Vec<TokenId> = wildlife.net.tokens(forest).map(|(id, _)| id).collect();
-        let [robin, fox] = seeded[..] else {
-            panic!("two species in Forest")
+        let seeded = ids(&wildlife.net, forest);
+        let [robin, fox, deer, woodpecker] = seeded[..] else {
+            panic!("four species in Forest")
         };
-        wildlife.net.set_param(Season("Autumn".to_owned())).unwrap();
         wildlife.net.drain_events().for_each(drop);
 
-        wildlife.net.fire(wildlife.migrate).unwrap();
+        wildlife.net.fire(wildlife.migrate_forest).unwrap();
         let events: Vec<Event> = wildlife.net.drain_events().collect();
         let [
             Event::Fired {
@@ -429,8 +763,11 @@ mod tests {
             species(&wildlife.net, on_the_move, migrant).destination,
             Some("Wetland".to_owned())
         );
-        let left: Vec<TokenId> = wildlife.net.tokens(forest).map(|(id, _)| id).collect();
-        assert_eq!(left, [fox], "the fox stayed, under its own id");
+        assert_eq!(
+            ids(&wildlife.net, forest),
+            [fox, deer, woodpecker],
+            "the rest stayed, under their own ids"
+        );
         assert_eq!(answers(&wildlife), ON_THE_MOVE);
         let snapshot = wildlife.net.snapshot().unwrap();
         for (question, filter) in questions(&wildlife) {
@@ -450,24 +787,33 @@ mod tests {
                     && produced[0].0 == wildlife.at(Habitat::Wetland).id()),
             "{events:?}"
         );
-        assert_eq!(
-            wildlife.net.tokens(forest).next().map(|(id, _)| id),
-            Some(fox)
-        );
-        assert!(
-            !wildlife.net.is_fireable(wildlife.migrate),
-            "no bird left in Forest, autumn or not"
-        );
+        assert_eq!(ids(&wildlife.net, forest), [fox, deer, woodpecker]);
     }
 
-    /// The bird need not be in front: with the fox first and an owl behind
-    /// it, `Migrate` takes the owl from the back and the fox does not move,
-    /// as PROTOCOL's transcript 06 has it.
+    /// The bird need not be in front: the woodpecker stands behind the fox
+    /// and the deer, and `Migrate` takes it from the back; then, with a
+    /// gecko and an owl injected behind them, the owl, as PROTOCOL's
+    /// transcript 06 has it. With no bird left, it is not fireable, autumn
+    /// or not.
     #[test]
     fn migrate_takes_the_oldest_bird_wherever_it_stands() {
         let mut wildlife = migrated();
         let forest = wildlife.at(Habitat::Forest);
-        let (fox, _) = wildlife.net.tokens(forest.id()).next().unwrap();
+        let [fox, deer, woodpecker] = ids(&wildlife.net, forest.id())[..] else {
+            panic!("three species left in Forest")
+        };
+        assert_eq!(
+            wildlife.net.first_match(forest.id(), &birds()),
+            Some(woodpecker),
+            "the token the edge would take"
+        );
+        wildlife.net.fire(wildlife.migrate_forest).unwrap();
+        assert_eq!(ids(&wildlife.net, forest.id()), [fox, deer]);
+        assert!(
+            !wildlife.net.is_fireable(wildlife.migrate_forest),
+            "no bird left in Forest"
+        );
+
         let gecko = wildlife.net.put(
             forest,
             Species::new("Gecko", Class::Reptile, Diet::Insectivore, 5),
@@ -475,24 +821,17 @@ mod tests {
         let owl = wildlife
             .net
             .put(forest, Species::new("Owl", Class::Bird, Diet::Carnivore, 5));
-        assert_eq!(
-            wildlife
-                .net
-                .first_match(forest.id(), &Filter::new().key_in("class", [Class::Bird])),
-            Some(owl),
-            "the token the edge would take"
-        );
+        assert_eq!(wildlife.net.first_match(forest.id(), &birds()), Some(owl));
         wildlife.net.drain_events().for_each(drop);
 
-        wildlife.net.fire(wildlife.migrate).unwrap();
+        wildlife.net.fire(wildlife.migrate_forest).unwrap();
         let events: Vec<Event> = wildlife.net.drain_events().collect();
         assert!(
             matches!(&events[..], [Event::Fired { consumed, produced, .. }]
                 if consumed == &[(forest.id(), owl)] && produced.len() == 1),
             "{events:?}"
         );
-        let left: Vec<TokenId> = wildlife.net.tokens(forest.id()).map(|(id, _)| id).collect();
-        assert_eq!(left, [fox, gecko]);
+        assert_eq!(ids(&wildlife.net, forest.id()), [fox, deer, gecko]);
     }
 
     #[test]
@@ -501,12 +840,12 @@ mod tests {
         let net = &wildlife.net;
         assert_eq!(
             net.distinct_values("class", None),
-            [Class::Bird, Class::Mammal, Class::Reptile, Class::Fish].map(KeyValue::from)
+            [Class::Bird, Class::Mammal, Class::Fish, Class::Reptile].map(KeyValue::from)
         );
         let tundra = [wildlife.at(Habitat::Tundra).id()];
         assert_eq!(
             net.distinct_values("diet", Some(&tundra)),
-            [Diet::Omnivore, Diet::Herbivore].map(KeyValue::from)
+            [Diet::Omnivore, Diet::Herbivore, Diet::Carnivore].map(KeyValue::from)
         );
         assert!(net.distinct_values("colour", None).is_empty());
     }
@@ -515,18 +854,23 @@ mod tests {
     fn a_decline_keeps_the_keys_and_a_rename_changes_them() {
         let mut wildlife = build_wildlife().expect("the net builds");
         let forest = wildlife.at(Habitat::Forest);
-        let (robin, _) = wildlife.net.tokens(forest.id()).next().unwrap();
-        let before = wildlife.net.keys(forest.id(), robin).unwrap();
+        let deer = wildlife
+            .net
+            .first_match(forest.id(), &herbivores())
+            .unwrap();
+        let before = wildlife.net.keys(forest.id(), deer).unwrap();
 
-        wildlife.net.fire(wildlife.decline).unwrap();
-        assert_eq!(species(&wildlife.net, forest.id(), robin).population, 60);
+        wildlife.net.fire(wildlife.decline_forest).unwrap();
+        assert_eq!(species(&wildlife.net, forest.id(), deer).population, 150);
         assert_eq!(
-            wildlife.net.keys(forest.id(), robin).unwrap(),
+            wildlife.net.keys(forest.id(), deer).unwrap(),
             before,
             "population is not a key"
         );
         assert_eq!(answers(&wildlife), ON_THE_SEED);
 
+        let (robin, _) = wildlife.net.tokens(forest.id()).next().unwrap();
+        let before = wildlife.net.keys(forest.id(), robin).unwrap();
         let mut renamed = species(&wildlife.net, forest.id(), robin).clone();
         renamed.name = "European Robin".to_owned();
         wildlife.net.replace(forest, robin, renamed).unwrap();
@@ -563,7 +907,7 @@ mod tests {
         );
         assert_eq!(
             answer(net, &Filter::new().with_prefix("T")),
-            "Tundra: Fox, Arctic Hare",
+            "Tundra: Fox, Arctic Hare, Lemming, Snowy Owl",
             "no clauses: every token of the places covered"
         );
         assert_eq!(
@@ -581,7 +925,7 @@ mod tests {
                     .in_places([tundra, forest])
                     .with_prefix("F")
             ),
-            "Forest: Fox",
+            "Forest: Fox, Deer",
             "both restrictions, and place order whatever order they are named in"
         );
         assert_eq!(answer(net, &Filter::new().with_prefix("Migrat")), "");
@@ -597,14 +941,13 @@ mod tests {
     fn a_clause_on_a_parameter_reads_its_current_value() {
         let mut wildlife = build_wildlife().expect("the net builds");
         let class_is_season = Filter::new().key_is_param("class", "season");
-        wildlife.net.set_param(Season("Autumn".to_owned())).unwrap();
-        assert_eq!(answer(&wildlife.net, &class_is_season), "");
+        assert_eq!(answer(&wildlife.net, &class_is_season), "", "Autumn");
 
         // A season named like a class, to show that the clause reads it.
         wildlife.net.set_param(Season("Bird".to_owned())).unwrap();
         assert_eq!(
             answer(&wildlife.net, &class_is_season),
-            "Forest: Robin; Wetland: Robin, Heron"
+            "Forest: Robin, Woodpecker; Wetland: Robin, Heron; Savanna: Egret; Tundra: Snowy Owl"
         );
         let forest = wildlife.at(Habitat::Forest).id();
         let (robin, _) = wildlife.net.tokens(forest).next().unwrap();
@@ -664,7 +1007,7 @@ mod tests {
                     .key_in("class", ["Bird"])
                     .key_in("diet", ["Carnivore"])
             ),
-            "Forest: Owl; Wetland: Heron"
+            "Forest: Owl; Wetland: Heron; Tundra: Snowy Owl"
         );
     }
 }

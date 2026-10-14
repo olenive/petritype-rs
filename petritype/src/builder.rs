@@ -46,7 +46,7 @@ use crate::firing::TieBreak;
 use crate::ids::{NetId, PlaceId, PlaceRef, TransitionId, foreign_place};
 use crate::index::KeyIndex;
 use crate::keys::{KeyValue, KeysVtable};
-use crate::nested::{Nested, NestedVtable, forget_inner_events};
+use crate::nested::{DeepPolicy, Nested, NestedVtable, forget_inner_events};
 use crate::net::Net;
 use crate::param::ParamSlot;
 use crate::place::{CloneFn, DebugFn, ErasedToken, PlaceMeta, PlaceSlot, clone_of, debug_of};
@@ -208,6 +208,9 @@ pub struct NetBuilder {
     /// How the built net's default selector breaks ties, as set by
     /// [`tie_break`](NetBuilder::tie_break).
     tie_break: TieBreak,
+    /// How the built net's [`step_deep`](Net::step_deep) shares its firings,
+    /// as set by [`deep_policy`](NetBuilder::deep_policy).
+    deep_policy: DeepPolicy,
     /// Whether the author declared the net resettable, with
     /// [`resettable`](NetBuilder::resettable).
     resettable: bool,
@@ -241,6 +244,7 @@ impl NetBuilder {
             assert_acyclic: false,
             assert_no_source_transitions: false,
             tie_break: TieBreak::FirstDeclared,
+            deep_policy: DeepPolicy::OuterFirst,
             resettable: false,
             not_nested: None,
             keys_problem: None,
@@ -805,11 +809,23 @@ impl NetBuilder {
 
     /// Sets how the built net's default selector breaks ties between
     /// fireable transitions of equal priority: batch order
-    /// ([`TieBreak::FirstDeclared`], the default) or flow order
-    /// ([`TieBreak::LastDeclared`]). See [`TieBreak`] for why it is a
-    /// choice, and [`Net::set_tie_break`] to change it later.
+    /// ([`TieBreak::FirstDeclared`], the default), flow order
+    /// ([`TieBreak::LastDeclared`]) or turn order
+    /// ([`TieBreak::RoundRobin`]). See [`TieBreak`] for why it is a choice,
+    /// and [`Net::set_tie_break`] to change it later.
     pub fn tie_break(&mut self, tie_break: TieBreak) -> &mut Self {
         self.tie_break = tie_break;
+        self
+    }
+
+    /// Sets how the built net's [`step_deep`](Net::step_deep) shares its
+    /// firings between the net and the inner nets its tokens carry: this net
+    /// first ([`DeepPolicy::OuterFirst`], the default) or every net in turn
+    /// ([`DeepPolicy::Interleaved`]). See [`DeepPolicy`] for what each does
+    /// to an outer net that can always fire, and [`Net::set_deep_policy`] to
+    /// change it later.
+    pub fn deep_policy(&mut self, policy: DeepPolicy) -> &mut Self {
+        self.deep_policy = policy;
         self
     }
 
@@ -1183,6 +1199,9 @@ impl NetBuilder {
             fired_count: 0,
             selector: None,
             tie_break: self.tie_break,
+            last_pick: None,
+            deep_policy: self.deep_policy,
+            deep_cursor: None,
             resettable: self.resettable,
             label_limit: self.label_limit,
             events: Vec::new(),
@@ -1444,6 +1463,7 @@ impl fmt::Debug for NetBuilder {
             .field("label_limit", &self.label_limit)
             .field("assert_acyclic", &self.assert_acyclic)
             .field("tie_break", &self.tie_break)
+            .field("deep_policy", &self.deep_policy)
             .field("resettable", &self.resettable)
             .field("not_nested", &self.not_nested)
             .field("keys_problem", &self.keys_problem);

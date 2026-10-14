@@ -12,7 +12,8 @@
 //!   tokens. [`Net::nested`] reads a token's inner nets back.
 //! - **Run.** [`Net::step_deep`] fires the outer net first and, when it has
 //!   nothing to fire, the first inner net that has, in place order, then
-//!   token order, then the order [`Nested::nets`] lists them.
+//!   token order, then the order [`Nested::nets`] lists them; or, under
+//!   [`DeepPolicy::Interleaved`], every net in turn.
 //!   [`drivers::run`](crate::drivers::run) steps that way, so running a net
 //!   to quiescence runs its inner nets too. A
 //!   [passive](crate::NetBuilder::passive) place is skipped: its inner nets
@@ -32,6 +33,7 @@
 
 use std::any::Any;
 use std::fmt;
+use std::ops::Range;
 
 use crate::error::FiringFailed;
 #[cfg(feature = "serde")]
@@ -278,6 +280,12 @@ pub(crate) fn forget_inner_events(nested: NestedVtable, value: &mut ErasedToken)
     }
 }
 
+/// No inner net's turn: an empty range of places in walk order.
+const NO_TURN: Range<usize> = 0..0;
+
+/// Every inner net's turn, however many there are.
+const EVERY_TURN: Range<usize> = 0..usize::MAX;
+
 /// What one [`Net::step_deep`] fired, and where.
 ///
 /// [`Here`](DeepStep::Here) is a transition of the net that was stepped;
@@ -317,6 +325,100 @@ impl DeepStep {
             DeepStep::Inside { step, .. } => step.transition(),
         }
     }
+}
+
+/// How [`Net::step_deep`] shares its firings between a net and the inner
+/// nets its tokens carry (DESIGN §6.6).
+///
+/// The nets form a cycle in *walk order*: the net itself, then its inner
+/// nets — nested places in place order,
+/// [passive](crate::NetBuilder::passive) ones skipped, each place's tokens
+/// oldest first, each token's nets in [`Nested::nets`] order, a net's own
+/// inner nets before the next token. A deep step fires once, in the first
+/// net it comes to that has a firing, chosen by that net's own selector; the
+/// policy says where it starts.
+///
+/// - [`OuterFirst`](DeepPolicy::OuterFirst), the default, starts at the net
+///   itself every time, so an outer net that can always fire **starves** its
+///   inner nets. A net meant to run this way gives its outer transitions
+///   guards that wait on what is inside, as the `transit` example's city
+///   waits on where each vehicle's doors are.
+/// - [`Interleaved`](DeepPolicy::Interleaved) starts at the net after the
+///   one the previous deep step fired in and goes round once, so no live
+///   net waits longer than **one round**, however busy the others are: the
+///   policy for a net that cannot give its outer transitions such guards.
+///
+/// Interleaved's *cursor* is the net that fired last: this net's own
+/// [`NetId`], or an inner net's nested id, recorded by every deep step under
+/// either policy, a failed firing as well as one that landed, and read under
+/// this one alone. Where there is none — a
+/// fresh net, one restored from JSON or forked (`Net::fork`, with the
+/// `serde` feature), since the cursor is kept in memory only, or when that
+/// net has gone, its token consumed or moved to a passive place — the round
+/// starts at this net.
+///
+/// The policy of the net that is stepped governs the whole walk below it;
+/// an inner net's own policy counts only when it is stepped deep itself, by
+/// an outer body. Quiescence ([`Net::is_quiescent_deep`]) does not depend
+/// on it. Set with
+/// [`NetBuilder::deep_policy`](crate::NetBuilder::deep_policy) or
+/// [`Net::set_deep_policy`]; the drivers ([`drivers`](crate::drivers)) and
+/// the protocol runner honour it.
+///
+/// ```
+/// use petritype::{DeepPolicy, DeepStep, NetBuilder, TakeEdge};
+///
+/// // An inner net with one thing to do.
+/// let mut inner = NetBuilder::new();
+/// let todo = inner.place::<u32>("Todo");
+/// let done = inner.place::<u32>("Done");
+/// inner.seed(todo, [1]);
+/// inner.transition("Work", (TakeEdge(todo),), (done,), |n: u32| (n,));
+/// let inner = inner.build()?;
+///
+/// // An outer net that can always fire: `Spin` puts back what it takes.
+/// let mut b = NetBuilder::new();
+/// let wheel = b.place::<u32>("Wheel");
+/// let desk = b.place_nested::<petritype::Net>("Desk");
+/// b.seed(wheel, [0]);
+/// b.seed(desk, [inner]);
+/// b.transition("Spin", (TakeEdge(wheel),), (wheel,), |n: u32| (n + 1,));
+/// b.deep_policy(DeepPolicy::Interleaved);
+/// let mut net = b.build()?;
+///
+/// assert!(matches!(net.step_deep()?, Some(DeepStep::Here { .. })), "the outer net's turn");
+/// assert!(matches!(net.step_deep()?, Some(DeepStep::Inside { .. })), "the inner net's");
+/// assert!(matches!(net.step_deep()?, Some(DeepStep::Here { .. })), "and round again");
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[non_exhaustive]
+pub enum DeepPolicy {
+    /// This net's own selector first; when it chooses nothing, the first
+    /// inner net in walk order that has a firing. Python petritype's
+    /// `deep_policy="outer_first"`, and every net's policy before this
+    /// setting existed.
+    #[default]
+    OuterFirst,
+    /// Every net in turn: from the net after the one that fired last, round
+    /// the cycle once, to the first that has a firing. Python petritype's
+    /// `deep_policy="interleaved"`.
+    Interleaved,
+}
+
+/// What one [`Net::step_deep_staged`] did: chose one of this net's own
+/// transitions for the caller to fire, or fired inside.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum StagedStep {
+    /// It was this net's turn, and its selector chose this transition, which
+    /// has **not** fired: the caller [launches](Net::launch) it and
+    /// [distributes](Net::distribute) what comes back. The choice counted,
+    /// as [`Net::choose`]'s does.
+    Chosen(TransitionId),
+    /// An inner net fired, inline, as in [`Net::step_deep`]: always a
+    /// [`DeepStep::Inside`], its events already in this net's log.
+    Inside(DeepStep),
 }
 
 impl Net {
@@ -428,18 +530,22 @@ impl Net {
     }
 
     /// Fires one transition, here or in an inner net: this net first, and
-    /// when it has nothing to fire, the first inner net that has.
+    /// when it has nothing to fire, the first inner net that has — or, under
+    /// [`DeepPolicy::Interleaved`], the next net in turn that has.
     ///
-    /// [`step`](Net::step) is tried first, selector and all. When it fires
-    /// nothing, the inner nets are walked — nested places in place order,
+    /// Under the default [`DeepPolicy::OuterFirst`], [`step`](Net::step) is
+    /// tried first, selector and all. When it fires nothing, the inner nets
+    /// are walked — nested places in place order,
     /// [passive](crate::NetBuilder::passive) ones skipped, each place's
-    /// tokens oldest first, each token's nets in [`Nested::nets`] order — and
-    /// `step_deep` is called on each in turn, so the walk goes as deep as
-    /// the nesting does. The first firing found is the step. Called in a
-    /// loop, which is what [`drivers::run`](crate::drivers::run) does, this
-    /// is DESIGN §6.6's policy: the outer net until it is quiet, then the
-    /// inner nets in place order and token order, repeated until everything
-    /// is quiet. Deterministic, given the selectors.
+    /// tokens oldest first, each token's nets in [`Nested::nets`] order, a
+    /// net's own inner nets before the next token — and each is stepped by
+    /// its own selector, so the walk goes as deep as the nesting does. The
+    /// first firing found is the step. Called in a loop, which is what
+    /// [`drivers::run`](crate::drivers::run) does, this is DESIGN §6.6's
+    /// policy: the outer net until it is quiet, then the inner nets in place
+    /// order and token order, repeated until everything is quiet. Under
+    /// `Interleaved` the walk is the same cycle, started after the net that
+    /// fired last ([`DeepPolicy`]). Deterministic, given the selectors.
     ///
     /// An inner firing's events are in this net's log, as
     /// [`Event::Nested`], by the time this returns.
@@ -475,10 +581,81 @@ impl Net {
     /// inner; its transition id is the inner net's. The failure's own
     /// [`Failed`](Event::Failed) event is lifted, like any other.
     pub fn step_deep(&mut self) -> Result<Option<DeepStep>, FiringFailed> {
-        if let Some(transition) = self.step()? {
-            return Ok(Some(DeepStep::Here { transition }));
+        Ok(match self.step_deep_staged()? {
+            None => None,
+            Some(StagedStep::Inside(step)) => Some(step),
+            Some(StagedStep::Chosen(transition)) => {
+                self.fire_now(transition)?;
+                Some(DeepStep::Here { transition })
+            }
+        })
+    }
+
+    /// One deep step for a caller that fires this net's own transitions in
+    /// stages: [`step_deep`](Net::step_deep), except that when the turn
+    /// falls to this net and its selector chooses, the choice is handed back
+    /// rather than fired.
+    ///
+    /// For a driver whose outer bodies run elsewhere — [`launch`](Net::launch)
+    /// here, [`run`](crate::Firing::run) on a thread of its own,
+    /// [`distribute`](Net::distribute) here — and whose inner firings are
+    /// inline, as the protocol runner (`petritype-runner`) does for `step`
+    /// and a running net. It honours the [`DeepPolicy`] where
+    /// [`select`](Net::select) followed by [`step_inside`](Net::step_inside)
+    /// cannot: under [`DeepPolicy::Interleaved`] the inner nets whose turn
+    /// comes before this net's are tried first. The choice counts, for the
+    /// [round robin](crate::TieBreak::RoundRobin) as
+    /// [`choose`](Net::choose)'s does and for the deep policy as a firing
+    /// here, so launch it.
+    ///
+    /// ```
+    /// use petritype::{NetBuilder, StagedStep, TakeEdge};
+    ///
+    /// let mut b = NetBuilder::new();
+    /// let inbox = b.place::<u32>("Inbox");
+    /// let outbox = b.place::<u32>("Outbox");
+    /// b.seed(inbox, [7]);
+    /// let forward = b.transition("Forward", (TakeEdge(inbox),), (outbox,), |n: u32| (n,)).id();
+    /// let mut net = b.build()?;
+    ///
+    /// let Some(StagedStep::Chosen(chosen)) = net.step_deep_staged()? else {
+    ///     panic!("the outer net's own turn");
+    /// };
+    /// assert_eq!(chosen, forward);
+    /// let firing = net.launch(chosen)?;            // the body may go anywhere now
+    /// net.distribute(firing.run())?;
+    /// assert_eq!(net.step_deep_staged()?, None, "quiescent, deep");
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// An inner failure's [`FiringFailed`], as from `step_deep`, its
+    /// [`path`](FiringFailed::path) saying where. Nothing of this net's own
+    /// fires here, so nothing of its own fails.
+    pub fn step_deep_staged(&mut self) -> Result<Option<StagedStep>, FiringFailed> {
+        let (ahead, behind) = self.round();
+        if let Some(step) = self.inner_turn(ahead)? {
+            return Ok(Some(StagedStep::Inside(step)));
         }
-        self.step_inside()
+        if let Some(transition) = self.choose() {
+            self.deep_cursor = Some(self.id);
+            return Ok(Some(StagedStep::Chosen(transition)));
+        }
+        Ok(self.inner_turn(behind)?.map(StagedStep::Inside))
+    }
+
+    /// Changes how [`step_deep`](Net::step_deep) shares its firings between
+    /// this net and its inner nets; see [`DeepPolicy`]. Takes effect from
+    /// the next deep step, and leaves the cursor where it is.
+    pub fn set_deep_policy(&mut self, policy: DeepPolicy) {
+        self.deep_policy = policy;
+    }
+
+    /// How [`step_deep`](Net::step_deep) shares its firings: as built, or as
+    /// last set with [`set_deep_policy`](Net::set_deep_policy).
+    pub fn deep_policy(&self) -> DeepPolicy {
+        self.deep_policy
     }
 
     /// Whether nothing can happen here or below: nothing fireable and nothing
@@ -497,9 +674,9 @@ impl Net {
                 .all(|(_, _, _, inner)| inner.is_quiescent_deep())
     }
 
-    /// The inner half of [`step_deep`](Net::step_deep): one firing in the
-    /// first inner net that has one, without asking this net's own selector
-    /// first.
+    /// The inner half of [`step_deep`](Net::step_deep) under
+    /// [`DeepPolicy::OuterFirst`]: one firing in the first inner net that
+    /// has one, without asking this net's own selector first.
     ///
     /// For a caller that has already asked it. A driver that runs this net's
     /// own firings in stages — [`select`](Net::select), then
@@ -507,17 +684,20 @@ impl Net {
     /// [`distribute`](Net::distribute) — and wants the inner nets when that
     /// selector picks nothing calls this, where
     /// [`step_deep`](Net::step_deep) would ask the selector a second time
-    /// and fire inline whatever it chose. The concurrent driver does exactly
-    /// that when its launch sweep finds nothing out here, and so does the
-    /// protocol runner (`petritype-runner`) for `step` and a running net.
+    /// and fire inline whatever it chose. It always walks from the start,
+    /// whatever the net's [`DeepPolicy`], and moves no cursor; a driver that
+    /// honours the policy steps with
+    /// [`step_deep_staged`](Net::step_deep_staged) instead, as the
+    /// protocol runner (`petritype-runner`) does.
     ///
     /// The walk and the lifting are `step_deep`'s: nested places in place
     /// order, [passive](crate::NetBuilder::passive) ones skipped, tokens
-    /// oldest first, each token's nets in [`Nested::nets`] order, `step_deep`
-    /// on each, the first firing found is the step, and its events are in
-    /// this net's log, as [`Event::Nested`], by the time this returns. `None`
-    /// when no inner net has anything to fire; this net's own fireable
-    /// transitions are never fired here, at this level.
+    /// oldest first, each token's nets in [`Nested::nets`] order, each net
+    /// stepped by its own selector and then its own inner nets walked, the
+    /// first firing found is the step, and its events are in this net's
+    /// log, as [`Event::Nested`], by the time this returns. `None` when no
+    /// inner net has anything to fire; this net's own fireable transitions
+    /// are never fired here, at this level.
     ///
     /// ```
     /// use petritype::{DeepStep, NetBuilder, TakeEdge};
@@ -551,6 +731,88 @@ impl Net {
     /// The inner failure's [`FiringFailed`], as from `step_deep`, its
     /// [`path`](FiringFailed::path) saying where.
     pub fn step_inside(&mut self) -> Result<Option<DeepStep>, FiringFailed> {
+        match self.turn_inside(&EVERY_TURN, &mut 0) {
+            None => Ok(None),
+            Some((_, result)) => result.map(Some),
+        }
+    }
+
+    // ----- internals ------------------------------------------------------
+
+    /// Where this net's round stands: the inner nets, by their place in
+    /// walk order (counted from 0, this net itself not counted), whose turn
+    /// comes before this net's own and after it (DESIGN §6.6).
+    ///
+    /// Under [`DeepPolicy::OuterFirst`] none come before and all after.
+    /// Under [`DeepPolicy::Interleaved`] the round starts after the cursor:
+    /// after this net, every inner net comes before it; after the inner net
+    /// at `k`, those after `k` come before it and those up to `k` after;
+    /// with no cursor, or one that names no net in the walk, the round
+    /// starts here.
+    pub(crate) fn round(&self) -> (Range<usize>, Range<usize>) {
+        match self.deep_policy {
+            DeepPolicy::OuterFirst => (NO_TURN, EVERY_TURN),
+            DeepPolicy::Interleaved => match self.deep_cursor {
+                Some(cursor) if cursor == self.id => (EVERY_TURN, NO_TURN),
+                Some(cursor) => match self.walk_position(cursor) {
+                    Some(at) => (at + 1..usize::MAX, 0..at + 1),
+                    None => (NO_TURN, EVERY_TURN),
+                },
+                None => (NO_TURN, EVERY_TURN),
+            },
+        }
+    }
+
+    /// One inner firing among the inner nets whose place in walk order is in
+    /// `turns`, the net it happened in recorded as the deep cursor.
+    pub(crate) fn inner_turn(
+        &mut self,
+        turns: Range<usize>,
+    ) -> Result<Option<DeepStep>, FiringFailed> {
+        if turns.is_empty() {
+            return Ok(None);
+        }
+        let Some((fired_in, result)) = self.turn_inside(&turns, &mut 0) else {
+            return Ok(None);
+        };
+        self.deep_cursor = Some(fired_in);
+        result.map(Some)
+    }
+
+    /// Where `wanted` is in walk order among the active inner nets, at any
+    /// depth, or `None` if it is not there.
+    fn walk_position(&self, wanted: NetId) -> Option<usize> {
+        let mut at = 0;
+        self.find_in_walk(wanted, &mut at).then_some(at)
+    }
+
+    /// [`walk_position`](Net::walk_position), one level: `at` counts the
+    /// nets passed so far.
+    fn find_in_walk(&self, wanted: NetId, at: &mut usize) -> bool {
+        for (_, _, _, inner) in self.active_inner_nets() {
+            if inner.id == wanted {
+                return true;
+            }
+            *at += 1;
+            if inner.find_in_walk(wanted, at) {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// The walk itself: the active inner nets in walk order, numbered from
+    /// `*next`, each one whose number is in `turns` stepped by its own
+    /// selector and then its own inner nets walked; the first firing, or
+    /// failure, ends it. Returns the id of the net it happened in and the
+    /// step or the failure, wrapped and lifted level by level on the way
+    /// up: the events under the place and token the token sits in (rule 1),
+    /// a failure's [`path`](FiringFailed::path) filled in.
+    fn turn_inside(
+        &mut self,
+        turns: &Range<usize>,
+        next: &mut usize,
+    ) -> Option<(NetId, Result<DeepStep, FiringFailed>)> {
         for index in 0..self.places.len() {
             let meta = &self.places[index].meta;
             let Some(nested) = meta.nested else {
@@ -561,6 +823,10 @@ impl Net {
             }
             let place = PlaceId(index as u32);
             for position in 0..self.places[index].tokens.len() {
+                if *next >= turns.end {
+                    // Every net from here on is past the last turn asked for.
+                    return None;
+                }
                 let (token, value) = &mut self.places[index].tokens[position];
                 let token = *token;
                 // The first inner net that fires, with what it logged; the
@@ -570,15 +836,28 @@ impl Net {
                     (nested.nets_mut)(&mut **value)
                         .into_iter()
                         .find_map(|(name, inner)| {
-                            let result = inner.step_deep();
-                            if matches!(result, Ok(None)) {
-                                return None;
-                            }
+                            let turn = *next;
+                            *next += 1;
+                            let here = if turns.contains(&turn) {
+                                match inner.step() {
+                                    Ok(None) => None,
+                                    Ok(Some(transition)) => {
+                                        Some((inner.id(), Ok(DeepStep::Here { transition })))
+                                    }
+                                    Err(failed) => Some((inner.id(), Err(failed))),
+                                }
+                            } else {
+                                None
+                            };
+                            let (fired_in, result) = match here {
+                                Some(found) => found,
+                                None => inner.turn_inside(turns, next)?,
+                            };
                             let nested_id = inner.id();
                             let events: Vec<Event> = inner.drain_events().collect();
-                            Some((name.to_owned(), nested_id, events, result))
+                            Some((name.to_owned(), nested_id, events, fired_in, result))
                         });
-                let Some((name, nested_id, events, result)) = found else {
+                let Some((name, nested_id, events, fired_in, result)) = found else {
                     continue;
                 };
                 // An inner net fired, and a key may read it: the token is
@@ -599,39 +878,59 @@ impl Net {
                         event: Box::new(event),
                     });
                 }
-                return match result {
-                    Ok(Some(step)) => Ok(Some(DeepStep::Inside {
+                let result = match result {
+                    Ok(step) => Ok(DeepStep::Inside {
                         place,
                         token,
                         net: name,
                         nested_id,
                         step: Box::new(step),
-                    })),
+                    }),
                     Err(mut failed) => {
                         failed.path.insert(0, (place, token, name));
                         Err(failed)
                     }
-                    Ok(None) => unreachable!("only a firing or a failure is kept"),
                 };
+                return Some((fired_in, result));
             }
         }
-        Ok(None)
+        None
     }
 
-    // ----- internals ------------------------------------------------------
-
     /// The first transition anywhere in the nesting that is fireable, with
-    /// its name: this net's first, then the inner nets' in
-    /// [`step_deep`](Net::step_deep) order. Selectors are not consulted.
+    /// its name, in the order the next [`step_deep`](Net::step_deep) would
+    /// try the nets: under [`DeepPolicy::OuterFirst`] this net's first, then
+    /// the inner nets' in walk order; under [`DeepPolicy::Interleaved`] the
+    /// round from the cursor. Selectors are not consulted.
     ///
     /// What the drivers' fuse blames when it trips: the transition that
     /// would have been attempted next.
     pub(crate) fn first_fireable_deep(&self) -> Option<(TransitionId, String)> {
-        if let Some(&transition) = self.fireable().first() {
-            return Some((transition, self.transition_name(transition)));
+        let first_of = |net: &Net| {
+            net.fireable()
+                .first()
+                .map(|&transition| (transition, net.transition_name(transition)))
+        };
+        let (ahead, behind) = self.round();
+        let mut walk = Vec::new();
+        self.collect_walk(&mut walk);
+        let in_turns = |turns: &Range<usize>| {
+            walk.iter()
+                .enumerate()
+                .filter(|(turn, _)| turns.contains(turn))
+                .find_map(|(_, net)| first_of(net))
+        };
+        in_turns(&ahead)
+            .or_else(|| first_of(self))
+            .or_else(|| in_turns(&behind))
+    }
+
+    /// Every active inner net at every depth, in walk order.
+    fn collect_walk<'a>(&'a self, walk: &mut Vec<&'a Net>) {
+        for (_, _, _, inner) in self.active_inner_nets() {
+            walk.push(inner);
+            inner.collect_walk(walk);
         }
-        self.active_inner_nets()
-            .find_map(|(_, _, _, inner)| inner.first_fireable_deep())
     }
 
     /// Every inner net that [`step_deep`](Net::step_deep) would walk, in the

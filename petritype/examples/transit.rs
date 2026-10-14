@@ -31,13 +31,19 @@
 //! city's own transition when it has one and otherwise the first one inside a
 //! vehicle, until all seven passengers are in `Arrived`, and prints each
 //! firing under its path as it goes. That is all a viewer's Step does, and
-//! the net is built so that it is enough. On the way it saves the city's
+//! the net is built so that it is enough: it keeps the default deep policy,
+//! [`DeepPolicy::OuterFirst`], and
+//! [`DeepPolicy::Interleaved`], which takes the city and each cabin in turn,
+//! is the policy for a net that cannot give its outer transitions guards
+//! like these (DESIGN §6.6). On the way it saves the city's
 //! marking as JSON text — the vehicles' cabins in it, each as the template
 //! that built it with its marking, parameters and switches — the first time a
 //! vehicle is between stations, loads it into a freshly built city, steps
 //! that one to the end too, and compares the two.
 //!
 //! [`MutateEdge`]: petritype::MutateEdge
+//! [`DeepPolicy::OuterFirst`]: petritype::DeepPolicy::OuterFirst
+//! [`DeepPolicy::Interleaved`]: petritype::DeepPolicy::Interleaved
 
 // A crate root's `mod` looks beside it, so the path is spelled out: the net
 // lives in `transit/net.rs`, the file a runner's example includes too.

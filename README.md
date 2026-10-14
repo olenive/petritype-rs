@@ -76,6 +76,10 @@ so `net.snapshot()` works on a net of vehicles too. `petritype/examples/transit.
 and ferries built this way (`cargo run -p petritype --example transit --features serde`), whose journey runs under plain
 `step_deep` because each vehicle's state is where the tokens in its cabin are, each door in `Doors Open` or
 `Doors Closed`, which the city's guards read; `DESIGN.md` §6.6 has the rules.
+A net whose outer transitions cannot wait on what is inside like that sets `b.deep_policy(DeepPolicy::Interleaved)`,
+and `step_deep` and the drivers then take it and each inner net in turn, so that an outer net that can always fire
+no longer starves its inner nets; `b.tie_break(TieBreak::RoundRobin)` takes a net's own transitions of equal
+priority in turn the same way. Both default to what they always did.
 Served by `petritype-runner`, an inner net is addressed by its path (`transit/Depot/#0/cabin`) or its
 stable nested id, and its events arrive wrapped in `nested` notifications (PROTOCOL.md §12, `DESIGN.md` §19.3.11).
 
@@ -99,8 +103,9 @@ A *keyed edge* chooses its token by them: `TakeWhereEdge(forest, Filter::new().k
 the oldest bird, wherever it stands, and `MutateWhereEdge` lends it to the body in place. Every other token stays
 where it is under its id, so taking one token out of a crowd no longer means taking the crowd and putting it back.
 
-`petritype/examples/wildlife.rs` asks the token-keys proposal's five questions of species across habitats and
-migrates its birds through a keyed edge (`cargo run -p petritype --example wildlife --features serde`);
+`petritype/examples/wildlife.rs` asks the token-keys proposal's five questions of species across habitats, migrates
+its birds through keyed take edges, and spreads the egret and thins the deer and the lemmings through keyed mutate
+edges, each guard reading the token its edge would take (`cargo run -p petritype --example wildlife --features serde`);
 `DESIGN.md` §8.3 has the rules.
 Served by `petritype-runner`, every token carries its keys on the wire, and a host can `query` the net, list a key's
 `distinct` values, or `set_filter` so that it reads and hears of only the tokens a filter keeps, the rest told as

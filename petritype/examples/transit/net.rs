@@ -566,6 +566,13 @@ pub fn front_cabin(net: &Net, place: PlaceRef<Vehicle>) -> Option<&Net> {
 /// passengers of [`WAITING`] on their platforms, `destination` unset and
 /// every transition switched on.
 pub fn build_city() -> Result<City, BoxedError> {
+    build_city_with(None)
+}
+
+/// [`build_city`] with the net parameter `destination` set as built: the
+/// runner's `transit` entry takes it as a load parameter, as the Python
+/// factory takes it as a keyword (PROTOCOL.md §11).
+pub fn build_city_with(destination: Option<Location>) -> Result<City, BoxedError> {
     let templates = templates();
     let mut b = NetBuilder::new();
     b.templates(&templates);
@@ -583,7 +590,7 @@ pub fn build_city() -> Result<City, BoxedError> {
     for place in platforms.places.into_iter().chain([arrived]) {
         b.serializable(place);
     }
-    b.param(Destination(None));
+    b.param(Destination(destination));
     b.serializable_param::<Destination>("destination");
 
     b.seed(

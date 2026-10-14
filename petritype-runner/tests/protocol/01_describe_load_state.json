@@ -15,7 +15,7 @@
             {"name": "parcel-intake", "description": "Shelve parcels as they are injected", "mode": "24/7",
              "params": []},
             {"name": "transit", "description": "Vehicles board, carry and alight passengers", "mode": "manual",
-             "params": []},
+             "params": [{"name": "destination", "type_name": "Option<Location>", "required": false, "default": null}]},
             {"name": "wildlife", "description": "Species migrate, spread and decline across habitats", "mode": "manual",
              "params": []}
           ]

@@ -479,6 +479,25 @@ the choice without firing, and `NetBuilder::resettable()` /
 `Net::is_resettable()` record the author's promise that rebuilding the net is
 a true reset.
 
+**Added 2026-10-12 (slice 21).** A third tie-break, `TieBreak::RoundRobin`
+(Python petritype's `tie_break="round_robin"`; decision B1 of the phase).
+Among the fireable transitions of top priority, in declaration order, the
+default selector picks the first one declared *after* the transition it
+chose last, the *cursor*, wrapping to the first when none follows; with no
+cursor yet it picks the first declared. The cursor is the declaration index
+of the default selector's last choice taken to be fired, one per net, inner
+nets included; it moves under any tie-break and only round robin reads it.
+`step` takes the choice, and so do `step_deep`, the drivers and the runner;
+`select()` reports it and moves nothing, so a driver that fires in stages
+takes it with `Net::choose()`, which is `select()` with the choice counted.
+A custom selector neither reads nor moves the cursor, nor do `fire` by name
+and a concurrent sweep; a switched-off transition is not fireable, so never
+a candidate. The cursor lives in memory only: a fresh net, a net restored
+from JSON or forked, and a reset (a rebuild) start their round afresh.
+A FIFO pipeline alternates its stages under it, and transitions competing
+for one place take turns. No wire change: PROTOCOL.md §5 carries no
+tie-break.
+
 ### 6.2 Three stages
 
 ```rust
@@ -518,7 +537,9 @@ the selector declined. Deterministic given the selector: the basis for tests
 and replay. `net.fire(t) -> Result<(), NetError>` fires a named transition
 regardless of the selector (`NotFireable` if it cannot fire right now).
 `net.step_deep()` (slice 15) is `step` and, when that fires nothing, one
-firing inside a token that carries nets of its own (§6.6).
+firing inside a token that carries nets of its own (§6.6); under
+`DeepPolicy::Interleaved` (slice 21) it is one firing in the next net in
+turn that has one.
 
 ### 6.4 Concurrent
 
@@ -570,8 +591,13 @@ net.nested(place, token) -> Option<Vec<(&str, &Net)>>
 net.nested_scope(place, token, f: impl FnOnce(&mut [(&str, &mut Net)]) -> R) -> Option<R>
 net.step_deep() -> Result<Option<DeepStep>, FiringFailed>
 net.step_inside() -> Result<Option<DeepStep>, FiringFailed>   // slice 17: step_deep without this net's own step
+net.step_deep_staged() -> Result<Option<StagedStep>, FiringFailed>   // slice 21: step_deep, this net's own choice handed back
+b.deep_policy(DeepPolicy) -> &mut Self;  net.set_deep_policy(DeepPolicy);  net.deep_policy() -> DeepPolicy   // slice 21
 net.is_quiescent_deep() -> bool
 net.place_ref::<T>(name) -> Option<PlaceRef<T>>       // a typed handle by name, checked by TypeId
+
+#[non_exhaustive] pub enum DeepPolicy { #[default] OuterFirst, Interleaved }     // slice 21
+#[non_exhaustive] pub enum StagedStep { Chosen(TransitionId), Inside(DeepStep) }  // slice 21
 
 pub enum DeepStep {
     Here   { transition: TransitionId },
@@ -604,6 +630,45 @@ pub enum DeepStep {
   protocol runner, whose outer bodies run on threads of their own while its
   inner firings are inline (§19.3.11) — and would otherwise ask the
   selector twice and fire inline whatever it chose.
+- **The deep policy** (slice 21, 2026-10-12; decision B2 of the phase,
+  Python petritype's `deep_policy`). What the paragraph above describes is
+  now the default, `DeepPolicy::OuterFirst`, and there is a second,
+  `DeepPolicy::Interleaved`: the nets form a cycle, the outer net then the
+  inner nets in that same walk order; a deep step starts at the net *after*
+  the one the previous deep step fired in (the outer net when nothing has
+  fired yet, after a reset or a load, or when that net is gone), goes round
+  once, and fires in the first net that has a firing, chosen by that net's
+  own selector; one firing per step. So no live net waits longer than one
+  round while an always-live outer net or sibling fires: the policy for a
+  net that cannot give its outer transitions guards like the city's. The
+  cursor is the identity of the net that fired last, the outer net's own
+  `NetId` or an inner net's nested id, kept in memory only (never saved,
+  never forked; a net whose token was consumed or moved to a passive place
+  is gone); every deep step records it, under either policy, a failed
+  firing as well as one that landed. The policy of the net stepped, the
+  outermost, governs the whole deep step: the walk fires each net by its
+  own selector, `step`, never by its own `step_deep`, so an inner net's own
+  policy is not consulted, and counts only when an outer body steps that
+  net deep. Quiescence is unchanged. PROTOCOL.md §12.3 says the same for
+  both runtimes since 2026-10-12: "That order is the default. A net built
+  with the interleaved deep-step policy (Python
+  `deep_policy="interleaved"`, Rust `DeepPolicy::Interleaved`, since
+  2026-10-12) is driven round a cycle instead, the outer net and then the
+  inner nets in that same order: each firing goes to the first net with
+  something to fire, counting from the net after the one the last firing
+  was in, so that an outer net that can always fire does not starve the
+  inner ones; the policy, like the tie-break within each net, is the
+  runtime's own and nothing on the wire changes." Set with `NetBuilder::deep_policy` or `Net::set_deep_policy`;
+  `fork` copies it, as it does the tie-break. As built, `step_deep` is
+  `step_deep_staged` with the chosen transition fired inline, and
+  `step_inside` is the walk of `OuterFirst` alone: from the start whatever
+  the policy, moving no cursor. A driver that fires this net's own
+  transitions in stages and honours the policy steps with
+  `step_deep_staged()`, which hands back `StagedStep::Chosen(t)` when the
+  turn falls to this net (the choice taken, as `choose` takes it) and makes
+  an inner firing inline otherwise (`StagedStep::Inside`); the protocol
+  runner does (§19.3.13), and the concurrent driver uses the round's two
+  halves, `round` and `inner_turn`, inside the crate (§13).
 - **Passive.** `step_deep` never descends into a passive place, and its
   inner nets do not count against `is_quiescent_deep`. An outer body steps
   them itself: `vehicle.inner.step()`, or `drivers::run` on it, inside a
@@ -663,8 +728,9 @@ pub enum DeepStep {
 - **On the wire** (phase 3, slice 17): the protocol runner addresses inner
   nets by path or nested id, reports their events wrapped in `nested`
   notifications with versions of their own, and steps them with
-  `step_inside` (PROTOCOL.md §12; §19.3.11). `petritype-dot` draws the outer
-  net only.
+  `step_inside` (PROTOCOL.md §12; §19.3.11), since slice 21 with
+  `step_deep_staged` in the order of the net's deep policy (§19.3.13).
+  `petritype-dot` draws the outer net only.
 
 **Phase 2, 2026-10-09: saving and forking** (slice 16; the proposal's R5a,
 R5b, R5, R6 and step 6 of its script). Everything here is behind the `serde`
@@ -957,6 +1023,8 @@ net.nested(place, token) -> Option<Vec<(&str, &Net)>>   // slice 15: a nested to
 net.nested_scope(place, token, f) -> Option<R>    // slice 15: the same, mutably, lifting on return
 net.is_quiescent_deep() -> bool                   // slice 15: quiescent here and in every non-passive inner net
 net.step_inside() -> Result<Option<DeepStep>, FiringFailed>   // slice 17: step_deep's inner half, for a driver that asked select() itself (§6.6)
+net.step_deep_staged() -> Result<Option<StagedStep>, FiringFailed>   // slice 21: step_deep with this net's own choice handed back, in the deep policy's order (§6.6)
+net.choose() -> Option<TransitionId>               // slice 21: select(), and the choice counts for the round robin (§6.1)
 #[cfg(feature = "serde")]
 net.param_name(type_name) -> Option<&str>         // slice 17: the wire name behind a ParamChanged's type name, from serializable_param
 net.fireable() -> Vec<TransitionId>;  net.is_fireable(t) -> bool;  net.is_enabled(t) -> bool;  net.priority_of(t) -> f64
@@ -1259,6 +1327,27 @@ BuildError::KeyedEdgeOnUnkeyedPlace { transition, place }
   consumed and one produced, the fox under its old id, the five questions
   answered by the index after it; and with the fox in front and an owl
   behind it, the owl is taken.
+- **The example, second edition** (2026-10-13, decided with the Python
+  track, which re-recorded the shared `06_keys_query_filter.json`). The
+  first edition's `Spread Savanna Reef` and `Decline Forest` were plain
+  `MutateEdge`s with guards on the front token, so on screen the zebra,
+  first in `Savanna`, halved itself onto the reef, and the robin, first in
+  `Forest`, halved down to a population of 0 that stayed; with `season`
+  `"Summer"` by default a plain run was three spreads and seven declines.
+  Now every transition but `Settle` is keyed and every guard reads the
+  token its edge would take (`first_match`, through the example's
+  `oldest`): `Migrate Forest Wetland` and `Migrate Tundra Wetland` take the
+  oldest bird (`take_where`, `class in {Bird}`) in autumn, the default;
+  `Spread Savanna Wetland` halves the egret, the oldest bird of `Savanna`,
+  while it is above `spread_threshold` (200), and sends a copy with the
+  rest to `Wetland` (`mutate_where` with an output); `Decline Forest`
+  halves the deer (`diet in {Herbivore}`) while above 10 and `Decline
+  Tundra` the lemmings (`species in {Lemming}`) while above 100, floors
+  that keep every population above 0. The seed is twenty tokens, four to a
+  habitat. Left alone, the net fires nineteen times — two migrations from
+  `Forest`, one from `Tundra`, three settlings, three spreads, five and
+  five declines, in that order under `FirstDeclared` — and stops. No engine
+  change: the keyed edges of this slice already did all of it.
 
 **Pattern notes.** The game's pattern P2
 (`Cyberpunk2020-Simulation/docs/world-net-design.md` §8.1, "select by
@@ -1564,6 +1653,27 @@ drivers::run_indefinitely(&mut net, mode, tick: Duration, stop: &AtomicBool, on_
 - `OnFailure::Disable` switches off an inner transition where it is, found
   by the failure's `path`; its `Toggled` is lifted like any inner event.
 
+**Done, slice 21** (the deep policy, §6.6; 2026-10-12):
+
+- `Mode::Sequential` is `step_deep` in a loop, in `run` and
+  `run_indefinitely`, so it follows the net's policy as it stands; the loop
+  did not change.
+- `Mode::Concurrent` takes the cycle as `step_deep` does, a launch sweep
+  being the outer net's turn. Under `OuterFirst` nothing changed: one inline
+  inner firing when a sweep launches nothing and nothing is airborne. Under
+  `Interleaved` each time round the loop is one turn: an inline firing in
+  the first inner net whose turn comes before the outer net's in the round,
+  else the sweep (which, when it launches anything, makes the outer net the
+  cursor), else an inline firing in an inner net whose turn comes after.
+  Inner turns are taken whether or not outer bodies are airborne, and after
+  one the loop takes whatever has landed without waiting and goes round
+  again. `run_indefinitely` takes one such turn a tick. So an outer net
+  that can always launch does not starve its inner nets here either. The
+  two halves of the round are `Net::round` and `Net::inner_turn`, inside
+  the crate.
+- The fuse blames what the round would try next: `first_fireable_deep`
+  follows the policy.
+
 ## 14. Crate layout
 
 Cargo workspace, edition 2024, MSRV = current stable minus two (must be
@@ -1595,7 +1705,9 @@ protocol's conformance net `wildlife`, split the same way
 (`examples/wildlife.rs` for the proposal's questions and their answers as
 tests, `examples/wildlife/net.rs` for the net) and needing `serde` for the
 same reason: its species are JSON and its `season` is a wire parameter.
-Since slice 19 its `Migrate` is a keyed edge (§8.3).
+Since slice 19 its `Migrate` is a keyed edge (§8.3), and since its second
+edition (2026-10-13, §8.3) every transition but `Settle` is, and a plain
+run ends after nineteen firings.
 
 **Done, slice 12.**
 
@@ -1879,6 +1991,19 @@ Slices, each with tests, in order:
     still do. The outer `progress` counts inner firings under their paths,
     as Python's does. The core gained `Net::query_ids` and
     `Snapshot::query_ids`; `tests/slice20.rs`.
+21. Engine policies and the protocol's wording gaps (§6.1, §6.6, §13,
+    §19.3.13), 2026-10-12, decisions A and B of the phase, shared with the
+    Python track: `TieBreak::RoundRobin` with its cursor and `Net::choose`;
+    `DeepPolicy::{OuterFirst, Interleaved}`, set with
+    `NetBuilder::deep_policy` and `Net::set_deep_policy`, read with
+    `Net::deep_policy`, with its own cursor, and `Net::step_deep_staged`
+    with `StagedStep` for a driver that fires in stages; `step_deep` and both
+    drivers honour it. Defaults unchanged, neither cursor saved. The runner:
+    `inject` into an inner net answers with its address (A2), `null` counts
+    as absent for every optional field (A5), an inner net that an outer
+    firing produces has its fireable set taken at the landing (A7), and
+    `step` and a running net follow the loaded net's policies;
+    `tests/slice21.rs`.
 
 **2026-10-10: the `transit` example runs its own journey** (no slice: an
 example, a conformance net and a transcript changed, the crates' API did not).
@@ -1961,7 +2086,7 @@ The decisions that shape it, all of 2026-10-03:
 | a token's `nets` (§12.2) | `net.nested(place, token)`: each net's name, `id()`, its path, `template()`, and the sum of its places' counts |
 | `nested` notification (§12.4) | `Event::Nested`, unwrapped to the event the innermost net logged: one wrapper with the full path, the inner notification built with that net's names and version |
 | inner `marking_version` (§12.3) | the runner's counter per inner net, one per state notification of that net; the outer one does not move |
-| `step` or a running net, inside (§12.3) | `select()`; when it picks nothing, `step_inside()`, inline: `nested` around `fired` |
+| `step` or a running net, inside (§12.3) | `step_deep_staged()` → `StagedStep::Inside`, inline: `nested` around `fired` (slice 21; `select()` and then `step_inside()` before) |
 | `topology.places[].key_names`, a token's `keys` (§13.1) | `TopologyPlace::key_names`, written only when non-empty; `Net::keys`, read when the line is written (slice 20, §19.3.12) |
 | a `produced` entry's fifth element (§7.1) | `protocol::Produced`: three elements, or five with `null` for the colour Rust never has when the place declares keys |
 | a request's filter (§13.2) | `protocol::Filter::parse`, then place names resolved to the named net's ids: a `Filter` with `Clause::{In, IsParam}` |
@@ -1976,8 +2101,8 @@ The decisions that shape it, all of 2026-10-03:
 | `generation` | the runner's counter of loads and resets; a rebuilt `Net` numbers its tokens from the start again, which is why the protocol has generations at all |
 | state notifications | `Event` variants, ids resolved to names through the read API, produced tokens labelled with `label()`; `ParamChanged { type_name }` reported under the parameter's wire name from `serializable_param` when it has one |
 | `fireable` notification | the runner compares `net.fireable()` after each batch of events |
-| `step`, `start` | `select()`, `launch`, the body on a thread of its own, `distribute`; one firing at a time, so `Launched` then `Distributed` |
-| `inject {place, token}` | `apply_json` of `JsonCommand::Extend` with one token; the new id is read off the `Added` event. Needs a `serializable` place, else `not_serializable` |
+| `step`, `start` | `step_deep_staged()` → `StagedStep::Chosen(t)` in the net's deep policy's turn (slice 21; `select()` before), `launch`, the body on a thread of its own, `distribute`; one firing at a time, so `Launched` then `Distributed` |
+| `inject {place, token}` | `apply_json` of `JsonCommand::Extend` with one token; the new id is read off the `Added` event. Needs a `serializable` place, else `not_serializable`. Into an inner net through `nested_scope` at each level, answered with that net's version, `path` and `nested_id` (slice 21) |
 | `enable`, `disable` | `net.enable(t)`, `net.disable(t)` (`Toggled`) |
 | `set_param {param, value}` | `JsonCommand::SetParam`; `transition` ignored; `invalid_params` for a name the net has no parameter under (slice 17; `unsupported` before), `unsupported` for a parameter with no wire name |
 | `get_token {id}` | `net.json()` gives `kind: "json"`; otherwise `debug()` gives `kind: "text"`, untruncated |
@@ -2027,7 +2152,7 @@ a wire format they do not own. `Snapshot` stays unserialisable; tokens are
 
 ### 19.3 The `petritype-runner` crate
 
-**Designed and built 2026-10-03**; as-built notes in §19.3.10, nested nets in §19.3.11, keys in §19.3.12. A library crate in this
+**Designed and built 2026-10-03**; as-built notes in §19.3.10, nested nets in §19.3.11, keys in §19.3.12, the protocol's wording gaps and the engine policies in §19.3.13. A library crate in this
 workspace plus an example binary. A net's bodies are the user's code, so the
 binary is always the user's own: it lists its nets and hands over to the
 crate. Dependencies: `petritype` with `serde`, `serde`, `serde_json`, and
@@ -2176,7 +2301,7 @@ and omitted if the closure panicked.
 #### 19.3.5 The firing cycle
 
 ```
-step / start tick:   select() -> launch(t)
+step / start tick:   select() -> launch(t)          (since slice 21: step_deep_staged(), §19.3.13)
    detachable:       Launched written; Outgoing::Launch(firing); in_flight set
    inline (MutateEdge): launch already ran the body; distribute at once; Fired written
 Input::Completed:    distribute(done) -> Distributed or Failed written;
@@ -2424,7 +2549,9 @@ runner change.
   rules; only the wire is reordered.
 - **Inner firings are inline.** `step` asks the outer selector
   (`select()`) and, when it picks nothing, makes the first inner firing in
-  `step_deep`'s order with `Net::step_inside()` (§6.6), inline: the inner
+  `step_deep`'s order with `Net::step_inside()` (§6.6; since slice 21 both
+  through `Net::step_deep_staged`, in the net's deep policy's order,
+  §19.3.13), inline: the inner
   net logs `Fired`, and the wire says `nested` around `fired`, one of the
   two shapes §12.4 allows; a harness folds the other into it. The `step`
   result is `{fired: true, transition, path, nested_id, marking_version:
@@ -2457,7 +2584,7 @@ runner change.
   progress, plus `path`, `nested_id` and `template`; `get_place_tokens` and
   `get_token` echo `path` and `nested_id`. `inject` into an inner net
   answers with that net's version and no address, as the shared transcript
-  has it. While a body is airborne, a read whose address does not resolve
+  has it (until 2026-10-12: now with `path` and `nested_id` too, §19.3.13). While a body is airborne, a read whose address does not resolve
   waits for the landing (the net may be inside the token the body took) and
   is answered then, or `unknown_net`; every other inner net is read at
   once. Inner bodies run inline on the owner thread, so nothing is read
@@ -2597,7 +2724,9 @@ unchanged, both from the Python repository and from a verbatim copy in
   lines now include `hidden`, `added` and `removed`, the forms its mutations
   take under a filter. `06_keys_query_filter.json` has Python's `Spread
   Savanna Reef` as `launched`, `hidden {kind: "mutated"}`, `distributed`;
-  this runner's inline firing tells `hidden`, `fired`.
+  this runner's inline firing tells `hidden`, `fired`. (Since the net's
+  second edition, §8.3, the transcript shows the same of `Decline Forest`,
+  and a keyed mutate with its produced copy in `Spread Savanna Wetland`.)
 - **Read in PROTOCOL.md, where it is silent or loose** (for its next
   revision): `failed.consumed` is projected like `launched.consumed` here,
   so a hidden token's id is never told, where §13.4 names only `launched`,
@@ -2608,7 +2737,92 @@ unchanged, both from the Python repository and from a verbatim copy in
   as in Python, where §13.2 says nothing; `query {filter: null}` reads as no
   filter here (Python answers `invalid_params`); and a `mutated` inside an
   inner net whose token a body holds cannot be checked against the filter,
-  so it keeps the token's view as it was.
+  so it keeps the token's view as it was. (2026-10-12: the phase's
+  decisions for PROTOCOL.md's next revision settle the first and the
+  fourth as this runner had them, A6 and A5; §19.3.13.)
+
+#### 19.3.13 The protocol's wording gaps and the engine policies, 2026-10-12
+
+Slice 21: the runner's half of the phase's decisions, A (eight wording gaps
+in PROTOCOL.md, which the Python track writes into its next revision, cited
+here by the sections they amend) and B (the engine policies, §6.1 and
+§6.6), in the same words as the Python runner.
+
+- **A2, `inject` into an inner net answers with its address** (§12.3,
+  §12.5): `{status, id, marking_version, path, nested_id}`, the version the
+  inner net's, as every result about an inner net carries `path` and
+  `nested_id`. The path is the one the address resolved to, whichever of
+  the two the request gave.
+- **A3, `step` is outer-only** (§12.3): it was already refused with
+  `invalid_params`, as `enable`, `disable`, `set_param`, `start`, `stop`
+  and `reset` are (§19.3.11); a test now sends it a `path` as well as a
+  `nested_id`.
+- **A4, an undeclared `set_param` name is `invalid_params`** (§6.4): so
+  since slice 17, and tested.
+- **A5, `null` for an optional request field counts as absence** (§2,
+  §13.3), except `inject.token` and `set_param.value`, which are values
+  and may be `null`: one helper, `optional`, reads every optional field (`path`,
+  `nested_id`, `filter`, `token_limit`, `offset`, `limit`, `after`,
+  `places`, and `load`'s `net` and `params`), so `query {filter: null}` is
+  `query {}`, the connection's filter if it set one, and `step {path:
+  null}` is a `step`, where the outer-only check used to see the key and
+  refuse it. A required field is read directly: `inject`'s `token: null`
+  is a token for a place whose type takes it, and `set_param`'s `value:
+  null` a value, which `transit`'s `destination` takes. A request's
+  `params: null` is `{}` in `Owner` as it already was off the wire. Tests
+  for `query`, `get_state` and the rest.
+- **A6, `failed.consumed` is projected like `launched.consumed`** (§13.4:
+  "`launched.consumed`, `failed.consumed`, `distributed.produced` and
+  `fired`'s lists hold only matching tokens (a `failed` lists what its
+  `launched` listed)"): so since slice 20, and tested (§19.3.12).
+- **A7, when an inner net's baseline fireable set is taken** (§7.2,
+  §12.3: at `load` for seeded inner nets, at the `inject` that carried the
+  token, at the landing of the outer firing that produced the token, and
+  `reset` and `load` retake them): at `load`, `reset` and an `inject` it
+  already was; at the landing of the outer firing that produced its token
+  it was not. A net a body
+  built arrived through its lifted events, its record made with an empty
+  set, and its first `fireable` announced the baseline. `land`, and the
+  report of an inner firing, now call `Loaded::know_new` before the flush,
+  so the set is taken there, silently; the test's `hatchery` has a body
+  build a truck and its bin. No transcript has such a firing.
+- **A8, a parameter value decodes by its declared type** (§6.4, §11):
+  `set_param` goes through the decoder registered for the wire name
+  (§19.3.12), so `transit`'s `Destination(Option<Location>)` takes a
+  station or `null` in either order and refuses a number; a test sends
+  both orders.
+- **The policies are honoured** (B1, B2). `step` and a running net step
+  through `Net::step_deep_staged`: `StagedStep::Chosen(t)` is the outer
+  net's turn, launched in stages as before, and `StagedStep::Inside` an
+  inner firing made inline and reported as before. Under the default
+  policy that is exactly `select()` and then `step_inside()`, which is why
+  the transcripts replay; under `Interleaved` the outer net's staged
+  launch takes its turn in the cycle. The choice is taken as `Net::choose`
+  takes it, so a round-robin net alternates over the wire too (through
+  `select()` it would have chosen the same transition every time). A reset
+  rebuilds the net, so both cursors start afresh, as a load does (Python's
+  owner calls `forget_cursors()`). PROTOCOL.md §12.3's words are quoted in
+  §6.6: the policy is the runtime's own, and nothing on the wire changes.
+  Tests: `rivals` (round
+  robin) and `carousel` (an always-live `Spin` and a worker, the policy a
+  load parameter) stepped and run under each policy, and a reset.
+- **`transit` takes `destination` as a load parameter.** A8's consequence
+  on the Python side, pinned by the shared transcript: the Python factory took
+  `destination: str | None = None` as a keyword for A8, so its `describe`
+  lists it, and `05_nested_nets.json`, recorded again for A2 (its inject of
+  `Hal` into the bus's cabin answers with the address now), pins
+  `describe` in full (§11). The example binary's `transit` entry declares
+  `destination` (`Option<Location>`, default `null`), a typed entry whose
+  factory builds the city with it as the net parameter's value
+  (`build_city_with`), so a number is `invalid_params` at `load` as at
+  `set_param`.
+- **Transcripts.** The re-recorded `05_nested_nets.json` replays here
+  unchanged, and replaces the verbatim copy in `tests/protocol/`; our own 01
+  lists `transit`'s new parameter; 02 to 04 and 06 are untouched, and every
+  one replays. Against the sibling checkout's shared set the old 05 fails
+  on exactly those two lines (`describe` and the inner inject) until the
+  Python track's re-recorded file lands there; the set with the new 05
+  (`PETRITYPE_PROTOCOL_TRANSCRIPTS`) replays in full.
 
 ### 19.4 Who spawns it
 

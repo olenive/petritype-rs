@@ -259,8 +259,12 @@
 //!   [`NetBuilder::place_nested`] the place that holds such tokens (DESIGN
 //!   §6.6). [`Net::nested`] reads a token's inner nets, [`Net::step_deep`]
 //!   fires the net and then, when it has nothing to fire, its inner nets,
-//!   with a [`DeepStep`] saying where, and [`Net::is_quiescent_deep`] asks
-//!   whether anything can happen at any depth.
+//!   with a [`DeepStep`] saying where (or, under the [`DeepPolicy`]
+//!   `Interleaved`, the net and its inner nets in turn),
+//!   [`Net::step_deep_staged`] is the same step for a driver that fires the
+//!   net's own transitions in stages ([`StagedStep`]), and
+//!   [`Net::is_quiescent_deep`] asks whether anything can happen at any
+//!   depth.
 //!   [`NetBuilder::passive`] leaves a place's inner nets to the outer bodies
 //!   that reach into them, and [`Net::nested_scope`] is that reach for a
 //!   caller that is not a body. Whatever an inner net logs comes out in the
@@ -281,10 +285,11 @@
 //! - [`TransitionBuilder::guard`] and [`TransitionBuilder::priority`] decide
 //!   what is fireable and which of the fireable ones the default
 //!   [`Selector`] picks, with ties going by the net's [`TieBreak`] (first
-//!   declared, or last declared for flow order);
+//!   declared, last declared for flow order, or round robin for turns);
 //!   [`Net::set_selector`] replaces that choice,
 //!   [`Net::clear_selector`] puts it back, [`Net::select`] reports it
-//!   without firing, and [`Net::enable`] /
+//!   without firing, [`Net::choose`] takes it for a firing made in stages,
+//!   and [`Net::enable`] /
 //!   [`Net::disable`] switch a transition off and on.
 //! - [`NetBuilder::assert_acyclic`] and
 //!   [`NetBuilder::assert_no_source_transitions`] are the two opt-in checks
@@ -378,7 +383,7 @@ pub use ids::{NetId, PlaceId, PlaceRef, TokenId, TransitionId};
 pub use keys::{Clause, Filter, KeyValue, Keys, Match};
 #[cfg(feature = "serde")]
 pub use marking::Marking;
-pub use nested::{DeepStep, Nested};
+pub use nested::{DeepPolicy, DeepStep, Nested, StagedStep};
 pub use net::{Net, PlaceInfo};
 pub use param::Param;
 pub use routing::{Either, RoutedOutput};

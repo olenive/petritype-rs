@@ -18,7 +18,14 @@
         "name": "transit",
         "description": "Vehicles board, carry and alight passengers",
         "mode": "manual",
-        "params": []
+        "params": [
+         {
+          "name": "destination",
+          "type_name": "<label>",
+          "required": false,
+          "default": null
+         }
+        ]
        }
       ]
      }
@@ -1292,20 +1299,6 @@
    },
    "expect": [
     {
-     "method": "launched",
-     "params": {
-      "transition": "Board Depot",
-      "consumed": [
-       [
-        "Platform@Depot",
-        "<id:ada>"
-       ]
-      ],
-      "marking_version": "<version>",
-      "running": false
-     }
-    },
-    {
      "method": "nested",
      "params": {
       "path": "<path>",
@@ -1335,9 +1328,15 @@
      }
     },
     {
-     "method": "distributed",
+     "method": "fired",
      "params": {
       "transition": "Board Depot",
+      "consumed": [
+       [
+        "Platform@Depot",
+        "<id:ada>"
+       ]
+      ],
       "produced": [],
       "duration_ms": "<ms>",
       "marking_version": "<version>",
@@ -1380,20 +1379,6 @@
    },
    "expect": [
     {
-     "method": "launched",
-     "params": {
-      "transition": "Board Depot",
-      "consumed": [
-       [
-        "Platform@Depot",
-        "<id:bram>"
-       ]
-      ],
-      "marking_version": "<version>",
-      "running": false
-     }
-    },
-    {
      "method": "nested",
      "params": {
       "path": "<path>",
@@ -1423,9 +1408,15 @@
      }
     },
     {
-     "method": "distributed",
+     "method": "fired",
      "params": {
       "transition": "Board Depot",
+      "consumed": [
+       [
+        "Platform@Depot",
+        "<id:bram>"
+       ]
+      ],
       "produced": [],
       "duration_ms": "<ms>",
       "marking_version": "<version>",
@@ -1448,20 +1439,6 @@
     "method": "step"
    },
    "expect": [
-    {
-     "method": "launched",
-     "params": {
-      "transition": "Board Depot",
-      "consumed": [
-       [
-        "Platform@Depot",
-        "<id:cato>"
-       ]
-      ],
-      "marking_version": "<version>",
-      "running": false
-     }
-    },
     {
      "method": "nested",
      "params": {
@@ -1492,9 +1469,15 @@
      }
     },
     {
-     "method": "distributed",
+     "method": "fired",
      "params": {
       "transition": "Board Depot",
+      "consumed": [
+       [
+        "Platform@Depot",
+        "<id:cato>"
+       ]
+      ],
       "produced": [],
       "duration_ms": "<ms>",
       "marking_version": "<version>",
@@ -1528,20 +1511,6 @@
    },
    "expect": [
     {
-     "method": "launched",
-     "params": {
-      "transition": "Board Harbour",
-      "consumed": [
-       [
-        "Platform@Harbour",
-        "<id:finn>"
-       ]
-      ],
-      "marking_version": "<version>",
-      "running": false
-     }
-    },
-    {
      "method": "nested",
      "params": {
       "path": "<path>",
@@ -1571,9 +1540,15 @@
      }
     },
     {
-     "method": "distributed",
+     "method": "fired",
      "params": {
       "transition": "Board Harbour",
+      "consumed": [
+       [
+        "Platform@Harbour",
+        "<id:finn>"
+       ]
+      ],
       "produced": [],
       "duration_ms": "<ms>",
       "marking_version": "<version>",
@@ -1616,20 +1591,6 @@
    },
    "expect": [
     {
-     "method": "launched",
-     "params": {
-      "transition": "Board Harbour",
-      "consumed": [
-       [
-        "Platform@Harbour",
-        "<id:gwen>"
-       ]
-      ],
-      "marking_version": "<version>",
-      "running": false
-     }
-    },
-    {
      "method": "nested",
      "params": {
       "path": "<path>",
@@ -1659,9 +1620,15 @@
      }
     },
     {
-     "method": "distributed",
+     "method": "fired",
      "params": {
       "transition": "Board Harbour",
+      "consumed": [
+       [
+        "Platform@Harbour",
+        "<id:gwen>"
+       ]
+      ],
       "produced": [],
       "duration_ms": "<ms>",
       "marking_version": "<version>",
@@ -2011,20 +1978,6 @@
    },
    "expect": [
     {
-     "method": "launched",
-     "params": {
-      "transition": "Depart Depot",
-      "consumed": [
-       [
-        "Depot",
-        "<id:bus>"
-       ]
-      ],
-      "marking_version": "<version>",
-      "running": false
-     }
-    },
-    {
      "method": "nested",
      "params": {
       "path": "<path>",
@@ -2042,9 +1995,15 @@
      }
     },
     {
-     "method": "distributed",
+     "method": "fired",
      "params": {
       "transition": "Depart Depot",
+      "consumed": [
+       [
+        "Depot",
+        "<id:bus>"
+       ]
+      ],
       "produced": [
        [
         "In Transit",
@@ -2389,20 +2348,6 @@
    },
    "expect": [
     {
-     "method": "launched",
-     "params": {
-      "transition": "Arrive",
-      "consumed": [
-       [
-        "In Transit",
-        "<id:bus_in_transit>"
-       ]
-      ],
-      "marking_version": "<version>",
-      "running": false
-     }
-    },
-    {
      "method": "nested",
      "params": {
       "path": "<path>",
@@ -2476,9 +2421,15 @@
      }
     },
     {
-     "method": "distributed",
+     "method": "fired",
      "params": {
       "transition": "Arrive",
+      "consumed": [
+       [
+        "In Transit",
+        "<id:bus_in_transit>"
+       ]
+      ],
       "produced": [
        [
         "Central",
@@ -2691,15 +2642,6 @@
    },
    "expect": [
     {
-     "method": "launched",
-     "params": {
-      "transition": "Alight Central",
-      "consumed": [],
-      "marking_version": "<version>",
-      "running": false
-     }
-    },
-    {
      "method": "nested",
      "params": {
       "path": "<path>",
@@ -2728,9 +2670,10 @@
      }
     },
     {
-     "method": "distributed",
+     "method": "fired",
      "params": {
       "transition": "Alight Central",
+      "consumed": [],
       "produced": [
        [
         "Arrived",
@@ -2846,15 +2789,6 @@
    },
    "expect": [
     {
-     "method": "launched",
-     "params": {
-      "transition": "Alight Central",
-      "consumed": [],
-      "marking_version": "<version>",
-      "running": false
-     }
-    },
-    {
      "method": "nested",
      "params": {
       "path": "<path>",
@@ -2883,9 +2817,10 @@
      }
     },
     {
-     "method": "distributed",
+     "method": "fired",
      "params": {
       "transition": "Alight Central",
+      "consumed": [],
       "produced": [
        [
         "Arrived",
@@ -2999,15 +2934,6 @@
    },
    "expect": [
     {
-     "method": "launched",
-     "params": {
-      "transition": "Alight Central",
-      "consumed": [],
-      "marking_version": "<version>",
-      "running": false
-     }
-    },
-    {
      "method": "nested",
      "params": {
       "path": "<path>",
@@ -3036,9 +2962,10 @@
      }
     },
     {
-     "method": "distributed",
+     "method": "fired",
      "params": {
       "transition": "Alight Central",
+      "consumed": [],
       "produced": [
        [
         "Arrived",
@@ -3167,20 +3094,6 @@
    },
    "expect": [
     {
-     "method": "launched",
-     "params": {
-      "transition": "Board Central",
-      "consumed": [
-       [
-        "Platform@Central",
-        "<id:dara>"
-       ]
-      ],
-      "marking_version": "<version>",
-      "running": false
-     }
-    },
-    {
      "method": "nested",
      "params": {
       "path": "<path>",
@@ -3210,9 +3123,15 @@
      }
     },
     {
-     "method": "distributed",
+     "method": "fired",
      "params": {
       "transition": "Board Central",
+      "consumed": [
+       [
+        "Platform@Central",
+        "<id:dara>"
+       ]
+      ],
       "produced": [],
       "duration_ms": "<ms>",
       "marking_version": "<version>",
@@ -3255,20 +3174,6 @@
    },
    "expect": [
     {
-     "method": "launched",
-     "params": {
-      "transition": "Board Central",
-      "consumed": [
-       [
-        "Platform@Central",
-        "<id:eve>"
-       ]
-      ],
-      "marking_version": "<version>",
-      "running": false
-     }
-    },
-    {
      "method": "nested",
      "params": {
       "path": "<path>",
@@ -3298,9 +3203,15 @@
      }
     },
     {
-     "method": "distributed",
+     "method": "fired",
      "params": {
       "transition": "Board Central",
+      "consumed": [
+       [
+        "Platform@Central",
+        "<id:eve>"
+       ]
+      ],
       "produced": [],
       "duration_ms": "<ms>",
       "marking_version": "<version>",
@@ -4016,20 +3927,6 @@
    },
    "expect": [
     {
-     "method": "launched",
-     "params": {
-      "transition": "Depart Central",
-      "consumed": [
-       [
-        "Central",
-        "<id:bus_central>"
-       ]
-      ],
-      "marking_version": "<version>",
-      "running": false
-     }
-    },
-    {
      "method": "nested",
      "params": {
       "path": "<path>",
@@ -4047,9 +3944,15 @@
      }
     },
     {
-     "method": "distributed",
+     "method": "fired",
      "params": {
       "transition": "Depart Central",
+      "consumed": [
+       [
+        "Central",
+        "<id:bus_central>"
+       ]
+      ],
       "produced": [
        [
         "In Transit",
@@ -4088,20 +3991,6 @@
     "method": "step"
    },
    "expect": [
-    {
-     "method": "launched",
-     "params": {
-      "transition": "Arrive",
-      "consumed": [
-       [
-        "In Transit",
-        "<id:bus_in_transit_2>"
-       ]
-      ],
-      "marking_version": "<version>",
-      "running": false
-     }
-    },
     {
      "method": "nested",
      "params": {
@@ -4176,9 +4065,15 @@
      }
     },
     {
-     "method": "distributed",
+     "method": "fired",
      "params": {
       "transition": "Arrive",
+      "consumed": [
+       [
+        "In Transit",
+        "<id:bus_in_transit_2>"
+       ]
+      ],
       "produced": [
        [
         "Harbour",
@@ -4649,20 +4544,6 @@
    },
    "expect": [
     {
-     "method": "launched",
-     "params": {
-      "transition": "Depart Harbour",
-      "consumed": [
-       [
-        "Harbour",
-        "<id:ferry>"
-       ]
-      ],
-      "marking_version": "<version>",
-      "running": false
-     }
-    },
-    {
      "method": "nested",
      "params": {
       "path": "<path>",
@@ -4680,9 +4561,15 @@
      }
     },
     {
-     "method": "distributed",
+     "method": "fired",
      "params": {
       "transition": "Depart Harbour",
+      "consumed": [
+       [
+        "Harbour",
+        "<id:ferry>"
+       ]
+      ],
       "produced": [
        [
         "In Transit",
@@ -4721,20 +4608,6 @@
     "method": "step"
    },
    "expect": [
-    {
-     "method": "launched",
-     "params": {
-      "transition": "Arrive",
-      "consumed": [
-       [
-        "In Transit",
-        "<id:ferry_in_transit>"
-       ]
-      ],
-      "marking_version": "<version>",
-      "running": false
-     }
-    },
     {
      "method": "nested",
      "params": {
@@ -4846,9 +4719,15 @@
      }
     },
     {
-     "method": "distributed",
+     "method": "fired",
      "params": {
       "transition": "Arrive",
+      "consumed": [
+       [
+        "In Transit",
+        "<id:ferry_in_transit>"
+       ]
+      ],
       "produced": [
        [
         "Airport",
@@ -4964,15 +4843,6 @@
    },
    "expect": [
     {
-     "method": "launched",
-     "params": {
-      "transition": "Alight Harbour",
-      "consumed": [],
-      "marking_version": "<version>",
-      "running": false
-     }
-    },
-    {
      "method": "nested",
      "params": {
       "path": "<path>",
@@ -5001,9 +4871,10 @@
      }
     },
     {
-     "method": "distributed",
+     "method": "fired",
      "params": {
       "transition": "Alight Harbour",
+      "consumed": [],
       "produced": [
        [
         "Arrived",
@@ -5117,15 +4988,6 @@
    },
    "expect": [
     {
-     "method": "launched",
-     "params": {
-      "transition": "Alight Harbour",
-      "consumed": [],
-      "marking_version": "<version>",
-      "running": false
-     }
-    },
-    {
      "method": "nested",
      "params": {
       "path": "<path>",
@@ -5154,9 +5016,10 @@
      }
     },
     {
-     "method": "distributed",
+     "method": "fired",
      "params": {
       "transition": "Alight Harbour",
+      "consumed": [],
       "produced": [
        [
         "Arrived",
@@ -5351,20 +5214,6 @@
    },
    "expect": [
     {
-     "method": "launched",
-     "params": {
-      "transition": "Depart Harbour",
-      "consumed": [
-       [
-        "Harbour",
-        "<id:bus_harbour>"
-       ]
-      ],
-      "marking_version": "<version>",
-      "running": false
-     }
-    },
-    {
      "method": "nested",
      "params": {
       "path": "<path>",
@@ -5382,9 +5231,15 @@
      }
     },
     {
-     "method": "distributed",
+     "method": "fired",
      "params": {
       "transition": "Depart Harbour",
+      "consumed": [
+       [
+        "Harbour",
+        "<id:bus_harbour>"
+       ]
+      ],
       "produced": [
        [
         "In Transit",
@@ -5423,20 +5278,6 @@
     "method": "step"
    },
    "expect": [
-    {
-     "method": "launched",
-     "params": {
-      "transition": "Arrive",
-      "consumed": [
-       [
-        "In Transit",
-        "<id:bus_in_transit_3>"
-       ]
-      ],
-      "marking_version": "<version>",
-      "running": false
-     }
-    },
     {
      "method": "nested",
      "params": {
@@ -5511,9 +5352,15 @@
      }
     },
     {
-     "method": "distributed",
+     "method": "fired",
      "params": {
       "transition": "Arrive",
+      "consumed": [
+       [
+        "In Transit",
+        "<id:bus_in_transit_3>"
+       ]
+      ],
       "produced": [
        [
         "Airport",
@@ -5629,15 +5476,6 @@
    },
    "expect": [
     {
-     "method": "launched",
-     "params": {
-      "transition": "Alight Airport",
-      "consumed": [],
-      "marking_version": "<version>",
-      "running": false
-     }
-    },
-    {
      "method": "nested",
      "params": {
       "path": "<path>",
@@ -5666,9 +5504,10 @@
      }
     },
     {
-     "method": "distributed",
+     "method": "fired",
      "params": {
       "transition": "Alight Airport",
+      "consumed": [],
       "produced": [
        [
         "Arrived",
@@ -5782,15 +5621,6 @@
    },
    "expect": [
     {
-     "method": "launched",
-     "params": {
-      "transition": "Alight Airport",
-      "consumed": [],
-      "marking_version": "<version>",
-      "running": false
-     }
-    },
-    {
      "method": "nested",
      "params": {
       "path": "<path>",
@@ -5819,9 +5649,10 @@
      }
     },
     {
-     "method": "distributed",
+     "method": "fired",
      "params": {
       "transition": "Alight Airport",
+      "consumed": [],
       "produced": [
        [
         "Arrived",
@@ -5974,7 +5805,9 @@
      "result": {
       "status": "injected",
       "id": "<id:bus_hal>",
-      "marking_version": "<version>"
+      "marking_version": "<version>",
+      "path": "<path>",
+      "nested_id": "<id:bus_cabin>"
      }
     }
    ]
@@ -6313,20 +6146,6 @@
    },
    "expect": [
     {
-     "method": "launched",
-     "params": {
-      "transition": "Depart Depot",
-      "consumed": [
-       [
-        "Depot",
-        "<id:shuttle>"
-       ]
-      ],
-      "marking_version": "<version>",
-      "running": false
-     }
-    },
-    {
      "method": "nested",
      "params": {
       "path": "<path>",
@@ -6344,9 +6163,15 @@
      }
     },
     {
-     "method": "distributed",
+     "method": "fired",
      "params": {
       "transition": "Depart Depot",
+      "consumed": [
+       [
+        "Depot",
+        "<id:shuttle>"
+       ]
+      ],
       "produced": [
        [
         "In Transit",
@@ -6444,20 +6269,6 @@
    },
    "expect": [
     {
-     "method": "launched",
-     "params": {
-      "transition": "Arrive",
-      "consumed": [
-       [
-        "In Transit",
-        "<id:shuttle_in_transit>"
-       ]
-      ],
-      "marking_version": "<version>",
-      "running": false
-     }
-    },
-    {
      "method": "nested",
      "params": {
       "path": "<path>",
@@ -6531,9 +6342,15 @@
      }
     },
     {
-     "method": "distributed",
+     "method": "fired",
      "params": {
       "transition": "Arrive",
+      "consumed": [
+       [
+        "In Transit",
+        "<id:shuttle_in_transit>"
+       ]
+      ],
       "produced": [
        [
         "Airport",

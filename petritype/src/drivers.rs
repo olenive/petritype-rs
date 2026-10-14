@@ -72,6 +72,13 @@
 //! guarantee of the inner nets is therefore the sequential one, but only the
 //! sequential driver promises an order for the whole run.
 //!
+//! Both drivers honour the net's [`DeepPolicy`]. Under
+//! [`Interleaved`](DeepPolicy::Interleaved) the concurrent driver takes the
+//! cycle as `step_deep` does, a launch sweep being the outer net's turn: one
+//! inline inner firing for each inner net's turn, in the order of the round,
+//! made whether or not outer bodies are airborne, so an outer net that can
+//! always launch does not starve its inner nets here either.
+//!
 //! # Limits: pacing and the fuse
 //!
 //! [`Limits`] holds two caps, and both count **launches** — attempts,
@@ -152,6 +159,7 @@
 //! is returned stays the first one). `net.in_flight()` is empty whenever one
 //! of these functions returns.
 
+use std::ops::Range;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::thread;
@@ -160,7 +168,7 @@ use std::time::{Duration, Instant};
 use crate::error::{FiringFailed, NetError};
 use crate::firing::Completed;
 use crate::ids::{PlaceId, TokenId, TransitionId};
-use crate::nested::DeepStep;
+use crate::nested::{DeepPolicy, DeepStep};
 use crate::net::Net;
 
 /// Why a blocking `recv` cannot fail here: the driver holds a sender of its
@@ -184,7 +192,8 @@ pub enum Mode {
     /// detachable body on its own thread inside a
     /// [`std::thread::scope`]. The selector is not consulted and completion
     /// order is wall-clock order. Inner nets are stepped inline, one firing
-    /// at a time, whenever a sweep finds nothing to launch.
+    /// at a time, whenever a sweep finds nothing to launch — or, under
+    /// [`DeepPolicy::Interleaved`], in their turns between the sweeps.
     Concurrent,
 }
 
@@ -575,15 +584,33 @@ fn run_concurrent(
         let (tx, rx) = mpsc::channel::<Completed>();
         let mut airborne: usize = 0;
         let mut capped = false;
-        let mut fuse: Option<(u64, TransitionId)> = None;
+        let mut fuse: Option<(u64, TransitionId, String)> = None;
         let mut first_failure: Option<FiringFailed> = None;
 
         loop {
+            let interleaved = net.deep_policy() == DeepPolicy::Interleaved;
+            let (ahead, behind) = net.round();
             let mut launched_this_sweep = 0_usize;
+            // An inner net took its turn this time round, inline.
+            let mut inner_turn = false;
             if tally.capped(limits) {
                 capped = true;
             }
+            // Under `Interleaved`, the inner nets whose turn comes before the
+            // outer net's in this round.
             if !capped && fuse.is_none() && first_failure.is_none() {
+                inner_turn = inner_step(
+                    net,
+                    ahead,
+                    limits,
+                    on_failure,
+                    tally,
+                    &mut fuse,
+                    &mut first_failure,
+                );
+            }
+            // The outer net's turn: one launch sweep.
+            if !inner_turn && !capped && fuse.is_none() && first_failure.is_none() {
                 for transition in net.fireable() {
                     if tally.capped(limits) {
                         capped = true;
@@ -592,7 +619,7 @@ fn run_concurrent(
                     if let Some(limit) = limits.error_after_n_firings
                         && tally.launched >= limit
                     {
-                        fuse = Some((limit, transition));
+                        fuse = Some((limit, transition, net.transition_name(transition)));
                         break;
                     }
                     let firing = match net.launch(transition) {
@@ -623,6 +650,35 @@ fn run_concurrent(
                         }
                     }
                 }
+                if launched_this_sweep > 0 {
+                    net.deep_cursor = Some(net.id());
+                }
+            }
+            // The inner nets whose turn comes after the outer net's: every
+            // one of them under `OuterFirst`, and only once nothing out here
+            // is airborne, since a guard out here may read the marking in
+            // there; under `Interleaved` the rest of the round, airborne
+            // bodies or not.
+            if !inner_turn
+                && launched_this_sweep == 0
+                && (interleaved || airborne == 0)
+                && !capped
+                && fuse.is_none()
+                && first_failure.is_none()
+            {
+                inner_turn = inner_step(
+                    net,
+                    behind,
+                    limits,
+                    on_failure,
+                    tally,
+                    &mut fuse,
+                    &mut first_failure,
+                );
+                if !inner_turn && airborne == 0 && fuse.is_none() && first_failure.is_none() {
+                    // Every net had its turn, and none had a firing.
+                    return Ok(tally.summary(net, true));
+                }
             }
 
             if capped || fuse.is_some() || first_failure.is_some() {
@@ -634,42 +690,17 @@ fn run_concurrent(
                 break;
             }
             if airborne == 0 {
-                if launched_this_sweep == 0 {
-                    // The outer net has nothing to launch: one inner firing,
-                    // inline and in `step_deep`'s order, then sweep again,
-                    // since a guard out here may read the marking in there.
-                    if let Some(limit) = limits.error_after_n_firings
-                        && tally.launched >= limit
-                        && let Some((transition, name)) = net.first_fireable_deep()
-                    {
-                        return Err(DriverError::TooManyFirings {
-                            limit,
-                            transition,
-                            name,
-                            summary: tally.summary(net, false),
-                        });
-                    }
-                    match net.step_inside() {
-                        Ok(Some(step)) => tally.landed(&step),
-                        Ok(None) => return Ok(tally.summary(net, true)),
-                        Err(error) => {
-                            tally.launched += 1;
-                            tally.failed += 1;
-                            match on_failure {
-                                OnFailure::Stop => {
-                                    return Err(DriverError::FiringFailed {
-                                        summary: tally.summary(net, false),
-                                        error,
-                                    });
-                                }
-                                OnFailure::Disable => disable(net, &error),
-                                OnFailure::Continue => {}
-                            }
-                        }
-                    }
-                }
                 // Inline firings only, and they moved the marking: sweep
                 // again before calling the net quiescent.
+                continue;
+            }
+            if inner_turn {
+                // An inner net fired while bodies are airborne: take what has
+                // landed meanwhile, and go round again without waiting.
+                while let Ok(done) = rx.try_recv() {
+                    airborne -= 1;
+                    absorb(net, done, on_failure, tally, &mut first_failure);
+                }
                 continue;
             }
 
@@ -683,11 +714,11 @@ fn run_concurrent(
             }
         }
 
-        if let Some((limit, transition)) = fuse {
+        if let Some((limit, transition, name)) = fuse {
             return Err(DriverError::TooManyFirings {
                 limit,
                 transition,
-                name: net.transition_name(transition),
+                name,
                 summary: tally.summary(net, false),
             });
         }
@@ -767,8 +798,30 @@ where
             if stop.load(Ordering::Relaxed) {
                 break;
             }
+            let interleaved = net.deep_policy() == DeepPolicy::Interleaved;
+            let (ahead, behind) = net.round();
+            // One turn a tick: under `Interleaved`, an inner net's whose turn
+            // comes before the outer net's, if one has a firing; else the
+            // outer net's sweep; else an inner net's after it.
+            let inner_turn = inner_step(
+                net,
+                ahead,
+                Limits::default(),
+                on_failure,
+                tally,
+                &mut None,
+                &mut first_failure,
+            );
+            if first_failure.is_some() {
+                break;
+            }
             let mut launched_this_sweep = 0_usize;
-            for transition in net.fireable() {
+            let sweep = if inner_turn {
+                Vec::new()
+            } else {
+                net.fireable()
+            };
+            for transition in sweep {
                 if stop.load(Ordering::Relaxed) {
                     break;
                 }
@@ -795,22 +848,26 @@ where
             if first_failure.is_some() {
                 break;
             }
-            // Nothing out here to launch and nothing airborne: one inner
-            // firing this tick, inline, in `step_deep`'s order.
-            if launched_this_sweep == 0 && airborne == 0 && !stop.load(Ordering::Relaxed) {
-                match net.step_inside() {
-                    Ok(Some(step)) => tally.landed(&step),
-                    Ok(None) => {}
-                    Err(error) => {
-                        tally.launched += 1;
-                        tally.failed += 1;
-                        match on_failure {
-                            OnFailure::Stop => first_failure = Some(error),
-                            OnFailure::Disable => disable(net, &error),
-                            OnFailure::Continue => {}
-                        }
-                    }
-                }
+            if launched_this_sweep > 0 {
+                net.deep_cursor = Some(net.id());
+            }
+            // Nothing out here to launch and nothing airborne (or, under
+            // `Interleaved`, airborne bodies or not): one inner firing this
+            // tick, inline, in the round's order.
+            if !inner_turn
+                && launched_this_sweep == 0
+                && (interleaved || airborne == 0)
+                && !stop.load(Ordering::Relaxed)
+            {
+                inner_step(
+                    net,
+                    behind,
+                    Limits::default(),
+                    on_failure,
+                    tally,
+                    &mut None,
+                    &mut first_failure,
+                );
                 if first_failure.is_some() {
                     break;
                 }
@@ -859,6 +916,57 @@ where
 /// [`fireable`](Net::fireable) can only ever fail as `NotFireable`.
 const LAUNCHABLE: &str =
     "a driver launches only what this net's own `fireable` just named, so it exists";
+
+/// One inner firing, inline, among the inner nets whose place in the round's
+/// walk is in `turns` ([`Net::round`]), for a concurrent loop: the fuse
+/// first, then the firing, counted, its failure handled as `on_failure`
+/// says ([`Stop`](OnFailure::Stop) keeps the first one in `first_failure`).
+///
+/// True when an inner net took its turn, firing or failing. False when
+/// `turns` is empty, when none of those nets had a firing, or when the fuse
+/// was spent and something anywhere is fireable, in which case `fuse` now
+/// says which, and nothing was attempted.
+fn inner_step(
+    net: &mut Net,
+    turns: Range<usize>,
+    limits: Limits,
+    on_failure: OnFailure,
+    tally: &mut Tally,
+    fuse: &mut Option<(u64, TransitionId, String)>,
+    first_failure: &mut Option<FiringFailed>,
+) -> bool {
+    if turns.is_empty() {
+        return false;
+    }
+    if let Some(limit) = limits.error_after_n_firings
+        && tally.launched >= limit
+        && let Some((transition, name)) = net.first_fireable_deep()
+    {
+        *fuse = Some((limit, transition, name));
+        return false;
+    }
+    match net.inner_turn(turns) {
+        Ok(Some(step)) => {
+            tally.landed(&step);
+            true
+        }
+        Ok(None) => false,
+        Err(error) => {
+            tally.launched += 1;
+            tally.failed += 1;
+            match on_failure {
+                OnFailure::Stop => {
+                    if first_failure.is_none() {
+                        *first_failure = Some(error);
+                    }
+                }
+                OnFailure::Disable => disable(net, &error),
+                OnFailure::Continue => {}
+            }
+            true
+        }
+    }
+}
 
 /// Stage three, with the failure policy applied: the one place a driver
 /// hands a [`Completed`] back to the net.

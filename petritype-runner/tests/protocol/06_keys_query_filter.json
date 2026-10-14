@@ -144,15 +144,23 @@
          "detail": "<any>"
         },
         {
+         "name": "Migrate Tundra Wetland",
+         "detail": "<any>"
+        },
+        {
          "name": "Settle",
          "detail": "<any>"
         },
         {
-         "name": "Spread Savanna Reef",
+         "name": "Spread Savanna Wetland",
          "detail": "<any>"
         },
         {
          "name": "Decline Forest",
+         "detail": "<any>"
+        },
+        {
+         "name": "Decline Tundra",
          "detail": "<any>"
         }
        ],
@@ -175,6 +183,22 @@
           }
          },
          {
+          "place": "Tundra",
+          "transition": "Migrate Tundra Wetland",
+          "direction": "in",
+          "kind": "take_where",
+          "filter": {
+           "clauses": [
+            {
+             "key": "class",
+             "values": [
+              "Bird"
+             ]
+            }
+           ]
+          }
+         },
+         {
           "place": "Migrating",
           "transition": "Settle",
           "direction": "in",
@@ -182,19 +206,60 @@
          },
          {
           "place": "Savanna",
-          "transition": "Spread Savanna Reef",
+          "transition": "Spread Savanna Wetland",
           "direction": "in",
-          "kind": "mutate"
+          "kind": "mutate_where",
+          "filter": {
+           "clauses": [
+            {
+             "key": "class",
+             "values": [
+              "Bird"
+             ]
+            }
+           ]
+          }
          },
          {
           "place": "Forest",
           "transition": "Decline Forest",
           "direction": "in",
-          "kind": "mutate"
+          "kind": "mutate_where",
+          "filter": {
+           "clauses": [
+            {
+             "key": "diet",
+             "values": [
+              "Herbivore"
+             ]
+            }
+           ]
+          }
+         },
+         {
+          "place": "Tundra",
+          "transition": "Decline Tundra",
+          "direction": "in",
+          "kind": "mutate_where",
+          "filter": {
+           "clauses": [
+            {
+             "key": "species",
+             "values": [
+              "Lemming"
+             ]
+            }
+           ]
+          }
          },
          {
           "place": "Migrating",
           "transition": "Migrate Forest Wetland",
+          "direction": "out"
+         },
+         {
+          "place": "Migrating",
+          "transition": "Migrate Tundra Wetland",
           "direction": "out"
          },
          {
@@ -223,8 +288,8 @@
           "direction": "out"
          },
          {
-          "place": "Reef",
-          "transition": "Spread Savanna Reef",
+          "place": "Wetland",
+          "transition": "Spread Savanna Wetland",
           "direction": "out"
          }
         ]
@@ -233,7 +298,13 @@
       "transitions": {
        "Migrate Forest Wetland": {
         "enabled": true,
-        "fireable": false,
+        "fireable": true,
+        "in_flight": false,
+        "priority": 0.0
+       },
+       "Migrate Tundra Wetland": {
+        "enabled": true,
+        "fireable": true,
         "in_flight": false,
         "priority": 0.0
        },
@@ -243,7 +314,7 @@
         "in_flight": false,
         "priority": 0.0
        },
-       "Spread Savanna Reef": {
+       "Spread Savanna Wetland": {
         "enabled": true,
         "fireable": true,
         "in_flight": false,
@@ -254,12 +325,18 @@
         "fireable": true,
         "in_flight": false,
         "priority": 0.0
+       },
+       "Decline Tundra": {
+        "enabled": true,
+        "fireable": true,
+        "in_flight": false,
+        "priority": 0.0
        }
       },
       "marking": {
        "places": {
         "Forest": {
-         "count": 2,
+         "count": 4,
          "tokens": [
           {
            "id": "<id:robin>",
@@ -278,14 +355,32 @@
             "class": "Mammal",
             "diet": "Omnivore"
            }
+          },
+          {
+           "id": "<id:deer>",
+           "label": "<label>",
+           "keys": {
+            "species": "Deer",
+            "class": "Mammal",
+            "diet": "Herbivore"
+           }
+          },
+          {
+           "id": "<id:woodpecker>",
+           "label": "<label>",
+           "keys": {
+            "species": "Woodpecker",
+            "class": "Bird",
+            "diet": "Insectivore"
+           }
           }
          ]
         },
         "Wetland": {
-         "count": 2,
+         "count": 4,
          "tokens": [
           {
-           "id": "<id>",
+           "id": "<id:robin_wetland>",
            "label": "<label>",
            "keys": {
             "species": "Robin",
@@ -294,21 +389,39 @@
            }
           },
           {
-           "id": "<id>",
+           "id": "<id:heron>",
            "label": "<label>",
            "keys": {
             "species": "Heron",
             "class": "Bird",
             "diet": "Carnivore"
            }
+          },
+          {
+           "id": "<id:pike>",
+           "label": "<label>",
+           "keys": {
+            "species": "Pike",
+            "class": "Fish",
+            "diet": "Carnivore"
+           }
+          },
+          {
+           "id": "<id:otter>",
+           "label": "<label>",
+           "keys": {
+            "species": "Otter",
+            "class": "Mammal",
+            "diet": "Carnivore"
+           }
           }
          ]
         },
         "Savanna": {
-         "count": 2,
+         "count": 4,
          "tokens": [
           {
-           "id": "<id>",
+           "id": "<id:zebra>",
            "label": "<label>",
            "keys": {
             "species": "Zebra",
@@ -317,35 +430,80 @@
            }
           },
           {
-           "id": "<id>",
+           "id": "<id:gecko>",
            "label": "<label>",
            "keys": {
             "species": "Gecko",
             "class": "Reptile",
             "diet": "Insectivore"
            }
+          },
+          {
+           "id": "<id:lion>",
+           "label": "<label>",
+           "keys": {
+            "species": "Lion",
+            "class": "Mammal",
+            "diet": "Carnivore"
+           }
+          },
+          {
+           "id": "<id:egret>",
+           "label": "<label>",
+           "keys": {
+            "species": "Egret",
+            "class": "Bird",
+            "diet": "Insectivore"
+           }
           }
          ]
         },
         "Reef": {
-         "count": 1,
+         "count": 4,
          "tokens": [
           {
-           "id": "<id>",
+           "id": "<id:clownfish>",
            "label": "<label>",
            "keys": {
             "species": "Clownfish",
             "class": "Fish",
             "diet": "Omnivore"
            }
+          },
+          {
+           "id": "<id:parrotfish>",
+           "label": "<label>",
+           "keys": {
+            "species": "Parrotfish",
+            "class": "Fish",
+            "diet": "Herbivore"
+           }
+          },
+          {
+           "id": "<id:reef_shark>",
+           "label": "<label>",
+           "keys": {
+            "species": "Reef Shark",
+            "class": "Fish",
+            "diet": "Carnivore"
+           }
+          },
+          {
+           "id": "<id:sea_turtle>",
+           "label": "<label>",
+           "keys": {
+            "species": "Sea Turtle",
+            "class": "Reptile",
+            "diet": "Herbivore"
+           }
           }
          ]
         },
         "Tundra": {
-         "count": 2,
+         "count": 4,
          "tokens": [
           {
-           "id": "<id>",
+           "id": "<id:fox_tundra>",
            "label": "<label>",
            "keys": {
             "species": "Fox",
@@ -354,12 +512,30 @@
            }
           },
           {
-           "id": "<id>",
+           "id": "<id:arctic_hare>",
            "label": "<label>",
            "keys": {
             "species": "Arctic Hare",
             "class": "Mammal",
             "diet": "Herbivore"
+           }
+          },
+          {
+           "id": "<id:lemming>",
+           "label": "<label>",
+           "keys": {
+            "species": "Lemming",
+            "class": "Mammal",
+            "diet": "Herbivore"
+           }
+          },
+          {
+           "id": "<id:snowy_owl>",
+           "label": "<label>",
+           "keys": {
+            "species": "Snowy Owl",
+            "class": "Bird",
+            "diet": "Carnivore"
            }
           }
          ]
@@ -425,7 +601,7 @@
        {
         "place": "Wetland",
         "token": {
-         "id": "<id>",
+         "id": "<id:robin_wetland>",
          "label": "<label>",
          "keys": {
           "species": "Robin",
@@ -467,7 +643,7 @@
      "id": "5",
      "result": {
       "marking_version": "<version>",
-      "count": 3,
+      "count": 6,
       "matches": [
        {
         "place": "Forest",
@@ -489,9 +665,28 @@
         }
        },
        {
+        "place": "Forest",
+        "token": {
+         "id": "<id:woodpecker>",
+         "label": "<label>",
+         "keys": {
+          "species": "Woodpecker",
+          "class": "Bird",
+          "diet": "Insectivore"
+         }
+        },
+        "json": {
+         "name": "Woodpecker",
+         "class": "Bird",
+         "diet": "Insectivore",
+         "population": 45,
+         "destination": null
+        }
+       },
+       {
         "place": "Wetland",
         "token": {
-         "id": "<id>",
+         "id": "<id:robin_wetland>",
          "label": "<label>",
          "keys": {
           "species": "Robin",
@@ -510,7 +705,7 @@
        {
         "place": "Wetland",
         "token": {
-         "id": "<id>",
+         "id": "<id:heron>",
          "label": "<label>",
          "keys": {
           "species": "Heron",
@@ -523,6 +718,44 @@
          "class": "Bird",
          "diet": "Carnivore",
          "population": 40,
+         "destination": null
+        }
+       },
+       {
+        "place": "Savanna",
+        "token": {
+         "id": "<id:egret>",
+         "label": "<label>",
+         "keys": {
+          "species": "Egret",
+          "class": "Bird",
+          "diet": "Insectivore"
+         }
+        },
+        "json": {
+         "name": "Egret",
+         "class": "Bird",
+         "diet": "Insectivore",
+         "population": 1500,
+         "destination": null
+        }
+       },
+       {
+        "place": "Tundra",
+        "token": {
+         "id": "<id:snowy_owl>",
+         "label": "<label>",
+         "keys": {
+          "species": "Snowy Owl",
+          "class": "Bird",
+          "diet": "Carnivore"
+         }
+        },
+        "json": {
+         "name": "Snowy Owl",
+         "class": "Bird",
+         "diet": "Carnivore",
+         "population": 15,
          "destination": null
         }
        }
@@ -554,7 +787,7 @@
      "id": "6",
      "result": {
       "marking_version": "<version>",
-      "count": 7,
+      "count": 14,
       "matches": [
        {
         "place": "Forest",
@@ -595,21 +828,21 @@
         }
        },
        {
-        "place": "Wetland",
+        "place": "Forest",
         "token": {
-         "id": "<id>",
+         "id": "<id:deer>",
          "label": "<label>",
          "keys": {
-          "species": "Robin",
-          "class": "Bird",
-          "diet": "Insectivore"
+          "species": "Deer",
+          "class": "Mammal",
+          "diet": "Herbivore"
          }
         },
         "json": {
-         "name": "Robin",
-         "class": "Bird",
-         "diet": "Insectivore",
-         "population": 80,
+         "name": "Deer",
+         "class": "Mammal",
+         "diet": "Herbivore",
+         "population": 300,
          "destination": null
         }
        }
@@ -645,7 +878,7 @@
      "id": "7",
      "result": {
       "marking_version": "<version>",
-      "count": 2,
+      "count": 4,
       "matches": [
        {
         "place": "Forest",
@@ -667,9 +900,28 @@
         }
        },
        {
+        "place": "Forest",
+        "token": {
+         "id": "<id:woodpecker>",
+         "label": "<label>",
+         "keys": {
+          "species": "Woodpecker",
+          "class": "Bird",
+          "diet": "Insectivore"
+         }
+        },
+        "json": {
+         "name": "Woodpecker",
+         "class": "Bird",
+         "diet": "Insectivore",
+         "population": 45,
+         "destination": null
+        }
+       },
+       {
         "place": "Wetland",
         "token": {
-         "id": "<id>",
+         "id": "<id:robin_wetland>",
          "label": "<label>",
          "keys": {
           "species": "Robin",
@@ -682,6 +934,25 @@
          "class": "Bird",
          "diet": "Insectivore",
          "population": 80,
+         "destination": null
+        }
+       },
+       {
+        "place": "Savanna",
+        "token": {
+         "id": "<id:egret>",
+         "label": "<label>",
+         "keys": {
+          "species": "Egret",
+          "class": "Bird",
+          "diet": "Insectivore"
+         }
+        },
+        "json": {
+         "name": "Egret",
+         "class": "Bird",
+         "diet": "Insectivore",
+         "population": 1500,
          "destination": null
         }
        }
@@ -715,7 +986,7 @@
      "id": "8",
      "result": {
       "marking_version": "<version>",
-      "count": 3,
+      "count": 5,
       "matches": [
        {
         "place": "Forest",
@@ -737,9 +1008,28 @@
         }
        },
        {
+        "place": "Forest",
+        "token": {
+         "id": "<id:deer>",
+         "label": "<label>",
+         "keys": {
+          "species": "Deer",
+          "class": "Mammal",
+          "diet": "Herbivore"
+         }
+        },
+        "json": {
+         "name": "Deer",
+         "class": "Mammal",
+         "diet": "Herbivore",
+         "population": 300,
+         "destination": null
+        }
+       },
+       {
         "place": "Tundra",
         "token": {
-         "id": "<id>",
+         "id": "<id:fox_tundra>",
          "label": "<label>",
          "keys": {
           "species": "Fox",
@@ -758,7 +1048,7 @@
        {
         "place": "Tundra",
         "token": {
-         "id": "<id>",
+         "id": "<id:arctic_hare>",
          "label": "<label>",
          "keys": {
           "species": "Arctic Hare",
@@ -771,6 +1061,25 @@
          "class": "Mammal",
          "diet": "Herbivore",
          "population": 90,
+         "destination": null
+        }
+       },
+       {
+        "place": "Tundra",
+        "token": {
+         "id": "<id:lemming>",
+         "label": "<label>",
+         "keys": {
+          "species": "Lemming",
+          "class": "Mammal",
+          "diet": "Herbivore"
+         }
+        },
+        "json": {
+         "name": "Lemming",
+         "class": "Mammal",
+         "diet": "Herbivore",
+         "population": 2000,
          "destination": null
         }
        }
@@ -795,8 +1104,8 @@
       "values": [
        "Bird",
        "Mammal",
-       "Reptile",
-       "Fish"
+       "Fish",
+       "Reptile"
       ]
      }
     }
@@ -820,7 +1129,8 @@
       "key": "diet",
       "values": [
        "Omnivore",
-       "Herbivore"
+       "Herbivore",
+       "Carnivore"
       ]
      }
     }
@@ -861,8 +1171,8 @@
     {
      "id": "12",
      "error": {
-      "code": "invalid_params",
-      "message": "<label>"
+      "message": "<label>",
+      "code": "invalid_params"
      }
     }
    ]
@@ -882,8 +1192,8 @@
     {
      "id": "13",
      "error": {
-      "code": "unknown_place",
-      "message": "<label>"
+      "message": "<label>",
+      "code": "unknown_place"
      }
     }
    ]
@@ -893,7 +1203,7 @@
     "method": "set_param",
     "params": {
      "param": "season",
-     "value": "Autumn"
+     "value": "Summer"
     }
    },
    "expect": [
@@ -909,9 +1219,9 @@
      "method": "fireable",
      "params": {
       "transitions": [
-       "Migrate Forest Wetland",
-       "Spread Savanna Reef",
-       "Decline Forest"
+       "Spread Savanna Wetland",
+       "Decline Forest",
+       "Decline Tundra"
       ],
       "marking_version": "<version>",
       "running": false
@@ -1036,15 +1346,23 @@
          "detail": "<any>"
         },
         {
+         "name": "Migrate Tundra Wetland",
+         "detail": "<any>"
+        },
+        {
          "name": "Settle",
          "detail": "<any>"
         },
         {
-         "name": "Spread Savanna Reef",
+         "name": "Spread Savanna Wetland",
          "detail": "<any>"
         },
         {
          "name": "Decline Forest",
+         "detail": "<any>"
+        },
+        {
+         "name": "Decline Tundra",
          "detail": "<any>"
         }
        ],
@@ -1067,6 +1385,22 @@
           }
          },
          {
+          "place": "Tundra",
+          "transition": "Migrate Tundra Wetland",
+          "direction": "in",
+          "kind": "take_where",
+          "filter": {
+           "clauses": [
+            {
+             "key": "class",
+             "values": [
+              "Bird"
+             ]
+            }
+           ]
+          }
+         },
+         {
           "place": "Migrating",
           "transition": "Settle",
           "direction": "in",
@@ -1074,19 +1408,60 @@
          },
          {
           "place": "Savanna",
-          "transition": "Spread Savanna Reef",
+          "transition": "Spread Savanna Wetland",
           "direction": "in",
-          "kind": "mutate"
+          "kind": "mutate_where",
+          "filter": {
+           "clauses": [
+            {
+             "key": "class",
+             "values": [
+              "Bird"
+             ]
+            }
+           ]
+          }
          },
          {
           "place": "Forest",
           "transition": "Decline Forest",
           "direction": "in",
-          "kind": "mutate"
+          "kind": "mutate_where",
+          "filter": {
+           "clauses": [
+            {
+             "key": "diet",
+             "values": [
+              "Herbivore"
+             ]
+            }
+           ]
+          }
+         },
+         {
+          "place": "Tundra",
+          "transition": "Decline Tundra",
+          "direction": "in",
+          "kind": "mutate_where",
+          "filter": {
+           "clauses": [
+            {
+             "key": "species",
+             "values": [
+              "Lemming"
+             ]
+            }
+           ]
+          }
          },
          {
           "place": "Migrating",
           "transition": "Migrate Forest Wetland",
+          "direction": "out"
+         },
+         {
+          "place": "Migrating",
+          "transition": "Migrate Tundra Wetland",
           "direction": "out"
          },
          {
@@ -1115,8 +1490,8 @@
           "direction": "out"
          },
          {
-          "place": "Reef",
-          "transition": "Spread Savanna Reef",
+          "place": "Wetland",
+          "transition": "Spread Savanna Wetland",
           "direction": "out"
          }
         ]
@@ -1125,7 +1500,13 @@
       "transitions": {
        "Migrate Forest Wetland": {
         "enabled": true,
-        "fireable": true,
+        "fireable": false,
+        "in_flight": false,
+        "priority": 0.0
+       },
+       "Migrate Tundra Wetland": {
+        "enabled": true,
+        "fireable": false,
         "in_flight": false,
         "priority": 0.0
        },
@@ -1135,7 +1516,7 @@
         "in_flight": false,
         "priority": 0.0
        },
-       "Spread Savanna Reef": {
+       "Spread Savanna Wetland": {
         "enabled": true,
         "fireable": true,
         "in_flight": false,
@@ -1146,13 +1527,19 @@
         "fireable": true,
         "in_flight": false,
         "priority": 0.0
+       },
+       "Decline Tundra": {
+        "enabled": true,
+        "fireable": true,
+        "in_flight": false,
+        "priority": 0.0
        }
       },
       "marking": {
        "places": {
         "Forest": {
-         "count": 2,
-         "matching": 1,
+         "count": 4,
+         "matching": 2,
          "tokens": [
           {
            "id": "<id:robin>",
@@ -1162,15 +1549,24 @@
             "class": "Bird",
             "diet": "Insectivore"
            }
+          },
+          {
+           "id": "<id:woodpecker>",
+           "label": "<label>",
+           "keys": {
+            "species": "Woodpecker",
+            "class": "Bird",
+            "diet": "Insectivore"
+           }
           }
          ]
         },
         "Wetland": {
-         "count": 2,
+         "count": 4,
          "matching": 2,
          "tokens": [
           {
-           "id": "<id>",
+           "id": "<id:robin_wetland>",
            "label": "<label>",
            "keys": {
             "species": "Robin",
@@ -1179,7 +1575,7 @@
            }
           },
           {
-           "id": "<id>",
+           "id": "<id:heron>",
            "label": "<label>",
            "keys": {
             "species": "Heron",
@@ -1190,19 +1586,39 @@
          ]
         },
         "Savanna": {
-         "count": 2,
-         "matching": 0,
-         "tokens": []
+         "count": 4,
+         "matching": 1,
+         "tokens": [
+          {
+           "id": "<id:egret>",
+           "label": "<label>",
+           "keys": {
+            "species": "Egret",
+            "class": "Bird",
+            "diet": "Insectivore"
+           }
+          }
+         ]
         },
         "Reef": {
-         "count": 1,
+         "count": 4,
          "matching": 0,
          "tokens": []
         },
         "Tundra": {
-         "count": 2,
-         "matching": 0,
-         "tokens": []
+         "count": 4,
+         "matching": 1,
+         "tokens": [
+          {
+           "id": "<id:snowy_owl>",
+           "label": "<label>",
+           "keys": {
+            "species": "Snowy Owl",
+            "class": "Bird",
+            "diet": "Carnivore"
+           }
+          }
+         ]
         },
         "Migrating": {
          "count": 0,
@@ -1235,13 +1651,13 @@
      "result": {
       "place": "Wetland",
       "marking_version": "<version>",
-      "count": 2,
+      "count": 4,
       "matching": 2,
       "offset": 0,
       "limit": 1,
       "tokens": [
        {
-        "id": "<id>",
+        "id": "<id:robin_wetland>",
         "label": "<label>",
         "keys": {
          "species": "Robin",
@@ -1270,13 +1686,13 @@
      "result": {
       "place": "Wetland",
       "marking_version": "<version>",
-      "count": 2,
+      "count": 4,
       "matching": 2,
       "offset": 1,
       "limit": 1,
       "tokens": [
        {
-        "id": "<id>",
+        "id": "<id:heron>",
         "label": "<label>",
         "keys": {
          "species": "Heron",
@@ -1301,8 +1717,8 @@
     {
      "id": "19",
      "error": {
-      "code": "unknown_token",
-      "message": "<label>"
+      "message": "<label>",
+      "code": "unknown_token"
      }
     }
    ]
@@ -1339,6 +1755,170 @@
    },
    "expect": [
     {
+     "method": "mutated",
+     "params": {
+      "place": "Savanna",
+      "id": "<id:egret>",
+      "label": "<label>",
+      "keys": {
+       "species": "Egret",
+       "class": "Bird",
+       "diet": "Insectivore"
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "fired",
+     "params": {
+      "transition": "Spread Savanna Wetland",
+      "consumed": [],
+      "produced": [
+       [
+        "Wetland",
+        "<id:egret_wetland>",
+        "<label>",
+        null,
+        {
+         "species": "Egret",
+         "class": "Bird",
+         "diet": "Insectivore"
+        }
+       ]
+      ],
+      "duration_ms": "<ms>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "21",
+     "result": {
+      "fired": true,
+      "transition": "Spread Savanna Wetland",
+      "marking_version": "<version>",
+      "running": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "set_param",
+    "params": {
+     "param": "spread_threshold",
+     "value": 1000
+    }
+   },
+   "expect": [
+    {
+     "method": "param_changed",
+     "params": {
+      "param": "spread_threshold",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "fireable",
+     "params": {
+      "transitions": [
+       "Decline Forest",
+       "Decline Tundra"
+      ],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "22",
+     "result": {
+      "marking_version": "<version>"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "step"
+   },
+   "expect": [
+    {
+     "method": "hidden",
+     "params": {
+      "kind": "mutated",
+      "place": "Forest",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "fired",
+     "params": {
+      "transition": "Decline Forest",
+      "consumed": [],
+      "produced": [],
+      "duration_ms": "<ms>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "23",
+     "result": {
+      "fired": true,
+      "transition": "Decline Forest",
+      "marking_version": "<version>",
+      "running": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "set_param",
+    "params": {
+     "param": "season",
+     "value": "Autumn"
+    }
+   },
+   "expect": [
+    {
+     "method": "param_changed",
+     "params": {
+      "param": "season",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "fireable",
+     "params": {
+      "transitions": [
+       "Migrate Forest Wetland",
+       "Migrate Tundra Wetland",
+       "Decline Forest",
+       "Decline Tundra"
+      ],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "24",
+     "result": {
+      "marking_version": "<version>"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "step"
+   },
+   "expect": [
+    {
      "method": "fired",
      "params": {
       "transition": "Migrate Forest Wetland",
@@ -1351,13 +1931,128 @@
       "produced": [
        [
         "Migrating",
-        "<id>",
+        "<id:robin_migrating>",
         "<label>",
         null,
         {
          "species": "Robin",
          "class": "Bird",
          "diet": "Insectivore"
+        }
+       ]
+      ],
+      "duration_ms": "<ms>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "fireable",
+     "params": {
+      "transitions": [
+       "Migrate Forest Wetland",
+       "Migrate Tundra Wetland",
+       "Settle",
+       "Decline Forest",
+       "Decline Tundra"
+      ],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "25",
+     "result": {
+      "fired": true,
+      "transition": "Migrate Forest Wetland",
+      "marking_version": "<version>",
+      "running": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "step"
+   },
+   "expect": [
+    {
+     "method": "fired",
+     "params": {
+      "transition": "Migrate Forest Wetland",
+      "consumed": [
+       [
+        "Forest",
+        "<id:woodpecker>"
+       ]
+      ],
+      "produced": [
+       [
+        "Migrating",
+        "<id:woodpecker_migrating>",
+        "<label>",
+        null,
+        {
+         "species": "Woodpecker",
+         "class": "Bird",
+         "diet": "Insectivore"
+        }
+       ]
+      ],
+      "duration_ms": "<ms>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "fireable",
+     "params": {
+      "transitions": [
+       "Migrate Tundra Wetland",
+       "Settle",
+       "Decline Forest",
+       "Decline Tundra"
+      ],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "26",
+     "result": {
+      "fired": true,
+      "transition": "Migrate Forest Wetland",
+      "marking_version": "<version>",
+      "running": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "step"
+   },
+   "expect": [
+    {
+     "method": "fired",
+     "params": {
+      "transition": "Migrate Tundra Wetland",
+      "consumed": [
+       [
+        "Tundra",
+        "<id:snowy_owl>"
+       ]
+      ],
+      "produced": [
+       [
+        "Migrating",
+        "<id:snowy_owl_migrating>",
+        "<label>",
+        null,
+        {
+         "species": "Snowy Owl",
+         "class": "Bird",
+         "diet": "Carnivore"
         }
        ]
       ],
@@ -1371,18 +2066,18 @@
      "params": {
       "transitions": [
        "Settle",
-       "Spread Savanna Reef",
-       "Decline Forest"
+       "Decline Forest",
+       "Decline Tundra"
       ],
       "marking_version": "<version>",
       "running": false
      }
     },
     {
-     "id": "21",
+     "id": "27",
      "result": {
       "fired": true,
-      "transition": "Migrate Forest Wetland",
+      "transition": "Migrate Tundra Wetland",
       "marking_version": "<version>",
       "running": false
      }
@@ -1401,13 +2096,13 @@
       "consumed": [
        [
         "Migrating",
-        "<id>"
+        "<id:robin_migrating>"
        ]
       ],
       "produced": [
        [
         "Wetland",
-        "<id>",
+        "<id:robin_wetland_2>",
         "<label>",
         null,
         {
@@ -1423,65 +2118,10 @@
      }
     },
     {
-     "method": "fireable",
-     "params": {
-      "transitions": [
-       "Spread Savanna Reef",
-       "Decline Forest"
-      ],
-      "marking_version": "<version>",
-      "running": false
-     }
-    },
-    {
-     "id": "22",
+     "id": "28",
      "result": {
       "fired": true,
       "transition": "Settle",
-      "marking_version": "<version>",
-      "running": false
-     }
-    }
-   ]
-  },
-  {
-   "send": {
-    "method": "step"
-   },
-   "expect": [
-    {
-     "method": "launched",
-     "params": {
-      "transition": "Spread Savanna Reef",
-      "consumed": [],
-      "marking_version": "<version>",
-      "running": false
-     }
-    },
-    {
-     "method": "hidden",
-     "params": {
-      "kind": "mutated",
-      "place": "Savanna",
-      "marking_version": "<version>",
-      "running": false
-     }
-    },
-    {
-     "method": "distributed",
-     "params": {
-      "transition": "Spread Savanna Reef",
-      "produced": [],
-      "duration_ms": "<ms>",
-      "marking_version": "<version>",
-      "running": false
-     }
-    },
-    {
-     "id": "23",
-     "result": {
-      "fired": true,
-      "transition": "Spread Savanna Reef",
       "marking_version": "<version>",
       "running": false
      }
@@ -1512,10 +2152,10 @@
      }
     },
     {
-     "id": "24",
+     "id": "29",
      "result": {
       "status": "injected",
-      "id": "<id>",
+      "id": "<id:token>",
       "marking_version": "<version>"
      }
     }
@@ -1539,7 +2179,7 @@
      "method": "added",
      "params": {
       "place": "Forest",
-      "id": "<id>",
+      "id": "<id:owl>",
       "label": "<label>",
       "keys": {
        "species": "Owl",
@@ -1555,18 +2195,19 @@
      "params": {
       "transitions": [
        "Migrate Forest Wetland",
-       "Spread Savanna Reef",
-       "Decline Forest"
+       "Settle",
+       "Decline Forest",
+       "Decline Tundra"
       ],
       "marking_version": "<version>",
       "running": false
      }
     },
     {
-     "id": "25",
+     "id": "30",
      "result": {
       "status": "injected",
-      "id": "<id>",
+      "id": "<id:owl>",
       "marking_version": "<version>"
      }
     }
@@ -1578,15 +2219,15 @@
    },
    "expect": [
     {
-     "id": "26",
+     "id": "31",
      "result": {
       "marking_version": "<version>",
-      "count": 4,
+      "count": 8,
       "matches": [
        {
         "place": "Forest",
         "token": {
-         "id": "<id>",
+         "id": "<id:owl>",
          "label": "<label>",
          "keys": {
           "species": "Owl",
@@ -1605,7 +2246,7 @@
        {
         "place": "Wetland",
         "token": {
-         "id": "<id>",
+         "id": "<id:robin_wetland>",
          "label": "<label>",
          "keys": {
           "species": "Robin",
@@ -1624,7 +2265,7 @@
        {
         "place": "Wetland",
         "token": {
-         "id": "<id>",
+         "id": "<id:heron>",
          "label": "<label>",
          "keys": {
           "species": "Heron",
@@ -1643,7 +2284,26 @@
        {
         "place": "Wetland",
         "token": {
-         "id": "<id>",
+         "id": "<id:egret_wetland>",
+         "label": "<label>",
+         "keys": {
+          "species": "Egret",
+          "class": "Bird",
+          "diet": "Insectivore"
+         }
+        },
+        "json": {
+         "name": "Egret",
+         "class": "Bird",
+         "diet": "Insectivore",
+         "population": 750,
+         "destination": null
+        }
+       },
+       {
+        "place": "Wetland",
+        "token": {
+         "id": "<id:robin_wetland_2>",
          "label": "<label>",
          "keys": {
           "species": "Robin",
@@ -1657,6 +2317,63 @@
          "diet": "Insectivore",
          "population": 120,
          "destination": null
+        }
+       },
+       {
+        "place": "Savanna",
+        "token": {
+         "id": "<id:egret>",
+         "label": "<label>",
+         "keys": {
+          "species": "Egret",
+          "class": "Bird",
+          "diet": "Insectivore"
+         }
+        },
+        "json": {
+         "name": "Egret",
+         "class": "Bird",
+         "diet": "Insectivore",
+         "population": 750,
+         "destination": null
+        }
+       },
+       {
+        "place": "Migrating",
+        "token": {
+         "id": "<id:woodpecker_migrating>",
+         "label": "<label>",
+         "keys": {
+          "species": "Woodpecker",
+          "class": "Bird",
+          "diet": "Insectivore"
+         }
+        },
+        "json": {
+         "name": "Woodpecker",
+         "class": "Bird",
+         "diet": "Insectivore",
+         "population": 45,
+         "destination": "Wetland"
+        }
+       },
+       {
+        "place": "Migrating",
+        "token": {
+         "id": "<id:snowy_owl_migrating>",
+         "label": "<label>",
+         "keys": {
+          "species": "Snowy Owl",
+          "class": "Bird",
+          "diet": "Carnivore"
+         }
+        },
+        "json": {
+         "name": "Snowy Owl",
+         "class": "Bird",
+         "diet": "Carnivore",
+         "population": 15,
+         "destination": "Wetland"
         }
        }
       ]
@@ -1682,15 +2399,15 @@
    },
    "expect": [
     {
-     "id": "27",
+     "id": "32",
      "result": {
       "marking_version": "<version>",
-      "count": 2,
+      "count": 1,
       "matches": [
        {
         "place": "Savanna",
         "token": {
-         "id": "<id>",
+         "id": "<id:zebra>",
          "label": "<label>",
          "keys": {
           "species": "Zebra",
@@ -1702,26 +2419,7 @@
          "name": "Zebra",
          "class": "Mammal",
          "diet": "Herbivore",
-         "population": 2500,
-         "destination": null
-        }
-       },
-       {
-        "place": "Reef",
-        "token": {
-         "id": "<id>",
-         "label": "<label>",
-         "keys": {
-          "species": "Zebra",
-          "class": "Mammal",
-          "diet": "Herbivore"
-         }
-        },
-        "json": {
-         "name": "Zebra",
-         "class": "Mammal",
-         "diet": "Herbivore",
-         "population": 2500,
+         "population": 5000,
          "destination": null
         }
        }
@@ -1736,7 +2434,7 @@
    },
    "expect": [
     {
-     "id": "28",
+     "id": "33",
      "result": {
       "marking_version": "<version>"
      }
@@ -1752,7 +2450,7 @@
    },
    "expect": [
     {
-     "id": "29",
+     "id": "34",
      "result": {
       "protocol_version": 1,
       "runtime": "<label>",
@@ -1829,15 +2527,23 @@
          "detail": "<any>"
         },
         {
+         "name": "Migrate Tundra Wetland",
+         "detail": "<any>"
+        },
+        {
          "name": "Settle",
          "detail": "<any>"
         },
         {
-         "name": "Spread Savanna Reef",
+         "name": "Spread Savanna Wetland",
          "detail": "<any>"
         },
         {
          "name": "Decline Forest",
+         "detail": "<any>"
+        },
+        {
+         "name": "Decline Tundra",
          "detail": "<any>"
         }
        ],
@@ -1860,6 +2566,22 @@
           }
          },
          {
+          "place": "Tundra",
+          "transition": "Migrate Tundra Wetland",
+          "direction": "in",
+          "kind": "take_where",
+          "filter": {
+           "clauses": [
+            {
+             "key": "class",
+             "values": [
+              "Bird"
+             ]
+            }
+           ]
+          }
+         },
+         {
           "place": "Migrating",
           "transition": "Settle",
           "direction": "in",
@@ -1867,19 +2589,60 @@
          },
          {
           "place": "Savanna",
-          "transition": "Spread Savanna Reef",
+          "transition": "Spread Savanna Wetland",
           "direction": "in",
-          "kind": "mutate"
+          "kind": "mutate_where",
+          "filter": {
+           "clauses": [
+            {
+             "key": "class",
+             "values": [
+              "Bird"
+             ]
+            }
+           ]
+          }
          },
          {
           "place": "Forest",
           "transition": "Decline Forest",
           "direction": "in",
-          "kind": "mutate"
+          "kind": "mutate_where",
+          "filter": {
+           "clauses": [
+            {
+             "key": "diet",
+             "values": [
+              "Herbivore"
+             ]
+            }
+           ]
+          }
+         },
+         {
+          "place": "Tundra",
+          "transition": "Decline Tundra",
+          "direction": "in",
+          "kind": "mutate_where",
+          "filter": {
+           "clauses": [
+            {
+             "key": "species",
+             "values": [
+              "Lemming"
+             ]
+            }
+           ]
+          }
          },
          {
           "place": "Migrating",
           "transition": "Migrate Forest Wetland",
+          "direction": "out"
+         },
+         {
+          "place": "Migrating",
+          "transition": "Migrate Tundra Wetland",
           "direction": "out"
          },
          {
@@ -1908,8 +2671,8 @@
           "direction": "out"
          },
          {
-          "place": "Reef",
-          "transition": "Spread Savanna Reef",
+          "place": "Wetland",
+          "transition": "Spread Savanna Wetland",
           "direction": "out"
          }
         ]
@@ -1922,19 +2685,31 @@
         "in_flight": false,
         "priority": 0.0
        },
-       "Settle": {
+       "Migrate Tundra Wetland": {
         "enabled": true,
         "fireable": false,
         "in_flight": false,
         "priority": 0.0
        },
-       "Spread Savanna Reef": {
+       "Settle": {
         "enabled": true,
         "fireable": true,
         "in_flight": false,
         "priority": 0.0
        },
+       "Spread Savanna Wetland": {
+        "enabled": true,
+        "fireable": false,
+        "in_flight": false,
+        "priority": 0.0
+       },
        "Decline Forest": {
+        "enabled": true,
+        "fireable": true,
+        "in_flight": false,
+        "priority": 0.0
+       },
+       "Decline Tundra": {
         "enabled": true,
         "fireable": true,
         "in_flight": false,
@@ -1944,7 +2719,7 @@
       "marking": {
        "places": {
         "Forest": {
-         "count": 3,
+         "count": 4,
          "tokens": [
           {
            "id": "<id:fox>",
@@ -1958,10 +2733,10 @@
          ]
         },
         "Wetland": {
-         "count": 3,
+         "count": 6,
          "tokens": [
           {
-           "id": "<id>",
+           "id": "<id:robin_wetland>",
            "label": "<label>",
            "keys": {
             "species": "Robin",
@@ -1972,10 +2747,10 @@
          ]
         },
         "Savanna": {
-         "count": 2,
+         "count": 4,
          "tokens": [
           {
-           "id": "<id>",
+           "id": "<id:zebra>",
            "label": "<label>",
            "keys": {
             "species": "Zebra",
@@ -1986,10 +2761,10 @@
          ]
         },
         "Reef": {
-         "count": 2,
+         "count": 4,
          "tokens": [
           {
-           "id": "<id>",
+           "id": "<id:clownfish>",
            "label": "<label>",
            "keys": {
             "species": "Clownfish",
@@ -2000,10 +2775,10 @@
          ]
         },
         "Tundra": {
-         "count": 2,
+         "count": 3,
          "tokens": [
           {
-           "id": "<id>",
+           "id": "<id:fox_tundra>",
            "label": "<label>",
            "keys": {
             "species": "Fox",
@@ -2014,18 +2789,30 @@
          ]
         },
         "Migrating": {
-         "count": 0,
-         "tokens": []
+         "count": 2,
+         "tokens": [
+          {
+           "id": "<id:woodpecker_migrating>",
+           "label": "<label>",
+           "keys": {
+            "species": "Woodpecker",
+            "class": "Bird",
+            "diet": "Insectivore"
+           }
+          }
+         ]
         }
        }
       },
       "progress": {
-       "step_count": 3,
-       "last_fired": "Spread Savanna Reef",
+       "step_count": 6,
+       "last_fired": "Settle",
        "fired_counts": {
-        "Migrate Forest Wetland": 1,
-        "Settle": 1,
-        "Spread Savanna Reef": 1
+        "Spread Savanna Wetland": 1,
+        "Decline Forest": 1,
+        "Migrate Forest Wetland": 2,
+        "Migrate Tundra Wetland": 1,
+        "Settle": 1
        },
        "last_progress_at": "<time>"
       }
@@ -2045,13 +2832,13 @@
       "consumed": [
        [
         "Forest",
-        "<id>"
+        "<id:owl>"
        ]
       ],
       "produced": [
        [
         "Migrating",
-        "<id>",
+        "<id:owl_migrating>",
         "<label>",
         null,
         {
@@ -2071,15 +2858,15 @@
      "params": {
       "transitions": [
        "Settle",
-       "Spread Savanna Reef",
-       "Decline Forest"
+       "Decline Forest",
+       "Decline Tundra"
       ],
       "marking_version": "<version>",
       "running": false
      }
     },
     {
-     "id": "30",
+     "id": "35",
      "result": {
       "fired": true,
       "transition": "Migrate Forest Wetland",
@@ -2105,11 +2892,38 @@
    },
    "expect": [
     {
-     "id": "31",
+     "id": "36",
      "result": {
       "marking_version": "<version>",
       "count": 0,
       "matches": []
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "query",
+    "params": {
+     "filter": {
+      "clauses": [
+       {
+        "key": "class",
+        "values": [
+         "Bird"
+        ],
+        "param": "season"
+       }
+      ]
+     }
+    }
+   },
+   "expect": [
+    {
+     "id": "37",
+     "error": {
+      "message": "<label>",
+      "code": "invalid_params"
      }
     }
    ]

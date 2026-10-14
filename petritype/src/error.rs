@@ -30,14 +30,18 @@ pub enum BuildError {
         /// The name used more than once.
         name: String,
     },
-    /// A [`SnapshotEdge`](crate::SnapshotEdge) reads a place declared with
-    /// [`place_no_clone`](crate::NetBuilder::place_no_clone).
+    /// A [`SnapshotEdge`](crate::SnapshotEdge) or a
+    /// [`SurveyEdge`](crate::SurveyEdge) reads a place declared with
+    /// [`place_no_clone`](crate::NetBuilder::place_no_clone), or with
+    /// [`place_nested`](crate::NetBuilder::place_nested), which is such a
+    /// place.
     ///
-    /// A snapshot is a clone of the front token, and such a place recorded no
-    /// cloner. The token type may well be `Clone` — the place is what gave
-    /// the ability up — so this cannot be a compile error. Use a
-    /// [`TakeEdge`](crate::TakeEdge), or declare the place with
-    /// [`place`](crate::NetBuilder::place).
+    /// A snapshot is a clone of the front token, a survey a clone of every
+    /// token, and such a place recorded no cloner. The token type may well
+    /// be `Clone` — the place is what gave the ability up — so this cannot
+    /// be a compile error. Use a [`TakeEdge`](crate::TakeEdge) (a
+    /// [`DrainEdge`](crate::DrainEdge) for a survey), or declare the place
+    /// with [`place`](crate::NetBuilder::place).
     #[error("transition {transition:?} snapshots place {place:?}, which cannot clone its tokens")]
     SnapshotOfNoClonePlace {
         /// The transition whose edge it is.
@@ -112,12 +116,14 @@ pub enum BuildError {
     /// owns the tokens themselves and may have consumed or wrecked them by
     /// the time it fails; a place with no cloner has nothing to take. Only
     /// the consuming edges are affected — [`TakeEdge`](crate::TakeEdge),
-    /// [`TakeAllEdge`](crate::TakeAllEdge) and
-    /// [`TakeWhereEdge`](crate::TakeWhereEdge) — since a
-    /// [`MutateEdge`](crate::MutateEdge) takes nothing out of its place and
-    /// so has nothing to put back, and a
-    /// [`SnapshotEdge`](crate::SnapshotEdge) of such a place is already
-    /// refused by [`SnapshotOfNoClonePlace`](BuildError::SnapshotOfNoClonePlace).
+    /// [`TakeAllEdge`](crate::TakeAllEdge),
+    /// [`TakeWhereEdge`](crate::TakeWhereEdge) and
+    /// [`DrainEdge`](crate::DrainEdge), however empty its place is when the
+    /// net is built — since a [`MutateEdge`](crate::MutateEdge) takes nothing
+    /// out of its place and so has nothing to put back, and a
+    /// [`SnapshotEdge`](crate::SnapshotEdge) or a
+    /// [`SurveyEdge`](crate::SurveyEdge) of such a place is already refused
+    /// by [`SnapshotOfNoClonePlace`](BuildError::SnapshotOfNoClonePlace).
     /// Drop the flag, or declare the place with
     /// [`place`](crate::NetBuilder::place).
     #[error(
@@ -234,11 +240,14 @@ pub enum BuildError {
     /// Such a *source* transition takes no token out of any place when it
     /// fires — read edges do not count, since a
     /// [`SnapshotEdge`](crate::SnapshotEdge), a
-    /// [`MutateEdge`](crate::MutateEdge) and a
-    /// [`MutateWhereEdge`](crate::MutateWhereEdge) leave their places as
-    /// they found them, and a [`Param<T>`](crate::Param) is not a place at
-    /// all — so having fired changes nothing about whether it can fire
-    /// again, and the net never quiesces. Give it a
+    /// [`MutateEdge`](crate::MutateEdge), a
+    /// [`MutateWhereEdge`](crate::MutateWhereEdge) and a
+    /// [`SurveyEdge`](crate::SurveyEdge) leave their places as they found
+    /// them, and a [`Param<T>`](crate::Param) is not a place at all; nor
+    /// does a [`DrainEdge`](crate::DrainEdge), which takes every token there
+    /// is, possibly none, and so does not hold the transition back on an
+    /// empty place — so having fired changes nothing about whether it can
+    /// fire again, and the net never quiesces. Give it a
     /// [`TakeEdge`](crate::TakeEdge), a
     /// [`TakeAllEdge`](crate::TakeAllEdge) or a
     /// [`TakeWhereEdge`](crate::TakeWhereEdge), or drop the assertion:

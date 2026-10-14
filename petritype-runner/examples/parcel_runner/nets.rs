@@ -2,10 +2,11 @@
 //! that the transcript tests can load the very same registry without a
 //! process.
 //!
-//! Besides the parcel nets it carries the protocol's two other conformance
-//! nets, `transit` (PROTOCOL.md §11, §12) and `wildlife` (§11, §13): the
-//! core's own example nets, included from `petritype/examples/transit/net.rs`
-//! and `petritype/examples/wildlife/net.rs` as they are, not copied.
+//! Besides the parcel nets it carries the protocol's three other conformance
+//! nets, `transit` (PROTOCOL.md §11, §12), `wildlife` (§11, §13) and `shop`
+//! (§11, §5.1): the core's own example nets, included from
+//! `petritype/examples/transit/net.rs`, `petritype/examples/wildlife/net.rs`
+//! and `petritype/examples/shop/net.rs` as they are, not copied.
 
 use std::fmt;
 
@@ -278,6 +279,38 @@ pub fn wildlife_registry() -> Vec<NetEntry> {
     vec![wildlife_entry()]
 }
 
+/// The protocol's conformance net `shop` (PROTOCOL.md §11): orders priced
+/// with whatever promotions are running, through a survey edge, and every
+/// promotion ended at the close of the day, through a drain edge — the two
+/// input edges that accept an empty place, `"survey"` and `"drain"` on the
+/// wire (§5.1). The file is the core's example
+/// (`petritype/examples/shop/net.rs`), which depends on `petritype` only,
+/// for this.
+#[path = "../../../petritype/examples/shop/net.rs"]
+#[allow(dead_code)]
+pub mod shop_net;
+
+/// The shop as §11 seeds it: empty everywhere, every place one a host may
+/// `inject` a string into. No parameters of either kind.
+pub fn shop(_: &petritype_runner::Params) -> Result<Net, LoadError> {
+    shop_net::build_shop()
+        .map(|shop| shop.net)
+        .map_err(LoadError::from)
+}
+
+/// The `shop` entry, as PROTOCOL.md §11 names and describes it.
+fn shop_entry() -> NetEntry {
+    NetEntry::new("shop", shop)
+        .description("Price orders with whatever promotions are running, and end them at the close")
+        .hosting(Hosting::Manual)
+}
+
+/// The `shop` net alone, for the transcripts over it (PROTOCOL.md §11).
+#[allow(dead_code)]
+pub fn shop_registry() -> Vec<NetEntry> {
+    vec![shop_entry()]
+}
+
 /// The conformance net's entry, as PROTOCOL.md §11 names and describes it.
 fn conformance_entry() -> NetEntry {
     NetEntry::new("parcel-distribution", conformance::parcel_distribution)
@@ -306,5 +339,6 @@ pub fn registry() -> Vec<NetEntry> {
             .hosting(Hosting::Continuous),
         transit_entry(),
         wildlife_entry(),
+        shop_entry(),
     ]
 }

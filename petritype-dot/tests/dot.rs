@@ -11,8 +11,8 @@ use std::error::Error;
 use std::fmt;
 
 use petritype::{
-    Event, Filter, MutateEdge, MutateWhereEdge, Net, NetBuilder, Param, PlaceRef, SnapshotEdge,
-    TakeAllEdge, TakeEdge, TakeWhereEdge, TransitionId,
+    DrainEdge, Event, Filter, MutateEdge, MutateWhereEdge, Net, NetBuilder, Param, PlaceRef,
+    SnapshotEdge, SurveyEdge, TakeAllEdge, TakeEdge, TakeWhereEdge, TransitionId,
 };
 use petritype_dot::{Highlight, RankDir, Style, dot, dot_with};
 
@@ -352,6 +352,45 @@ fn every_edge_kind_has_its_own_attributes() {
     // One output needs no number: there is nothing to tell it apart from.
     let (single, _double) = chain();
     assert!(dot(&single).contains("  t0 -> p1 [color=black, penwidth=1];\n"));
+}
+
+/// The two edges an empty place satisfies are drawn as their all-at-once
+/// counterparts, `TakeAllEdge` and `SnapshotEdge`, with a hollow arrowhead,
+/// and both say `*`: every token, possibly none.
+#[test]
+fn drain_and_survey_edges_have_a_hollow_arrowhead() {
+    let mut b = NetBuilder::new();
+    let orders = b.place::<String>("Orders");
+    let promotions = b.place::<String>("Promotions");
+    let day_end = b.place::<String>("Day End");
+    let priced = b.place::<String>("Priced");
+    let expired = b.place::<String>("Expired");
+    b.transition(
+        "Price Order",
+        (TakeEdge(orders), SurveyEdge(promotions)),
+        (priced,),
+        |order: String, _: Vec<String>| (order,),
+    );
+    b.transition(
+        "Close Day",
+        (TakeEdge(day_end), DrainEdge(promotions)),
+        (expired,),
+        |_: String, running: Vec<String>| (running,),
+    );
+    let net = b.build().expect("the net builds");
+    let text = dot(&net);
+
+    assert!(
+        text.contains(
+            "  p1 -> t0 [style=dashed, color=dimgray, arrowhead=empty, penwidth=1, label=\"*\"];\n"
+        ),
+        "SurveyEdge reads every token, possibly none",
+    );
+    assert!(
+        text.contains("  p1 -> t1 [color=black, arrowhead=empty, penwidth=1, label=\"*\"];\n"),
+        "DrainEdge takes every token, possibly none",
+    );
+    assert!(text.contains("  p0 -> t0 [color=black, penwidth=1];\n"));
 }
 
 /// A keyed edge is drawn as its plain counterpart, labelled with its filter:

@@ -12,8 +12,10 @@
 //!   ignored however full its places are.
 //! - **fireable** is whether this transition could fire *right now*:
 //!   switched on, not in flight, every input place non-empty (holding a
-//!   token its filter accepts, for a keyed edge), guard (if any) saying yes.
-//!   That is [`Net::fireable`] and [`Net::is_fireable`].
+//!   token its filter accepts, for a keyed edge; anything at all, nothing
+//!   included, for a [`DrainEdge`](crate::DrainEdge) or a
+//!   [`SurveyEdge`](crate::SurveyEdge)), guard (if any) saying yes. That is
+//!   [`Net::fireable`] and [`Net::is_fireable`].
 //!
 //! Classical Petri net writing calls the second one "enabled" (and DESIGN §3
 //! still does); this crate needs the word for the switch, which is the one an
@@ -101,8 +103,9 @@ use crate::param::{ParamSlot, param_slot};
 use crate::place::{ErasedToken, PlaceMeta, PlaceSlot};
 use crate::transition::{ArgSource, TransitionSlot};
 
-/// Why an input place is never empty once stage one starts: being fireable
-/// is what was checked.
+/// Why an input place is never empty once stage one starts, for an edge
+/// that [requires presence](EdgeKind::requires_presence): being fireable is
+/// what was checked. A drain or a survey edge never asks.
 const NON_EMPTY: &str = "a fireable transition's input places all hold a token";
 
 /// Why a keyed edge finds its token once stage one starts: fireability asked
@@ -194,7 +197,11 @@ impl Net {
     ///   [`MutateWhereEdge`](crate::MutateWhereEdge)) needs a token its
     ///   filter accepts, asked of the key index, a
     ///   [`Clause::IsParam`](crate::Clause::IsParam) reading the parameter as
-    ///   it is now;
+    ///   it is now. The exceptions are the edges that do not
+    ///   [require presence](EdgeKind::requires_presence),
+    ///   [`DrainEdge`](crate::DrainEdge) and
+    ///   [`SurveyEdge`](crate::SurveyEdge), which read every token there
+    ///   is, zero or more, and are not asked at all;
     /// - its guard, if it has one, returns true. It is asked last, so a guard
     ///   on a keyed transition knows a token is there to be had.
     ///
@@ -278,7 +285,10 @@ impl Net {
                 .inputs
                 .iter()
                 .zip(&slot.filters)
-                .all(|(&(place, _), filter)| match filter {
+                .all(|(&(place, kind), filter)| match filter {
+                    // A drain or a survey takes whatever is there, nothing
+                    // included: its place cannot hold the transition back.
+                    _ if !kind.requires_presence() => true,
                     None => self.count(place) > 0,
                     Some(filter) => {
                         first_match(&self.places, &self.params, &self.index, place, filter)
@@ -1466,6 +1476,13 @@ struct Lent {
 /// place, as a [`TakeEdge`](crate::TakeEdge) takes the front, and every
 /// other token stays where it is.
 ///
+/// A [`DrainEdge`](crate::DrainEdge) takes every token as a
+/// [`TakeAllEdge`](crate::TakeAllEdge) does, which for an empty place is
+/// nothing: an empty argument, nothing in `consumed` or `restore`. A
+/// [`SurveyEdge`](crate::SurveyEdge) clones every token as a
+/// [`SnapshotEdge`](crate::SnapshotEdge) clones the front one, and moves
+/// nothing.
+///
 /// `restore` is `Some` for a transition declared with
 /// [`restore_tokens_on_failure`](crate::TransitionBuilder::restore_tokens_on_failure),
 /// and every token a consuming edge takes is cloned into it, with its id, in
@@ -1543,7 +1560,9 @@ fn consume(
                 consumed.push((place, token));
                 args.push(ErasedInput::Token(value));
             }
-            EdgeKind::TakeAll => {
+            // A drain is a take-all that its place cannot hold back, so an
+            // empty place gives it an empty batch through the same code.
+            EdgeKind::TakeAll | EdgeKind::Drain => {
                 let slot = &mut places[position];
                 let nested = slot.meta.nested;
                 let mut values = Vec::with_capacity(slot.tokens.len());
@@ -1571,6 +1590,21 @@ fn consume(
                 // The clone is taken now, so the body sees a value that
                 // cannot change under it even once firings run elsewhere.
                 args.push(ErasedInput::Token(clone(&**value)));
+            }
+            EdgeKind::Survey => {
+                let slot = &places[position];
+                let clone = slot
+                    .meta
+                    .clone
+                    .expect("build rejects a survey of a place that cannot clone its tokens");
+                // Every token, oldest first, cloned now for the same reason
+                // as a snapshot's; none at all from an empty place.
+                let values = slot
+                    .tokens
+                    .iter()
+                    .map(|(_, value)| clone(&**value))
+                    .collect();
+                args.push(ErasedInput::Tokens(values));
             }
             EdgeKind::Mutate | EdgeKind::MutateWhere => {
                 let (at, token) = match kind {

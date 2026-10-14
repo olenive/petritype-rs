@@ -3,10 +3,10 @@
 //! filled in.
 //!
 //! It is also where the net is checked. Most checks always run — duplicate
-//! names, two input edges into one place, a snapshot or a restore of a place
-//! that cannot clone, an output no payload type can reach — because each one
-//! is a wiring mistake with no sensible reading. Two more are opt-in, because
-//! what they forbid is legitimate in many nets:
+//! names, two input edges into one place, a snapshot, a survey or a restore
+//! of a place that cannot clone, an output no payload type can reach —
+//! because each one is a wiring mistake with no sensible reading. Two more
+//! are opt-in, because what they forbid is legitimate in many nets:
 //! [`assert_acyclic`](NetBuilder::assert_acyclic) and
 //! [`assert_no_source_transitions`](NetBuilder::assert_no_source_transitions).
 //!
@@ -33,6 +33,17 @@
 //! excluded from both checks, because they move no tokens: a configuration
 //! place every transition snapshots is not a cycle, and a transition that
 //! only reads is a source however many input edges it has.
+//!
+//! So is a [`DrainEdge`](crate::DrainEdge), for a different reason: it
+//! consumes, but it takes every token there is, which may be none, so a
+//! firing through it need not consume anything, and "every firing consumes
+//! at least one token" cannot lean on it. Both checks count only the edges
+//! that always take a token — [`TakeEdge`](crate::TakeEdge),
+//! [`TakeAllEdge`](crate::TakeAllEdge) and
+//! [`TakeWhereEdge`](crate::TakeWhereEdge) — and the proof holds over them
+//! as stated: each transition has one, fed only from upstream of it, so it
+//! fires no more often than that place is fed, however many tokens a drain
+//! carries round meanwhile.
 
 use std::any::{TypeId, type_name};
 use std::collections::{HashSet, VecDeque};
@@ -693,7 +704,7 @@ impl NetBuilder {
     /// The three type-checked relationships are:
     ///
     /// - one body parameter per input, of the type that input produces
-    ///   ([`InputEdge`](crate::InputEdge)) — which for the six edge kinds
+    ///   ([`InputEdge`](crate::InputEdge)) — which for the eight edge kinds
     ///   depends on how they read their place, and for a
     ///   [`Param<T>`](crate::Param), which reads no place at all, is `T`;
     /// - one returned slot per output place, holding one token, zero or one,
@@ -854,10 +865,20 @@ impl NetBuilder {
     /// [`TakeWhereEdge`](crate::TakeWhereEdge)), and every output edge, from
     /// a transition to a place it writes. Read edges are left out —
     /// [`SnapshotEdge`](crate::SnapshotEdge),
-    /// [`MutateEdge`](crate::MutateEdge) and
-    /// [`MutateWhereEdge`](crate::MutateWhereEdge) move no tokens, so a loop
-    /// through one cannot feed itself, and a configuration place every
-    /// transition reads is not a cycle.
+    /// [`MutateEdge`](crate::MutateEdge),
+    /// [`MutateWhereEdge`](crate::MutateWhereEdge) and
+    /// [`SurveyEdge`](crate::SurveyEdge) move no tokens, so a loop through
+    /// one cannot feed itself, and a configuration place every transition
+    /// reads is not a cycle.
+    ///
+    /// A [`DrainEdge`](crate::DrainEdge) is left out too, although it
+    /// consumes: it may take nothing, so the proof below does not count it,
+    /// as [`assert_no_source_transitions`](NetBuilder::assert_no_source_transitions)
+    /// does not, and a loop closed only by a drain is not reported. The
+    /// proof holds without it: every transition still has an edge that
+    /// always takes a token, fed from upstream of it, and fires no more
+    /// often than that place is fed, however many tokens a drain carries
+    /// back meanwhile.
     ///
     /// ```
     /// # use petritype::{BuildError, NetBuilder, TakeEdge};
@@ -873,9 +894,9 @@ impl NetBuilder {
     /// );
     /// ```
     ///
-    /// Passing proves that tokens only move forward, not that the net stops:
-    /// a transition with no consuming input fires for ever in a perfectly
-    /// acyclic net.
+    /// Passing proves that tokens only move forward along the edges the walk
+    /// follows, not that the net stops: a transition with no consuming input
+    /// fires for ever in a perfectly acyclic net.
     ///
     /// # The pair
     ///
@@ -914,9 +935,10 @@ impl NetBuilder {
     /// nothing about whether it can fire again, and it fires for ever. Read
     /// edges do not count, and a transition whose every input is a
     /// [`SnapshotEdge`](crate::SnapshotEdge), a
-    /// [`MutateEdge`](crate::MutateEdge) or a
-    /// [`MutateWhereEdge`](crate::MutateWhereEdge) is a source like one with
-    /// no inputs at all: they leave their places as they found them.
+    /// [`MutateEdge`](crate::MutateEdge), a
+    /// [`MutateWhereEdge`](crate::MutateWhereEdge) or a
+    /// [`SurveyEdge`](crate::SurveyEdge) is a source like one with no inputs
+    /// at all: they leave their places as they found them.
     ///
     /// ```
     /// # use petritype::{BuildError, NetBuilder};
@@ -928,6 +950,28 @@ impl NetBuilder {
     /// let error = b.build().expect_err("Spawn consumes nothing");
     /// assert!(matches!(error, BuildError::SourceTransition { ref transition } if transition == "Spawn"));
     /// ```
+    ///
+    /// A [`DrainEdge`](crate::DrainEdge) does not count either, although it
+    /// consumes. The rule asks for an edge that is *guaranteed* to take a
+    /// token, and a drain takes every token there is, which may be none; it
+    /// never holds its transition back, so a transition whose only input is
+    /// one fires on an empty place, and again, for ever:
+    ///
+    /// ```
+    /// # use petritype::{BuildError, DrainEdge, NetBuilder};
+    /// let mut b = NetBuilder::new();
+    /// b.assert_no_source_transitions();
+    /// let promotions = b.place::<String>("Promotions");
+    /// let expired = b.place::<String>("Expired");
+    /// b.transition("Expire All", (DrainEdge(promotions),), (expired,), |all: Vec<String>| (all,));
+    ///
+    /// let error = b.build().expect_err("Expire All fires on an empty place");
+    /// assert!(matches!(error, BuildError::SourceTransition { ref transition } if transition == "Expire All"));
+    /// ```
+    ///
+    /// Beside a [`TakeEdge`](crate::TakeEdge) — `Close Day` taking the
+    /// day's end marker and draining the promotions — the transition is no
+    /// source: the marker is what each firing pays.
     ///
     /// Passing proves that every firing shrinks the marking, not that the
     /// net stops: tokens can still go round a cycle for ever, since what one
@@ -962,8 +1006,8 @@ impl NetBuilder {
     /// [`BuildError::KeysAlreadyDeclared`] for the first
     /// [`keys`](NetBuilder::keys) declaration that repeats a name or a
     /// place;
-    /// [`BuildError::SnapshotOfNoClonePlace`] if a snapshot edge reads a
-    /// place that cannot clone its tokens;
+    /// [`BuildError::SnapshotOfNoClonePlace`] if a snapshot or a survey edge
+    /// reads a place that cannot clone its tokens;
     /// [`BuildError::RestoreOfNoClonePlace`] if a transition that
     /// [restores its inputs on failure](crate::TransitionBuilder::restore_tokens_on_failure)
     /// consumes such a place;
@@ -1028,9 +1072,10 @@ impl NetBuilder {
             }
             // One input edge per place per transition. Both halves of
             // firing rely on it: "fireable iff every input place is
-            // non-empty" is only exact while one edge wants one place, and
-            // the `&mut` borrows a mutating edge hands the body are disjoint
-            // by construction rather than by a run-time check.
+            // non-empty" (bar the drains and surveys, which ask nothing) is
+            // only exact while one edge wants one place, and the `&mut`
+            // borrows a mutating edge hands the body are disjoint by
+            // construction rather than by a run-time check.
             let mut read = HashSet::with_capacity(slot.inputs.len());
             for (place, kind) in &slot.inputs {
                 if !read.insert(*place) {
@@ -1041,8 +1086,11 @@ impl NetBuilder {
                 }
                 // A snapshot needs the place's cloner, which
                 // `place_no_clone` did not record — whether or not the type
-                // itself is `Clone`.
-                if *kind == EdgeKind::Snapshot && self.places[place.0 as usize].meta.clone.is_none()
+                // itself is `Clone` — and a survey is a snapshot of every
+                // token. A nested place is such a place, so this is also
+                // what refuses a snapshot or a survey of one.
+                if matches!(kind, EdgeKind::Snapshot | EdgeKind::Survey)
+                    && self.places[place.0 as usize].meta.clone.is_none()
                 {
                     return Err(BuildError::SnapshotOfNoClonePlace {
                         transition: slot.name.clone(),
@@ -1051,9 +1099,11 @@ impl NetBuilder {
                 }
                 // Restoring is done with clones taken at stage one, so a
                 // transition that restores can only consume places that can
-                // clone. The read edges are exempt because they consume
-                // nothing: a mutating edge has nothing to put back, and a
-                // snapshot of such a place was refused just above.
+                // clone, a drain's included, empty or not: the check is about
+                // the edge, not the marking. The read edges are exempt
+                // because they consume nothing: a mutating edge has nothing
+                // to put back, and a snapshot or a survey of such a place
+                // was refused just above.
                 if slot.restore_tokens_on_failure
                     && kind.consumes()
                     && self.places[place.0 as usize].meta.clone.is_none()
@@ -1151,7 +1201,9 @@ impl NetBuilder {
         // easier of the two to act on.
         if self.assert_no_source_transitions {
             for slot in &self.transitions {
-                if !slot.inputs.iter().any(|(_, kind)| kind.consumes()) {
+                // A drain consumes, but may take nothing: only an edge that
+                // always takes a token makes a firing pay for itself.
+                if !slot.inputs.iter().any(|(_, kind)| kind.always_consumes()) {
                     return Err(BuildError::SourceTransition {
                         transition: slot.name.clone(),
                     });
@@ -1255,11 +1307,13 @@ impl NetBuilder {
     /// everything reachable from it.
     fn find_cycle(&self) -> Option<Vec<String>> {
         // The reverse of `inputs`, taken once: which transitions consume a
-        // place, in declaration order. Read edges are not token flow.
+        // place, in declaration order. Read edges are not token flow, and a
+        // drain, which may take nothing, is no part of the proof
+        // (`assert_acyclic`'s docs).
         let mut consumers: Vec<Vec<u32>> = vec![Vec::new(); self.places.len()];
         for (index, slot) in self.transitions.iter().enumerate() {
             for (place, kind) in &slot.inputs {
-                if kind.consumes() {
+                if kind.always_consumes() {
                     consumers[place.0 as usize].push(index as u32);
                 }
             }

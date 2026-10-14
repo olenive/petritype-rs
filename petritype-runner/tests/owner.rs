@@ -5,7 +5,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use petritype::{
-    DeepPolicy, Firing, MutateEdge, Nested, Net, NetBuilder, Param, TakeEdge, Templates, TieBreak,
+    DeepPolicy, DrainEdge, Firing, MutateEdge, Nested, Net, NetBuilder, Param, SurveyEdge,
+    TakeEdge, Templates, TieBreak,
 };
 use petritype_runner::protocol::Request;
 use petritype_runner::{
@@ -513,6 +514,83 @@ fn get_state_has_the_protocol_shape() {
         s["progress"],
         json!({"step_count": 0, "last_fired": null, "fired_counts": {}, "last_progress_at": null})
     );
+}
+
+/// `Tickets -Serve(surveys Notices, drains Bin)-> Served`: a transition
+/// whose two zero-or-more edges read places that start empty (slice 22).
+fn desk(_: &Params) -> Result<Net, LoadError> {
+    let mut b = NetBuilder::new();
+    let tickets = b.place::<u32>("Tickets");
+    let notices = b.place::<String>("Notices");
+    let bin = b.place::<u32>("Bin");
+    let served = b.place::<usize>("Served");
+    b.serializable(tickets);
+    b.serializable(notices);
+    b.serializable(bin);
+    b.transition(
+        "Serve",
+        (TakeEdge(tickets), SurveyEdge(notices), DrainEdge(bin)),
+        (served,),
+        |_: u32, read: Vec<String>, taken: Vec<u32>| (read.len() + taken.len(),),
+    );
+    Ok(b.build()?)
+}
+
+/// The two kinds go out as `"survey"` and `"drain"` (PROTOCOL.md §5.1),
+/// with no `filter`; neither holds `Serve` back on an empty place, and a
+/// firing lists what the drain took, nothing from an empty one, and nothing
+/// the survey read.
+#[test]
+fn drain_and_survey_edges_go_out_with_their_kinds() {
+    let mut h = H::over(vec![NetEntry::new("desk", desk)]);
+    h.result("load", json!({"net": "desk"}));
+    let s = h.result("get_state", json!({}));
+    let edges = s["topology"]["edges"].as_array().unwrap();
+    assert_eq!(
+        edges[..3],
+        [
+            json!({"place": "Tickets", "transition": "Serve", "direction": "in", "kind": "take"}),
+            json!({"place": "Notices", "transition": "Serve", "direction": "in", "kind": "survey"}),
+            json!({"place": "Bin", "transition": "Serve", "direction": "in", "kind": "drain"}),
+        ]
+    );
+    assert_eq!(
+        s["topology"]["transitions"][0]["detail"]["detachable"],
+        true
+    );
+
+    let lines = h.send("inject", json!({"place": "Tickets", "token": 1}));
+    assert_eq!(
+        find(&lines, "fireable")["transitions"],
+        json!(["Serve"]),
+        "an empty Notices and an empty Bin hold nothing back"
+    );
+    let lines = h.send("step", json!({}));
+    let launched = find(&lines, "launched");
+    assert_eq!(
+        launched["consumed"].as_array().unwrap().len(),
+        1,
+        "{launched}"
+    );
+    assert_eq!(launched["consumed"][0][0], "Tickets");
+
+    h.send(
+        "inject",
+        json!({"place": "Notices", "token": "closing early"}),
+    );
+    h.send("inject", json!({"place": "Bin", "token": 7}));
+    h.send("inject", json!({"place": "Tickets", "token": 2}));
+    let lines = h.send("step", json!({}));
+    let consumed: Vec<&str> = find(&lines, "launched")["consumed"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| entry[0].as_str().unwrap())
+        .collect();
+    assert_eq!(consumed, ["Tickets", "Bin"], "the notice was only read");
+    let s = h.result("get_state", json!({}));
+    assert_eq!(s["marking"]["places"]["Notices"]["count"], 1);
+    assert_eq!(s["marking"]["places"]["Bin"]["count"], 0);
 }
 
 #[test]

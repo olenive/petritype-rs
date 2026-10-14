@@ -304,6 +304,8 @@ fn edge_kind(kind: petritype::EdgeKind) -> Option<protocol::EdgeKind> {
         petritype::EdgeKind::Mutate => Some(protocol::EdgeKind::Mutate),
         petritype::EdgeKind::TakeWhere => Some(protocol::EdgeKind::TakeWhere),
         petritype::EdgeKind::MutateWhere => Some(protocol::EdgeKind::MutateWhere),
+        petritype::EdgeKind::Drain => Some(protocol::EdgeKind::Drain),
+        petritype::EdgeKind::Survey => Some(protocol::EdgeKind::Survey),
         _ => None,
     }
 }

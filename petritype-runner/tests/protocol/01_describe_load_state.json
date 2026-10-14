@@ -17,6 +17,8 @@
             {"name": "transit", "description": "Vehicles board, carry and alight passengers", "mode": "manual",
              "params": [{"name": "destination", "type_name": "Option<Location>", "required": false, "default": null}]},
             {"name": "wildlife", "description": "Species migrate, spread and decline across habitats", "mode": "manual",
+             "params": []},
+            {"name": "shop", "description": "Price orders with whatever promotions are running, and end them at the close", "mode": "manual",
              "params": []}
           ]
         }}

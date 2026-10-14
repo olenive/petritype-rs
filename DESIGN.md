@@ -44,6 +44,7 @@ Kept, with the same meaning:
 | `list[T]` argument = take all tokens | `TakeAllEdge` |
 | `SnapshotEdge` / `MutateEdge` | same |
 | presence required on every input edge | same |
+| `DrainEdge` / `SurveyEdge`, which require none (2026-10-14) | same (slice 22, §4.4) |
 | type-based output routing for distinct types | routed output form, resolved at build time |
 | `return_index` on tuple returns | positional output form |
 | `output_distribution_function` | `Distribution` output form |
@@ -92,7 +93,8 @@ Dropped, and why:
   `disable`, `Toggled`).
 - **Fireable**: a transition that is enabled, not in flight, whose every
   input place is non-empty (holds a token the filter accepts, for a keyed
-  edge) and whose guard passes.
+  edge; anything, nothing included, for a drain or a survey edge) and whose
+  guard passes.
 - **Firing**: consume inputs, run body, distribute outputs.
 - **Quiescent**: nothing fireable and nothing in flight.
 - **Inner net**: a net carried by a token, in a *nested* place; the net
@@ -104,6 +106,10 @@ Dropped, and why:
   keys pass its clauses; a **query** asks a net for them; a **keyed edge**
   (`TakeWhereEdge`, `MutateWhereEdge`, slice 19) takes or mutates the oldest
   token its filter accepts instead of the front one.
+- **Presence**: what an input edge asks of its place before its transition
+  may fire. Six kinds require it; a **drain** edge (`DrainEdge`) and a
+  **survey** edge (`SurveyEdge`), slice 22, do not: they take or read every
+  token there is, zero or more (§4.4).
 - **Template**: a function registered by name that builds a net; a net
   built through one is **stamped** with it, and can then be saved, restored
   and **forked** (copied by building it again), §6.6, slice 16.
@@ -225,17 +231,19 @@ Universal bound: `T: Debug + Clone + Send + Sync + 'static`.
 
 Escape hatch: `place_no_clone::<T>()` drops the `Clone` bound (for `File`,
 sockets, handles). Such a place cannot be the source of a `SnapshotEdge` or
-a consuming input to a `restore_tokens_on_failure` transition (build errors;
-a `MutateEdge` from it is fine), and makes `Net::snapshot()` return `Err`.
+a `SurveyEdge` (slice 22), or a consuming input to a
+`restore_tokens_on_failure` transition (build errors; a `MutateEdge` from it
+is fine, and so is a `DrainEdge` on a transition that does not restore), and
+makes `Net::snapshot()` return `Err`.
 
 `place_nested::<T>()` (slice 15, §6.6) is the second: `T: Nested + Debug +
 Send + Sync + 'static`, no `Clone`, because a `Net` cannot be cloned. It is a
 no-clone place with all of the above, except, since slice 16 and with the
 `serde` feature, `Net::snapshot()`: a snapshot copies each of its tokens with
 `Nested::fork`, which rebuilds the token's inner nets from their templates
-(§6.6). The snapshot edge and the restoring consuming edge stay build
-errors: both clone on the launch path, where nothing may fail, and a fork
-can.
+(§6.6). The snapshot edge, the survey edge and the restoring consuming
+edge stay build errors: all three clone on the launch path, where nothing may
+fail, and a fork can.
 
 Big data idiom: put heavy fields in `Arc`. Moves are free (a `Vec` is 24
 bytes to move); `Arc::clone` is a counter bump; `Arc::make_mut` is
@@ -247,7 +255,7 @@ in the place's type.
 ```rust
 struct TransitionSlot {
     name: String,
-    inputs: Vec<(PlaceId, EdgeKind)>,      // EdgeKind::{Take, TakeAll, Snapshot, Mutate, TakeWhere, MutateWhere}
+    inputs: Vec<(PlaceId, EdgeKind)>,      // EdgeKind::{Take, TakeAll, Snapshot, Mutate, TakeWhere, MutateWhere, Drain, Survey}
     filters: Vec<Option<Filter>>,          // beside inputs: Some exactly for the two keyed kinds (slice 19)
     outputs: Vec<PlaceId>,                 // positional; also the target set for routed / Distribution
     // no routing field: a routed body's TypeId -> output index table is resolved from types when the
@@ -271,12 +279,93 @@ Input edge kinds and the body parameter each produces:
 | `MutateEdge(p)` | no | `&mut T` (front token, in place) | yes |
 | `TakeWhereEdge(p, filter)` | one token, the oldest the filter accepts | `T` | a token the filter accepts |
 | `MutateWhereEdge(p, filter)` | no | `&mut T` (the oldest token the filter accepts, in place) | a token the filter accepts |
+| `DrainEdge(p)` | every token, zero or more | `Vec<T>`, possibly empty | no |
+| `SurveyEdge(p)` | no | `Vec<T>` (clones of every token, zero or more) | no |
 
 A transition reads each place through at most one input edge
 (`DuplicateInputPlace` at build), so fireability is exactly "every input
-place non-empty" (for a keyed edge, "holding a token the filter accepts")
-and the borrows of the mutating edges are disjoint by construction. The two
-keyed edges (slice 19) are §8.3's.
+place non-empty" (for a keyed edge, "holding a token the filter accepts";
+for a drain or a survey edge, nothing at all) and the borrows of the
+mutating edges are disjoint by construction. The two keyed edges (slice 19)
+are §8.3's; the two that require no presence (slice 22) are below.
+
+**Edges on empty places, 2026-10-14** (slice 22). The proposal
+`dev-docs/EDGES_ON_EMPTY_PLACES.md`, its R1 to R7 for this runtime (the
+viewer's R7 is petritype-bevy's), shared with the Python track (R8, D2).
+Every input edge before this one held its transition back until its place
+had a token. That is right for a token the transition works *on*, and wrong
+for a place it only needs to *look at* when something is there: "every
+promotion running", "every subscriber to notify", where none is a perfectly
+good answer. The workaround was an *empty twin*, a second transition with
+the same inputs less that edge, guarded on the place being empty: one
+optional place doubles a transition, and *k* of them read by one transition
+need 2^*k*. (The other workaround, a single token holding a list, stays the
+right one for an aggregate; these edges are for members that must be
+individual tokens.)
+
+```rust
+pub struct DrainEdge<T>(pub PlaceRef<T>);     // body parameter Vec<T>, every token, consumed
+pub struct SurveyEdge<T>(pub PlaceRef<T>);    // body parameter Vec<T>, clones of every token; T: Clone
+#[non_exhaustive] pub enum EdgeKind { .., Drain, Survey }   // "drain", "survey"
+kind.requires_presence() -> bool;   // false exactly for Drain and Survey
+EdgeKind::Drain.consumes() == true;  EdgeKind::Survey.consumes() == false
+```
+
+- **Fireable** whatever the place holds, nothing included: the scan (§6.1)
+  skips the presence check for an edge whose kind does not
+  `requires_presence()`. The transition's other edges and its guard still
+  apply, so a guard can hold it back. In Petri-net terms a drain is a
+  *reset arc*, an extension that leaves the enabling rule alone, and a
+  survey a pure data dependency with no effect on enabling at all.
+- **Firing.** Launch takes a drain's tokens as a `TakeAllEdge`'s, through
+  the same code: every token, oldest first, into a `Vec` that is empty for
+  an empty place; `Fired.consumed` (or `Launched.consumed`) names each of
+  them, which may be none from that place; the index forgets them and a
+  nested token's inner log is lifted (§6.6, rule 3) as for any consuming
+  edge. A survey clones every token at launch with the place's cloner, as
+  a snapshot clones the front one, and moves nothing: nothing in
+  `consumed`, no event of its own. Its clones are owned, so a transition
+  whose reads are snapshots and surveys stays detachable and may run on a
+  worker; the body sees the place as it was at launch. Nothing new in
+  `Marking`, `Snapshot` or `export_marking`.
+- **Restore.** `restore_tokens_on_failure` puts a drain's tokens back at
+  the front of the place, oldest first, with their ids, as every restore
+  does (§7), ahead of anything put in while the firing was in flight. A
+  survey has nothing to put back.
+- **Checks.** Both read their place through the one edge a transition may
+  have into it (`DuplicateInputPlace`). A survey of a place that cannot
+  clone, a nested place among them, is `SnapshotOfNoClonePlace` (its
+  message says the transition "snapshots" the place, which a survey of
+  every token does; no sibling error was worth adding), and `SurveyEdge<T>`
+  asks `T: Clone` at compile time as `SnapshotEdge<T>` does. A drain of
+  such a place is fine; a restoring transition's drain of one is
+  `RestoreOfNoClonePlace`, empty place or not. `assert_no_source_transitions`
+  and `assert_acyclic` count only the edges that *always* take a token
+  (`EdgeKind::always_consumes`, crate-private: consuming and requiring
+  presence), so a transition whose only input is a `DrainEdge` is a source,
+  and fires for ever on an empty place, and a loop closed only by a drain
+  is not a cycle of the proof's. The termination proof holds over the
+  edges it counts (§12): each transition still has one, fed from upstream
+  of it, however many tokens a drain carries round meanwhile.
+- **Read API and wire.** `TransitionInfo::inputs`, `EdgeInfo::Input` and
+  the topology carry the kinds as they carry the others, with
+  `filters`/`filter` `None`. With `serde`, `EdgeKind` writes `"drain"` and
+  `"survey"`, the names PROTOCOL.md §5.1 gained; the runner sends them
+  (§19.3.14), and a reader that does not know them draws a plain edge, as
+  §5.1 already said. `petritype-dot` draws them as `TakeAllEdge` and
+  `SnapshotEdge` are drawn, with a hollow arrowhead (`arrowhead=empty`, the
+  proposal's D5) and `*` on both.
+- **Not here** (the proposal's §7): no keyed zero-or-more edge (D4) and no
+  mutating one (D3); `requires_presence` is what either would reuse.
+  Returning a token to the front of a place from a body (D6) is a separate
+  feature.
+- **The example** is the proposal's shop (§2), `examples/shop.rs` with the
+  net in `examples/shop/net.rs`, the protocol's conformance net `shop`
+  (PROTOCOL.md §11): `Price Order` takes an order and surveys
+  `Promotions`, `Close Day` takes the day's end marker and drains them.
+  The proposal's §2 script gives its §6 table (`tests/slice22.rs` and the
+  example's tests), and the shared transcript `07_empty_place_edges.json`
+  drives it over the wire.
 
 Bodies are `FnMut`: they may hold private mutable state (counters, RNGs).
 Anything captured must be `Send + Sync`; use `move`, `Arc`, `Mutex`, atomics.
@@ -463,6 +552,14 @@ fireable transitions in declaration order; `Net::is_fireable(t)` asks about
 one. The scan is linear each step; incremental tracking is a later
 optimisation. ("Enabled" alone means the switch: `enable`, `disable`,
 `is_enabled`.)
+
+**Added 2026-10-14 (slice 22).** The presence condition is asked only of an
+edge whose kind `requires_presence()`: a `DrainEdge` or a `SurveyEdge` reads
+every token its place holds, zero or more, and is satisfied by an empty
+place, so it never holds its transition back (§4.4). Such a transition is
+fireable when its other edges and its guard say so; one whose only inputs
+are drains and surveys is fireable whenever it is switched on and home,
+and is a source (§12).
 
 Selection among fireable transitions: the net's selector, default = highest
 priority (unset or NaN scores 0.0; `Net::priority_of(t)` exposes the score),
@@ -700,7 +797,8 @@ pub enum DeepStep {
      nested token: before the firing's `Mutated` for that token, so
      `Nested`*, `Mutated`, then `Fired`, `Distributed` or `Failed`;
   3. a consuming edge (`TakeEdge`, `TakeAllEdge`, since slice 19
-     `TakeWhereEdge`) from a nested place: at launch, before `Launched` or
+     `TakeWhereEdge`, since slice 22 `DrainEdge`) from a nested place: at
+     launch, before `Launched` or
      `Fired`, under the source place and the old id, so nothing logged
      inside a token that is never put back is lost;
   4. a token produced into a nested place: after `Fired` or `Distributed`,
@@ -897,7 +995,7 @@ outer net should see it.
 - **Consumed tokens are lost by default.** `Failed { transition, consumed, restored, error }`
   records their ids and places; with `restored == true` they are back.
 - **`restore_tokens_on_failure(t)`** clones the consumed tokens (`TakeEdge`,
-  `TakeAllEdge`, `TakeWhereEdge`) at launch; the clones travel with the
+  `TakeAllEdge`, `TakeWhereEdge`, `DrainEdge`) at launch; the clones travel with the
   firing, and on any failure in stage three (body `Err`, panic, bad
   `Distribution`) go back to the front of their places in original order
   **with their original `TokenId`s**, before the `Failed` event and without
@@ -1539,9 +1637,10 @@ Always:
   (`KeysAlreadyDeclared { place }`); the first offender, after `NotNested`
   (slice 18, §8.3). `keys` itself is infallible.
 - One input edge per place per transition (`DuplicateInputPlace`).
-- `SnapshotEdge` from a `no_clone` place.
+- `SnapshotEdge` or `SurveyEdge` (slice 22) from a `no_clone` place, both
+  `SnapshotOfNoClonePlace`.
 - `restore_tokens_on_failure` on a transition with a consuming (`TakeEdge`,
-  `TakeAllEdge`, `TakeWhereEdge`) input from a `no_clone` place.
+  `TakeAllEdge`, `TakeWhereEdge`, `DrainEdge`) input from a `no_clone` place.
   (A nested place counts as `no_clone` for both, with `serde` too: its
   tokens are copied by a fork, which can fail, and these two copy on the
   launch path, where nothing may; §4.3, §6.6.)
@@ -1560,14 +1659,18 @@ Always:
 Opt-in:
 - `b.assert_acyclic()`: iterative three-colour DFS over consuming input edges
   (`TakeWhereEdge` among them) and output edges; read edges excluded (they
-  move no tokens). Roots are
+  move no tokens), and since slice 22 `DrainEdge` too, which consumes but
+  may take nothing, so the proof does not lean on it (§4.4). Roots are
   transitions in declaration order; the first cycle found is reported as
   `BuildError::Cycle { path }`, node names from the repeated node round to
   itself (first == last, so it normally starts at a transition), joined with
   `" -> "` in the message.
 - `b.assert_no_source_transitions()`: every transition has at least one
-  `TakeEdge`, `TakeAllEdge` or `TakeWhereEdge` input; a transition with
-  only read edges (`MutateWhereEdge` among them) fails.
+  `TakeEdge`, `TakeAllEdge` or `TakeWhereEdge` input, an edge that always
+  takes a token; a transition with only read edges (`MutateWhereEdge` and
+  `SurveyEdge` among them) fails, and so, since slice 22, does one whose
+  only consuming input is a `DrainEdge`, which fires for ever on an empty
+  place.
   First offender in declaration order → `BuildError::SourceTransition`.
 - Both run after the always-on checks, source transitions before cycles.
 - The pair is a static termination proof; each alone proves less, and the
@@ -1708,6 +1811,12 @@ same reason: its species are JSON and its `season` is a wire parameter.
 Since slice 19 its `Migrate` is a keyed edge (§8.3), and since its second
 edition (2026-10-13, §8.3) every transition but `Settle` is, and a plain
 run ends after nineteen firings.
+An eleventh, shop (slice 22), is the edges-on-empty-places proposal's
+example and the protocol's conformance net `shop`, split the same way
+(`examples/shop.rs` for the proposal's script and its table as tests,
+`examples/shop/net.rs` for the net) and needing `serde` because every place
+is marked serializable for the wire's `inject`; its net depends on
+`petritype` alone.
 
 **Done, slice 12.**
 
@@ -2004,6 +2113,21 @@ Slices, each with tests, in order:
     firing produces has its fireable set taken at the landing (A7), and
     `step` and a running net follow the loaded net's policies;
     `tests/slice21.rs`.
+22. Edges on empty places (§4.4, §6.1, §12, §19.3.14), 2026-10-14, R1 to R6
+    of `dev-docs/EDGES_ON_EMPTY_PLACES.md`, shared with the Python track:
+    `DrainEdge` and `SurveyEdge`, body parameter `Vec<T>`, `EdgeKind::
+    {Drain, Survey}` and `EdgeKind::requires_presence`; the fireability
+    scan skips the presence check for them; a drain launches as a take-all
+    (and restores as one), a survey clones every token at launch and moves
+    nothing; a survey of a no-clone place is `SnapshotOfNoClonePlace`; the
+    source rule and the acyclicity walk count only the edges that always
+    take a token, so a drain alone is a source. `petritype-dot` draws the
+    two with a hollow arrowhead. The example `shop`, the protocol's
+    conformance net of that name, runs the proposal's script to its table;
+    the runner sends `"drain"` and `"survey"`, carries `shop` (the core
+    example, included by path), and the shared `07_empty_place_edges.json`
+    replays unchanged. `tests/slice22.rs`, two `trybuild` cases. The viewer
+    (R7) is petritype-bevy's.
 
 **2026-10-10: the `transit` example runs its own journey** (no slice: an
 example, a conformance net and a transcript changed, the crates' API did not).
@@ -2081,6 +2205,7 @@ The decisions that shape it, all of 2026-10-03:
 | `topology.transitions[].detail` | `TransitionInfo::params` (type names) and `detachable` |
 | `topology.edges` | `net.edges()`: `EdgeKind::{Take, TakeAll, Snapshot, Mutate}` as `"take"`, `"take_all"`, `"snapshot"`, `"mutate"`; `Output { slot }` as `slot` where the transition has more than one output and `TransitionInfo::positional` (slice 17; a routed or distributing body has no slots to speak of) |
 | keyed edges, `kind: "take_where"` / `"mutate_where"` with `filter` (§5.1, §13.5) | `EdgeKind::{TakeWhere, MutateWhere}` and `EdgeInfo::Input::filter` (slice 19), the filter's `places` mapped from ids to names by the runner (slice 20; sent without `kind` before it) |
+| edges an empty place satisfies, `kind: "drain"` / `"survey"` (§5.1) | `EdgeKind::{Drain, Survey}` (slice 22, §4.4, §19.3.14), no `filter` |
 | `topology.places[].nested`, `passive` (§12.2) | `TopologyPlace::nested`, `passive`, written only when true |
 | `path`, `nested_id` (§12.1) | a path walked through `net.nested(place, token)` level by level; a nested id is the inner net's `NetId` printed with its `Display`, found by walking every nested place at every depth; mutable reach (`inject`) through `nested_scope` at each level |
 | a token's `nets` (§12.2) | `net.nested(place, token)`: each net's name, `id()`, its path, `template()`, and the sum of its places' counts |
@@ -2823,6 +2948,50 @@ here by the sections they amend) and B (the engine policies, §6.1 and
   on exactly those two lines (`describe` and the inner inject) until the
   Python track's re-recorded file lands there; the set with the new 05
   (`PETRITYPE_PROTOCOL_TRANSCRIPTS`) replays in full.
+
+#### 19.3.14 Edges on empty places on the wire, 2026-10-14
+
+Slice 22, the runner's half of the edges-on-empty-places proposal (its R6;
+§4.4 has the engine's half). PROTOCOL.md §5.1, revised by the Python track,
+adds two values to `edges[].kind`: `"drain"`, an input edge that consumes
+every token of its place, zero or more, and `"survey"`, one that reads
+every token without consuming any, zero or more; neither holds its
+transition back on an empty place, and neither carries `filter`. Nothing
+else on the wire changes: `fired.consumed` (and `launched.consumed`) lists
+what a drain took, none from an empty place, and nothing a survey read.
+
+- **As this runtime implements it.** `protocol::EdgeKind` gained `Drain`
+  and `Survey` (snake_case on the wire, as the core's `EdgeKind`), and
+  `translate::edge_kind` maps the core's two kinds onto them; before this a
+  kind the runner did not know went out without `kind`, which a reader
+  draws as a plain edge (§5.1), and that is still what an older runner of
+  ours would send. A survey's transition stays detachable (`detail.
+  detachable: true`), so it is launched in stages like any other; a drain's
+  tokens are in `launched.consumed` in the order they were taken.
+- **`fireable`** (PROTOCOL.md §5.2, amended the same day: "every input
+  place non-empty (but one read through a `drain` or `survey` edge, §5.1)")
+  is `Net::fireable` as it always was, so the runner's `fireable`
+  notifications and `transitions[].fireable` follow the new rule with no
+  change of their own: an inject into `Promotions` alone announces nothing,
+  and one into `Orders` makes `Price Order` fireable whatever `Promotions`
+  holds.
+- **The conformance net `shop`** (PROTOCOL.md §11): the example binary
+  includes `petritype/examples/shop/net.rs` as it includes transit's and
+  wildlife's, under the description the Python factory gives it ("Price
+  orders with whatever promotions are running, and end them at the
+  close"), manual hosting, no load parameters and no net parameters.
+  `nets::shop_registry` carries it alone, for the transcripts over it.
+- **Transcripts.** The Python track recorded `07_empty_place_edges.json`
+  (the proposal's §2 script over the wire: `describe`, `load`, `get_state`
+  with the two kinds in the topology, the script's injects and steps, a
+  step with nothing fireable, a final `get_state`, and a `get_token` of
+  each of the six output tokens, which is what pins the §6 values, labels
+  being masked); its copy in `tests/protocol/` is byte for byte the shared
+  file and replays with no runner change beyond the two kinds and the
+  entry. Our own `01` lists `shop` in
+  `describe`, which lists everything the example carries; 02 to 06 are
+  untouched. A test drives a net of a take, a survey and a drain through
+  `Owner` (`drain_and_survey_edges_go_out_with_their_kinds`).
 
 ### 19.4 Who spawns it
 

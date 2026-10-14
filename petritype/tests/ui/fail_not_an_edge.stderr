@@ -7,12 +7,14 @@ error[E0277]: `PlaceRef<u32>` is not an input edge
    |       required by a bound introduced by this call
    |
    = help: the trait `InputEdge` is not implemented for `PlaceRef<u32>`
-   = note: an input must say how it reads its place: `TakeEdge(p)`, `TakeAllEdge(p)`, `SnapshotEdge(p)`, `MutateEdge(p)`, or by a filter `TakeWhereEdge(p, f)` or `MutateWhereEdge(p, f)`; `Param::<T>::new()` is the input that reads no place
+   = note: an input must say how it reads its place: `TakeEdge(p)`, `TakeAllEdge(p)`, `SnapshotEdge(p)`, `MutateEdge(p)`, by a filter `TakeWhereEdge(p, f)` or `MutateWhereEdge(p, f)`, or every token, possibly none, `DrainEdge(p)` or `SurveyEdge(p)`; `Param::<T>::new()` is the input that reads no place
    = help: the following other types implement trait `InputEdge`:
+             DrainEdge<T>
              MutateEdge<T>
              MutateWhereEdge<T>
              Param<T>
              SnapshotEdge<T>
+             SurveyEdge<T>
              TakeAllEdge<T>
              TakeEdge<T>
              TakeWhereEdge<T>
@@ -35,12 +37,14 @@ error[E0277]: `PlaceRef<u32>` is not an input edge
    |       required by a bound introduced by this call
    |
    = help: the trait `InputEdge` is not implemented for `PlaceRef<u32>`
-   = note: an input must say how it reads its place: `TakeEdge(p)`, `TakeAllEdge(p)`, `SnapshotEdge(p)`, `MutateEdge(p)`, or by a filter `TakeWhereEdge(p, f)` or `MutateWhereEdge(p, f)`; `Param::<T>::new()` is the input that reads no place
+   = note: an input must say how it reads its place: `TakeEdge(p)`, `TakeAllEdge(p)`, `SnapshotEdge(p)`, `MutateEdge(p)`, by a filter `TakeWhereEdge(p, f)` or `MutateWhereEdge(p, f)`, or every token, possibly none, `DrainEdge(p)` or `SurveyEdge(p)`; `Param::<T>::new()` is the input that reads no place
    = help: the following other types implement trait `InputEdge`:
+             DrainEdge<T>
              MutateEdge<T>
              MutateWhereEdge<T>
              Param<T>
              SnapshotEdge<T>
+             SurveyEdge<T>
              TakeAllEdge<T>
              TakeEdge<T>
              TakeWhereEdge<T>

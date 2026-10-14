@@ -36,7 +36,9 @@ pub enum ErasedInput<'a> {
     /// [`SnapshotEdge`](crate::SnapshotEdge) took of the front token.
     Token(ErasedToken),
     /// Every token of a place, oldest first: a
-    /// [`TakeAllEdge`](crate::TakeAllEdge).
+    /// [`TakeAllEdge`](crate::TakeAllEdge) or a
+    /// [`DrainEdge`](crate::DrainEdge), whose list may be empty, or the
+    /// clones a [`SurveyEdge`](crate::SurveyEdge) took of them, likewise.
     Tokens(Vec<ErasedToken>),
     /// A token of a place, borrowed where it lies: the front one for a
     /// [`MutateEdge`](crate::MutateEdge), the one its filter chose for a

@@ -91,7 +91,8 @@ pub enum Event {
         /// [`Added`](Event::Added) of its own, because nothing new appeared:
         /// this flag is the whole report. (True with an empty `consumed` for
         /// a restoring transition that consumes nothing at all, which reads
-        /// nothing but snapshots and mutating edges.)
+        /// nothing but snapshots, surveys and mutating edges, or drains only
+        /// empty places.)
         ///
         /// False: they are gone, and their ids are retired.
         restored: bool,

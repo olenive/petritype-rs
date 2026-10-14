@@ -3,8 +3,9 @@
 //! One function, [`dot`], turns a net into the source of a `digraph`. Feed
 //! the string to `dot -Tsvg` — or to any Graphviz binding — and you have the
 //! picture: places as ovals holding their tokens, transitions as boxes, and
-//! the four kinds of input edge drawn apart, so that a reader can tell a
-//! token being *taken* from one being *read*.
+//! the kinds of input edge drawn apart, so that a reader can tell a token
+//! being *taken* from one being *read*, and an edge that waits for a token
+//! from one that an empty place satisfies.
 //!
 //! The renderer works over the read API of DESIGN §8.2 and nothing else, so
 //! it draws a live [`Net`] or an owned [`Snapshot`] alike ([`DotSource`] is
@@ -37,6 +38,8 @@
 //! | [`SnapshotEdge`](petritype::SnapshotEdge) | `style=dashed, color=dimgray, arrowhead=normal, penwidth=1` |
 //! | [`MutateEdge`](petritype::MutateEdge) | `dir=both, arrowhead=dot, arrowtail=dot, color=dimgray, penwidth=2` |
 //! | [`TakeWhereEdge`](petritype::TakeWhereEdge), [`MutateWhereEdge`](petritype::MutateWhereEdge) | as `TakeEdge` and `MutateEdge`, plus the filter as the label, `label="class in {Bird}"` (*new*: a keyed edge chooses its token, and the diagram says by what) |
+//! | [`DrainEdge`](petritype::DrainEdge) | as `TakeAllEdge`, with `arrowhead=empty` (*new*: a hollow arrowhead marks an edge an empty place satisfies) |
+//! | [`SurveyEdge`](petritype::SurveyEdge) | as `SnapshotEdge`, with `arrowhead=empty` and `label="*"` (*new*: every token, and possibly none) |
 //! | an input edge of a kind this version does not know | as a `TakeEdge` |
 //! | output edge | `color=black, penwidth=1`, plus `label="<slot>"` when the transition has more than one output (*new*: positional order is what a positional body returns into) |
 //! | highlighted edge | both its ends highlighted: the kind's shape is kept and its `color` and `penwidth` become `magenta`/`red` and `2` |
@@ -584,6 +587,22 @@ fn input_attrs(kind: EdgeKind, filter: Option<&Filter>, highlight: Option<&str>)
             String::from("arrowtail=dot"),
             String::from("color=dimgray"),
             String::from("penwidth=2"),
+        ],
+        // The two that read every token there is, nothing included: their
+        // all-at-once counterparts with a hollow arrowhead, which is the
+        // mark of an edge that an empty place does not hold back.
+        EdgeKind::Drain => vec![
+            String::from("color=black"),
+            String::from("arrowhead=empty"),
+            String::from("penwidth=1"),
+            String::from("label=\"*\""),
+        ],
+        EdgeKind::Survey => vec![
+            String::from("style=dashed"),
+            String::from("color=dimgray"),
+            String::from("arrowhead=empty"),
+            String::from("penwidth=1"),
+            String::from("label=\"*\""),
         ],
         // `EdgeKind` is `#[non_exhaustive]`: a kind this renderer has never
         // heard of is drawn as a plain take, as a protocol reader would.

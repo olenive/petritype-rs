@@ -290,3 +290,165 @@ naming what differs from sections 2, 4 and 6 and why, plus the commits.
 > acceptance test and check section 6. Append an "As built" section to the
 > document when finished. Do not touch `~/work/games/**` or
 > `~/work/petritype-bevy/TODO_TEMP.md`.
+
+## As built (Rust)
+
+Slice 22, 2026-10-14, branch `empty-place-edges` of petritype-rs, cut from
+main at 6e8ef4d (after the merge of §5): the Rust track's §5 steps 1 and 2,
+R1 to R6. The viewer (R7, step 3) is petritype-bevy's and is not part of
+this branch. DESIGN §4.4 ("Edges on empty places"), §6.1, §12, §18 (slice
+22) and §19.3.14 describe what was built; this section names what differs
+from §2, §4 and §6, and why.
+
+**§2, the shop.** Built as written, in `petritype/examples/shop/net.rs`
+(the net, `build_shop`, which a runner includes by path) and
+`petritype/examples/shop.rs` (the script and the §6 table, printed and
+tested), in the shape of `wildlife`. What the document left open was
+settled with the Python track through the shared contract: every place is
+`String` and serializable, so that the wire's `inject` reaches any of them;
+the bodies are named functions (`apply_promotions`, `end_promotions`);
+`Price Order` returns positionally, the order into slot 0 (`Priced`) and the
+discounts into slot 1 (`Discounts Applied`), so the wire lists both slots;
+the net's description is the Python factory's, "Price orders with whatever
+promotions are running, and end them at the close". The example needs the
+`serde` feature only because `serializable` does.
+
+**§4, the requirements.**
+
+- R1 as written. `DrainEdge<T>` needs no `Clone`; `SurveyEdge<T>` asks
+  `T: Clone` at compile time, as `SnapshotEdge<T>` does, and the build
+  refuses a survey of a place that gave cloning up. That refusal is
+  `SnapshotOfNoClonePlace`, not a sibling: its message ("transition ...
+  snapshots place ..., which cannot clone its tokens") is true of a survey,
+  which snapshots every token, and a sibling error would have been a second
+  name for one rule. A nested place is a no-clone place, so a survey of one
+  is refused by the same check; since `SurveyEdge<T>` needs `T: Clone`, the
+  build only meets a nested token type that is `Clone` (one that nests no
+  net, say), and every other is refused by the compiler first. A drain of a
+  no-clone place builds, unless its transition restores
+  (`RestoreOfNoClonePlace`, empty place or not).
+- R2 as written: `EdgeKind::requires_presence()` is public, false for
+  exactly `Drain` and `Survey`; the scan skips the presence check for them.
+- R3 as written for the source rule, and for the acyclicity walk too: both
+  count only the edges that always take a token (a crate-private
+  `EdgeKind::always_consumes`, consuming and requiring presence), so a
+  drain counts in neither, as the Python track does by hand (R8). The
+  document asked that "any other analysis that assumes a consuming edge
+  moves a token" say the same; leaving the drain out of the walk is the
+  choice that agrees with Python, and it keeps the termination proof sound:
+  every transition still has an edge that always takes a token, fed only
+  from upstream of it in the walked graph, so it fires no more often than
+  that place is fed, however many tokens a drain carries round meanwhile. A
+  loop closed only by a drain is therefore not reported as a cycle, which
+  the docs of `assert_acyclic` say ("tokens only move forward along the
+  edges the walk follows").
+- R4 as written. A drain shares the take-all's launch code, so an empty
+  place gives an empty batch, and the index and a nested token's inner log
+  are handled as for any consuming edge; a restore puts the drained tokens
+  back at the front, oldest first, with their ids, ahead of anything put in
+  while the firing was in flight. A survey's clones are owned, so its
+  transition stays detachable and runs on a worker under the concurrent
+  driver.
+- R5 as written: `TransitionInfo::inputs`, `EdgeInfo::Input` and the
+  topology carry the kinds, `filters`/`filter` `None`.
+- R6: both tracks ran (D2), so the wording of PROTOCOL.md §5.1 is the
+  Python track's, which also amended §5.2 (`fireable`: every input place
+  non-empty "but one read through a `drain` or `survey` edge") and §11 (the
+  `shop` conformance net). DESIGN §19.3.14 records the same for this
+  runtime: the runner's `protocol::EdgeKind` gained `Drain` and `Survey`,
+  its `fireable` is the core's and needed no change, and the shared
+  `07_empty_place_edges.json` replays byte for byte. Our own transcript
+  01, which pins `describe` over everything the example binary carries,
+  lists `shop` now.
+- R7 is not on this branch (petritype-bevy's step). What it asks of the
+  core is there: a viewer can mark an edge with `!kind.requires_presence()`.
+  `petritype-dot`, this repository's renderer, was given D5's mark as an
+  addition: a drain draws as a take-all and a survey as a snapshot, each
+  with `arrowhead=empty` and `*`.
+- R9 held: no keyed and no mutating zero-or-more edge.
+- The InputEdge diagnostic now names `DrainEdge(p)` and `SurveyEdge(p)`
+  among the edges an input must be (`tests/ui/fail_not_an_edge.stderr`),
+  and §5's trybuild check is two cases: `pass_empty_place_edges.rs` (both
+  hand over a `Vec<T>`) and `fail_drain_without_vec.rs` (a drain read as one
+  `T`).
+
+**§6, the expected results.** All hold: the table after each of the four
+steps, `Price Order` absent from `fireable()` while `Orders` is empty
+whatever `Promotions` holds, the source rule rejecting a transition whose
+only input is a `DrainEdge`, a `SurveyEdge` on a `place_no_clone` place
+failing to build with the no-clone error, a failing `Close Day` restoring
+the promotions oldest first with their ids, and the topology listing the
+two kinds (`tests/slice22.rs`, the example's tests, the runner's
+`drain_and_survey_edges_go_out_with_their_kinds` and transcript 07). "The
+viewer draws them" is petritype-bevy's to show; `petritype-dot` draws them.
+
+**Python, for the record** (its own report has the details): the drain is
+an argument edge and the survey a snapshot edge by class, both kinds
+require their argument to be annotated `list[T]`, checked when the graph is
+built, and the source and cycle analyses leave the drain out by hand.
+
+**Commits.** 712b2db (the slice: core, example, runner, transcript 07,
+tests and DESIGN), and the commit that adds this section.
+
+## As built (Python)
+
+**As built (Python), 2026-10-14**, petritype branch `empty-place-edges`: commit f23a2a6 (code, tests, transcript) and commit ade50aa (docs). `DrainEdge` subclasses `ArgumentEdgeToTransition` and `SurveyEdge` subclasses `SnapshotEdge`, as R8 asks.
+
+**§2.** The shop is as written, with every place `str`. `Price Order` returns `(order, discounts)` through two indexed return edges (slots 0 and 1). `Close Day` returns its list into `Expired`, and an empty list deposits nothing. The net's `describe` description, which the document leaves open and the transcript pins, is "Price orders with whatever promotions are running, and end them at the close".
+
+**§4.**
+- R1: Python has no `place_no_clone`, so there is no no-clone error. A survey of a nested place is allowed, as a snapshot is, because a deep copy of a net mints a new net. Python has no `DuplicateInputPlace` either; nothing changed there.
+- R1 and R8, the list argument: `SurveyEdge` also needs a `list[T]` argument, checked at build like the drain's. R8's "which already yields every token" holds in Python only for a list-annotated argument, and R1 gives the survey `Vec<T>`. For both kinds this exact check replaces the general argument type check, so a place of lists drains into `list[list[T]]`. A plain list-annotated take on such a place is still refused by the old check; that is unchanged.
+- R2 is `ExecutableGraphCheck.requires_presence(edge)`.
+- R3: both static checks leave drains out by hand, with the shop's examples in their docstrings. The source rule's message now reads "no ArgumentEdgeToTransition input other than a DrainEdge".
+- R4: Python has no "detachable" to keep. `Fired.consumed` lists nothing from an empty drained place, and restore puts drained tokens back at the front with their ids.
+- R5: Python has no `TransitionInfo`; the runner's topology is the info.
+- R6: PROTOCOL.md was edited directly, since both tracks ran. §5.2's `fireable` ("every input place non-empty") was amended as well, since it would otherwise be false.
+- R7: the Python viewer is the Graphviz renderer. Both kinds get a hollow arrowhead (`arrowhead="empty"`).
+- R8: `@petri_net` declares no edges, so the decorator needed nothing.
+
+**§6.** Everything is pinned except the no-clone build error, which does not apply in Python. The shared transcript adds a `get_token` of each output token after the final `get_state`, because labels are masked and only those reads pin the section 6 values.
+
+**§8.** The work was done in the Python repository only, in its own worktree and branch. This section was written in the Python track's report and appended here by the owner's agent, since the document lives in the Rust repository.
+
+## As built (Bevy)
+
+**As built (Bevy), 2026-10-14**, petritype-bevy branch `empty-place-edges`, commit 83ced6d. This is viewer
+slice 11, DESIGN §3.10.
+
+R7 is built as written:
+- `mirror.rs` maps `drain` and `survey`, and any other kind still draws as a plain edge.
+- The colour still follows `consumes()`, so a survey reads as a snapshot does and a drain as a take.
+- The dashes still follow `is_keyed()`.
+- The inspector prints `Drain` and `Survey` with no filter. It needed no code change, because it prints the
+  kind's `Debug`.
+
+One addition R7 did not name: under a projection, the mirror's doubt rule counts a drain as taking any number of
+tokens, as it counts a take-all. A firing through a drain may have taken hidden tokens, and its `consumed` list
+leaves them out.
+
+D5's hollow arrowhead is the open head's two strokes, the same size and angle, closed by a third stroke. The line
+stops at that stroke, and the head is chosen by `!kind.requires_presence()`, separately from the dashes. The
+head is *left empty*, not filled with a backdrop colour. Bevy's gizmos draw lines and fill nothing, so an empty
+head shows whatever the edge is drawn on: the page, the side panel's backdrop or an inner window's, in either
+theme, without the renderer needing to know which. That gives the outline-filled-with-backdrop look D5 asks for,
+and it cannot pick the wrong backdrop.
+
+To make the head testable, the per-edge drawing moved into `render::draw_edge`, which draws into a `GizmoBuffer`
+that a test reads back. A dashed straight line now stops `TIP_LENGTH` short of the tip, instead of running under
+the solid stretch into the head. This looks the same, and it keeps a hollow head empty if a keyed kind ever
+accepts an empty place.
+
+The acceptance net is built in the tests with the builder rather than included by path, since the sibling
+checkout carries `shop` only from slice 22. One script, `tests/common::the_shop_script`, checks §6 three ways:
+- as a net in process;
+- on the Rust runner's state machine in process;
+- against the runner's example binary. This test is Rust only, as the wildlife ones are, and skips when the
+  binary has no `shop`.
+
+All of §6 that concerns the viewer holds:
+- the table after each step;
+- `Price Order` absent from the fireable set while `Orders` is empty, whatever `Promotions` holds;
+- the topology's two kinds;
+- the viewer drawing them;
+- a close with nothing to drain consuming its marker alone.

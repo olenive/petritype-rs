@@ -19,7 +19,8 @@ log (slice 15, nets as tokens). With `serde`, such a net is saved and loaded
 as JSON, its tokens' inner nets rebuilt from templates registered by name,
 and copied with `fork`, which is what lets it be snapshotted (slice 16). Tokens may carry keys, named values
 their place derives from them, and a net answers queries by them from an index it keeps (slice 18); a keyed edge takes
-or mutates the oldest token a filter accepts, leaving the others where they are (slice 19). The Bevy visualiser lives in its own
+or mutates the oldest token a filter accepts, leaving the others where they are (slice 19); a drain or a survey edge takes or reads
+every token of a place, zero or more, and never holds its transition back (slice 22). The Bevy visualiser lives in its own
 repository, `petritype-bevy`, and depends on this crate. See `DESIGN.md` for the design and
 `dev-docs/NAMING_CONVENTIONS.md` for vocabulary shared with the Python library.*
 
@@ -111,6 +112,36 @@ Served by `petritype-runner`, every token carries its keys on the wire, and a ho
 `distinct` values, or `set_filter` so that it reads and hears of only the tokens a filter keeps, the rest told as
 `hidden` (PROTOCOL.md §13, `DESIGN.md` §19.3.12).
 
+## Input edges
+
+An input edge says how a transition reads a place, and so what its body is handed:
+
+| edge | consumes | body parameter | the place must hold |
+|---|---|---|---|
+| `TakeEdge(p)` | the front token | `T` | a token |
+| `TakeAllEdge(p)` | every token | `Vec<T>` | a token |
+| `SnapshotEdge(p)` | nothing (a clone of the front token) | `T` | a token |
+| `MutateEdge(p)` | nothing (the front token, borrowed) | `&mut T` | a token |
+| `TakeWhereEdge(p, filter)` | the oldest token the filter accepts | `T` | a token the filter accepts |
+| `MutateWhereEdge(p, filter)` | nothing (that token, borrowed) | `&mut T` | a token the filter accepts |
+| `DrainEdge(p)` | every token, zero or more | `Vec<T>`, possibly empty | nothing |
+| `SurveyEdge(p)` | nothing (clones of every token, zero or more) | `Vec<T>`, possibly empty | nothing |
+
+The last two are for a place a transition only needs to look at when something is there. A shop prices an order with
+whatever promotions are running and ends them all when the day closes, and a shop with none running still sells things:
+
+```rust
+b.transition("Price Order", (TakeEdge(orders), SurveyEdge(promotions)), (priced, discounts_applied),
+    |order: String, promotions: Vec<String>| { /* one discount per promotion, maybe none */ });
+b.transition("Close Day", (TakeEdge(day_end), DrainEdge(promotions)), (expired,),
+    |_close: String, promotions: Vec<String>| { /* every promotion ends, maybe none */ });
+```
+
+Without them each transition needs an "empty twin" guarded on the place being empty. A drain consumes but may take
+nothing, so `assert_no_source_transitions` does not count it: a transition whose only input is a drain fires for ever.
+`petritype/examples/shop.rs` runs the shop (`cargo run -p petritype --example shop --features serde`); `DESIGN.md`
+§4.4 has the rules, and on the wire the two are `"drain"` and `"survey"` (PROTOCOL.md §5.1).
+
 ## Crates
 
 | crate | what it is |
@@ -129,9 +160,10 @@ A Petri net has two kinds of nodes connected by directed edges:
 - **Transitions** consume tokens from input places, run a function, and
   distribute the results to output places.
 
-A transition can fire when every input place has a token. Firing consumes the
-inputs, runs the body, and distributes the outputs. The tokens across all
-places are the live state of the system.
+A transition can fire when every input place has a token (or, for a drain or a
+survey edge, whatever it holds, nothing included). Firing consumes the inputs,
+runs the body, and distributes the outputs. The tokens across all places are
+the live state of the system.
 
 ## Anatomy of a transition
 

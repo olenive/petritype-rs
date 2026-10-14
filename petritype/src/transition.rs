@@ -229,7 +229,9 @@ pub struct TransitionInfo<'a> {
     /// [`MutateWhereEdge`](crate::MutateWhereEdge), whose body parameter
     /// borrows a token where it lies: such a firing runs inline inside
     /// [`launch`](crate::Net::launch) instead of being handed to a worker.
-    /// Derived from the edge kinds, never asked of the author.
+    /// Derived from the edge kinds, never asked of the author. The other
+    /// reads, [`SnapshotEdge`](crate::SnapshotEdge) and
+    /// [`SurveyEdge`](crate::SurveyEdge), hand over clones and leave it true.
     pub detachable: bool,
 }
 
@@ -325,8 +327,10 @@ impl TransitionBuilder<'_> {
     /// time it fails, and may have changed or dropped them. This flag buys
     /// them back with a clone. Stage one clones every token a consuming edge
     /// takes — [`TakeEdge`](crate::TakeEdge),
-    /// [`TakeAllEdge`](crate::TakeAllEdge) and
-    /// [`TakeWhereEdge`](crate::TakeWhereEdge) — before the body sees
+    /// [`TakeAllEdge`](crate::TakeAllEdge),
+    /// [`TakeWhereEdge`](crate::TakeWhereEdge) and
+    /// [`DrainEdge`](crate::DrainEdge), which took none from an empty place
+    /// and so has none to put back — before the body sees
     /// anything, the clones travel with the firing, and any failure of it (an
     /// `Err`, a panic, or a [`Distribution`](crate::Distribution) naming a
     /// place the transition may not write to) puts them back at the **front**
@@ -340,10 +344,11 @@ impl TransitionBuilder<'_> {
     /// the next firing takes it again.
     ///
     /// [`SnapshotEdge`](crate::SnapshotEdge),
-    /// [`MutateEdge`](crate::MutateEdge) and
-    /// [`MutateWhereEdge`](crate::MutateWhereEdge) consume nothing, so there
-    /// is nothing to restore for them: a snapshot's clone was never in a
-    /// place, and a mutation was made where the token lies and stands,
+    /// [`MutateEdge`](crate::MutateEdge),
+    /// [`MutateWhereEdge`](crate::MutateWhereEdge) and
+    /// [`SurveyEdge`](crate::SurveyEdge) consume nothing, so there is nothing
+    /// to restore for them: a snapshot's or a survey's clones were never in
+    /// a place, and a mutation was made where the token lies and stands,
     /// failure or not.
     ///
     /// The cost is one clone per consumed token per firing of *this*

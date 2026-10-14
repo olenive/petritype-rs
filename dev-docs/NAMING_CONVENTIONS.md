@@ -35,6 +35,9 @@ rename backlog.
 | non-consuming read, live `&mut` | `MutateEdge(place)` | `MutateEdge` | — |
 | consuming input, the oldest token a filter accepts | `TakeWhereEdge(place, filter)` (the spec's `TakeWhere`, with the crate's `Edge` suffix), `EdgeKind::TakeWhere`, `"take_where"` | `TakeWhereEdge` | — |
 | non-consuming read, live `&mut` of the oldest token a filter accepts | `MutateWhereEdge(place, filter)`, `EdgeKind::MutateWhere`, `"mutate_where"` | `MutateWhereEdge` | — |
+| consuming input, every token, zero or more: never holds its transition back (a *reset arc*) | `DrainEdge(place)`, `EdgeKind::Drain`, `"drain"` (the `Vec::drain` idiom) | `DrainEdge`, argument annotated `list[T]` | — |
+| non-consuming read, clones of every token, zero or more: never holds its transition back | `SurveyEdge(place)`, `EdgeKind::Survey`, `"survey"` | `SurveyEdge` | — |
+| whether an input edge needs something in its place before its transition may fire | **presence**; `EdgeKind::requires_presence` (false exactly for drain and survey) | — | — |
 | output connection | output edge (positional in the builder tuple) | `ReturnedEdgeFromTransition` | — |
 | author-written router after the body | output distribution function; body method `body.output_distribution(f)` (extension trait `OutputDistribution`, wrapper `WithOutputDistribution`) | `output_distribution_function` field | rename `output_distribution` (alias kept); `guard` / `priority` already omit `_function` |
 | value returned by an output distribution function | `Distribution` (`Distribution::new().to(place, token)`, chainable; `push` for loops; one constructor only) | the `{name: token}` dict | — |

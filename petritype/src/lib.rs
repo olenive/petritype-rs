@@ -173,7 +173,9 @@
 //!   [`TakeWhereEdge`] and [`MutateWhereEdge`] do what `TakeEdge` and
 //!   `MutateEdge` do to the oldest token a [`Filter`] accepts rather than to
 //!   the front one, leaving every other token where it is (*keyed* edges,
-//!   DESIGN §8.3); [`EdgeKind`] is the same thing with the type forgotten.
+//!   DESIGN §8.3); [`DrainEdge`] and [`SurveyEdge`] take or read every
+//!   token there is, zero or more, and never hold their transition back
+//!   (DESIGN §4.4); [`EdgeKind`] is the same thing with the type forgotten.
 //! - [`IntoTokens`] decides how many tokens one returned slot is worth, and
 //!   [`IntoOutcome`] tells outputs from failure.
 //! - [`RoutedOutput`] is the second output form: a body that returns a value
@@ -242,7 +244,8 @@
 //!   [`Net::enable`] / [`Net::disable`] work the author's on/off switch,
 //!   while *fireable* means "could fire right now" — switched on, input
 //!   places non-empty (holding a token the filter accepts, for a keyed
-//!   edge), guard saying yes.
+//!   edge; anything, nothing included, for a drain or a survey edge), guard
+//!   saying yes.
 //! - [`Net::fireable`] and [`Net::is_fireable`] say what could fire now;
 //!   [`Net::step`] fires one transition, [`Net::fire`] fires a named one,
 //!   and a body that returns `Err` or panics gives [`FiringFailed`].
@@ -371,8 +374,8 @@ pub use distribution::{
     Distribution, DistributionError, OutputDistribution, WithOutputDistribution,
 };
 pub use edge::{
-    EdgeInfo, EdgeKind, InputEdge, InputEdges, MutateEdge, MutateWhereEdge, SnapshotEdge,
-    TakeAllEdge, TakeEdge, TakeWhereEdge,
+    DrainEdge, EdgeInfo, EdgeKind, InputEdge, InputEdges, MutateEdge, MutateWhereEdge,
+    SnapshotEdge, SurveyEdge, TakeAllEdge, TakeEdge, TakeWhereEdge,
 };
 #[cfg(feature = "serde")]
 pub use error::TemplateError;

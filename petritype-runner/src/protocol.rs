@@ -804,6 +804,12 @@ pub enum EdgeKind {
     TakeWhere,
     /// Borrows the oldest token its filter accepts and may change it.
     MutateWhere,
+    /// Consumes every token, zero or more: an empty place does not hold the
+    /// transition back (§5.1, slice 22).
+    Drain,
+    /// Reads a clone of every token, zero or more: an empty place does not
+    /// hold the transition back (§5.1, slice 22).
+    Survey,
 }
 
 // ----- filters ---------------------------------------------------------------

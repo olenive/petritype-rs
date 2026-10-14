@@ -12,9 +12,11 @@
 //! The nets are in `parcel_runner/nets.rs`, which the transcript tests load
 //! too: the parcel nets, and the protocol's conformance nets `transit`, whose
 //! vehicles carry nets of their own (`get_state {"nested_id": ...}` reads
-//! one), and `wildlife`, whose species carry keys (`query {"filter":
-//! {"clauses": [{"key": "class", "values": ["Bird"]}]}}` finds the birds).
-//! This file is the whole of what an author writes besides them.
+//! one), `wildlife`, whose species carry keys (`query {"filter":
+//! {"clauses": [{"key": "class", "values": ["Bird"]}]}}` finds the birds),
+//! and `shop`, whose transitions read a place that may be empty through a
+//! `survey` and a `drain` edge. This file is the whole of what an author
+//! writes besides them.
 
 use std::process::ExitCode;
 

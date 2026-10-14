@@ -79,5 +79,14 @@ name = "wildlife"
 test = true
 required-features = ["serde"]
 
+# Input edges that accept an empty place (DESIGN §4.4): a shop pricing orders
+# with whatever promotions are running, and ending them at the close of the
+# day. The net itself is `examples/shop/net.rs`, the protocol's conformance
+# net `shop`, every place of which a host may inject into: hence the feature.
+[[example]]
+name = "shop"
+test = true
+required-features = ["serde"]
+
 [package.metadata.docs.rs]
 all-features = true

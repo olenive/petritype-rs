@@ -91,7 +91,7 @@ impl<'a> ErasedInputs<'a> {
     }
 }
 
-/// A cursor over one firing's [`ErasedInputs`]: what an input position takes
+/// A cursor over one firing's `ErasedInputs`: what an input position takes
 /// its arguments from.
 ///
 /// A position takes exactly as many arguments as it described edges, in the

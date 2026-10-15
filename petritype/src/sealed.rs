@@ -64,7 +64,7 @@ pub trait EdgeSealed {
     /// edge has already guaranteed.
     fn extract<'a>(inputs: &mut ErasedCursor<'a, '_>) -> Self::Arg<'a>;
 
-    /// Appends what this position is, one [`InputSpec`] per edge it binds:
+    /// Appends what this position is, one `InputSpec` per edge it binds:
     /// a place edge with its kind, the net its handle carried and a keyed
     /// edge's filter, or a parameter with its type (DESIGN §10).
     ///

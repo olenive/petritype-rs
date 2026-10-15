@@ -20,7 +20,8 @@ as JSON, its tokens' inner nets rebuilt from templates registered by name,
 and copied with `fork`, which is what lets it be snapshotted (slice 16). Tokens may carry keys, named values
 their place derives from them, and a net answers queries by them from an index it keeps (slice 18); a keyed edge takes
 or mutates the oldest token a filter accepts, leaving the others where they are (slice 19); a drain or a survey edge takes or reads
-every token of a place, zero or more, and never holds its transition back (slice 22). The Bevy visualiser lives in its own
+every token of a place, zero or more, and never holds its transition back (slice 22); and a body may take its inputs and return its
+outputs as structs bound to the net by field name, which name no place, so one library function serves many nets (slice 23). The Bevy visualiser lives in its own
 repository, `petritype-bevy`, and depends on this crate. See `DESIGN.md` for the design and
 `dev-docs/NAMING_CONVENTIONS.md` for vocabulary shared with the Python library.*
 
@@ -142,12 +143,42 @@ nothing, so `assert_no_source_transitions` does not count it: a transition whose
 `petritype/examples/shop.rs` runs the shop (`cargo run -p petritype --example shop --features serde`); `DESIGN.md`
 §4.4 has the rules, and on the wire the two are `"drain"` and `"survey"` (PROTOCOL.md §5.1).
 
+## Binding by name
+
+A body is bound to a net by position (a tuple of inputs is its parameter list, a returned tuple fills the outputs in
+order), by type (a routed return), or by name: a library function takes and returns structs that name no place and no
+kind of edge, and each net wires their fields its own way.
+
+```rust
+#[derive(Inputs)]
+pub struct Pricing { pub order: Order, pub promos: Vec<Promo>, pub prices: Prices }
+
+#[derive(Outputs)]
+pub struct Priced { pub order: Order, pub note: Option<Note>, pub restock: Vec<Item> }
+
+pub fn price(p: Pricing) -> Priced { /* knows nothing about places */ }
+
+b.transition(
+    "Price Order",
+    (PricingEdges { order: TakeEdge(orders), promos: SurveyEdge(promos), prices: Param::new() },),
+    PricedEdges { order: priced, note: notes, restock },
+    price,
+);
+```
+
+`PricingEdges` and `PricedEdges` are generated: each field takes any input that reads its type (`TakeWhereEdge` or
+`DrainEdge` would do for the wholesaler next door) or any place that accepts it, the order of the fields is the order
+of the edges the net and the wire see, and a wrong kind is a compile error at the field. A struct of inputs is one
+position of the input tuple; a struct of outputs is all of the outputs. Neither has the tuples' cap.
+`petritype/examples/pricing.rs` wires the library into a shop and a wholesaler (`cargo run -p petritype --example
+pricing`); `DESIGN.md` §4.4 and §4.5 have the rules.
+
 ## Crates
 
 | crate | what it is |
 |---|---|
 | `petritype` | the builder, `Net`, events, checks, drivers, commands, snapshots |
-| `petritype-derive` | `#[derive(Routed)]`, re-exported as `petritype::Routed` |
+| `petritype-derive` | `#[derive(Routed)]`, `#[derive(Inputs)]` and `#[derive(Outputs)]`, re-exported as `petritype::Routed`, `petritype::Inputs` and `petritype::Outputs` |
 | `petritype-dot` | Graphviz DOT text of a `Net` or a `Snapshot` |
 | `petritype-runner` | turns your binary into a net process speaking the shared [net protocol](https://github.com/olenive/petritype/blob/main/PROTOCOL.md) on stdin and stdout, for petritype-server and the Bevy visualiser |
 | `petritype-bevy` | separate repository: a Bevy visualiser that mirrors a running net into entities |
@@ -178,8 +209,10 @@ the live state of the system.
 Where outputs go is decided by the return type of the body, or of the output
 distribution function if there is one:
 
-- **Positional**: a tuple. Slot *i* goes to output place *i*. Use when several
-  output places share a type.
+- **Positional**: a tuple. Return position *i* goes to output place *i*. Use
+  when several output places share a type.
+- **Named**: a struct that derives `Outputs`, whose fields go to the places
+  wired to their names. Use for a library function more than one net wires.
 - **Routed**: any non-tuple value. Each emitted value goes to the output place
   of its type; order of output places doesn't matter. Use when types are
   distinct.

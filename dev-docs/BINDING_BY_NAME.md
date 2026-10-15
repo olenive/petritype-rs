@@ -337,3 +337,143 @@ numbers, and the D3 outcome.
 > acceptance tests and check section 6. Append an "As built" section when
 > finished. Do not touch `~/work/games/**`, `~/work/petritype`,
 > `~/work/petritype-bevy` or `TODO_TEMP.md`.
+
+## As built
+
+Slice 23, 2026-10-15, branch `binding-by-name` of petritype-rs, cut from
+main at 3e76c11: R2 to R9, in the five commits of §5's second branch. R1
+(the cap to 16, its compile-time numbers and DESIGN §5's cap sentence and
+§16's arity row) is the `arity-16` branch's and is not here; where these
+docs need the cap they say "the tuple cap (§5)". DESIGN §4.4 ("Binding by
+name"), §4.5 ("Named"), §5, §16 and §18 (slice 23) describe what was built;
+this section names what differs from §2, §4 and §6, and why.
+
+**§2, the example.** Built as `petritype/examples/pricing.rs`, with the
+library in `examples/pricing/library.rs` and the nets in
+`examples/pricing/nets.rs`; it needs no feature and is no conformance net.
+Four differences from the text:
+
+- Every struct of edges is written inside the input tuple,
+  `(PricingEdges { .. },)`, because R6 was dropped (below).
+- `Promo` carries `percent: u32` rather than `rate: f32`, so that the tests
+  compare totals exactly; `restock` holds the items the price list does not
+  carry, which the order is not charged for, rather than always `vec![]`, so
+  that the `Vec` field carries tokens in a test.
+- The mixed form is a second transition of the shop net, `Price and Stamp`
+  (gift orders beside a `Stamps` place), not a third net; it writes through
+  the same `PricedEdges` value as `Price Order`, a struct of outputs being
+  `Copy` when its places are.
+- The wholesaler is built by `build_wholesale_with(prices, body)`, generic
+  over the body, with `build_wholesale` passing `price`: §6 asks for a
+  failing body to show the restore, and `price` cannot fail. The wiring's
+  types are named in the example (`WholesaleInputs`, `WholesaleOutputs`)
+  to show that a wiring is a type like any other. The price list is a
+  token seeded on `Price List`.
+
+**§4, the requirements.**
+
+- **R2** as written, with three choices. `EdgeSealed::spec` became
+  `describe(&self, &mut Vec<InputSpec>)` and `extract` takes an
+  `ErasedCursor`, a wrapper over the `IterMut` the wrapper used before, so
+  `&mut` arguments can still be alive together. The wrapper calls
+  `cursor.finish()` after the body, which panics, and so fails the firing,
+  if a position took fewer inputs than it described: a token never handed
+  to the body would otherwise be lost silently. `ErasedInput` became
+  crate-private, no sealed signature naming it any more. No nested tuple
+  is an `InputEdge`: it would collide with R6's blanket, and nothing needs
+  it; the engine test binds two edges through a hand-written `Pair`
+  position inside `body.rs`'s tests (describe order, extraction with a
+  borrow, the flat read API, restore, `DuplicateInputPlace` and the source
+  rule).
+- **R3.** `Reads<V>` is as specified, one impl per kind (written out, not
+  generated, so that rustc's "but `Reads<Promo>` is implemented" help shows
+  the impl rather than a macro). Its relation to `Arg<'a>` is a hidden
+  subtrait, `binding::Extract<'a, V>: Reads<V>`, implemented beside each
+  `Reads` impl: `TakeEdge<T>: Extract<'a, T>` for every `'a`,
+  `MutateEdge<T>: Extract<'a, &'a mut T>`. The wiring struct is bounded by
+  `Reads<V>` (`for<'a> Reads<&'a mut T>` for a borrowing field), where the
+  message is written; its impls ask `for<'a> Extract<'a, V>`, which ties
+  the field's lifetime to the cursor's. A blanket `Extract` over
+  `EdgeSealed<Arg<'a> = V>` compiled too, but a wrong kind then also
+  produced an E0271 naming `EdgeSealed`.
+- **D3: mutate fields are in.** The bound compiles on stable 1.98, no
+  `unsafe`: `pass_inputs_mutate.rs` and `tests/binding.rs` fill
+  `&'a mut T` fields from a `MutateEdge` and a `MutateWhereEdge`, with a
+  function and with a closure taking `Tally<'_>`.
+- **R4.** The derive implements `EdgeSealed` and `InputEdge` directly for
+  the wiring, naming `EdgeSealed` through `petritype::binding`, rather than
+  the core holding a blanket over a hidden "wiring" trait: with such a
+  blanket in reach, rustc explained the plainest mistake, a place handle in
+  the tuple, as "`PlaceRef<u32>: InputWiring` is not satisfied". So the
+  seal has one opening, the hidden module, which re-exports `EdgeSealed`
+  (and, for R5, `PlaceTupleSealed`). Beyond the spec: the derive also
+  refuses a `where` clause; besides `#[binding(edges = "..")]` it reads
+  `inputs = ".."` and `outputs = ".."`, so that one struct can derive both
+  bindings without their wirings colliding; the wiring derives `Clone`,
+  `Copy` and `Debug`, and its fields take the struct's visibility (a library
+  struct with private fields can still be wired); a type parameter named
+  `F0` in a field's type is dodged (`_F0`). The generated items are spanned
+  at the struct's name and each bound at its field, so that "required by
+  this bound" points at the field, and no note points into the derive.
+- **R5** as written. `Accepts<V>` is one blanket impl for `PlaceRef<T>` over
+  `IntoTokens<T>`, marked `#[diagnostic::do_not_recommend]` so that a wrong
+  place is reported on `Accepts` ("`PlaceRef<Order>` cannot take a field of
+  type `Option<Note>`") rather than on `IntoTokens`. The return-form impl
+  is through a hidden `binding::NamedOutputs<Outputs>`, which the derive
+  implements for the struct and its own wiring only, under the marker
+  `Named`; the fields push to `OutputTarget::Index(i)` through an `Emit`
+  sink that counts them. The ambiguity with `Routed` was real (both impls
+  applied to a struct deriving both); the routed form now asks
+  `Outputs: TupleOfPlaces`, a sealed marker of the tuples of place handles,
+  so the struct is routed whole by a tuple and bound by name by its own
+  wiring, tested both ways. Nothing existing changes, a tuple having been
+  the only `OutputPlaces` until now.
+- **R6 dropped (D5).** The blanket is coherent and a lone struct then
+  compiles, but fifteen UI cases got worse: `(inbox,)` was reported as "a
+  transition's inputs must be a tuple of input edges", a closure's wrong
+  parameter or arity lost rustc's expected/found signatures (E0631 and
+  E0593 became a generic "body parameters do not match"), and every
+  mismatch of the outputs (a wrong number or type of return positions, an
+  `Err` type that is not an error, a wrong place in a struct of outputs)
+  was reported as a mismatch of the inputs. Two impls in reach of every input tuple is the
+  cause, and `#[diagnostic::do_not_recommend]` does not remove it. A
+  derive-generated conversion trait (`IntoInputEdges`, the struct
+  converting itself to its one-tuple) was tried in a prototype: it kept
+  those messages but moved the place handle's error from the element to
+  the call and named the hidden trait for a wrong field, so it was not
+  pursued. `fail_inputs_without_tuple.rs` pins what a lone struct is told
+  (the note, and rustc's own "use a unary tuple instead").
+- **R7.** UI cases: `fail_inputs_wrong_kind`, `fail_inputs_type_parameter`,
+  `fail_inputs_missing_field` with `pass_inputs_every_field`,
+  `pass_inputs_mutate`, `fail_outputs_wrong_place`, `fail_outputs_in_tuple`
+  (R9's non-goal, which the `OutputPlaces` note answers) and
+  `fail_inputs_without_tuple`; the derives' other refusals are unit tests in
+  `petritype-derive`. The `on_unimplemented` texts of `InputEdge`,
+  `InputEdges`, `TransitionBody`, `OutputPlaces`, `PositionalOutputs` and
+  `IntoOutcome` gained the named form; `Reads`, `Extract` and `Accepts`
+  are new. A wrong kind is reported four times (the literal, the call's
+  generic argument, `InputEdges`, the body), each with the same message;
+  the first points at the field.
+- **R8.** DESIGN as listed, with "slot" made "return position" in §4.5 and
+  in §16's `IntoTokens` row; §5's prose had no "slot" left outside the cap
+  sentence, which is untouched, and the wire's `slot` keeps its name.
+  PROTOCOL.md: nothing. **Python: nothing**; it binds inputs by name
+  already and outputs by type or `return_index`, and the wire did not change.
+- **R9** held: no `Group`, no public nested tuples, no new output kind, no
+  arrays of edges, no struct of outputs inside a tuple, no derive on enums,
+  no change to the wire, the viewer, the runner or the transcripts.
+
+**§6, the expected results.** All hold, with two notes. The till is built
+by name in `tests/binding.rs`, one struct of fourteen inputs and one of
+thirteen outputs, past the tuple cap without R1; it builds flat at sixteen
+only on `arity-16`, so that half is that branch's. Its fourteen inputs are
+thirteen edges and the `Param` price list, so `TransitionInfo::inputs` and
+the topology list thirteen input edges and one parameter, not "fourteen
+input edges" as `TRANSITION_ARITY.md` §6 counts them. The runner's `slot`
+for a named return is checked by a unit test in its `translate` module
+(field order, 0 and 1); the shared transcripts replay unchanged through the
+suite's gate.
+
+**Commits**, on `binding-by-name`: 8850d43 (R2), debe8e0 (R3 and R4),
+f7c4521 (R5), 1848ea1 (R6, attempted and dropped), and the documentation
+commit that adds this section (R8).

@@ -530,9 +530,11 @@ Conventions:
   reliable, and the annotation doubles as documentation.
 - Bodies, guards and priorities are `'static`: capture place handles with
   `move` (`PlaceRef` is `Copy`, so it costs nothing).
-- Input arity is capped at 12. Output arity likewise. Inputs and outputs are
-  always tuples: a single one needs the trailing comma, `(TakeEdge(p),)` and
-  `(count,)`, and the empty tuple `()` means none.
+- Input arity is capped at 16, where Bevy's `IntoSystem` and axum's handlers
+  stop (12 until 2026-10-15, `dev-docs/TRANSITION_ARITY.md`). Output arity
+  likewise. Inputs and outputs are always tuples: a single one needs the
+  trailing comma, `(TakeEdge(p),)` and `(count,)`, and the empty tuple `()`
+  means none.
 - Bodies may return `Outputs` or `Result<Outputs, E>` where
   `E: Error + Send + Sync + 'static` (trait `IntoOutcome`).
 - Mismatch errors use `#[diagnostic::on_unimplemented]` so the compiler says
@@ -1925,7 +1927,7 @@ effects, which the viewer attributes; 232 tests with `http`.
 |---|---|
 | heterogeneous typed places in one net | `Box<dyn Any + Send + Sync>` storage + `TypeId`; typed handle `PlaceRef<T>` with `PhantomData<fn() -> T>` |
 | per-type helpers without trait objects on tokens | monomorphised generic fns coerced to `fn` pointers, stored in `PlaceMeta` |
-| bodies of any arity in one list | trait over tuples, `macro_rules!` impls for arity 0..=12 (as Bevy `IntoSystem`, axum handlers) |
+| bodies of any arity in one list | trait over tuples, `macro_rules!` impls for arity 0..=16 (as Bevy `IntoSystem`, axum handlers, which stop there too) |
 | `&mut T` parameters from `MutateEdge` | generic associated type `type Arg<'a>` on the edge-kind trait |
 | readable mismatch errors | `#[diagnostic::on_unimplemented]` |
 | body may return plain or `Result` | trait `IntoOutcome<Outputs, Marker>` over the return type; marker tags (`Positional`, `Failing<M>`, later `Routed`) keep the impls from overlapping, as Bevy's `IntoSystem<Marker>` |

@@ -151,7 +151,7 @@ pub(crate) type ErasedBody =
 /// run time than the positional form, which knows its indices from the start.
 ///
 /// The table is a small vector rather than a map: a transition has at most
-/// twelve outputs, and a linear scan over that many `TypeId`s beats hashing
+/// sixteen outputs, and a linear scan over that many `TypeId`s beats hashing
 /// one.
 pub struct RouteTable {
     /// One entry per routable payload type, in the order

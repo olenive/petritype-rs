@@ -709,7 +709,7 @@ impl<T: Clone + Send + Sync + 'static> EdgeSealed for SurveyEdge<T> {
 
 impl<T: Clone + Send + Sync + 'static> InputEdge for SurveyEdge<T> {}
 
-/// A tuple of input edges, `()` to twelve of them.
+/// A tuple of input edges, `()` to sixteen of them.
 ///
 /// This is the type of the `inputs` argument of
 /// [`NetBuilder::transition`](crate::NetBuilder::transition). A single edge

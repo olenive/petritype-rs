@@ -4,7 +4,7 @@
 //! Three questions have to be answered at compile time:
 //!
 //! 1. Do the body's parameters match the input edges? — [`TransitionBody`],
-//!    implemented for every arity from 0 to 12.
+//!    implemented for every arity from 0 to 16.
 //! 2. Does what the body returns match the output places? —
 //!    [`PositionalOutputs`], slot by slot, with [`IntoTokens`] deciding how
 //!    many tokens one slot is worth; [`RoutedOutput`](crate::RoutedOutput),
@@ -142,7 +142,7 @@ impl<T> IntoTokens<T> for Vec<T> {
     }
 }
 
-/// A tuple of place handles, `()` to twelve of them: a transition's outputs.
+/// A tuple of place handles, `()` to sixteen of them: a transition's outputs.
 ///
 /// The tuple is positional, so its order is the order of the slots in what
 /// the body returns. A single output still needs the trailing comma:
@@ -316,7 +316,7 @@ where
 /// A closure that can be a transition's body, given those input edges and
 /// those output places.
 ///
-/// Implemented for every `FnMut` of arity 0 to 12 whose parameters are what
+/// Implemented for every `FnMut` of arity 0 to 16 whose parameters are what
 /// the edges produce and whose return value is an [`IntoOutcome`]. The body
 /// is `FnMut`, so it may keep private state between firings, and
 /// `Send + Sync + 'static`, because it may run on another thread and the net

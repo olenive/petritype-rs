@@ -205,3 +205,64 @@ the compile-time numbers from R3.
 > Build the section 2 net as the acceptance test and check section 6. Append
 > an "As built" section to the document when finished. Do not touch
 > `~/work/games/**` or `~/work/petritype-bevy/TODO_TEMP.md`.
+
+## As built (R1, arity-16)
+
+Built 2026-10-15 on branch `arity-16`, as one commit on 3e76c11: the commit
+that adds this section (a commit cannot name its own hash; `git log
+arity-16` has it). Of this document only R3 is built, under its new name,
+R1 of `BINDING_BY_NAME.md`; groups (R1, R2 here) were replaced by binding
+by name and are not built.
+
+**What changed.** `for_each_arity!` in `petritype/src/arity.rs` now runs
+its macro for arities 0 to 16, the four new arities written out like the
+twelve before them. The edge, body and output macros are untouched: each
+emits its impls for four more tuple sizes, twelve impls per arity in all.
+Every doc that gave twelve as the cap now gives sixteen: the module doc of
+`arity.rs` (with the reason, and why it was 12), DESIGN §5's conventions
+bullet, DESIGN §16's "trait over tuples" row, the docs of `InputEdges`,
+`OutputPlaces`, `TransitionBody` and the `body` module, and `RouteTable`'s
+note on why a vector beats a map. Twelves that are not the cap stay: slice
+2's `a_body_may_have_no_inputs_or_twelve` and `..._outputs_or_twelve` still
+pass and still mean something, twelve being inside the range now rather
+than its end, and the dev-docs proposals describe c93ec03 as it was. No
+API, behaviour, wire or diagnostic changed; no trybuild `.stderr` moved.
+
+**Tests.** `petritype/tests/arity16.rs`: the §2 till written flat, one
+transition `Serve` with fourteen input positions and thirteen outputs, and
+the §6 checks (one order makes one receipt and one `Served` and restocks
+nothing; a shelf the order empties is restocked and no other; `Serve` waits
+for an order whatever the shelves hold; an out-of-stock order fails the
+body and `restore_tokens_on_failure` puts back the order alone; the
+topology in declaration order). Beside it a smoke test at the cap: sixteen
+`TakeEdge`s in, sixteen places out, the body returning its inputs reversed
+so that positions 12 to 15 must land where they were declared.
+
+**One difference from §6.** "The topology lists fourteen input edges"
+counts the `Param<Prices>` as an edge. It is an input position but not an
+edge of the net (DESIGN §10): the topology lists thirteen input edges (one
+take, one snapshot, eleven surveys) and the price list under `params`. The
+test asserts that, and that the two add up to fourteen.
+
+**Compile time.** `cargo clean -p petritype`, then `cargo build -p
+petritype --features serde` (debug, dependencies already built), wall
+clock in seconds; rustc 1.98.1, native arm64, 14 cores. The machine was
+shared with another agent's builds (load average 4 to 15), so a second
+round ran before and after back to back under the same load. The tests
+build is `--tests` after the same clean, and was taken before
+`arity16.rs` existed so that both sides compile the same tests.
+
+| build | cap 12 (before) | cap 16 (after) |
+|---|---|---|
+| library, round 1 | 1.33, 1.30, 1.31 | 1.38, 1.39, 1.39 |
+| library, round 2 | 1.33, 1.32, 1.32 | 1.46, 1.42, 1.43 |
+| library, mean of six | 1.32 | 1.41 |
+| `--tests`, rounds 1 and 2 | 3.88, 4.16 | 4.50, 4.01 |
+
+The library pays about 0.1 s (7%) for the four arities; the tests build
+moves less than its own noise. R3's condition ("keep 12 if 16 costs more
+than a few seconds") is met with room to spare. `BINDING_BY_NAME.md` §3
+gives 2.5 s for a full recompile; on this toolchain and machine it is
+1.3 s.
+
+**Python.** Nothing: its edges are lists and have no cap.

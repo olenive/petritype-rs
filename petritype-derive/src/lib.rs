@@ -178,8 +178,10 @@ fn variants(data: &DataEnum) -> Result<(Vec<TokenStream2>, Vec<TokenStream2>)> {
 ///
 /// The wiring is one input position: the body takes a `Pricing` there, and
 /// the transition's edges are its fields' edges in field order, which is
-/// what the read API and the wire report. It is as visible as the struct,
-/// fields included, and `Clone`, `Copy` and `Debug` where its inputs are.
+/// what the read API and the wire report. Like any input it goes in the
+/// input tuple, a lone one with the trailing comma. It is as visible as the
+/// struct, fields included, and `Clone`, `Copy` and `Debug` where its
+/// inputs are.
 ///
 /// The struct may have one lifetime, for fields of type `&'a mut T` that a
 /// `MutateEdge` or a `MutateWhereEdge` fills; the body then takes

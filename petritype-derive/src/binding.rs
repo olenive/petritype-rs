@@ -161,7 +161,7 @@ pub(crate) fn inputs(input: &DeriveInput) -> Result<TokenStream2> {
          order."
     );
 
-    let items = quote! {
+    let items = quote_spanned! {name.span()=>
         #[doc = #doc]
         #[doc = ""]
         #[doc = #doc_more]
@@ -246,7 +246,7 @@ pub(crate) fn outputs(input: &DeriveInput) -> Result<TokenStream2> {
          outputs, where the body returns a `{name}`; the transition's output edges are its \
          fields', in field order."
     );
-    let items = quote! {
+    let items = quote_spanned! {name.span()=>
         #[doc = #doc]
         #[doc = ""]
         #[doc = #doc_more]
@@ -380,7 +380,7 @@ fn edges_name(input: &DeriveInput, side: &Side) -> Result<Ident> {
     }
     Ok(own
         .or(general)
-        .unwrap_or_else(|| format_ident!("{}Edges", input.ident)))
+        .unwrap_or_else(|| format_ident!("{}Edges", input.ident, span = input.ident.span())))
 }
 
 /// `F0`, `F1`, ...: the wiring's type parameters, one per field. If a field's

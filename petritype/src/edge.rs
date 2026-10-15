@@ -873,6 +873,14 @@ impl<'a, T: Clone + Send + Sync + 'static> Extract<'a, Vec<T>> for SurveyEdge<T>
 /// it: the tuple is the body's parameter list, in order. So may a struct of
 /// edges that `#[derive(Inputs)]` generated, which is one position however
 /// many edges it binds (DESIGN §4.4).
+///
+/// A lone struct of edges goes in a tuple too, `(PricingEdges { .. },)`,
+/// like a lone edge. Accepting either alone would take a blanket impl for
+/// any [`InputEdge`] beside the tuples', and with two impls in reach of
+/// every input tuple the compiler stops saying which input is wrong: a
+/// place handle in the tuple would be reported as "not a tuple", and a
+/// body that returns the wrong number of outputs as a mismatch of its
+/// parameters.
 #[diagnostic::on_unimplemented(
     message = "a transition's inputs must be a tuple of input edges",
     label = "not a tuple of input edges",

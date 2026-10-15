@@ -36,7 +36,7 @@ use std::any::TypeId;
 use std::fmt;
 
 use crate::arity::for_each_arity;
-use crate::erased::ErasedInput;
+use crate::erased::{ErasedCursor, ErasedInput};
 use crate::ids::{NetId, PlaceId, PlaceRef, TransitionId};
 use crate::keys::Filter;
 use crate::sealed::{EdgeSealed, EdgeTupleSealed};
@@ -564,28 +564,28 @@ pub(crate) fn owned_tokens<T: 'static>(input: &mut ErasedInput<'_>) -> Vec<T> {
     }
 }
 
-/// The `spec` of a place edge, written once: the handle's place and net, and
-/// the kind this edge type stands for; a keyed edge's filter, cloned, when
-/// the kind is followed by `keyed`.
-macro_rules! edge_spec {
+/// The `describe` of a place edge, written once: one spec, with the handle's
+/// place and net and the kind this edge type stands for; a keyed edge's
+/// filter, cloned, when the kind is followed by `keyed`.
+macro_rules! edge_describe {
     ($kind:expr) => {
-        fn spec(&self) -> InputSpec {
-            InputSpec::Edge {
+        fn describe(&self, out: &mut Vec<InputSpec>) {
+            out.push(InputSpec::Edge {
                 place: self.0.id(),
                 kind: $kind,
                 net: self.0.net(),
                 filter: None,
-            }
+            });
         }
     };
     ($kind:expr, keyed) => {
-        fn spec(&self) -> InputSpec {
-            InputSpec::Edge {
+        fn describe(&self, out: &mut Vec<InputSpec>) {
+            out.push(InputSpec::Edge {
                 place: self.0.id(),
                 kind: $kind,
                 net: self.0.net(),
                 filter: Some(self.1.clone()),
-            }
+            });
         }
     };
 }
@@ -593,11 +593,11 @@ macro_rules! edge_spec {
 impl<T: Send + Sync + 'static> EdgeSealed for TakeEdge<T> {
     type Arg<'a> = T;
 
-    fn extract(input: &mut ErasedInput<'_>) -> T {
-        owned_token::<T>(input)
+    fn extract(inputs: &mut ErasedCursor<'_, '_>) -> T {
+        owned_token::<T>(inputs.next())
     }
 
-    edge_spec!(EdgeKind::Take);
+    edge_describe!(EdgeKind::Take);
 }
 
 impl<T: Send + Sync + 'static> InputEdge for TakeEdge<T> {}
@@ -605,11 +605,11 @@ impl<T: Send + Sync + 'static> InputEdge for TakeEdge<T> {}
 impl<T: Send + Sync + 'static> EdgeSealed for TakeAllEdge<T> {
     type Arg<'a> = Vec<T>;
 
-    fn extract(input: &mut ErasedInput<'_>) -> Vec<T> {
-        owned_tokens::<T>(input)
+    fn extract(inputs: &mut ErasedCursor<'_, '_>) -> Vec<T> {
+        owned_tokens::<T>(inputs.next())
     }
 
-    edge_spec!(EdgeKind::TakeAll);
+    edge_describe!(EdgeKind::TakeAll);
 }
 
 impl<T: Send + Sync + 'static> InputEdge for TakeAllEdge<T> {}
@@ -622,11 +622,11 @@ impl<T: Send + Sync + 'static> InputEdge for TakeAllEdge<T> {}
 impl<T: Clone + Send + Sync + 'static> EdgeSealed for SnapshotEdge<T> {
     type Arg<'a> = T;
 
-    fn extract(input: &mut ErasedInput<'_>) -> T {
-        owned_token::<T>(input)
+    fn extract(inputs: &mut ErasedCursor<'_, '_>) -> T {
+        owned_token::<T>(inputs.next())
     }
 
-    edge_spec!(EdgeKind::Snapshot);
+    edge_describe!(EdgeKind::Snapshot);
 }
 
 impl<T: Clone + Send + Sync + 'static> InputEdge for SnapshotEdge<T> {}
@@ -636,8 +636,8 @@ impl<T: Send + Sync + 'static> EdgeSealed for MutateEdge<T> {
     /// the body writes through the reference.
     type Arg<'a> = &'a mut T;
 
-    fn extract<'a>(input: &'a mut ErasedInput<'_>) -> &'a mut T {
-        match input {
+    fn extract<'a>(inputs: &mut ErasedCursor<'a, '_>) -> &'a mut T {
+        match inputs.next() {
             ErasedInput::Borrowed(token) => (**token)
                 .downcast_mut::<T>()
                 .expect("an input edge's token has the type of its place"),
@@ -645,7 +645,7 @@ impl<T: Send + Sync + 'static> EdgeSealed for MutateEdge<T> {
         }
     }
 
-    edge_spec!(EdgeKind::Mutate);
+    edge_describe!(EdgeKind::Mutate);
 }
 
 impl<T: Send + Sync + 'static> InputEdge for MutateEdge<T> {}
@@ -653,11 +653,11 @@ impl<T: Send + Sync + 'static> InputEdge for MutateEdge<T> {}
 impl<T: Send + Sync + 'static> EdgeSealed for TakeWhereEdge<T> {
     type Arg<'a> = T;
 
-    fn extract(input: &mut ErasedInput<'_>) -> T {
-        owned_token::<T>(input)
+    fn extract(inputs: &mut ErasedCursor<'_, '_>) -> T {
+        owned_token::<T>(inputs.next())
     }
 
-    edge_spec!(EdgeKind::TakeWhere, keyed);
+    edge_describe!(EdgeKind::TakeWhere, keyed);
 }
 
 impl<T: Send + Sync + 'static> InputEdge for TakeWhereEdge<T> {}
@@ -666,8 +666,8 @@ impl<T: Send + Sync + 'static> EdgeSealed for MutateWhereEdge<T> {
     /// Borrows, as a [`MutateEdge`] does, the token the filter chose.
     type Arg<'a> = &'a mut T;
 
-    fn extract<'a>(input: &'a mut ErasedInput<'_>) -> &'a mut T {
-        match input {
+    fn extract<'a>(inputs: &mut ErasedCursor<'a, '_>) -> &'a mut T {
+        match inputs.next() {
             ErasedInput::Borrowed(token) => (**token)
                 .downcast_mut::<T>()
                 .expect("an input edge's token has the type of its place"),
@@ -675,7 +675,7 @@ impl<T: Send + Sync + 'static> EdgeSealed for MutateWhereEdge<T> {
         }
     }
 
-    edge_spec!(EdgeKind::MutateWhere, keyed);
+    edge_describe!(EdgeKind::MutateWhere, keyed);
 }
 
 impl<T: Send + Sync + 'static> InputEdge for MutateWhereEdge<T> {}
@@ -685,11 +685,11 @@ impl<T: Send + Sync + 'static> InputEdge for MutateWhereEdge<T> {}
 impl<T: Send + Sync + 'static> EdgeSealed for DrainEdge<T> {
     type Arg<'a> = Vec<T>;
 
-    fn extract(input: &mut ErasedInput<'_>) -> Vec<T> {
-        owned_tokens::<T>(input)
+    fn extract(inputs: &mut ErasedCursor<'_, '_>) -> Vec<T> {
+        owned_tokens::<T>(inputs.next())
     }
 
-    edge_spec!(EdgeKind::Drain);
+    edge_describe!(EdgeKind::Drain);
 }
 
 impl<T: Send + Sync + 'static> InputEdge for DrainEdge<T> {}
@@ -700,11 +700,11 @@ impl<T: Send + Sync + 'static> InputEdge for DrainEdge<T> {}
 impl<T: Clone + Send + Sync + 'static> EdgeSealed for SurveyEdge<T> {
     type Arg<'a> = Vec<T>;
 
-    fn extract(input: &mut ErasedInput<'_>) -> Vec<T> {
-        owned_tokens::<T>(input)
+    fn extract(inputs: &mut ErasedCursor<'_, '_>) -> Vec<T> {
+        owned_tokens::<T>(inputs.next())
     }
 
-    edge_spec!(EdgeKind::Survey);
+    edge_describe!(EdgeKind::Survey);
 }
 
 impl<T: Clone + Send + Sync + 'static> InputEdge for SurveyEdge<T> {}
@@ -725,14 +725,15 @@ impl<T: Clone + Send + Sync + 'static> InputEdge for SurveyEdge<T> {}
 pub trait InputEdges: EdgeTupleSealed {}
 
 /// The tuple is read by reference: the plain handles are `Copy`, and a keyed
-/// edge's filter is cloned into its spec.
+/// edge's filter is cloned into its spec. Each position appends as many specs
+/// as it binds edges, so the list is flat whatever the positions are.
 macro_rules! impl_edges {
     ($(($t:ident, $r:ident, $i:tt)),*) => {
         impl<$($t: InputEdge,)*> EdgeTupleSealed for ($($t,)*) {
             #[allow(unused_variables, non_snake_case)]
             fn describe(&self, out: &mut Vec<InputSpec>) {
                 let ($($t,)*) = self;
-                $(out.push(EdgeSealed::spec($t));)*
+                $(EdgeSealed::describe($t, out);)*
             }
         }
 

@@ -21,14 +21,21 @@ use std::any::TypeId;
 
 use crate::edge::InputSpec;
 use crate::erased::{
-    ErasedBody, ErasedInput, ErasedOutcome, OutputTarget, RouteTable, RoutingProblem,
+    ErasedBody, ErasedCursor, ErasedOutcome, OutputTarget, RouteTable, RoutingProblem,
 };
 use crate::ids::{NetId, PlaceId};
 use crate::place::ErasedToken;
 
 /// The engine half of [`InputEdge`](crate::InputEdge): what the body
-/// parameter for this input is, how to take it out of an erased input, and
-/// what the input says it is.
+/// parameter for this input position is, how to take it out of the erased
+/// inputs, and which edges the position says it is.
+///
+/// One position may bind several edges: it describes as many as it has and
+/// takes the same number of erased inputs back, in the same order. The eight
+/// edge kinds and [`Param<T>`](crate::Param) describe one each; a struct of
+/// edges describes one per field. Everything downstream of the builder sees
+/// only the flat list, so no other part of the engine knows that positions
+/// and edges can differ in number.
 ///
 /// No `Copy` bound since slice 19: a keyed edge
 /// ([`TakeWhereEdge`](crate::TakeWhereEdge),
@@ -45,28 +52,29 @@ pub trait EdgeSealed {
     /// owned values and ignore `'a`.
     type Arg<'a>;
 
-    /// Takes this input's argument out of the input the engine prepared.
+    /// Takes this position's argument out of the inputs the engine
+    /// prepared: one erased input per edge it described, from the cursor.
     ///
     /// Panics if the variant does not match the edge kind, which the engine
     /// chooses, and `expect`s the downcast, which the typed handle in the
     /// edge has already guaranteed.
-    fn extract<'a>(input: &'a mut ErasedInput<'_>) -> Self::Arg<'a>;
+    fn extract<'a>(inputs: &mut ErasedCursor<'a, '_>) -> Self::Arg<'a>;
 
-    /// What this input is: a place edge with its kind, the net its handle
-    /// carried and a keyed edge's filter, or a parameter with its type
-    /// (DESIGN §10).
+    /// Appends what this position is, one [`InputSpec`] per edge it binds:
+    /// a place edge with its kind, the net its handle carried and a keyed
+    /// edge's filter, or a parameter with its type (DESIGN §10).
     ///
-    /// Takes `self` rather than being a constant because an edge's answer
+    /// Takes `self` rather than being static because an edge's answer
     /// depends on the handle (and the filter) inside it.
-    fn spec(&self) -> InputSpec;
+    fn describe(&self, out: &mut Vec<InputSpec>);
 }
 
 /// The engine half of [`InputEdges`](crate::InputEdges): the erased
 /// description of a tuple of inputs, in declaration order.
 pub trait EdgeTupleSealed {
-    /// Appends one [`InputSpec`] per input position, in tuple order, so the
-    /// builder can check the stamps, record the wiring, and keep the order
-    /// the body's parameters are in.
+    /// Appends one [`InputSpec`] per edge of every input position, in tuple
+    /// order, so the builder can check the stamps, record the wiring, and
+    /// keep the order the body's arguments are taken in.
     fn describe(&self, out: &mut Vec<InputSpec>);
 }
 
@@ -122,7 +130,9 @@ pub trait OutcomeSealed<Out, M> {
 /// typed body into an erased one.
 pub trait BodySealed<E, O, M> {
     /// Wraps this body, once, at declaration time. The wrapper extracts one
-    /// argument per edge, calls the body, and converts what it returns.
+    /// argument per input position, each from as many erased inputs as the
+    /// position described edges, calls the body, and converts what it
+    /// returns.
     ///
     /// The routing table is resolved here too, where the return type and the
     /// output places are both in scope, and captured by the wrapper — which

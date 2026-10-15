@@ -387,16 +387,14 @@ macro_rules! impl_body {
                     Err(problem) => (RouteTable::empty(), Some(problem)),
                 };
                 let body: ErasedBody = Box::new(move |mut inputs: ErasedInputs<'_>| {
-                    // One argument per edge, taken in declaration order.
-                    // `iter_mut` and not indexing: the items borrow the
-                    // slice rather than the iterator, so a `&mut` argument
-                    // may still be alive when the next one is taken.
-                    let mut args = inputs.iter_mut();
-                    let returned = (self)($(
-                        <$t as EdgeSealed>::extract(
-                            args.next().expect("one erased input per input edge"),
-                        ),
-                    )*);
+                    // One argument per position, each taking from the one
+                    // cursor as many inputs as it described edges, in
+                    // declaration order. The items borrow the inputs rather
+                    // than the cursor, so a `&mut` argument may still be
+                    // alive when the next one is taken.
+                    let mut cursor = inputs.cursor();
+                    let returned = (self)($(<$t as EdgeSealed>::extract(&mut cursor),)*);
+                    cursor.finish();
                     OutcomeSealed::into_outcome(returned, &routes)
                 });
                 (body, problem)
@@ -436,12 +434,9 @@ macro_rules! impl_body {
                     Err(problem) => (RouteTable::empty(), Some(problem)),
                 };
                 let body: ErasedBody = Box::new(move |mut inputs: ErasedInputs<'_>| {
-                    let mut args = inputs.iter_mut();
-                    let returned = (self.body)($(
-                        <$t as EdgeSealed>::extract(
-                            args.next().expect("one erased input per input edge"),
-                        ),
-                    )*);
+                    let mut cursor = inputs.cursor();
+                    let returned = (self.body)($(<$t as EdgeSealed>::extract(&mut cursor),)*);
+                    cursor.finish();
                     // Both halves are stage two, so the routing decision runs
                     // wherever the body ran — off-thread in concurrent mode.
                     OutcomeSealed::into_outcome((self.distribute)(returned), &routes)
@@ -484,12 +479,9 @@ macro_rules! impl_body {
                     Err(problem) => (RouteTable::empty(), Some(problem)),
                 };
                 let body: ErasedBody = Box::new(move |mut inputs: ErasedInputs<'_>| {
-                    let mut args = inputs.iter_mut();
-                    let returned = (self.body)($(
-                        <$t as EdgeSealed>::extract(
-                            args.next().expect("one erased input per input edge"),
-                        ),
-                    )*);
+                    let mut cursor = inputs.cursor();
+                    let returned = (self.body)($(<$t as EdgeSealed>::extract(&mut cursor),)*);
+                    cursor.finish();
                     match returned {
                         Ok(value) => {
                             OutcomeSealed::into_outcome((self.distribute)(value), &routes)
@@ -787,5 +779,288 @@ mod tests {
                 ErasedOutcome::Err(error) => panic!("unexpected failure: {error}"),
             }
         }
+    }
+}
+
+/// One input position that binds several edges, below the derive that makes
+/// such positions public (DESIGN §4.4): the engine's half of the change,
+/// tested on a position written by hand.
+#[cfg(test)]
+mod several_edges_per_position {
+    use super::*;
+    use crate::edge::{InputEdges, InputSpec};
+    use crate::erased::{ErasedCursor, ErasedInput};
+    use crate::sealed::EdgeTupleSealed;
+    use crate::{
+        BuildError, DrainEdge, EdgeKind, MutateEdge, NetBuilder, NetError, Param, SnapshotEdge,
+        TakeAllEdge, TakeEdge,
+    };
+
+    /// Two inputs in one position, the body handed both as a pair: what a
+    /// struct of edges is to the engine, without the names. Test-only, and
+    /// not public API in any form.
+    struct Pair<A, B>(A, B);
+
+    impl<A: InputEdge, B: InputEdge> EdgeSealed for Pair<A, B> {
+        type Arg<'a> = (A::Arg<'a>, B::Arg<'a>);
+
+        fn extract<'a>(inputs: &mut ErasedCursor<'a, '_>) -> Self::Arg<'a> {
+            let first = A::extract(inputs);
+            (first, B::extract(inputs))
+        }
+
+        fn describe(&self, out: &mut Vec<InputSpec>) {
+            self.0.describe(out);
+            self.1.describe(out);
+        }
+    }
+
+    impl<A: InputEdge, B: InputEdge> InputEdge for Pair<A, B> {}
+
+    #[derive(Clone)]
+    struct Scale(u32);
+
+    /// As `tests::erase`: wraps a body as `NetBuilder::transition` does.
+    fn erase<Edges, Outputs, M, F>(_inputs: Edges, _outputs: Outputs, body: F) -> ErasedBody
+    where
+        Edges: InputEdges,
+        Outputs: OutputPlaces,
+        F: TransitionBody<Edges, Outputs, M>,
+    {
+        BodySealed::into_erased(body).0
+    }
+
+    fn place<T>(index: u32) -> PlaceRef<T> {
+        PlaceRef::new(NetId(0), PlaceId(index))
+    }
+
+    /// The position describes its two edges where it stands, so the tuple's
+    /// list is flat and in declaration order.
+    #[test]
+    fn a_position_describes_every_edge_it_binds_in_order() {
+        let a = place::<u32>(0);
+        let b = place::<String>(1);
+        let c = place::<u32>(2);
+        let mut out = Vec::new();
+        EdgeTupleSealed::describe(
+            &(
+                TakeEdge(c),
+                Pair(TakeEdge(a), Param::<Scale>::new()),
+                SnapshotEdge(b),
+            ),
+            &mut out,
+        );
+        let kinds: Vec<Option<EdgeKind>> = out
+            .iter()
+            .map(|spec| match spec {
+                InputSpec::Edge { kind, .. } => Some(*kind),
+                InputSpec::Param { .. } => None,
+            })
+            .collect();
+        assert_eq!(
+            kinds,
+            [
+                Some(EdgeKind::Take),
+                Some(EdgeKind::Take),
+                None,
+                Some(EdgeKind::Snapshot)
+            ]
+        );
+    }
+
+    /// Each position takes as many arguments from the one cursor as it
+    /// described, a borrowed one included, and the next position starts
+    /// where it stopped.
+    #[test]
+    fn a_body_is_handed_one_argument_per_position() {
+        let counter = place::<u32>(0);
+        let notes = place::<String>(1);
+        let mut body = erase(
+            (
+                Pair(MutateEdge(counter), TakeAllEdge(counter)),
+                TakeEdge(notes),
+            ),
+            (counter, notes),
+            |(live, batch): (&mut u32, Vec<u32>), note: String| {
+                *live += batch.iter().sum::<u32>();
+                (*live, format!("{note}!"))
+            },
+        );
+
+        let mut token: ErasedToken = Box::new(10_u32);
+        let outcome = body(ErasedInputs::new(vec![
+            ErasedInput::Borrowed(&mut token),
+            ErasedInput::Tokens(vec![Box::new(1_u32), Box::new(2_u32)]),
+            ErasedInput::Token(Box::new(String::from("hi"))),
+        ]));
+        match outcome {
+            ErasedOutcome::Ok(tokens) => {
+                assert_eq!(*tokens[0].1.downcast_ref::<u32>().unwrap(), 13);
+                assert_eq!(tokens[1].1.downcast_ref::<String>().unwrap(), "hi!");
+            }
+            ErasedOutcome::Err(error) => panic!("unexpected failure: {error}"),
+        }
+        assert_eq!(*token.downcast_ref::<u32>().unwrap(), 13);
+    }
+
+    /// The builder, the read API, launch and the parameter lookup see the
+    /// flat list only: three edges and a parameter, wherever the positions
+    /// put them.
+    #[test]
+    fn a_net_sees_the_edges_of_a_position_flat() {
+        let mut b = NetBuilder::new();
+        let orders = b.place::<u32>("Orders");
+        let config = b.place::<String>("Config");
+        let counter = b.place::<u32>("Counter");
+        let out = b.place::<String>("Out");
+        b.param(Scale(10));
+        b.seed(orders, [1, 2]);
+        b.seed(config, [String::from("cfg")]);
+        b.seed(counter, [0]);
+        let bound = b
+            .transition(
+                "Bound",
+                (
+                    Pair(TakeEdge(orders), SnapshotEdge(config)),
+                    Param::<Scale>::new(),
+                    MutateEdge(counter),
+                ),
+                (out,),
+                |(order, cfg): (u32, String), scale: Scale, count: &mut u32| {
+                    *count += 1;
+                    (format!("{cfg}: {}", order * scale.0),)
+                },
+            )
+            .id();
+        let mut net = b.build().expect("the net builds");
+
+        let (_, info) = net.transitions().next().unwrap();
+        assert_eq!(
+            info.inputs,
+            [
+                (orders.id(), EdgeKind::Take),
+                (config.id(), EdgeKind::Snapshot),
+                (counter.id(), EdgeKind::Mutate),
+            ]
+        );
+        assert_eq!(info.params.len(), 1);
+        assert_eq!(net.edges().count(), 4, "three input edges and one output");
+
+        assert_eq!(net.step().unwrap(), Some(bound));
+        assert_eq!(net.step().unwrap(), Some(bound));
+        let written: Vec<&String> = net
+            .tokens(out.id())
+            .map(|(token, _)| net.token::<String>(out.id(), token).unwrap())
+            .collect();
+        assert_eq!(written, ["cfg: 10", "cfg: 20"]);
+        let (count, _) = net.tokens(counter.id()).next().unwrap();
+        assert_eq!(net.token::<u32>(counter.id(), count), Some(&2));
+        assert_eq!(net.count(config.id()), 1, "a snapshot inside a position");
+        assert_eq!(net.step().unwrap(), None, "no order left");
+    }
+
+    /// A failing body that restores its inputs puts back what the edges
+    /// inside a position took, with their ids, as it does for any edge.
+    #[test]
+    fn a_failing_body_restores_the_tokens_a_position_took() {
+        let mut b = NetBuilder::new();
+        let left = b.place::<u32>("Left");
+        let right = b.place::<u32>("Right");
+        let out = b.place::<u32>("Out");
+        b.seed(left, [1]);
+        b.seed(right, [2, 3]);
+        let jam = b
+            .transition(
+                "Jam",
+                (Pair(TakeEdge(left), TakeAllEdge(right)),),
+                (out,),
+                |_: (u32, Vec<u32>)| -> Result<(u32,), std::fmt::Error> { Err(std::fmt::Error) },
+            )
+            .restore_tokens_on_failure()
+            .id();
+        let mut net = b.build().expect("the net builds");
+        let before: Vec<_> = [left, right]
+            .iter()
+            .flat_map(|place| {
+                net.tokens(place.id())
+                    .map(|(token, _)| token)
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+
+        let failure = net.fire(jam).expect_err("the body fails");
+        assert!(matches!(failure, NetError::FiringFailed(ref f) if f.restored));
+        let after: Vec<_> = [left, right]
+            .iter()
+            .flat_map(|place| {
+                net.tokens(place.id())
+                    .map(|(token, _)| token)
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        assert_eq!(after, before, "every token back, ids kept");
+    }
+
+    /// One edge per place per transition counts the edges inside a position
+    /// like any other, within it and across positions; the source rule
+    /// counts the edge inside it that always takes a token, and only that.
+    #[test]
+    fn the_build_checks_count_the_edges_inside_a_position() {
+        /// Declares one transition over places `A` and `C`.
+        type Declare = fn(&mut NetBuilder, PlaceRef<u32>, PlaceRef<u32>);
+        let duplicate = |declare: Declare| {
+            let mut b = NetBuilder::new();
+            let a = b.place::<u32>("A");
+            let c = b.place::<u32>("C");
+            declare(&mut b, a, c);
+            matches!(
+                b.build(),
+                Err(BuildError::DuplicateInputPlace { ref place, .. }) if place == "A"
+            )
+        };
+        assert!(duplicate(|b, a, _| {
+            b.transition(
+                "Within",
+                (Pair(TakeEdge(a), SnapshotEdge(a)),),
+                (),
+                |_: (u32, u32)| (),
+            );
+        }));
+        assert!(duplicate(|b, a, c| {
+            b.transition(
+                "Across",
+                (Pair(SnapshotEdge(c), TakeEdge(a)), SnapshotEdge(a)),
+                (),
+                |_: (u32, u32), _: u32| (),
+            );
+        }));
+
+        let source = |drain: bool| {
+            let mut b = NetBuilder::new();
+            let a = b.place::<u32>("A");
+            let c = b.place::<u32>("C");
+            if drain {
+                b.transition(
+                    "Look",
+                    (Pair(SnapshotEdge(a), DrainEdge(c)),),
+                    (),
+                    |_: (u32, Vec<u32>)| (),
+                );
+            } else {
+                b.transition(
+                    "Look",
+                    (Pair(SnapshotEdge(a), TakeEdge(c)),),
+                    (),
+                    |_: (u32, u32)| (),
+                );
+            }
+            b.assert_no_source_transitions();
+            b.build().map(drop)
+        };
+        assert!(source(false).is_ok(), "the take inside the position counts");
+        assert!(matches!(
+            source(true),
+            Err(BuildError::SourceTransition { .. })
+        ));
     }
 }

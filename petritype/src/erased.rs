@@ -30,7 +30,11 @@ use crate::place::ErasedToken;
 /// Only [`Borrowed`](ErasedInput::Borrowed) ties a firing to the net, and it
 /// is filled in — after the other places have been drained — for inline
 /// firings alone.
-pub enum ErasedInput<'a> {
+///
+/// Crate-private: an input position takes its arguments through an
+/// [`ErasedCursor`], which hands these out to the extractors in this crate
+/// and to nobody else.
+pub(crate) enum ErasedInput<'a> {
     /// One owned token: a [`TakeEdge`](crate::TakeEdge) or
     /// [`TakeWhereEdge`](crate::TakeWhereEdge), or the clone a
     /// [`SnapshotEdge`](crate::SnapshotEdge) took of the front token.
@@ -63,6 +67,10 @@ impl fmt::Debug for ErasedInput<'_> {
 }
 
 /// One argument per input edge, in declaration order.
+///
+/// Flat: an input position that binds several edges (a struct of edges,
+/// DESIGN §4.4) has one argument per edge here, in the order it described
+/// them, and takes them back through an [`ErasedCursor`].
 #[derive(Debug)]
 pub struct ErasedInputs<'a>(Vec<ErasedInput<'a>>);
 
@@ -74,12 +82,62 @@ impl<'a> ErasedInputs<'a> {
         ErasedInputs(inputs)
     }
 
-    /// Hands out each argument once, in order, so that the wrapper can pass
-    /// several `&mut` arguments at once: the items of an
-    /// [`IterMut`](std::slice::IterMut) borrow the slice, not the iterator,
-    /// so they may all be alive together.
-    pub(crate) fn iter_mut(&mut self) -> std::slice::IterMut<'_, ErasedInput<'a>> {
-        self.0.iter_mut()
+    /// A cursor over the arguments, for the generated wrapper to hand to
+    /// each input position in turn.
+    pub(crate) fn cursor(&mut self) -> ErasedCursor<'_, 'a> {
+        ErasedCursor {
+            inputs: self.0.iter_mut(),
+        }
+    }
+}
+
+/// A cursor over one firing's [`ErasedInputs`]: what an input position takes
+/// its arguments from.
+///
+/// A position takes exactly as many arguments as it described edges, in the
+/// same order: one for an edge or a [`Param<T>`](crate::Param), one per
+/// field for a struct of edges. The wrapper hands the same cursor to every
+/// position of the tuple, so where one position stops the next begins, and
+/// the flat list the builder recorded is consumed in declaration order.
+///
+/// Each argument is handed out once, borrowing the inputs for `'s` rather
+/// than the cursor: the items of an [`IterMut`](std::slice::IterMut) borrow
+/// the slice, not the iterator, so several `&mut` arguments may be alive
+/// together while the next one is taken.
+pub struct ErasedCursor<'s, 'a> {
+    /// The arguments not yet taken.
+    inputs: std::slice::IterMut<'s, ErasedInput<'a>>,
+}
+
+impl<'s, 'a> ErasedCursor<'s, 'a> {
+    /// The next argument, for the next edge in declaration order.
+    ///
+    /// Panics if there is none: the builder recorded one argument per edge
+    /// the positions described, so a position that takes more than it
+    /// described is a bug in that position's two halves.
+    pub(crate) fn next(&mut self) -> &'s mut ErasedInput<'a> {
+        self.inputs
+            .next()
+            .expect("an input position takes one argument per edge it described")
+    }
+
+    /// Checks that every argument was taken, once the body has been called.
+    ///
+    /// Panics otherwise, for the same reason as [`next`](ErasedCursor::next):
+    /// an argument left behind is a token the body never saw, and a firing
+    /// that silently dropped one would lose it.
+    pub(crate) fn finish(self) {
+        assert_eq!(
+            self.inputs.len(),
+            0,
+            "an input position took fewer arguments than it described edges"
+        );
+    }
+}
+
+impl fmt::Debug for ErasedCursor<'_, '_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "ErasedCursor({} left)", self.inputs.len())
     }
 }
 

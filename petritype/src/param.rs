@@ -37,7 +37,7 @@ use std::fmt;
 use std::marker::PhantomData;
 
 use crate::edge::{InputEdge, InputSpec, owned_token};
-use crate::erased::ErasedInput;
+use crate::erased::ErasedCursor;
 use crate::place::{CloneFn, ErasedToken};
 #[cfg(feature = "serde")]
 use crate::place::{FromJsonFn, ToJsonFn};
@@ -127,15 +127,15 @@ impl<T> fmt::Debug for Param<T> {
 impl<T: Clone + Send + Sync + 'static> EdgeSealed for Param<T> {
     type Arg<'a> = T;
 
-    fn extract(input: &mut ErasedInput<'_>) -> T {
-        owned_token::<T>(input)
+    fn extract(inputs: &mut ErasedCursor<'_, '_>) -> T {
+        owned_token::<T>(inputs.next())
     }
 
-    fn spec(&self) -> InputSpec {
-        InputSpec::Param {
+    fn describe(&self, out: &mut Vec<InputSpec>) {
+        out.push(InputSpec::Param {
             type_id: TypeId::of::<T>(),
             type_name: type_name::<T>(),
-        }
+        });
     }
 }
 
@@ -264,13 +264,14 @@ mod tests {
         #[derive(Clone)]
         struct ApiToken;
 
-        let spec = EdgeSealed::spec(&Param::<ApiToken>::new());
+        let mut specs = Vec::new();
+        EdgeSealed::describe(&Param::<ApiToken>::new(), &mut specs);
         assert_eq!(
-            spec,
-            InputSpec::Param {
+            specs,
+            [InputSpec::Param {
                 type_id: TypeId::of::<ApiToken>(),
                 type_name: type_name::<ApiToken>(),
-            },
+            }],
         );
     }
 

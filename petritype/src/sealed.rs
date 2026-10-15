@@ -10,8 +10,9 @@
 //!   outside type can implement the public ones. Slices to come add impls
 //!   here; nobody else can add impls that would collide with them. The one
 //!   opening is [`crate::binding`], a hidden module through which the code
-//!   `#[derive(Inputs)]` generates in another crate implements
-//!   [`EdgeSealed`] for the struct of edges it declares.
+//!   `#[derive(Inputs)]` and `#[derive(Outputs)]` generate in another crate
+//!   implements [`EdgeSealed`] and [`PlaceTupleSealed`] for the structs of
+//!   edges they declare.
 //! - **Hiding the erased plumbing.** A public trait may not mention
 //!   [`ErasedInput`](crate::erased::ErasedInput) and friends in its method
 //!   signatures, but these traits may, so the engine's calling convention
@@ -82,7 +83,8 @@ pub trait EdgeTupleSealed {
 }
 
 /// The engine half of [`OutputPlaces`](crate::OutputPlaces): the erased
-/// description of a tuple of place handles, in declaration order.
+/// description of a tuple of place handles, or of the struct of them that
+/// `#[derive(Outputs)]` generates, in declaration order.
 pub trait PlaceTupleSealed {
     /// Appends `(place, net)` for each output place.
     fn describe(&self, out: &mut Vec<(PlaceId, NetId)>);
@@ -94,6 +96,31 @@ pub trait PlaceTupleSealed {
     /// say which places a transition writes to, and this says what they
     /// hold, which is the half a payload type is matched against.
     fn describe_types(out: &mut Vec<(TypeId, &'static str)>);
+}
+
+/// Tuples of place handles, and nothing else: the outputs the routed form
+/// resolves its payload types against.
+///
+/// A struct of outputs that `#[derive(Outputs)]` generated is
+/// [`OutputPlaces`](crate::OutputPlaces) too, but it says where each field
+/// of one struct goes, by name; the routed form is kept off it, so that a
+/// struct that derives both `Routed` and `Outputs` is unambiguous: bound by
+/// name where its own struct of outputs is the outputs, routed by type
+/// where a tuple is.
+pub trait TupleOfPlaces {}
+
+/// The engine half of [`Accepts`](crate::Accepts): where one output field
+/// goes, and how its value becomes tokens there.
+pub trait AcceptsSealed<V> {
+    /// `(place, net)` of the place this output writes to.
+    fn place(&self) -> (PlaceId, NetId);
+
+    /// `(type id, type name)` of the tokens that place holds.
+    fn token_type() -> (TypeId, &'static str);
+
+    /// Appends `(target, token)` for every token `value` is worth, each
+    /// addressed to output `index`.
+    fn push(value: V, index: usize, out: &mut Vec<(OutputTarget, ErasedToken)>);
 }
 
 /// The engine half of [`PositionalOutputs`](crate::PositionalOutputs):

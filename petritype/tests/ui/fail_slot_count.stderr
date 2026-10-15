@@ -9,9 +9,10 @@ error[E0277]: a transition body must return its outputs, or a `Result` of them
    |
    = help: the trait `IntoOutcome<(PlaceRef<u32>, PlaceRef<u32>), _>` is not implemented for `(u32,)`
    = note: positional: outputs `(PlaceRef<u32>, PlaceRef<u32>)` want a tuple of that many slots, where slot i is `T`, `Option<T>` or `Vec<T>` for the type of output place i, and `()` for no outputs at all
+   = note: named: the struct whose `#[derive(Outputs)]` generated the outputs' `...Edges` struct, each field going to the output of the same name
    = note: routed: a value that is not a tuple, whose every payload goes to the output place that holds its type — derive `Routed` on the enum or struct you return
    = note: distribution: a `Distribution` of (place, token) pairs, built with `Distribution::new().to(place, token)`, for choosing between output places of the same type
-   = note: any of the three may be wrapped in `Result<_, E>` where `E: std::error::Error + Send + Sync + 'static`; a `Result` always means failure, never routing
+   = note: any of these may be wrapped in `Result<_, E>` where `E: std::error::Error + Send + Sync + 'static`; a `Result` always means failure, never routing
 help: the following other types implement trait `IntoOutcome<Outputs, Marker>`
   --> src/body.rs
    |

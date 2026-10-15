@@ -413,6 +413,42 @@ mod tests {
         assert!(!exact.ends_with("..."));
     }
 
+    /// A body bound by name returns its outputs in field order, which the
+    /// core reports as positional and the wire carries as `slot`, as for a
+    /// tuple (DESIGN §4.5): nothing here knows the struct was there.
+    #[test]
+    fn a_named_return_writes_its_slots_in_field_order() {
+        #[derive(petritype::Outputs)]
+        struct Split {
+            big: Option<u32>,
+            small: Option<u32>,
+        }
+
+        let mut b = petritype::NetBuilder::new();
+        let inbox = b.place::<u32>("Inbox");
+        let big = b.place::<u32>("Big");
+        let small = b.place::<u32>("Small");
+        b.transition(
+            "Split",
+            (petritype::TakeEdge(inbox),),
+            SplitEdges { small, big },
+            |n: u32| Split {
+                big: (n > 9).then_some(n),
+                small: (n <= 9).then_some(n),
+            },
+        );
+        let net = b.build().unwrap();
+        let core = net.topology();
+        let wire = topology(&core, &Names::new(&core));
+        let slots: Vec<(&str, Option<usize>)> = wire
+            .edges
+            .iter()
+            .filter(|edge| edge.direction == protocol::Direction::Out)
+            .map(|edge| (edge.place.as_str(), edge.slot))
+            .collect();
+        assert_eq!(slots, [("Big", Some(0)), ("Small", Some(1))]);
+    }
+
     #[test]
     fn the_cut_is_on_a_character_boundary() {
         // Two bytes per character: a byte-based cut would split one.

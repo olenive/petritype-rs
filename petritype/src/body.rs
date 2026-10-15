@@ -6,9 +6,12 @@
 //! 1. Do the body's parameters match the input edges? — [`TransitionBody`],
 //!    implemented for every arity from 0 to 12.
 //! 2. Does what the body returns match the output places? —
-//!    [`PositionalOutputs`], slot by slot, with [`IntoTokens`] deciding how
-//!    many tokens one slot is worth; [`RoutedOutput`](crate::RoutedOutput),
-//!    payload type by payload type; or nothing at all for a
+//!    [`PositionalOutputs`], return position by return position, with
+//!    [`IntoTokens`] deciding how many tokens one position is worth; a
+//!    struct bound **by name** to the struct of outputs `#[derive(Outputs)]`
+//!    generated for it, field by field, with [`Accepts`] deciding what may
+//!    go where; [`RoutedOutput`](crate::RoutedOutput), payload type by
+//!    payload type; or nothing at all for a
 //!    [`Distribution`](crate::Distribution), which names its places itself
 //!    and is checked when its tokens land.
 //! 3. Is the return value an outcome at all? — [`IntoOutcome`], which also
@@ -27,6 +30,7 @@ use std::any::{TypeId, type_name};
 use std::error::Error;
 
 use crate::arity::for_each_arity;
+use crate::binding::{Emit, NamedOutputs};
 use crate::distribution::WithOutputDistribution;
 use crate::edge::InputEdge;
 use crate::erased::{
@@ -35,7 +39,10 @@ use crate::erased::{
 use crate::ids::{NetId, PlaceId, PlaceRef};
 use crate::place::ErasedToken;
 use crate::routing::{RouteSink, RouteSpec, RoutedOutput};
-use crate::sealed::{BodySealed, EdgeSealed, OutcomeSealed, PlaceTupleSealed, PositionalSealed};
+use crate::sealed::{
+    AcceptsSealed, BodySealed, EdgeSealed, OutcomeSealed, PlaceTupleSealed, PositionalSealed,
+    TupleOfPlaces,
+};
 
 pub mod marker {
     //! Type-level tags that tell the output forms apart.
@@ -61,6 +68,12 @@ pub mod marker {
     /// were declared in. See [`RoutedOutput`](crate::RoutedOutput).
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
     pub struct Routed;
+
+    /// The body returned a struct bound by name: each field goes to the
+    /// output the struct of outputs `#[derive(Outputs)]` generated for it
+    /// wires to the same name. See [`Accepts`](crate::Accepts).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    pub struct Named;
 
     /// The body returned a [`Distribution`](crate::Distribution): the places
     /// were named outright, so neither order nor type picks them.
@@ -142,18 +155,115 @@ impl<T> IntoTokens<T> for Vec<T> {
     }
 }
 
-/// A tuple of place handles, `()` to twelve of them: a transition's outputs.
+/// A tuple of place handles, `()` to twelve of them, or a struct of them
+/// bound by name: a transition's outputs.
 ///
-/// The tuple is positional, so its order is the order of the slots in what
-/// the body returns. A single output still needs the trailing comma:
-/// `(count,)`.
+/// The tuple is positional, so its order is the order of the return
+/// positions in what the body returns. A single output still needs the
+/// trailing comma: `(count,)`.
+///
+/// The struct is the one `#[derive(Outputs)]` generates for a struct the
+/// body returns: the same field names, each wired to an output that
+/// [`Accepts`] that field's type (DESIGN §4.5). It is the whole of the
+/// outputs, never a position inside a tuple, and its fields are the
+/// transition's output edges in field order.
 #[diagnostic::on_unimplemented(
     message = "a transition's outputs must be a tuple of place handles",
     label = "not a tuple of place handles",
     note = "write `(heavy, light, count)`, or `()` for a transition that produces nothing; \
-            a single output needs the trailing comma: `(count,)`"
+            a single output needs the trailing comma: `(count,)`",
+    note = "or bind them by name: derive `Outputs` on the struct the body returns and pass the \
+            `...Edges` struct it generates, whole, as the outputs"
 )]
 pub trait OutputPlaces: PlaceTupleSealed {}
+
+/// An output that can take a field of type `V` of a struct a body returns:
+/// the bound on every field of the struct of outputs `#[derive(Outputs)]`
+/// generates (DESIGN §4.5).
+///
+/// Outputs are edges too, of one kind today: a place handle, which puts the
+/// tokens a field is worth at the back of its place. A place of type `T`
+/// takes a field of type `T` (one token), `Option<T>` (zero or one) or
+/// `Vec<T>` (as many as it holds), as a return position does
+/// ([`IntoTokens`]), and the place's type decides which reading applies.
+/// This trait is where another kind of output would be added — one that
+/// replaces a place's token, or puts at the front — with an impl of its
+/// own beside this one.
+///
+/// ```
+/// use petritype::{Inputs, NetBuilder, Outputs, TakeEdge};
+///
+/// #[derive(Inputs)]
+/// struct Parcel {
+///     weight: u32,
+/// }
+///
+/// // The library side: one field per output, no place in sight.
+/// #[derive(Outputs)]
+/// struct Weighed {
+///     heavy: Option<u32>,
+///     light: Option<u32>,
+///     log: Vec<String>,
+/// }
+///
+/// fn weigh(p: Parcel) -> Weighed {
+///     let heavy = p.weight > 10;
+///     Weighed {
+///         heavy: heavy.then_some(p.weight),
+///         light: (!heavy).then_some(p.weight),
+///         log: vec![format!("weighed {}", p.weight)],
+///     }
+/// }
+///
+/// // The net side: each field wired to a place that accepts its type.
+/// let mut b = NetBuilder::new();
+/// let inbox = b.place::<u32>("Inbox");
+/// let heavy = b.place::<u32>("Heavy");
+/// let light = b.place::<u32>("Light");
+/// let log = b.place::<String>("Log");
+/// b.seed(inbox, [30]);
+/// b.transition(
+///     "Weigh",
+///     (ParcelEdges { weight: TakeEdge(inbox) },),
+///     WeighedEdges { heavy, light, log },
+///     weigh,
+/// );
+/// let mut net = b.build()?;
+/// net.step()?;
+/// assert_eq!((net.count(heavy.id()), net.count(light.id()), net.count(log.id())), (1, 0, 1));
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` cannot take a field of type `{V}`",
+    label = "this output does not accept `{V}`",
+    note = "an output place of type `T` takes a field of type `T` (one token), `Option<T>` \
+            (zero or one) or `Vec<T>` (any number)"
+)]
+pub trait Accepts<V>: AcceptsSealed<V> {}
+
+/// The tokens go where every positional token goes: an index, the field's
+/// position among the outputs, which the engine resolves to this place.
+impl<T: Send + Sync + 'static, V: IntoTokens<T>> AcceptsSealed<V> for PlaceRef<T> {
+    fn place(&self) -> (PlaceId, NetId) {
+        (self.id(), self.net())
+    }
+
+    fn token_type() -> (TypeId, &'static str) {
+        (TypeId::of::<T>(), type_name::<T>())
+    }
+
+    fn push(value: V, index: usize, out: &mut Vec<(OutputTarget, ErasedToken)>) {
+        value.for_each_token(&mut |token| {
+            out.push((OutputTarget::Index(index), Box::new(token) as ErasedToken));
+        });
+    }
+}
+
+/// `do_not_recommend`, so that a field of the wrong type is reported as
+/// this trait's failure, which names the field's type and the place's,
+/// rather than as the [`IntoTokens`] inside it.
+#[diagnostic::do_not_recommend]
+impl<T: Send + Sync + 'static, V: IntoTokens<T>> Accepts<V> for PlaceRef<T> {}
 
 /// What a body returns when its outputs are positional: a tuple with one slot
 /// per output place.
@@ -168,7 +278,8 @@ pub trait OutputPlaces: PlaceTupleSealed {}
     note = "outputs `{Outputs}` want a tuple of that many slots, where slot i is `T`, \
             `Option<T>` or `Vec<T>` for the type of output place i",
     note = "a value that is not a tuple is routed by type instead: derive `Routed` on the enum \
-            or struct you return, so that each payload goes to the output place that holds it"
+            or struct you return, so that each payload goes to the output place that holds it; \
+            or bound by name: derive `Outputs` on the struct you return"
 )]
 pub trait PositionalOutputs<Outputs>: PositionalSealed<Outputs> {}
 
@@ -178,13 +289,17 @@ pub trait PositionalOutputs<Outputs>: PositionalSealed<Outputs> {}
 /// means failure, never routing (DESIGN §7): a body that wants to send a
 /// value to one place or another returns data that says so, not an `Err`.
 ///
-/// The three forms are told apart by the return type:
+/// The four forms are told apart by the return type, and the outputs:
 ///
-/// - **positional** — a tuple, one slot per output place, matched by order
-///   ([`PositionalOutputs`]);
+/// - **positional** — a tuple, one return position per output place,
+///   matched by order ([`PositionalOutputs`]);
+/// - **named** — a struct that derives `Outputs`, whose fields go to the
+///   outputs of the same names in the struct of outputs generated for it
+///   ([`Accepts`]), when that struct is the outputs;
 /// - **routed** — a value that is not a tuple, matched by type
 ///   ([`RoutedOutput`](crate::RoutedOutput)), which is what
-///   [`#[derive(Routed)]`](crate::Routed) implements;
+///   [`#[derive(Routed)]`](crate::Routed) implements, when the outputs are a
+///   tuple;
 /// - **distribution** — a [`Distribution`](crate::Distribution), whose pairs
 ///   name their places outright, for the decisions only the data can make.
 ///
@@ -192,13 +307,16 @@ pub trait PositionalOutputs<Outputs>: PositionalSealed<Outputs> {}
 ///
 /// The `Marker` parameter is what keeps them from colliding. Positional
 /// outputs are `impl<O: PositionalOutputs<Outputs>> IntoOutcome<Outputs,
-/// marker::Positional> for O`, routed ones the same shape under
-/// [`marker::Routed`], and the distribution form is written for the concrete
-/// [`Distribution`](crate::Distribution) under [`marker::Distributed`].
-/// Because the tags differ, none of the impls overlaps another, and the
-/// compiler picks the form by picking the impl whose bounds hold. `Result`
-/// needs no new impl for any of them: [`marker::Failing<M>`] carries the
-/// inner form's tag.
+/// marker::Positional> for O`, named and routed ones the same shape under
+/// [`marker::Named`] and [`marker::Routed`], and the distribution form is
+/// written for the concrete [`Distribution`](crate::Distribution) under
+/// [`marker::Distributed`]. Because the tags differ, none of the impls
+/// overlaps another, and the compiler picks the form by picking the impl
+/// whose bounds hold. The routed impl asks for a tuple of outputs, so that
+/// a struct that derives both `Routed` and `Outputs` is read by name where
+/// its own struct of outputs is the outputs, and by type where a tuple is.
+/// `Result` needs no new impl for any of them: [`marker::Failing<M>`]
+/// carries the inner form's tag.
 ///
 /// A body wrapped with
 /// [`output_distribution`](crate::OutputDistribution::output_distribution)
@@ -211,12 +329,14 @@ pub trait PositionalOutputs<Outputs>: PositionalSealed<Outputs> {}
     note = "positional: outputs `{Outputs}` want a tuple of that many slots, where slot i is \
             `T`, `Option<T>` or `Vec<T>` for the type of output place i, and `()` for no \
             outputs at all",
+    note = "named: the struct whose `#[derive(Outputs)]` generated the outputs' `...Edges` \
+            struct, each field going to the output of the same name",
     note = "routed: a value that is not a tuple, whose every payload goes to the output place \
             that holds its type — derive `Routed` on the enum or struct you return",
     note = "distribution: a `Distribution` of (place, token) pairs, built with \
             `Distribution::new().to(place, token)`, for choosing between output places of the \
             same type",
-    note = "any of the three may be wrapped in `Result<_, E>` where \
+    note = "any of these may be wrapped in `Result<_, E>` where \
             `E: std::error::Error + Send + Sync + 'static`; a `Result` always means failure, \
             never routing"
 )]
@@ -251,7 +371,7 @@ impl<Outputs, O: PositionalOutputs<Outputs>> IntoOutcome<Outputs, marker::Positi
 /// [`RoutedOutput`](crate::RoutedOutput) (never a tuple).
 impl<Outputs, O> OutcomeSealed<Outputs, marker::Routed> for O
 where
-    Outputs: OutputPlaces,
+    Outputs: OutputPlaces + TupleOfPlaces,
     O: RoutedOutput,
 {
     fn routing() -> Result<RouteTable, RoutingProblem> {
@@ -275,10 +395,37 @@ where
 
 impl<Outputs, O> IntoOutcome<Outputs, marker::Routed> for O
 where
-    Outputs: OutputPlaces,
+    Outputs: OutputPlaces + TupleOfPlaces,
     O: RoutedOutput,
 {
 }
+
+/// The named form: a struct whose fields are bound by name to the struct of
+/// outputs `#[derive(Outputs)]` generated for it, which is what implements
+/// [`NamedOutputs`] for the pair.
+///
+/// No overlap with the positional and routed impls: the marker differs.
+/// Positional because the fields have an order, the struct of outputs'
+/// field order, and the read API and the wire report it (DESIGN §4.5): the
+/// tokens of field *i* go to output *i*, as a return position's do.
+impl<Outputs, O: NamedOutputs<Outputs>> OutcomeSealed<Outputs, marker::Named> for O {
+    /// Nothing to resolve: a field's position among the outputs is known.
+    fn routing() -> Result<RouteTable, RoutingProblem> {
+        Ok(RouteTable::empty())
+    }
+
+    fn positional() -> bool {
+        true
+    }
+
+    fn into_outcome(self, _routes: &RouteTable) -> ErasedOutcome {
+        let mut tokens = Vec::new();
+        self.emit(&mut Emit::new(&mut tokens));
+        ErasedOutcome::Ok(tokens)
+    }
+}
+
+impl<Outputs, O: NamedOutputs<Outputs>> IntoOutcome<Outputs, marker::Named> for O {}
 
 impl<Outputs, O, E, M> OutcomeSealed<Outputs, marker::Failing<M>> for Result<O, E>
 where
@@ -537,6 +684,8 @@ macro_rules! impl_outputs {
         }
 
         impl<$($t: Send + Sync + 'static,)*> OutputPlaces for ($(PlaceRef<$t>,)*) {}
+
+        impl<$($t: Send + Sync + 'static,)*> TupleOfPlaces for ($(PlaceRef<$t>,)*) {}
 
         impl<$($t,)* $($r,)*> PositionalSealed<($(PlaceRef<$t>,)*)> for ($($r,)*)
         where

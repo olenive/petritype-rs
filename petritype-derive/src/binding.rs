@@ -1,10 +1,12 @@
-//! `#[derive(Inputs)]`: a body's inputs bound to a net by field name.
+//! `#[derive(Inputs)]` and `#[derive(Outputs)]`: a body's inputs and
+//! outputs bound to a net by field name (DESIGN §4.4, §4.5).
 //!
-//! The derive reads a struct with one named field per input and writes a
-//! second struct, the *wiring*, with the same field names and one type
-//! parameter per field, plus the engine impls that make the wiring one input
-//! position of a transition. Everything it names in `petritype` is either
-//! public (`Reads`, `InputEdge`) or in the hidden `petritype::binding`
+//! Each derive reads a struct with one named field per input or output and
+//! writes a second struct, the *wiring*, with the same field names and one
+//! type parameter per field, plus the engine impls that make the wiring one
+//! input position of a transition, or the whole of its outputs. Everything
+//! they name in `petritype` is either public (`Reads`, `Accepts`,
+//! `InputEdge`, `OutputPlaces`) or in the hidden `petritype::binding`
 //! module, as `Routed`'s expansion names `petritype::routing`.
 
 use std::collections::HashSet;
@@ -13,34 +15,69 @@ use proc_macro2::{Ident, Span, TokenStream as TokenStream2, TokenTree};
 use quote::{format_ident, quote, quote_spanned};
 use syn::{Data, DeriveInput, Error, Fields, GenericParam, Lifetime, LitStr, Result, Type};
 
-/// A union has no fields a body could take by name.
-const UNION: &str = "`Inputs` cannot be derived for a union: derive it on a struct with one named \
-                     field per input";
+/// Which of the two derives is reading a struct: its name, its key in
+/// `#[binding(..)]`, and what it says when it refuses a declaration.
+struct Side {
+    /// The key that names this derive's wiring alone.
+    key: &'static str,
+    /// How many lifetimes the struct may have.
+    lifetimes: usize,
+    /// A union has no fields a body could take or return by name.
+    union: &'static str,
+    /// An enum is a choice, and a binding fills every field.
+    enumeration: &'static str,
+    /// Binding by name needs names.
+    tuple: &'static str,
+    /// No fields is the empty tuple, which needs no derive.
+    empty: &'static str,
+    /// The wiring says which type each field is, so the types must be known.
+    generic: &'static str,
+    /// The lifetime past what `lifetimes` allows.
+    lifetime: &'static str,
+    /// The wiring carries bounds of its own.
+    where_clause: &'static str,
+}
 
-/// An enum is a choice, and a transition reads every one of its inputs.
-const ENUM: &str = "`Inputs` cannot be derived for an enum: a transition reads every input at once, \
-                    so derive it on a struct with one named field per input";
+/// `#[derive(Inputs)]`.
+const INPUTS: Side = Side {
+    key: "inputs",
+    lifetimes: 1,
+    union: "`Inputs` cannot be derived for a union: derive it on a struct with one named field \
+            per input",
+    enumeration: "`Inputs` cannot be derived for an enum: a transition reads every input at \
+                  once, so derive it on a struct with one named field per input",
+    tuple: "`Inputs` binds fields by name, so the struct needs named fields: \
+            `struct Pricing { order: Order, .. }`; to bind by position, pass a tuple of edges \
+            instead",
+    empty: "`Inputs` needs at least one field: a transition with no inputs takes `()`",
+    generic: "`Inputs` cannot be derived for a generic struct: each field's type is what a net \
+              wires against, so it must be concrete; bind a generic body by position, with a \
+              tuple of edges",
+    lifetime: "`Inputs` allows one lifetime, the one its `&mut` fields borrow the net's tokens \
+               for during a call",
+    where_clause: "`Inputs` cannot be derived for a struct with a `where` clause: the struct of \
+                   edges it generates carries bounds of its own",
+};
 
-/// Binding by name needs names.
-const TUPLE: &str = "`Inputs` binds fields by name, so the struct needs named fields: \
-                     `struct Pricing { order: Order, .. }`; to bind by position, pass a tuple of \
-                     edges instead";
-
-/// A struct of no inputs is the empty tuple, which needs no derive.
-const EMPTY: &str = "`Inputs` needs at least one field: a transition with no inputs takes `()`";
-
-/// The wiring says which type each field reads, so the types must be known.
-const GENERIC: &str = "`Inputs` cannot be derived for a generic struct: each field's type is what \
-                       a net wires against, so it must be concrete; bind a generic body by \
-                       position, with a tuple of edges";
-
-/// One lifetime is the one `&mut` fields borrow the net's tokens for.
-const TWO_LIFETIMES: &str = "`Inputs` allows one lifetime, the one its `&mut` fields borrow the \
-                             net's tokens for during a call";
-
-/// The wiring carries bounds of its own.
-const WHERE: &str = "`Inputs` cannot be derived for a struct with a `where` clause: the struct of \
-                     edges it generates carries bounds of its own";
+/// `#[derive(Outputs)]`.
+const OUTPUTS: Side = Side {
+    key: "outputs",
+    lifetimes: 0,
+    union: "`Outputs` cannot be derived for a union: derive it on a struct with one named field \
+            per output",
+    enumeration: "`Outputs` cannot be derived for an enum: a struct bound by name fills every \
+                  output it names; to send a value to one place or another, derive `Routed` on \
+                  the enum instead",
+    tuple: "`Outputs` binds fields by name, so the struct needs named fields: \
+            `struct Priced { order: Order, .. }`; to bind by position, return a tuple instead",
+    empty: "`Outputs` needs at least one field: a transition that produces nothing returns `()`",
+    generic: "`Outputs` cannot be derived for a generic struct: each field's type is what a net \
+              wires against, so it must be concrete; return a tuple from a generic body",
+    lifetime: "`Outputs` cannot be derived for a type with a lifetime: a token is an owned \
+               value, so every output field must be `'static`",
+    where_clause: "`Outputs` cannot be derived for a struct with a `where` clause: the struct of \
+                   outputs it generates carries bounds of its own",
+};
 
 /// What `#[binding(..)]` accepts.
 const OPTION: &str = "expected `edges = \"Name\"`, `inputs = \"Name\"` or `outputs = \"Name\"`";
@@ -48,7 +85,7 @@ const OPTION: &str = "expected `edges = \"Name\"`, `inputs = \"Name\"` or `outpu
 /// A struct the derive accepts: its name, visibility and fields, and the
 /// names the expansion gives the wiring and its parts.
 struct Shape<'a> {
-    /// The struct the body takes.
+    /// The struct the body takes or returns.
     name: &'a Ident,
     /// Its visibility, which the wiring and its fields copy.
     vis: &'a syn::Visibility,
@@ -66,7 +103,7 @@ struct Shape<'a> {
 /// Generates the wiring for a struct of inputs; errors are spanned at the
 /// part of the declaration that has to change.
 pub(crate) fn inputs(input: &DeriveInput) -> Result<TokenStream2> {
-    let shape = shape(input)?;
+    let shape = shape(input, &INPUTS)?;
     let Shape {
         name,
         vis,
@@ -171,57 +208,149 @@ pub(crate) fn inputs(input: &DeriveInput) -> Result<TokenStream2> {
     Ok(quote!(#items #impls))
 }
 
+/// Generates the struct of outputs for a struct a body returns, and the
+/// impl that makes returning it the named form.
+pub(crate) fn outputs(input: &DeriveInput) -> Result<TokenStream2> {
+    let shape = shape(input, &OUTPUTS)?;
+    let Shape {
+        name,
+        vis,
+        edges,
+        fields,
+        params,
+        ..
+    } = &shape;
+
+    let mut accepts = Vec::new();
+    let mut members = Vec::new();
+    let mut places = Vec::new();
+    let mut types = Vec::new();
+    let mut emits = Vec::new();
+    for ((field, ty), param) in fields.iter().zip(params) {
+        // Spanned at the field, as for inputs.
+        let span = field.span();
+        accepts.push(quote_spanned!(span=> #param: ::petritype::Accepts<#ty>));
+        let doc = format!("The output that takes `{field}`.");
+        members.push(quote!(#[doc = #doc] #vis #field: #param));
+        places.push(quote!(::petritype::binding::output_place::<#param, #ty>(&self.#field, out);));
+        types.push(quote!(::petritype::binding::output_type::<#param, #ty>(out);));
+        emits.push(quote!(out.field::<#param, #ty>(self.#field);));
+    }
+
+    let doc = format!(
+        "Where a [`{name}`] goes in a net: one output per field, each any output that accepts \
+         the field's type."
+    );
+    let doc_more = format!(
+        "Generated by `#[derive(Outputs)]`. A value of it is the whole of a transition's \
+         outputs, where the body returns a `{name}`; the transition's output edges are its \
+         fields', in field order."
+    );
+    let items = quote! {
+        #[doc = #doc]
+        #[doc = ""]
+        #[doc = #doc_more]
+        #[derive(Clone, Copy, Debug)]
+        #vis struct #edges<#(#params),*>
+        where
+            #(#accepts,)*
+        {
+            #(#members,)*
+        }
+    };
+
+    // Spanned at the struct's name, as for inputs.
+    let impls = quote_spanned! {name.span()=>
+        impl<#(#params),*> ::petritype::binding::PlaceTupleSealed for #edges<#(#params),*>
+        where
+            #(#accepts,)*
+        {
+            fn describe(&self, out: &mut ::petritype::binding::Places) {
+                #(#places)*
+            }
+
+            fn describe_types(out: &mut ::petritype::binding::PlaceTypes) {
+                #(#types)*
+            }
+        }
+
+        impl<#(#params),*> ::petritype::OutputPlaces for #edges<#(#params),*>
+        where
+            #(#accepts,)*
+        {
+        }
+
+        impl<#(#params),*> ::petritype::binding::NamedOutputs<#edges<#(#params),*>> for #name
+        where
+            #(#accepts,)*
+        {
+            fn emit(self, out: &mut ::petritype::binding::Emit<'_>) {
+                #(#emits)*
+            }
+        }
+    };
+    Ok(quote!(#items #impls))
+}
+
 /// Checks the declaration and reads off what the expansion needs.
-fn shape(input: &DeriveInput) -> Result<Shape<'_>> {
-    let mut lifetimes = input.generics.lifetimes();
-    let lifetime = lifetimes.next().map(|param| &param.lifetime);
-    if let Some(second) = lifetimes.next() {
-        return Err(Error::new_spanned(&second.lifetime, TWO_LIFETIMES));
+fn shape<'a>(input: &'a DeriveInput, side: &Side) -> Result<Shape<'a>> {
+    let lifetimes: Vec<&Lifetime> = input
+        .generics
+        .lifetimes()
+        .map(|param| &param.lifetime)
+        .collect();
+    if let Some(extra) = lifetimes.get(side.lifetimes) {
+        return Err(Error::new_spanned(extra, side.lifetime));
     }
     for param in &input.generics.params {
         match param {
-            GenericParam::Type(param) => return Err(Error::new_spanned(&param.ident, GENERIC)),
-            GenericParam::Const(param) => return Err(Error::new_spanned(&param.ident, GENERIC)),
+            GenericParam::Type(param) => {
+                return Err(Error::new_spanned(&param.ident, side.generic));
+            }
+            GenericParam::Const(param) => {
+                return Err(Error::new_spanned(&param.ident, side.generic));
+            }
             GenericParam::Lifetime(_) => {}
         }
     }
     if let Some(clause) = &input.generics.where_clause {
-        return Err(Error::new_spanned(clause.where_token, WHERE));
+        return Err(Error::new_spanned(clause.where_token, side.where_clause));
     }
 
     let fields: Vec<(&Ident, &Type)> = match &input.data {
         Data::Struct(data) => match &data.fields {
             Fields::Named(named) if named.named.is_empty() => {
-                return Err(Error::new_spanned(named, EMPTY));
+                return Err(Error::new_spanned(named, side.empty));
             }
             Fields::Named(named) => named
                 .named
                 .iter()
                 .map(|field| (field.ident.as_ref().expect("a named field"), &field.ty))
                 .collect(),
-            Fields::Unnamed(unnamed) => return Err(Error::new_spanned(unnamed, TUPLE)),
-            Fields::Unit => return Err(Error::new_spanned(&input.ident, EMPTY)),
+            Fields::Unnamed(unnamed) => return Err(Error::new_spanned(unnamed, side.tuple)),
+            Fields::Unit => return Err(Error::new_spanned(&input.ident, side.empty)),
         },
-        Data::Enum(data) => return Err(Error::new_spanned(data.enum_token, ENUM)),
-        Data::Union(data) => return Err(Error::new_spanned(data.union_token, UNION)),
+        Data::Enum(data) => return Err(Error::new_spanned(data.enum_token, side.enumeration)),
+        Data::Union(data) => return Err(Error::new_spanned(data.union_token, side.union)),
     };
 
     Ok(Shape {
         name: &input.ident,
         vis: &input.vis,
-        edges: edges_name(input)?,
-        lifetime,
+        edges: edges_name(input, side)?,
+        lifetime: lifetimes.first().copied(),
         params: fresh_params(&fields),
         fields,
     })
 }
 
-/// The wiring's name: `#[binding(inputs = "..")]`, else
-/// `#[binding(edges = "..")]`, else the struct's name with `Edges` appended.
+/// The wiring's name: `#[binding(inputs = "..")]` (or `outputs`, for that
+/// derive), else `#[binding(edges = "..")]`, else the struct's name with
+/// `Edges` appended.
 ///
-/// `outputs` is accepted and left alone, for a struct that derives both
-/// bindings and names each wiring separately.
-fn edges_name(input: &DeriveInput) -> Result<Ident> {
+/// The other derive's key is accepted and left alone, for a struct that
+/// derives both bindings and names each wiring separately.
+fn edges_name(input: &DeriveInput, side: &Side) -> Result<Ident> {
     let mut general = None;
     let mut own = None;
     for attr in &input.attrs {
@@ -229,13 +358,13 @@ fn edges_name(input: &DeriveInput) -> Result<Ident> {
             continue;
         }
         attr.parse_nested_meta(|meta| {
+            let mut other = None;
             let slot = if meta.path.is_ident("edges") {
                 &mut general
-            } else if meta.path.is_ident("inputs") {
+            } else if meta.path.is_ident(side.key) {
                 &mut own
-            } else if meta.path.is_ident("outputs") {
-                let _: LitStr = meta.value()?.parse()?;
-                return Ok(());
+            } else if meta.path.is_ident("inputs") || meta.path.is_ident("outputs") {
+                &mut other
             } else {
                 return Err(meta.error(OPTION));
             };
@@ -335,119 +464,149 @@ mod tests {
     use super::*;
     use syn::parse_quote;
 
-    /// The message the derive refuses this declaration with.
-    fn refusal(input: DeriveInput) -> String {
-        match inputs(&input) {
+    /// The message a derive refuses this declaration with.
+    fn refusal(derive: fn(&DeriveInput) -> Result<TokenStream2>, input: DeriveInput) -> String {
+        match derive(&input) {
             Ok(_) => panic!("expected the derive to refuse this declaration"),
             Err(error) => error.to_string(),
         }
     }
 
     #[test]
-    fn the_derive_refuses_what_it_cannot_bind_by_name() {
+    fn the_derives_refuse_what_they_cannot_bind_by_name() {
+        for (derive, side) in [(inputs as fn(&_) -> _, &INPUTS), (outputs, &OUTPUTS)] {
+            let refused = |input| refusal(derive, input);
+            assert_eq!(
+                refused(parse_quote!(
+                    enum E {
+                        A(u32),
+                    }
+                )),
+                side.enumeration
+            );
+            assert_eq!(refused(parse_quote!(union U { a: u32 })), side.union);
+            assert_eq!(
+                refused(parse_quote!(
+                    struct S(u32);
+                )),
+                side.tuple
+            );
+            assert_eq!(
+                refused(parse_quote!(
+                    struct S;
+                )),
+                side.empty
+            );
+            assert_eq!(
+                refused(parse_quote!(
+                    struct S {}
+                )),
+                side.empty
+            );
+            assert_eq!(
+                refused(parse_quote!(
+                    struct S<T> {
+                        a: T,
+                    }
+                )),
+                side.generic
+            );
+            assert_eq!(
+                refused(parse_quote!(
+                    struct S<const N: usize> {
+                        a: [u32; N],
+                    }
+                )),
+                side.generic
+            );
+            assert_eq!(
+                refused(parse_quote!(
+                    struct S
+                    where
+                        u32: Copy,
+                    {
+                        a: u32,
+                    }
+                )),
+                side.where_clause
+            );
+            assert_eq!(
+                refused(parse_quote!(
+                    #[binding(wiring = "X")]
+                    struct S {
+                        a: u32,
+                    }
+                )),
+                OPTION
+            );
+        }
         assert_eq!(
-            refusal(parse_quote!(
-                enum E {
-                    A(u32),
-                }
-            )),
-            ENUM
+            refusal(
+                inputs,
+                parse_quote!(
+                    struct S<'a, 'b> {
+                        a: &'a mut u32,
+                        b: &'b mut u32,
+                    }
+                )
+            ),
+            INPUTS.lifetime
         );
-        assert_eq!(refusal(parse_quote!(union U { a: u32 })), UNION);
         assert_eq!(
-            refusal(parse_quote!(
-                struct S(u32);
-            )),
-            TUPLE
+            refusal(
+                outputs,
+                parse_quote!(
+                    struct S<'a> {
+                        a: &'a u32,
+                    }
+                )
+            ),
+            OUTPUTS.lifetime
         );
-        assert_eq!(
-            refusal(parse_quote!(
-                struct S;
-            )),
-            EMPTY
-        );
-        assert_eq!(
-            refusal(parse_quote!(
-                struct S {}
-            )),
-            EMPTY
-        );
-        assert_eq!(
-            refusal(parse_quote!(
-                struct S<T> {
-                    a: T,
-                }
-            )),
-            GENERIC
-        );
-        assert_eq!(
-            refusal(parse_quote!(
-                struct S<const N: usize> {
-                    a: [u32; N],
-                }
-            )),
-            GENERIC
-        );
-        assert_eq!(
-            refusal(parse_quote!(
-                struct S<'a, 'b> {
+        assert!(
+            inputs(&parse_quote!(
+                struct S<'a> {
                     a: &'a mut u32,
-                    b: &'b mut u32,
                 }
-            )),
-            TWO_LIFETIMES
-        );
-        assert_eq!(
-            refusal(parse_quote!(
-                struct S
-                where
-                    u32: Copy,
-                {
-                    a: u32,
-                }
-            )),
-            WHERE
-        );
-        assert_eq!(
-            refusal(parse_quote!(
-                #[binding(wiring = "X")]
-                struct S {
-                    a: u32,
-                }
-            )),
-            OPTION
+            ))
+            .is_ok()
         );
     }
 
     #[test]
     fn the_wiring_is_named_after_the_struct_unless_an_attribute_says_otherwise() {
-        let named = |input: DeriveInput| edges_name(&input).unwrap().to_string();
+        let named = |input: DeriveInput, side: &Side| edges_name(&input, side).unwrap().to_string();
         assert_eq!(
-            named(parse_quote!(
-                struct Pricing {
-                    a: u32,
-                }
-            )),
+            named(
+                parse_quote!(
+                    struct Pricing {
+                        a: u32,
+                    }
+                ),
+                &INPUTS
+            ),
             "PricingEdges"
         );
         assert_eq!(
-            named(parse_quote!(
-                #[binding(edges = "Wiring")]
-                struct Pricing {
-                    a: u32,
-                }
-            )),
+            named(
+                parse_quote!(
+                    #[binding(edges = "Wiring")]
+                    struct Pricing {
+                        a: u32,
+                    }
+                ),
+                &OUTPUTS
+            ),
             "Wiring"
         );
-        assert_eq!(
-            named(parse_quote!(
-                #[binding(edges = "Both", inputs = "In", outputs = "Out")]
-                struct Pricing {
-                    a: u32,
-                }
-            )),
-            "In"
+        let both: DeriveInput = parse_quote!(
+            #[binding(edges = "Both", inputs = "In", outputs = "Out")]
+            struct Pricing {
+                a: u32,
+            }
         );
+        assert_eq!(named(both.clone(), &INPUTS), "In");
+        assert_eq!(named(both, &OUTPUTS), "Out");
     }
 
     #[test]

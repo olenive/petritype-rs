@@ -1,7 +1,7 @@
 [package]
 name = "petritype-derive"
 version = "0.1.0"
-description = "The derives of petritype: #[derive(Routed)] routes a returned value by type, #[derive(Inputs)] binds a body's inputs by field name."
+description = "The derives of petritype: #[derive(Routed)] routes a returned value by type, #[derive(Inputs)] and #[derive(Outputs)] bind a body's inputs and outputs by field name."
 readme = "../README.md"
 keywords = ["petri-net", "derive", "macro"]
 categories = ["data-structures", "simulation"]

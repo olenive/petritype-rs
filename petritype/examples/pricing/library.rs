@@ -3,14 +3,15 @@
 //!
 //! This is the library side of `dev-docs/BINDING_BY_NAME.md` §2. A library
 //! like this is written once and wired into many nets, each reading the
-//! inputs its own way; `#[derive(Inputs)]` is what lets a net do that by
-//! field name rather than by position, so that no net depends on the order
-//! the fields happen to be declared in, and two inputs of one type cannot
-//! be swapped by accident.
+//! inputs its own way and sending the outputs to places of its own;
+//! `#[derive(Inputs)]` and `#[derive(Outputs)]` are what let a net do that
+//! by field name rather than by position, so that no net depends on the
+//! order the fields happen to be declared in, and two of one type cannot be
+//! swapped by accident.
 
 use std::collections::BTreeMap;
 
-use petritype::Inputs;
+use petritype::{Inputs, Outputs};
 
 /// An item on an order, by name.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -34,6 +35,11 @@ impl Order {
     /// A retail order, not yet priced.
     pub fn retail(customer: &str, items: &[&str]) -> Self {
         Order::new(customer, "retail", items)
+    }
+
+    /// A trade order, not yet priced.
+    pub fn trade(customer: &str, items: &[&str]) -> Self {
+        Order::new(customer, "trade", items)
     }
 
     fn new(customer: &str, tier: &str, items: &[&str]) -> Self {
@@ -92,6 +98,10 @@ impl Prices {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Note(pub String);
 
+/// A message stamped on an order, a gift's.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Stamp(pub String);
+
 /// What pricing an order takes. A net decides where each comes from: the
 /// order taken or chosen by a filter, the promotions surveyed or used up,
 /// the prices a parameter or a token on a place.
@@ -105,11 +115,36 @@ pub struct Pricing {
     pub prices: Prices,
 }
 
+/// What pricing an order gives. A net decides where each goes.
+#[derive(Outputs)]
+pub struct Priced {
+    /// The order, with its total: one token.
+    pub order: Order,
+    /// What was taken off it, if anything: zero tokens or one.
+    pub note: Option<Note>,
+    /// What it asked for that the list does not carry: any number.
+    pub restock: Vec<Item>,
+}
+
+impl Priced {
+    /// The same, with a stamp's message added to the note.
+    pub fn stamped(self, stamp: Stamp) -> Self {
+        let note = match self.note {
+            Some(Note(note)) => format!("{note}; {}", stamp.0),
+            None => stamp.0,
+        };
+        Priced {
+            note: Some(Note(note)),
+            ..self
+        }
+    }
+}
+
 /// Prices an order: every item on the list, less every promotion's
 /// percentage (all of it at most); a note when something was taken off; and
 /// the items the list does not carry, to be restocked, which the order is
 /// not charged for.
-pub fn price(p: Pricing) -> (Order, Option<Note>, Vec<Item>) {
+pub fn price(p: Pricing) -> Priced {
     let percent = p
         .promos
         .iter()
@@ -131,5 +166,9 @@ pub fn price(p: Pricing) -> (Order, Option<Note>, Vec<Item>) {
             names.join(", ")
         ))
     });
-    (p.order.priced(full * (100 - percent) / 100), note, restock)
+    Priced {
+        order: p.order.priced(full * (100 - percent) / 100),
+        note,
+        restock,
+    }
 }

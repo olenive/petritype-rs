@@ -246,7 +246,9 @@ pub enum EdgeInfo {
         /// The place written to.
         place: PlaceId,
         /// This place's index in the transition's declared outputs, which is
-        /// the slot a positional body returns into. Counted from zero.
+        /// the return position a positional body fills it from, or the
+        /// position of its field for a body that returns by name. Counted
+        /// from zero. (The field keeps the protocol's name, `slot`.)
         slot: usize,
     },
 }

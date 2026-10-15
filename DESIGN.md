@@ -70,7 +70,7 @@ Dropped, and why:
 | `isinstance` routing, subclass matching | no subtyping; enums replace unions |
 | list-at-scalar-place "batch" heuristic, empty-list-matches-everything | `Vec<T>` and `T` are distinct types; `Vec::new()` knows its `T` |
 | `allow_token_copying`, deepcopy, `id(token)` bookkeeping | ownership: no aliasing unless the author writes `Arc` |
-| `Optional[...]` place types to make `None` routable | slot type `Option<T>`; place type stays `T` |
+| `Optional[...]` place types to make `None` routable | a return position of type `Option<T>`; place type stays `T` |
 | `execution="thread"`, async/sync body distinction | core is sync; drivers decide where bodies run |
 | observer registry, `RunContext` | the driver holds `&mut Net` and is the observer |
 | `transition_history`, place histories, `token_history` | event log |
@@ -1119,7 +1119,7 @@ outer net should see it.
 ## 7. Failure semantics
 
 - **Expected outcomes are data.** Route a token to an error place via a
-  routed enum or a positional `Option` slot.
+  routed enum or a positional `Option` return.
 - **Unexpected failures return `Err`** from the body, erased to
   `Box<dyn Error + Send + Sync>`.
 - **Panics are caught** (`catch_unwind` with `AssertUnwindSafe`), in
@@ -1791,7 +1791,7 @@ Always:
   (`DuplicateParamName`). Both before routing.
 - Routed-output resolution (§4.5): `UnroutableOutput`, `AmbiguousOutput`,
   `UnreachableOutput`, each naming the transition and the type or place.
-- (Output slot count vs output place count is carried by the types; a
+- (Return position count vs output place count is carried by the types; a
   `debug_assert!` in `distribute` guards the erased index.)
 
 Opt-in:
@@ -1815,7 +1815,7 @@ Opt-in:
   docs say so.
 
 Compile-time (no check needed): edge kinds vs parameter types, positional
-slot types and count, non-unit return with zero output places, seeded token
+return position types and count, non-unit return with zero output places, seeded token
 types, `Distribution::to` argument types.
 
 ## 13. Drivers
@@ -1966,7 +1966,7 @@ is marked serializable for the wire's `inject`; its net depends on
   deepskyblue, boxes lightgreen, gold for in flight, magenta outline for the
   last firing via `Highlight::from_event(&Event)`, dashed for `SnapshotEdge`,
   dotted-both-ends for `MutateEdge`) with four additions: disabled
-  transitions grey and dashed, `*` on a `TakeAllEdge`, slot numbers on a
+  transitions grey and dashed, `*` on a `TakeAllEdge`, return positions numbered on a
   transition with more than one output, red for a `Failed` event. A
   highlighted read edge keeps its shape and only changes colour.
 - The examples live in `petritype/examples/` as cargo examples with

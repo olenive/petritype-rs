@@ -334,7 +334,8 @@ where
     message = "transition body parameters do not match its input edges",
     label = "this body cannot be called with what `{Edges}` produces",
     note = "one parameter per edge, in order: `TakeEdge(p)` gives `T`, `TakeAllEdge(p)` gives \
-            `Vec<T>`, `SnapshotEdge(p)` gives `T`, `MutateEdge(p)` gives `&mut T`",
+            `Vec<T>`, `SnapshotEdge(p)` gives `T`, `MutateEdge(p)` gives `&mut T`; a struct of \
+            edges from `#[derive(Inputs)]` gives the struct it was derived from",
     note = "with `.output_distribution(f)`, the output distribution function `f` takes exactly \
             what the body returns — the value inside the `Ok` if that is a `Result` — and \
             returns the outputs in any form, usually a `Distribution`",

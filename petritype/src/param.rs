@@ -36,7 +36,8 @@ use std::any::{TypeId, type_name};
 use std::fmt;
 use std::marker::PhantomData;
 
-use crate::edge::{InputEdge, InputSpec, owned_token};
+use crate::binding::Extract;
+use crate::edge::{InputEdge, InputSpec, Reads, owned_token};
 use crate::erased::ErasedCursor;
 use crate::place::{CloneFn, ErasedToken};
 #[cfg(feature = "serde")]
@@ -140,6 +141,16 @@ impl<T: Clone + Send + Sync + 'static> EdgeSealed for Param<T> {
 }
 
 impl<T: Clone + Send + Sync + 'static> InputEdge for Param<T> {}
+
+/// A parameter fills a field of its own type in a struct of inputs, as a
+/// [`TakeEdge`](crate::TakeEdge) does: `prices: Param::new()`.
+impl<T: Clone + Send + Sync + 'static> Reads<T> for Param<T> {}
+
+impl<'a, T: Clone + Send + Sync + 'static> Extract<'a, T> for Param<T> {
+    fn extract(inputs: &mut ErasedCursor<'a, '_>) -> T {
+        <Param<T> as EdgeSealed>::extract(inputs)
+    }
+}
 
 /// One parameter value as the net holds it: erased, with the cloner that
 /// copies it for a body and, under `serde`, the wire name and codecs that let

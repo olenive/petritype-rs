@@ -1,0 +1,120 @@
+error[E0277]: `TakeEdge<Promo>` cannot fill a field of type `Vec<Promo>`
+  --> tests/ui/fail_inputs_wrong_kind.rs:36:58
+   |
+36 |         (PricingEdges { order: TakeEdge(orders), promos: TakeEdge(promos), prices: Param::new() },),
+   |                                                          ^^^^^^^^^^^^^^^^ this input does not read `Vec<Promo>`
+   |
+   = note: each kind of input reads one shape: `T` from `TakeEdge`, `SnapshotEdge`, `TakeWhereEdge` or `Param::<T>::new()`; `Vec<T>` from `TakeAllEdge`, `DrainEdge` or `SurveyEdge`; `&mut T` from `MutateEdge` or `MutateWhereEdge`
+help: the trait `Reads<Vec<Promo>>` is not implemented for `TakeEdge<Promo>`
+      but trait `Reads<Promo>` is implemented for it
+  --> src/edge.rs
+   |
+   | impl<T: Send + Sync + 'static> Reads<T> for TakeEdge<T> {}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = help: for that trait implementation, expected `Promo`, found `Vec<Promo>`
+note: required by a bound in `PricingEdges`
+  --> tests/ui/fail_inputs_wrong_kind.rs:18:5
+   |
+16 | struct Pricing {
+   |        ------- required by a bound in this struct
+17 |     order: Order,
+18 |     promos: Vec<Promo>,
+   |     ^^^^^^ required by this bound in `PricingEdges`
+
+error[E0277]: `TakeEdge<Promo>` cannot fill a field of type `Vec<Promo>`
+  --> tests/ui/fail_inputs_wrong_kind.rs:34:5
+   |
+34 | /     b.transition(
+35 | |         "Price Order",
+36 | |         (PricingEdges { order: TakeEdge(orders), promos: TakeEdge(promos), prices: Param::new() },),
+37 | |         (priced,),
+38 | |         price,
+39 | |     );
+   | |_____^ this input does not read `Vec<Promo>`
+   |
+   = note: each kind of input reads one shape: `T` from `TakeEdge`, `SnapshotEdge`, `TakeWhereEdge` or `Param::<T>::new()`; `Vec<T>` from `TakeAllEdge`, `DrainEdge` or `SurveyEdge`; `&mut T` from `MutateEdge` or `MutateWhereEdge`
+help: the trait `Reads<Vec<Promo>>` is not implemented for `TakeEdge<Promo>`
+      but trait `Reads<Promo>` is implemented for it
+  --> src/edge.rs
+   |
+   | impl<T: Send + Sync + 'static> Reads<T> for TakeEdge<T> {}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = help: for that trait implementation, expected `Promo`, found `Vec<Promo>`
+note: required by a bound in `PricingEdges`
+  --> tests/ui/fail_inputs_wrong_kind.rs:18:5
+   |
+16 | struct Pricing {
+   |        ------- required by a bound in this struct
+17 |     order: Order,
+18 |     promos: Vec<Promo>,
+   |     ^^^^^^ required by this bound in `PricingEdges`
+
+error[E0277]: `TakeEdge<Promo>` cannot fill a field of type `Vec<Promo>`
+  --> tests/ui/fail_inputs_wrong_kind.rs:36:58
+   |
+34 |     b.transition(
+   |       ---------- required by a bound introduced by this call
+35 |         "Price Order",
+36 |         (PricingEdges { order: TakeEdge(orders), promos: TakeEdge(promos), prices: Param::new() },),
+   |                                                          ^^^^^^^^^^^^^^^^ this input does not read `Vec<Promo>`
+   |
+   = note: each kind of input reads one shape: `T` from `TakeEdge`, `SnapshotEdge`, `TakeWhereEdge` or `Param::<T>::new()`; `Vec<T>` from `TakeAllEdge`, `DrainEdge` or `SurveyEdge`; `&mut T` from `MutateEdge` or `MutateWhereEdge`
+help: the trait `Extract<'a, Vec<Promo>>` is not implemented for `TakeEdge<Promo>`
+      but trait `Extract<'_, Promo>` is implemented for it
+  --> src/edge.rs
+   |
+   | impl<'a, T: Send + Sync + 'static> Extract<'a, T> for TakeEdge<T> {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = help: for that trait implementation, expected `Promo`, found `Vec<Promo>`
+note: required for `PricingEdges<TakeEdge<Order>, TakeEdge<Promo>, Param<Prices>>` to implement `InputEdge`
+  --> tests/ui/fail_inputs_wrong_kind.rs:16:8
+   |
+16 | struct Pricing {
+   |        ^^^^^^^
+17 |     order: Order,
+18 |     promos: Vec<Promo>,
+   |     ------ unsatisfied trait bound introduced here
+   = note: required for `(PricingEdges<TakeEdge<Order>, TakeEdge<Promo>, Param<Prices>>,)` to implement `InputEdges`
+note: required by a bound in `NetBuilder::transition`
+  --> src/builder.rs
+   |
+   |     pub fn transition<Edges, Outputs, Body, Marker>(
+   |            ---------- required by a bound in this associated function
+...
+   |         Edges: InputEdges,
+   |                ^^^^^^^^^^ required by this bound in `NetBuilder::transition`
+
+error[E0277]: `TakeEdge<Promo>` cannot fill a field of type `Vec<Promo>`
+  --> tests/ui/fail_inputs_wrong_kind.rs:38:9
+   |
+34 |     b.transition(
+   |       ---------- required by a bound introduced by this call
+...
+38 |         price,
+   |         ^^^^^ this input does not read `Vec<Promo>`
+   |
+   = note: each kind of input reads one shape: `T` from `TakeEdge`, `SnapshotEdge`, `TakeWhereEdge` or `Param::<T>::new()`; `Vec<T>` from `TakeAllEdge`, `DrainEdge` or `SurveyEdge`; `&mut T` from `MutateEdge` or `MutateWhereEdge`
+help: the trait `Extract<'a, Vec<Promo>>` is not implemented for `TakeEdge<Promo>`
+      but trait `Extract<'_, Promo>` is implemented for it
+  --> src/edge.rs
+   |
+   | impl<'a, T: Send + Sync + 'static> Extract<'a, T> for TakeEdge<T> {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = help: for that trait implementation, expected `Promo`, found `Vec<Promo>`
+note: required for `PricingEdges<TakeEdge<Order>, TakeEdge<Promo>, Param<Prices>>` to implement `petritype::binding::EdgeSealed`
+  --> tests/ui/fail_inputs_wrong_kind.rs:16:8
+   |
+16 | struct Pricing {
+   |        ^^^^^^^
+17 |     order: Order,
+18 |     promos: Vec<Promo>,
+   |     ------ unsatisfied trait bound introduced here
+   = note: required for `fn(Pricing) -> (Order,) {price}` to implement `TransitionBody<(PricingEdges<TakeEdge<Order>, TakeEdge<Promo>, Param<Prices>>,), (PlaceRef<Order>,), (Positional, (Order,))>`
+note: required by a bound in `NetBuilder::transition`
+  --> src/builder.rs
+   |
+   |     pub fn transition<Edges, Outputs, Body, Marker>(
+   |            ---------- required by a bound in this associated function
+...
+   |         Body: TransitionBody<Edges, Outputs, Marker>,
+   |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `NetBuilder::transition`

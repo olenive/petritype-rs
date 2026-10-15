@@ -36,6 +36,7 @@ use std::any::TypeId;
 use std::fmt;
 
 use crate::arity::for_each_arity;
+use crate::binding::Extract;
 use crate::erased::{ErasedCursor, ErasedInput};
 use crate::ids::{NetId, PlaceId, PlaceRef, TransitionId};
 use crate::keys::Filter;
@@ -514,10 +515,14 @@ pub struct SurveyEdge<T>(
 /// because the tuple of inputs is also the list of the body's parameters,
 /// and a parameter occupies one of those positions like anything else.
 ///
-/// Sealed: the nine structs are the only implementors, and the bound exists
-/// so that a transition's inputs are checked at compile time. What each one
-/// hands the body is the table at the top of this module, plus `T` for a
-/// `Param<T>`. The engine half — how an input describes itself to the builder
+/// Sealed: the nine structs are the only implementors in this crate, and the
+/// bound exists so that a transition's inputs are checked at compile time.
+/// What each one hands the body is the table at the top of this module, plus
+/// `T` for a `Param<T>`. The one implementor outside it is the wiring that
+/// `#[derive(Inputs)]` generates, a struct of inputs that binds several
+/// edges in one position and hands the body the struct it was derived from
+/// (DESIGN §4.4); the derive reaches the engine half through a hidden
+/// module, which is the seal's one opening. The engine half — how an input describes itself to the builder
 /// and how its argument is taken out — is `EdgeSealed`, so that this trait
 /// carries nothing a place edge and a parameter cannot both answer.
 #[diagnostic::on_unimplemented(
@@ -526,9 +531,84 @@ pub struct SurveyEdge<T>(
     note = "an input must say how it reads its place: `TakeEdge(p)`, `TakeAllEdge(p)`, \
             `SnapshotEdge(p)`, `MutateEdge(p)`, by a filter `TakeWhereEdge(p, f)` or \
             `MutateWhereEdge(p, f)`, or every token, possibly none, `DrainEdge(p)` or \
-            `SurveyEdge(p)`; `Param::<T>::new()` is the input that reads no place"
+            `SurveyEdge(p)`; `Param::<T>::new()` is the input that reads no place",
+    note = "a struct of such inputs, bound to a body's struct by field name, is the \
+            `...Edges` struct that `#[derive(Inputs)]` generates for it"
 )]
 pub trait InputEdge: EdgeSealed {}
+
+/// An input that can fill a field of type `V` in a struct of inputs: the
+/// bound on every field of the wiring `#[derive(Inputs)]` generates
+/// (DESIGN §4.4).
+///
+/// A body may take its inputs as one struct with a field per input, bound
+/// to the net **by name**: the struct names no place and no kind of edge,
+/// so that one library function serves nets that read its inputs in
+/// different ways, and each net wires every field to any input whose
+/// argument is that field's type. This trait is "whose argument is that
+/// field's type", one impl per kind, as in the table at the top of this
+/// module:
+///
+/// | input | reads |
+/// |---|---|
+/// | [`TakeEdge<T>`], [`SnapshotEdge<T>`], [`TakeWhereEdge<T>`], [`Param<T>`](crate::Param) | `T` |
+/// | [`TakeAllEdge<T>`], [`DrainEdge<T>`], [`SurveyEdge<T>`] | `Vec<T>` |
+/// | [`MutateEdge<T>`], [`MutateWhereEdge<T>`] | `&'a mut T`, for any `'a` |
+///
+/// A field of type `&'a mut T` borrows its token where it lies for one
+/// call, as the mutating kinds always do; the struct then has the lifetime
+/// `'a`, and the body takes it as `Inputs<'_>`.
+///
+/// These nine are the only implementors: the engine half, which takes the
+/// value out of the erased inputs, is a hidden trait implemented beside
+/// each of them.
+///
+/// ```
+/// use petritype::{Inputs, NetBuilder, Param, SurveyEdge, TakeEdge};
+///
+/// #[derive(Debug, Clone)]
+/// struct Rate(u32);
+///
+/// // The library side: no place and no edge kind in sight.
+/// #[derive(Inputs)]
+/// struct Pricing {
+///     order: u32,
+///     promos: Vec<u32>,
+///     rate: Rate,
+/// }
+///
+/// fn price(p: Pricing) -> (u32,) {
+///     (p.order * p.rate.0 - p.promos.iter().sum::<u32>(),)
+/// }
+///
+/// // The net side: each field wired to an input that reads its type.
+/// let mut b = NetBuilder::new();
+/// let orders = b.place::<u32>("Orders");
+/// let promos = b.place::<u32>("Promos");
+/// let priced = b.place::<u32>("Priced");
+/// b.param(Rate(3));
+/// b.seed(orders, [10]);
+/// b.seed(promos, [1, 2]);
+/// b.transition(
+///     "Price",
+///     (PricingEdges { order: TakeEdge(orders), promos: SurveyEdge(promos), rate: Param::new() },),
+///     (priced,),
+///     price,
+/// );
+/// let mut net = b.build()?;
+/// net.step()?;
+/// let (token, _) = net.tokens(priced.id()).next().unwrap();
+/// assert_eq!(net.token::<u32>(priced.id(), token), Some(&27));
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` cannot fill a field of type `{V}`",
+    label = "this input does not read `{V}`",
+    note = "each kind of input reads one shape: `T` from `TakeEdge`, `SnapshotEdge`, \
+            `TakeWhereEdge` or `Param::<T>::new()`; `Vec<T>` from `TakeAllEdge`, `DrainEdge` \
+            or `SurveyEdge`; `&mut T` from `MutateEdge` or `MutateWhereEdge`"
+)]
+pub trait Reads<V>: InputEdge {}
 
 /// Moves the token out of an input, leaving [`ErasedInput::Taken`] behind.
 ///
@@ -709,18 +789,95 @@ impl<T: Clone + Send + Sync + 'static> EdgeSealed for SurveyEdge<T> {
 
 impl<T: Clone + Send + Sync + 'static> InputEdge for SurveyEdge<T> {}
 
+// What each edge kind reads, for a field of a struct of inputs: the public
+// `Reads` and its engine half `Extract`, one pair per kind, with the bounds
+// of the kind's `EdgeSealed` impl. Written out rather than generated, so
+// that a wrong kind's error shows the impl it was measured against.
+
+impl<T: Send + Sync + 'static> Reads<T> for TakeEdge<T> {}
+
+impl<'a, T: Send + Sync + 'static> Extract<'a, T> for TakeEdge<T> {
+    fn extract(inputs: &mut ErasedCursor<'a, '_>) -> T {
+        <Self as EdgeSealed>::extract(inputs)
+    }
+}
+
+impl<T: Send + Sync + 'static> Reads<Vec<T>> for TakeAllEdge<T> {}
+
+impl<'a, T: Send + Sync + 'static> Extract<'a, Vec<T>> for TakeAllEdge<T> {
+    fn extract(inputs: &mut ErasedCursor<'a, '_>) -> Vec<T> {
+        <Self as EdgeSealed>::extract(inputs)
+    }
+}
+
+impl<T: Clone + Send + Sync + 'static> Reads<T> for SnapshotEdge<T> {}
+
+impl<'a, T: Clone + Send + Sync + 'static> Extract<'a, T> for SnapshotEdge<T> {
+    fn extract(inputs: &mut ErasedCursor<'a, '_>) -> T {
+        <Self as EdgeSealed>::extract(inputs)
+    }
+}
+
+/// Whatever the lifetime: the field's is the struct's, and the engine
+/// fills the struct at the cursor's.
+impl<T: Send + Sync + 'static> Reads<&mut T> for MutateEdge<T> {}
+
+impl<'a, T: Send + Sync + 'static> Extract<'a, &'a mut T> for MutateEdge<T> {
+    fn extract(inputs: &mut ErasedCursor<'a, '_>) -> &'a mut T {
+        <Self as EdgeSealed>::extract(inputs)
+    }
+}
+
+impl<T: Send + Sync + 'static> Reads<T> for TakeWhereEdge<T> {}
+
+impl<'a, T: Send + Sync + 'static> Extract<'a, T> for TakeWhereEdge<T> {
+    fn extract(inputs: &mut ErasedCursor<'a, '_>) -> T {
+        <Self as EdgeSealed>::extract(inputs)
+    }
+}
+
+/// Whatever the lifetime: the field's is the struct's, and the engine
+/// fills the struct at the cursor's.
+impl<T: Send + Sync + 'static> Reads<&mut T> for MutateWhereEdge<T> {}
+
+impl<'a, T: Send + Sync + 'static> Extract<'a, &'a mut T> for MutateWhereEdge<T> {
+    fn extract(inputs: &mut ErasedCursor<'a, '_>) -> &'a mut T {
+        <Self as EdgeSealed>::extract(inputs)
+    }
+}
+
+impl<T: Send + Sync + 'static> Reads<Vec<T>> for DrainEdge<T> {}
+
+impl<'a, T: Send + Sync + 'static> Extract<'a, Vec<T>> for DrainEdge<T> {
+    fn extract(inputs: &mut ErasedCursor<'a, '_>) -> Vec<T> {
+        <Self as EdgeSealed>::extract(inputs)
+    }
+}
+
+impl<T: Clone + Send + Sync + 'static> Reads<Vec<T>> for SurveyEdge<T> {}
+
+impl<'a, T: Clone + Send + Sync + 'static> Extract<'a, Vec<T>> for SurveyEdge<T> {
+    fn extract(inputs: &mut ErasedCursor<'a, '_>) -> Vec<T> {
+        <Self as EdgeSealed>::extract(inputs)
+    }
+}
+
 /// A tuple of input edges, `()` to twelve of them.
 ///
 /// This is the type of the `inputs` argument of
 /// [`NetBuilder::transition`](crate::NetBuilder::transition). A single edge
 /// still goes in a tuple — `(TakeEdge(inbox),)` — because the tuple is what
 /// carries the arity, and a [`Param<T>`](crate::Param) may stand anywhere in
-/// it: the tuple is the body's parameter list, in order.
+/// it: the tuple is the body's parameter list, in order. So may a struct of
+/// edges that `#[derive(Inputs)]` generated, which is one position however
+/// many edges it binds (DESIGN §4.4).
 #[diagnostic::on_unimplemented(
     message = "a transition's inputs must be a tuple of input edges",
     label = "not a tuple of input edges",
     note = "write `(TakeEdge(p), SnapshotEdge(q))`, or `()` for a transition with no inputs; \
-            a single input needs the trailing comma: `(TakeEdge(p),)`"
+            a single input needs the trailing comma: `(TakeEdge(p),)`",
+    note = "a struct of edges that `#[derive(Inputs)]` generated is one input like any other, \
+            so it goes in the tuple too: `(PricingEdges {{ .. }},)`"
 )]
 pub trait InputEdges: EdgeTupleSealed {}
 

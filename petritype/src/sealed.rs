@@ -8,7 +8,10 @@
 //!
 //! - **Sealing.** These traits are not nameable outside the crate, so no
 //!   outside type can implement the public ones. Slices to come add impls
-//!   here; nobody else can add impls that would collide with them.
+//!   here; nobody else can add impls that would collide with them. The one
+//!   opening is [`crate::binding`], a hidden module through which the code
+//!   `#[derive(Inputs)]` generates in another crate implements
+//!   [`EdgeSealed`] for the struct of edges it declares.
 //! - **Hiding the erased plumbing.** A public trait may not mention
 //!   [`ErasedInput`](crate::erased::ErasedInput) and friends in its method
 //!   signatures, but these traits may, so the engine's calling convention

@@ -1,14 +1,17 @@
-//! `#[derive(Routed)]` for [petritype]: the macro that lets a transition body
-//! return a value and have it land in the output place of its type.
+//! The derives of [petritype]: `#[derive(Routed)]`, which lets a transition
+//! body return a value and have it land in the output place of its type, and
+//! `#[derive(Inputs)]`, which binds a body's inputs to a net by field name.
 //!
-//! The macro is re-exported by the `petritype` crate, which is where it is
-//! documented and where the examples live; there is no reason to depend on
-//! this crate directly.
+//! The macros are re-exported by the `petritype` crate, which is where they
+//! are documented and where the examples live; there is no reason to depend
+//! on this crate directly.
 //!
 //! [petritype]: https://docs.rs/petritype
 
 #![warn(missing_docs, missing_debug_implementations, unreachable_pub)]
 #![forbid(unsafe_code)]
+
+mod binding;
 
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
@@ -146,4 +149,53 @@ fn variants(data: &DataEnum) -> Result<(Vec<TokenStream2>, Vec<TokenStream2>)> {
     }
 
     Ok((payloads, arms))
+}
+
+/// Binds a body's inputs to a net by field name.
+///
+/// On a struct with one named field per input, it generates a second
+/// struct, the *wiring*, named after the first with `Edges` appended: the
+/// same field names, one type parameter per field, each bounded by
+/// `petritype::Reads<field type>`. A net fills each field with any input
+/// that reads that type, and passes the wiring where an input goes:
+///
+/// ```ignore
+/// #[derive(Inputs)]
+/// pub struct Pricing {
+///     pub order: Order,
+///     pub promos: Vec<Promo>,
+///     pub prices: Prices,
+/// }
+///
+/// b.transition(
+///     "Price Order",
+///     (PricingEdges { order: TakeEdge(orders), promos: SurveyEdge(promos), prices: Param::new() },),
+///     (priced,),
+///     |p: Pricing| (p.order,),
+/// );
+/// ```
+///
+/// The wiring is one input position: the body takes a `Pricing` there, and
+/// the transition's edges are its fields' edges in field order, which is
+/// what the read API and the wire report. It is as visible as the struct,
+/// fields included, and `Clone`, `Copy` and `Debug` where its inputs are.
+///
+/// The struct may have one lifetime, for fields of type `&'a mut T` that a
+/// `MutateEdge` or a `MutateWhereEdge` fills; the body then takes
+/// `Pricing<'_>`. It may not have type or const parameters (a field's type
+/// is what the net wires against), and needs at least one named field.
+///
+/// `#[binding(edges = "Name")]` names the wiring something else, and
+/// `#[binding(inputs = "Name")]` does so for this derive alone, for a struct
+/// that also derives another binding.
+///
+/// The expansion implements the engine traits of `petritype::binding` for
+/// the wiring; the crate's documentation of `Reads` says what may fill a
+/// field.
+#[proc_macro_derive(Inputs, attributes(binding))]
+pub fn derive_inputs(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    binding::inputs(&input)
+        .unwrap_or_else(Error::into_compile_error)
+        .into()
 }

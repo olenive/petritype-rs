@@ -190,9 +190,12 @@ pub struct TransitionInfo<'a> {
     pub params: &'a [&'static str],
     /// Output places, in declaration order.
     pub outputs: &'a [PlaceId],
-    /// Whether the body returns its outputs by position: a tuple, one slot
-    /// per output place ([`PositionalOutputs`](crate::PositionalOutputs)),
-    /// `()` included. False for a body that routes its payloads by type
+    /// Whether the body returns its outputs by position: a tuple, one return
+    /// position per output place
+    /// ([`PositionalOutputs`](crate::PositionalOutputs)), `()` included, or
+    /// a struct bound by name to the struct of outputs `#[derive(Outputs)]`
+    /// generated for it, whose field *i* goes to output *i*. False for a
+    /// body that routes its payloads by type
     /// ([`RoutedOutput`](crate::RoutedOutput)) or names their places in a
     /// [`Distribution`](crate::Distribution); a wrapped body is what its
     /// [output distribution function](crate::OutputDistribution) returns,
@@ -200,10 +203,12 @@ pub struct TransitionInfo<'a> {
     ///
     /// It says what an output edge's [`slot`](crate::EdgeInfo::Output)
     /// means. For a positional body the slot is the position in the
-    /// returned tuple the place is filled from, which a diagram may label;
-    /// otherwise it is only the order the places were declared in. The net
-    /// protocol writes `slot` for positional outputs alone, as Python
-    /// petritype writes its `return_index`.
+    /// returned tuple the place is filled from, or the position of the
+    /// field among the struct's, which a diagram may label; otherwise it is
+    /// only the order the places were declared in. The net protocol writes
+    /// `slot` for positional outputs alone, as Python petritype writes its
+    /// `return_index`. A named return is positional rather than a third
+    /// value because its order is real and the wire has no third value.
     pub positional: bool,
     /// The on/off switch, as
     /// [`Net::enable`](crate::Net::enable) and

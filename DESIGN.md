@@ -367,17 +367,98 @@ EdgeKind::Drain.consumes() == true;  EdgeKind::Survey.consumes() == false
   example's tests), and the shared transcript `07_empty_place_edges.json`
   drives it over the wire.
 
+**Binding by name, 2026-10-15** (slice 23). The proposal
+`dev-docs/BINDING_BY_NAME.md`, its R2 to R9; R1, the tuple cap (§5), is
+its own branch. A function is bound to a net in one of three ways, on
+either side: **by position** (a tuple of inputs is the parameter list, a
+returned tuple fills the outputs in order), **by name** (a struct's fields,
+below) and **by type** (routed outputs, §4.5). Inputs and outputs are both
+*edges with a kind*: the input side has the eight kinds above, with
+`Param<T>` beside them; the output side has one kind today, *put*, a place
+handle that appends what a field is worth (§4.5), and a new one (replace,
+put at the front, upsert by key) would be added as a struct with an impl of
+its own, as drain and survey were added on the input side.
+
+Binding by position goes wrong at the sizes a game reaches
+(`dev-docs/TRANSITION_ARITY.md` §1): an insertion shifts every later
+parameter, two parameters of one type swap silently, and a struct of
+*edges* in the function's signature would tie a library function to one way
+of reading its inputs. Binding by name keeps the function's struct free of
+places and edge kinds, so one function serves nets that read it
+differently:
+
+```rust
+#[derive(Inputs)]
+pub struct Pricing { pub order: Order, pub promos: Vec<Promo>, pub prices: Prices }
+
+// A shop: the front order, the promotions running, the prices a parameter.
+PricingEdges { order: TakeEdge(orders), promos: SurveyEdge(promos), prices: Param::new() }
+
+// A wholesaler, the same function: trade orders only, each promotion used once.
+PricingEdges {
+    order: TakeWhereEdge(orders, Filter::new().key_in("tier", ["trade"])),
+    promos: DrainEdge(promos),
+    prices: SnapshotEdge(price_list),
+}
+```
+
+- **The derive.** `#[derive(Inputs)]` on a struct with named fields
+  generates `<Name>Edges<F0, ..>`: the same field names, one type parameter
+  per field bounded by `Reads<field type>`, as visible as the struct,
+  `Clone`/`Copy`/`Debug` where its inputs are (`#[binding(edges = "..")]`,
+  or `inputs = ".."`, renames it). It refuses enums, unions, tuple and
+  empty structs, type and const parameters, a second lifetime and a `where`
+  clause, each with a message saying what to write instead.
+- **`Reads<V>`**, implemented in the core one line per kind: `TakeEdge`,
+  `SnapshotEdge`, `TakeWhereEdge` and `Param` read `T`; `TakeAllEdge`,
+  `DrainEdge` and `SurveyEdge` read `Vec<T>`; `MutateEdge` and
+  `MutateWhereEdge` read `&'a mut T` for any `'a`. A struct with a
+  `&'a mut T` field has that one lifetime and the body takes `Pricing<'_>`;
+  the token is borrowed where it lies, and the transition is not
+  detachable, as for the edges themselves. The derive asks for the hidden
+  engine half, `Extract<'a, V>`, `for<'a>`, which ties the field's lifetime
+  to the cursor's (§16).
+- **One position, several edges.** The struct of edges is one input
+  position: it stands in the input tuple like an edge or a parameter,
+  `(PricingEdges { .. }, TakeEdge(stamps))`, and the body takes the struct
+  there. Underneath, `EdgeSealed` describes into a vec and extracts from a
+  cursor over the erased inputs, one per edge the position described; the
+  builder, launch, restore, the index, `DuplicateInputPlace`,
+  `TransitionInfo::inputs`, the topology and the wire see the flat list, the
+  fields' edges in field order, whatever order a literal writes them in,
+  and nothing of the struct. `assert_no_source_transitions` counts the
+  edges inside a struct that always take a token, as anywhere else.
+- **Errors.** A field wired to the wrong kind is an error at that field of
+  the literal, "`TakeEdge<Promo>` cannot fill a field of type
+  `Vec<Promo>`", with the struct's own field as the bound it broke; a
+  missing field is rustc's own "missing field `promos`".
+- **Not here.** A struct of edges is not accepted without the tuple around
+  it (the proposal's R6): the blanket impl that would allow it puts two
+  impls in reach of every input tuple, and the compiler then reports a place
+  handle in a tuple as "not a tuple" and every mismatch of the outputs as a
+  mismatch of the inputs; the tuple it is, and the message for a lone
+  struct says so. Nested tuples of edges, `Group`, and arrays of edges as a
+  position are not public API.
+- **The example** is the proposal's pricing library and its nets,
+  `examples/pricing.rs` with the library in `examples/pricing/library.rs`
+  and the nets in `examples/pricing/nets.rs`; `tests/binding.rs` holds the
+  rest, and the till of `TRANSITION_ARITY.md` §2 written by name, fourteen
+  inputs and thirteen outputs through one struct each.
+
 Bodies are `FnMut`: they may hold private mutable state (counters, RNGs).
 Anything captured must be `Send + Sync`; use `move`, `Arc`, `Mutex`, atomics.
 
 ### 4.5 Outputs
 
-Output places are declared as a tuple in the builder (topology needs the
-list). The body's **return type** selects one of three forms:
+Output places are declared in the builder (topology needs the list), as a
+tuple or as the struct of outputs `#[derive(Outputs)]` generates. Outputs
+are edges too, of one kind today, *put*: a place handle, which appends the
+tokens a value is worth to its place. The body's **return type**, and the
+outputs it meets, select one of four forms:
 
-**Positional** — the return type is a tuple. Slot *i* goes to output place
-*i*. Each slot is `T`, `Option<T>` or `Vec<T>` for that place's `T` (trait
-`IntoTokens<T>`). Checked at compile time. A wrong order between
+**Positional** — the return type is a tuple. Return position *i* goes to
+output place *i*, and is `T`, `Option<T>` or `Vec<T>` for that place's `T`
+(trait `IntoTokens<T>`). Checked at compile time. A wrong order between
 *different* types fails to compile; between *same* types order is the only
 distinguishing information and the author must care anyway.
 
@@ -385,8 +466,34 @@ distinguishing information and the author must care anyway.
 (heavy, light, count)  ⇐  |ps: Vec<Parcel>| -> (Vec<Parcel>, Vec<Parcel>, Option<u32>)
 ```
 
-**Routed** — the return type is not a tuple. Each emitted payload goes to
-the unique output place of its type. Order of output places is irrelevant.
+**Named** (slice 23, §4.4) — the return type is a struct that derives
+`Outputs`, and the outputs are the struct of outputs generated for it,
+`<Name>Edges`, whole: each field goes to the place wired to its name,
+whatever order the literal writes them in, and is `T`, `Option<T>` or
+`Vec<T>` for that place's `T` (trait `Accepts<V>`, implemented for
+`PlaceRef<T>` through `IntoTokens`, where a future output kind adds its
+own impl). The struct names no place, so one library function's result
+goes to different places in different nets, and the order a tuple would
+make the author keep is replaced by the field names.
+
+```rust
+#[derive(Outputs)]
+pub struct Priced { pub order: Order, pub note: Option<Note>, pub restock: Vec<Item> }
+
+PricedEdges { order: priced, note: log, restock }  ⇐  |p: Pricing| -> Priced
+```
+
+The struct of outputs is never a position inside a tuple of outputs. The
+form reads back as positional (`TransitionInfo::positional`, D4 of the
+proposal): its order is real, field *i* to output *i*, and the wire has no
+third value, so the runner writes `slot` by field order. A struct that
+derives both `Routed` and `Outputs` is unambiguous: the routed form asks for
+a tuple of outputs, so the struct is routed whole where the outputs are a
+tuple and bound by name where they are its own struct of outputs.
+
+**Routed** — the return type is not a tuple, and the outputs are a tuple.
+Each emitted payload goes to the unique output place of its type. Order of
+output places is irrelevant.
 Trait `RoutedOutput` (`petritype::routing`) lists the payload types
 (`describe`) and emits them (`emit`); implemented by `#[derive(Routed)]` on
 an **enum** (each single-field tuple variant `V(P)` sends `P` to the place
@@ -464,12 +571,13 @@ Rules common to all forms:
   deferred until asked for.
 - **Which form, read back** (slice 17): `TransitionInfo::positional` and
   `TopologyTransition::positional` say whether the body (or its output
-  distribution function) returns by position, `()` included, read off the
-  return type when the transition is declared. It is what an output edge's
-  `slot` means: a position in what the body returns only for a positional
+  distribution function) returns by position, `()` and a named struct
+  included (slice 23), read off the return type when the transition is
+  declared. It is what an output edge's `slot` means: a position in what
+  the body returns (a field's, for a named struct) only for a positional
   body, the declared order and nothing more otherwise, so the protocol
   runner writes `slot` for positional outputs alone (§19.3.11), as Python
-  writes its `return_index`. A flag rather than an enum of the three forms:
+  writes its `return_index`. A flag rather than an enum of the forms:
   a variant called `Positional` beside `marker::Positional` makes rustc
   spell the marker's whole path in every error that names a body.
 
@@ -512,6 +620,27 @@ let weigh = b.transition(
 let net = b.build()?;   // Result<Net, BuildError>
 ```
 
+The same transition may bind its body by name instead (§4.4, §4.5): a
+library function takes and returns structs that name no place and no edge
+kind, and the net wires their fields through the structs
+`#[derive(Inputs)]` and `#[derive(Outputs)]` generate. The struct of inputs
+is one input position, so it goes in the input tuple beside any other
+inputs; the struct of outputs is the whole of the outputs.
+
+```rust
+#[derive(Inputs)]  struct Batch   { parcels: Vec<Parcel>, cfg: Config }
+#[derive(Outputs)] struct Weighed { heavy: Vec<Parcel>, light: Vec<Parcel>, count: Option<u32> }
+
+fn weigh(batch: Batch) -> Weighed { /* .. */ }      // knows nothing about the net
+
+b.transition(
+    "Weigh",
+    (BatchEdges { parcels: TakeAllEdge(inbox), cfg: SnapshotEdge(config) },),
+    WeighedEdges { heavy, light, count },
+    weigh,
+);
+```
+
 Builder ergonomics:
 - **Transitions chain.** `transition()` inserts the transition and returns a
   `TransitionBuilder<'_>` (holds `&mut NetBuilder` + the id); `.guard`,
@@ -537,6 +666,13 @@ Conventions:
   means none.
 - Bodies may return `Outputs` or `Result<Outputs, E>` where
   `E: Error + Send + Sync + 'static` (trait `IntoOutcome`).
+- Beside the tuples, inputs and outputs may be bound by name: a struct of
+  edges is one position of the input tuple (alone, `(BatchEdges { .. },)`),
+  and a struct of outputs is all of the outputs, never inside a tuple. A
+  struct has no cap of its own, so a body with more inputs or outputs than
+  the tuple cap allows takes them as one struct each; the net still sees
+  every edge, in field order. Prefer it for a library function that more
+  than one net wires, or wherever two parameters of one type could swap.
 - Mismatch errors use `#[diagnostic::on_unimplemented]` so the compiler says
   "transition body parameters do not match its input edges", not a trait soup.
 - Prefer routed outputs when types are distinct: no order to keep track of.
@@ -1787,7 +1923,7 @@ Cargo workspace, edition 2024, MSRV = current stable minus two (must be
 | crate | contents | deps |
 |---|---|---|
 | `petritype` | builder, `Net`, events, checks, `drivers` | `thiserror`; feature `serde` adds `serde`, `serde_json` |
-| `petritype-derive` | `#[derive(Routed)]` on enums (variants) and structs (leaf) | `syn` 2, `quote`, `proc-macro2`; re-exported by `petritype` unconditionally as `petritype::Routed` |
+| `petritype-derive` | `#[derive(Routed)]` on enums (variants) and structs (leaf); `#[derive(Inputs)]` and `#[derive(Outputs)]` on structs (slice 23, §4.4) | `syn` 2, `quote`, `proc-macro2`; re-exported by `petritype` unconditionally as `petritype::Routed`, `petritype::Inputs` and `petritype::Outputs` |
 | `petritype-dot` | Graphviz DOT text of a net and its marking (**done, slice 12**) | `petritype` only |
 | `petritype-bevy` | `NetRes`, mirror systems, token entities, in-flight highlighting, task-pool driver | pins one Bevy version |
 | `petritype-tokio` | only if a need appears | |
@@ -1930,9 +2066,14 @@ effects, which the viewer attributes; 232 tests with `http`.
 | bodies of any arity in one list | trait over tuples, `macro_rules!` impls for arity 0..=16 (as Bevy `IntoSystem`, axum handlers, which stop there too) |
 | `&mut T` parameters from `MutateEdge` | generic associated type `type Arg<'a>` on the edge-kind trait |
 | readable mismatch errors | `#[diagnostic::on_unimplemented]` |
-| body may return plain or `Result` | trait `IntoOutcome<Outputs, Marker>` over the return type; marker tags (`Positional`, `Failing<M>`, later `Routed`) keep the impls from overlapping, as Bevy's `IntoSystem<Marker>` |
-| positional slot may hold one / maybe one / many | trait `IntoTokens<T>` for `T`, `Option<T>`, `Vec<T>` |
+| body may return plain or `Result` | trait `IntoOutcome<Outputs, Marker>` over the return type; marker tags (`Positional`, `Failing<M>`, later `Routed` and `Named`) keep the impls from overlapping, as Bevy's `IntoSystem<Marker>` |
+| a return position, or a named output field, may hold one / maybe one / many | trait `IntoTokens<T>` for `T`, `Option<T>`, `Vec<T>`; `Accepts<V>` for `PlaceRef<T>` over it, for a field (slice 23) |
 | routing by payload type without runtime reflection | trait `RoutedOutput` (`describe` lists `TypeId`s, `emit` pushes into a `RouteSink`); `#[derive(Routed)]` proc macro names `petritype::routing`, so that module is public; table resolved from types at `transition()`, problems reported at `build()`. Cost of marker-based form selection: a return type that fits neither form is blamed on `IntoOutcome`, whose notes therefore describe both forms |
+| one input position binding several edges | `EdgeSealed::describe` appends to a `Vec<InputSpec>` and `extract` takes from `ErasedCursor`, an `IterMut` over the erased inputs whose items borrow the inputs rather than the cursor; everything after the builder sees the flat list (slice 23) |
+| a function's inputs and outputs bound by field name, its structs free of places and edge kinds | `#[derive(Inputs)]` / `#[derive(Outputs)]` generate a struct of edges with one type parameter per field, bounded by `Reads<V>` / `Accepts<V>`, the bound spanned at the field so that a wrong kind is reported against it (slice 23) |
+| a `&'a mut T` field filled for one call | `Reads<&'a mut T>` for any `'a`, and the hidden `Extract<'a, V>` asked for `for<'a>`, which ties the field's lifetime to the cursor's; stable, no `unsafe` (slice 23) |
+| derived impls of sealed engine traits from another crate | a hidden public module, `petritype::binding`, re-exporting `EdgeSealed` and `PlaceTupleSealed`: the seal's one opening, as `petritype::routing` is public for `Routed`. Concrete impls rather than blankets over a hidden trait, which would have rustc blame that trait for every non-edge in an input tuple (slice 23) |
+| a named return beside the positional and routed ones | marker `Named`; the routed impl asks `Outputs: TupleOfPlaces` (sealed, tuples only), so a type deriving both `Routed` and `Outputs` is never ambiguous (slice 23) |
 | body in flight without borrowing the net | `Option<Box<dyn FnMut>>` slot, `Option::take` on launch |
 | bodies on other threads | `Send + 'static` bounds; `Firing` and `Completed` always `Send` (owned inputs; `MutateEdge` runs inline at `launch`); `std::thread::scope` |
 | no aliasing between tokens | ownership and moves; `Clone` explicit; `Arc` for sharing; `Arc::make_mut` for copy-on-write |
@@ -2130,6 +2271,24 @@ Slices, each with tests, in order:
     example, included by path), and the shared `07_empty_place_edges.json`
     replays unchanged. `tests/slice22.rs`, two `trybuild` cases. The viewer
     (R7) is petritype-bevy's.
+23. Binding by name (§4.4, §4.5, §5, §16), 2026-10-15, R2 to R9 of
+    `dev-docs/BINDING_BY_NAME.md` (R1, the tuple cap, is a branch of its
+    own). An input position may bind several edges: `EdgeSealed` describes
+    into a vec and extracts from a cursor, and nothing after the builder
+    changed. `#[derive(Inputs)]` generates a struct of edges bounded by
+    `Reads<V>`, one input position whose edges are its fields' in field
+    order, `&'a mut T` fields included; `#[derive(Outputs)]` generates a
+    struct of outputs bounded by `Accepts<V>`, the whole of the outputs, and
+    returning the struct is the named form, marker `Named`, positional for
+    the read API and the wire. The engine traits the derives implement are
+    named through the hidden `petritype::binding`; the routed form asks for a
+    tuple of outputs, so `Routed` and `Outputs` on one struct never clash. A
+    lone struct without the tuple (R6) was tried and dropped: it made the
+    diagnostics of every input tuple worse. The example `pricing` wires one
+    library function into a shop and a wholesaler, with the mixed form;
+    `tests/binding.rs` holds the rest and the till of
+    `TRANSITION_ARITY.md` §2 by name, fourteen inputs and thirteen outputs;
+    eight `trybuild` cases. No wire, runner, protocol or Python change.
 
 **2026-10-10: the `transit` example runs its own journey** (no slice: an
 example, a conformance net and a transcript changed, the crates' API did not).

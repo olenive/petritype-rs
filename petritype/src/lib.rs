@@ -176,6 +176,18 @@
 //!   DESIGN §8.3); [`DrainEdge`] and [`SurveyEdge`] take or read every
 //!   token there is, zero or more, and never hold their transition back
 //!   (DESIGN §4.4); [`EdgeKind`] is the same thing with the type forgotten.
+//! - [`#[derive(Inputs)]`](Inputs) binds a body's inputs **by name**
+//!   rather than by position: on a struct with one field per input, it
+//!   generates a struct of edges with the same field names, each field
+//!   wired to any input that [`Reads`] its type. The body takes the struct,
+//!   which names no place and no kind of edge, so one library function
+//!   serves nets that read its inputs differently; the struct of edges is
+//!   one position of the input tuple, its edges in field order.
+//!   [`#[derive(Outputs)]`](Outputs) does the same for what a body
+//!   returns: a struct of outputs, each field wired to a place that
+//!   [`Accepts`] its type, which is the whole of the transition's outputs.
+//!   With [`#[derive(Routed)]`](Routed) these are the three ways to bind a
+//!   body: by position (tuples), by name (these), by type (routing).
 //! - [`IntoTokens`] decides how many tokens one returned slot is worth, and
 //!   [`IntoOutcome`] tells outputs from failure.
 //! - [`RoutedOutput`] is the second output form: a body that returns a value
@@ -338,6 +350,8 @@
 #![forbid(unsafe_code)]
 
 mod arity;
+#[doc(hidden)]
+pub mod binding;
 mod body;
 mod builder;
 mod command;
@@ -365,7 +379,9 @@ mod template;
 mod topology;
 mod transition;
 
-pub use body::{IntoOutcome, IntoTokens, OutputPlaces, PositionalOutputs, TransitionBody, marker};
+pub use body::{
+    Accepts, IntoOutcome, IntoTokens, OutputPlaces, PositionalOutputs, TransitionBody, marker,
+};
 pub use builder::NetBuilder;
 pub use command::Command;
 #[cfg(feature = "serde")]
@@ -374,7 +390,7 @@ pub use distribution::{
     Distribution, DistributionError, OutputDistribution, WithOutputDistribution,
 };
 pub use edge::{
-    DrainEdge, EdgeInfo, EdgeKind, InputEdge, InputEdges, MutateEdge, MutateWhereEdge,
+    DrainEdge, EdgeInfo, EdgeKind, InputEdge, InputEdges, MutateEdge, MutateWhereEdge, Reads,
     SnapshotEdge, SurveyEdge, TakeAllEdge, TakeEdge, TakeWhereEdge,
 };
 #[cfg(feature = "serde")]
@@ -399,6 +415,16 @@ pub use transition::{TransitionBuilder, TransitionInfo};
 /// Routes a returned value to the output place of its type; see
 /// [`RoutedOutput`] and the [`routing`] module.
 pub use petritype_derive::Routed;
+
+/// Binds a body's inputs to a net by field name: generates, for a struct
+/// with one field per input, the struct of edges that wires it (DESIGN
+/// §4.4); see [`Reads`].
+pub use petritype_derive::Inputs;
+
+/// Binds a body's outputs to a net by field name: generates, for a struct
+/// the body returns, the struct of outputs that wires each field to a place
+/// (DESIGN §4.5); see [`Accepts`].
+pub use petritype_derive::Outputs;
 
 /// The `serde_json` this crate was built against, re-exported so that callers
 /// of [`Net::json`] need not match its version by hand.

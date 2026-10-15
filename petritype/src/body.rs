@@ -6,9 +6,12 @@
 //! 1. Do the body's parameters match the input edges? — [`TransitionBody`],
 //!    implemented for every arity from 0 to 16.
 //! 2. Does what the body returns match the output places? —
-//!    [`PositionalOutputs`], slot by slot, with [`IntoTokens`] deciding how
-//!    many tokens one slot is worth; [`RoutedOutput`](crate::RoutedOutput),
-//!    payload type by payload type; or nothing at all for a
+//!    [`PositionalOutputs`], return position by return position, with
+//!    [`IntoTokens`] deciding how many tokens one position is worth; a
+//!    struct bound **by name** to the struct of outputs `#[derive(Outputs)]`
+//!    generated for it, field by field, with [`Accepts`] deciding what may
+//!    go where; [`RoutedOutput`](crate::RoutedOutput), payload type by
+//!    payload type; or nothing at all for a
 //!    [`Distribution`](crate::Distribution), which names its places itself
 //!    and is checked when its tokens land.
 //! 3. Is the return value an outcome at all? — [`IntoOutcome`], which also
@@ -27,6 +30,7 @@ use std::any::{TypeId, type_name};
 use std::error::Error;
 
 use crate::arity::for_each_arity;
+use crate::binding::{Emit, NamedOutputs};
 use crate::distribution::WithOutputDistribution;
 use crate::edge::InputEdge;
 use crate::erased::{
@@ -35,7 +39,10 @@ use crate::erased::{
 use crate::ids::{NetId, PlaceId, PlaceRef};
 use crate::place::ErasedToken;
 use crate::routing::{RouteSink, RouteSpec, RoutedOutput};
-use crate::sealed::{BodySealed, EdgeSealed, OutcomeSealed, PlaceTupleSealed, PositionalSealed};
+use crate::sealed::{
+    AcceptsSealed, BodySealed, EdgeSealed, OutcomeSealed, PlaceTupleSealed, PositionalSealed,
+    TupleOfPlaces,
+};
 
 pub mod marker {
     //! Type-level tags that tell the output forms apart.
@@ -61,6 +68,12 @@ pub mod marker {
     /// were declared in. See [`RoutedOutput`](crate::RoutedOutput).
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
     pub struct Routed;
+
+    /// The body returned a struct bound by name: each field goes to the
+    /// output the struct of outputs `#[derive(Outputs)]` generated for it
+    /// wires to the same name. See [`Accepts`](crate::Accepts).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    pub struct Named;
 
     /// The body returned a [`Distribution`](crate::Distribution): the places
     /// were named outright, so neither order nor type picks them.
@@ -142,18 +155,115 @@ impl<T> IntoTokens<T> for Vec<T> {
     }
 }
 
-/// A tuple of place handles, `()` to sixteen of them: a transition's outputs.
+/// A tuple of place handles, `()` to sixteen of them, or a struct of them
+/// bound by name: a transition's outputs.
 ///
-/// The tuple is positional, so its order is the order of the slots in what
-/// the body returns. A single output still needs the trailing comma:
-/// `(count,)`.
+/// The tuple is positional, so its order is the order of the return
+/// positions in what the body returns. A single output still needs the
+/// trailing comma: `(count,)`.
+///
+/// The struct is the one `#[derive(Outputs)]` generates for a struct the
+/// body returns: the same field names, each wired to an output that
+/// [`Accepts`] that field's type (DESIGN §4.5). It is the whole of the
+/// outputs, never a position inside a tuple, and its fields are the
+/// transition's output edges in field order.
 #[diagnostic::on_unimplemented(
     message = "a transition's outputs must be a tuple of place handles",
     label = "not a tuple of place handles",
     note = "write `(heavy, light, count)`, or `()` for a transition that produces nothing; \
-            a single output needs the trailing comma: `(count,)`"
+            a single output needs the trailing comma: `(count,)`",
+    note = "or bind them by name: derive `Outputs` on the struct the body returns and pass the \
+            `...Edges` struct it generates, whole, as the outputs"
 )]
 pub trait OutputPlaces: PlaceTupleSealed {}
+
+/// An output that can take a field of type `V` of a struct a body returns:
+/// the bound on every field of the struct of outputs `#[derive(Outputs)]`
+/// generates (DESIGN §4.5).
+///
+/// Outputs are edges too, of one kind today: a place handle, which puts the
+/// tokens a field is worth at the back of its place. A place of type `T`
+/// takes a field of type `T` (one token), `Option<T>` (zero or one) or
+/// `Vec<T>` (as many as it holds), as a return position does
+/// ([`IntoTokens`]), and the place's type decides which reading applies.
+/// This trait is where another kind of output would be added — one that
+/// replaces a place's token, or puts at the front — with an impl of its
+/// own beside this one.
+///
+/// ```
+/// use petritype::{Inputs, NetBuilder, Outputs, TakeEdge};
+///
+/// #[derive(Inputs)]
+/// struct Parcel {
+///     weight: u32,
+/// }
+///
+/// // The library side: one field per output, no place in sight.
+/// #[derive(Outputs)]
+/// struct Weighed {
+///     heavy: Option<u32>,
+///     light: Option<u32>,
+///     log: Vec<String>,
+/// }
+///
+/// fn weigh(p: Parcel) -> Weighed {
+///     let heavy = p.weight > 10;
+///     Weighed {
+///         heavy: heavy.then_some(p.weight),
+///         light: (!heavy).then_some(p.weight),
+///         log: vec![format!("weighed {}", p.weight)],
+///     }
+/// }
+///
+/// // The net side: each field wired to a place that accepts its type.
+/// let mut b = NetBuilder::new();
+/// let inbox = b.place::<u32>("Inbox");
+/// let heavy = b.place::<u32>("Heavy");
+/// let light = b.place::<u32>("Light");
+/// let log = b.place::<String>("Log");
+/// b.seed(inbox, [30]);
+/// b.transition(
+///     "Weigh",
+///     (ParcelEdges { weight: TakeEdge(inbox) },),
+///     WeighedEdges { heavy, light, log },
+///     weigh,
+/// );
+/// let mut net = b.build()?;
+/// net.step()?;
+/// assert_eq!((net.count(heavy.id()), net.count(light.id()), net.count(log.id())), (1, 0, 1));
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` cannot take a field of type `{V}`",
+    label = "this output does not accept `{V}`",
+    note = "an output place of type `T` takes a field of type `T` (one token), `Option<T>` \
+            (zero or one) or `Vec<T>` (any number)"
+)]
+pub trait Accepts<V>: AcceptsSealed<V> {}
+
+/// The tokens go where every positional token goes: an index, the field's
+/// position among the outputs, which the engine resolves to this place.
+impl<T: Send + Sync + 'static, V: IntoTokens<T>> AcceptsSealed<V> for PlaceRef<T> {
+    fn place(&self) -> (PlaceId, NetId) {
+        (self.id(), self.net())
+    }
+
+    fn token_type() -> (TypeId, &'static str) {
+        (TypeId::of::<T>(), type_name::<T>())
+    }
+
+    fn push(value: V, index: usize, out: &mut Vec<(OutputTarget, ErasedToken)>) {
+        value.for_each_token(&mut |token| {
+            out.push((OutputTarget::Index(index), Box::new(token) as ErasedToken));
+        });
+    }
+}
+
+/// `do_not_recommend`, so that a field of the wrong type is reported as
+/// this trait's failure, which names the field's type and the place's,
+/// rather than as the [`IntoTokens`] inside it.
+#[diagnostic::do_not_recommend]
+impl<T: Send + Sync + 'static, V: IntoTokens<T>> Accepts<V> for PlaceRef<T> {}
 
 /// What a body returns when its outputs are positional: a tuple with one slot
 /// per output place.
@@ -168,7 +278,8 @@ pub trait OutputPlaces: PlaceTupleSealed {}
     note = "outputs `{Outputs}` want a tuple of that many slots, where slot i is `T`, \
             `Option<T>` or `Vec<T>` for the type of output place i",
     note = "a value that is not a tuple is routed by type instead: derive `Routed` on the enum \
-            or struct you return, so that each payload goes to the output place that holds it"
+            or struct you return, so that each payload goes to the output place that holds it; \
+            or bound by name: derive `Outputs` on the struct you return"
 )]
 pub trait PositionalOutputs<Outputs>: PositionalSealed<Outputs> {}
 
@@ -178,13 +289,17 @@ pub trait PositionalOutputs<Outputs>: PositionalSealed<Outputs> {}
 /// means failure, never routing (DESIGN §7): a body that wants to send a
 /// value to one place or another returns data that says so, not an `Err`.
 ///
-/// The three forms are told apart by the return type:
+/// The four forms are told apart by the return type, and the outputs:
 ///
-/// - **positional** — a tuple, one slot per output place, matched by order
-///   ([`PositionalOutputs`]);
+/// - **positional** — a tuple, one return position per output place,
+///   matched by order ([`PositionalOutputs`]);
+/// - **named** — a struct that derives `Outputs`, whose fields go to the
+///   outputs of the same names in the struct of outputs generated for it
+///   ([`Accepts`]), when that struct is the outputs;
 /// - **routed** — a value that is not a tuple, matched by type
 ///   ([`RoutedOutput`](crate::RoutedOutput)), which is what
-///   [`#[derive(Routed)]`](crate::Routed) implements;
+///   [`#[derive(Routed)]`](crate::Routed) implements, when the outputs are a
+///   tuple;
 /// - **distribution** — a [`Distribution`](crate::Distribution), whose pairs
 ///   name their places outright, for the decisions only the data can make.
 ///
@@ -192,13 +307,16 @@ pub trait PositionalOutputs<Outputs>: PositionalSealed<Outputs> {}
 ///
 /// The `Marker` parameter is what keeps them from colliding. Positional
 /// outputs are `impl<O: PositionalOutputs<Outputs>> IntoOutcome<Outputs,
-/// marker::Positional> for O`, routed ones the same shape under
-/// [`marker::Routed`], and the distribution form is written for the concrete
-/// [`Distribution`](crate::Distribution) under [`marker::Distributed`].
-/// Because the tags differ, none of the impls overlaps another, and the
-/// compiler picks the form by picking the impl whose bounds hold. `Result`
-/// needs no new impl for any of them: [`marker::Failing<M>`] carries the
-/// inner form's tag.
+/// marker::Positional> for O`, named and routed ones the same shape under
+/// [`marker::Named`] and [`marker::Routed`], and the distribution form is
+/// written for the concrete [`Distribution`](crate::Distribution) under
+/// [`marker::Distributed`]. Because the tags differ, none of the impls
+/// overlaps another, and the compiler picks the form by picking the impl
+/// whose bounds hold. The routed impl asks for a tuple of outputs, so that
+/// a struct that derives both `Routed` and `Outputs` is read by name where
+/// its own struct of outputs is the outputs, and by type where a tuple is.
+/// `Result` needs no new impl for any of them: [`marker::Failing<M>`]
+/// carries the inner form's tag.
 ///
 /// A body wrapped with
 /// [`output_distribution`](crate::OutputDistribution::output_distribution)
@@ -211,12 +329,14 @@ pub trait PositionalOutputs<Outputs>: PositionalSealed<Outputs> {}
     note = "positional: outputs `{Outputs}` want a tuple of that many slots, where slot i is \
             `T`, `Option<T>` or `Vec<T>` for the type of output place i, and `()` for no \
             outputs at all",
+    note = "named: the struct whose `#[derive(Outputs)]` generated the outputs' `...Edges` \
+            struct, each field going to the output of the same name",
     note = "routed: a value that is not a tuple, whose every payload goes to the output place \
             that holds its type — derive `Routed` on the enum or struct you return",
     note = "distribution: a `Distribution` of (place, token) pairs, built with \
             `Distribution::new().to(place, token)`, for choosing between output places of the \
             same type",
-    note = "any of the three may be wrapped in `Result<_, E>` where \
+    note = "any of these may be wrapped in `Result<_, E>` where \
             `E: std::error::Error + Send + Sync + 'static`; a `Result` always means failure, \
             never routing"
 )]
@@ -251,7 +371,7 @@ impl<Outputs, O: PositionalOutputs<Outputs>> IntoOutcome<Outputs, marker::Positi
 /// [`RoutedOutput`](crate::RoutedOutput) (never a tuple).
 impl<Outputs, O> OutcomeSealed<Outputs, marker::Routed> for O
 where
-    Outputs: OutputPlaces,
+    Outputs: OutputPlaces + TupleOfPlaces,
     O: RoutedOutput,
 {
     fn routing() -> Result<RouteTable, RoutingProblem> {
@@ -275,10 +395,37 @@ where
 
 impl<Outputs, O> IntoOutcome<Outputs, marker::Routed> for O
 where
-    Outputs: OutputPlaces,
+    Outputs: OutputPlaces + TupleOfPlaces,
     O: RoutedOutput,
 {
 }
+
+/// The named form: a struct whose fields are bound by name to the struct of
+/// outputs `#[derive(Outputs)]` generated for it, which is what implements
+/// [`NamedOutputs`] for the pair.
+///
+/// No overlap with the positional and routed impls: the marker differs.
+/// Positional because the fields have an order, the struct of outputs'
+/// field order, and the read API and the wire report it (DESIGN §4.5): the
+/// tokens of field *i* go to output *i*, as a return position's do.
+impl<Outputs, O: NamedOutputs<Outputs>> OutcomeSealed<Outputs, marker::Named> for O {
+    /// Nothing to resolve: a field's position among the outputs is known.
+    fn routing() -> Result<RouteTable, RoutingProblem> {
+        Ok(RouteTable::empty())
+    }
+
+    fn positional() -> bool {
+        true
+    }
+
+    fn into_outcome(self, _routes: &RouteTable) -> ErasedOutcome {
+        let mut tokens = Vec::new();
+        self.emit(&mut Emit::new(&mut tokens));
+        ErasedOutcome::Ok(tokens)
+    }
+}
+
+impl<Outputs, O: NamedOutputs<Outputs>> IntoOutcome<Outputs, marker::Named> for O {}
 
 impl<Outputs, O, E, M> OutcomeSealed<Outputs, marker::Failing<M>> for Result<O, E>
 where
@@ -334,7 +481,8 @@ where
     message = "transition body parameters do not match its input edges",
     label = "this body cannot be called with what `{Edges}` produces",
     note = "one parameter per edge, in order: `TakeEdge(p)` gives `T`, `TakeAllEdge(p)` gives \
-            `Vec<T>`, `SnapshotEdge(p)` gives `T`, `MutateEdge(p)` gives `&mut T`",
+            `Vec<T>`, `SnapshotEdge(p)` gives `T`, `MutateEdge(p)` gives `&mut T`; a struct of \
+            edges from `#[derive(Inputs)]` gives the struct it was derived from",
     note = "with `.output_distribution(f)`, the output distribution function `f` takes exactly \
             what the body returns — the value inside the `Ok` if that is a `Result` — and \
             returns the outputs in any form, usually a `Distribution`",
@@ -387,16 +535,14 @@ macro_rules! impl_body {
                     Err(problem) => (RouteTable::empty(), Some(problem)),
                 };
                 let body: ErasedBody = Box::new(move |mut inputs: ErasedInputs<'_>| {
-                    // One argument per edge, taken in declaration order.
-                    // `iter_mut` and not indexing: the items borrow the
-                    // slice rather than the iterator, so a `&mut` argument
-                    // may still be alive when the next one is taken.
-                    let mut args = inputs.iter_mut();
-                    let returned = (self)($(
-                        <$t as EdgeSealed>::extract(
-                            args.next().expect("one erased input per input edge"),
-                        ),
-                    )*);
+                    // One argument per position, each taking from the one
+                    // cursor as many inputs as it described edges, in
+                    // declaration order. The items borrow the inputs rather
+                    // than the cursor, so a `&mut` argument may still be
+                    // alive when the next one is taken.
+                    let mut cursor = inputs.cursor();
+                    let returned = (self)($(<$t as EdgeSealed>::extract(&mut cursor),)*);
+                    cursor.finish();
                     OutcomeSealed::into_outcome(returned, &routes)
                 });
                 (body, problem)
@@ -436,12 +582,9 @@ macro_rules! impl_body {
                     Err(problem) => (RouteTable::empty(), Some(problem)),
                 };
                 let body: ErasedBody = Box::new(move |mut inputs: ErasedInputs<'_>| {
-                    let mut args = inputs.iter_mut();
-                    let returned = (self.body)($(
-                        <$t as EdgeSealed>::extract(
-                            args.next().expect("one erased input per input edge"),
-                        ),
-                    )*);
+                    let mut cursor = inputs.cursor();
+                    let returned = (self.body)($(<$t as EdgeSealed>::extract(&mut cursor),)*);
+                    cursor.finish();
                     // Both halves are stage two, so the routing decision runs
                     // wherever the body ran — off-thread in concurrent mode.
                     OutcomeSealed::into_outcome((self.distribute)(returned), &routes)
@@ -484,12 +627,9 @@ macro_rules! impl_body {
                     Err(problem) => (RouteTable::empty(), Some(problem)),
                 };
                 let body: ErasedBody = Box::new(move |mut inputs: ErasedInputs<'_>| {
-                    let mut args = inputs.iter_mut();
-                    let returned = (self.body)($(
-                        <$t as EdgeSealed>::extract(
-                            args.next().expect("one erased input per input edge"),
-                        ),
-                    )*);
+                    let mut cursor = inputs.cursor();
+                    let returned = (self.body)($(<$t as EdgeSealed>::extract(&mut cursor),)*);
+                    cursor.finish();
                     match returned {
                         Ok(value) => {
                             OutcomeSealed::into_outcome((self.distribute)(value), &routes)
@@ -544,6 +684,8 @@ macro_rules! impl_outputs {
         }
 
         impl<$($t: Send + Sync + 'static,)*> OutputPlaces for ($(PlaceRef<$t>,)*) {}
+
+        impl<$($t: Send + Sync + 'static,)*> TupleOfPlaces for ($(PlaceRef<$t>,)*) {}
 
         impl<$($t,)* $($r,)*> PositionalSealed<($(PlaceRef<$t>,)*)> for ($($r,)*)
         where
@@ -787,5 +929,288 @@ mod tests {
                 ErasedOutcome::Err(error) => panic!("unexpected failure: {error}"),
             }
         }
+    }
+}
+
+/// One input position that binds several edges, below the derive that makes
+/// such positions public (DESIGN §4.4): the engine's half of the change,
+/// tested on a position written by hand.
+#[cfg(test)]
+mod several_edges_per_position {
+    use super::*;
+    use crate::edge::{InputEdges, InputSpec};
+    use crate::erased::{ErasedCursor, ErasedInput};
+    use crate::sealed::EdgeTupleSealed;
+    use crate::{
+        BuildError, DrainEdge, EdgeKind, MutateEdge, NetBuilder, NetError, Param, SnapshotEdge,
+        TakeAllEdge, TakeEdge,
+    };
+
+    /// Two inputs in one position, the body handed both as a pair: what a
+    /// struct of edges is to the engine, without the names. Test-only, and
+    /// not public API in any form.
+    struct Pair<A, B>(A, B);
+
+    impl<A: InputEdge, B: InputEdge> EdgeSealed for Pair<A, B> {
+        type Arg<'a> = (A::Arg<'a>, B::Arg<'a>);
+
+        fn extract<'a>(inputs: &mut ErasedCursor<'a, '_>) -> Self::Arg<'a> {
+            let first = A::extract(inputs);
+            (first, B::extract(inputs))
+        }
+
+        fn describe(&self, out: &mut Vec<InputSpec>) {
+            self.0.describe(out);
+            self.1.describe(out);
+        }
+    }
+
+    impl<A: InputEdge, B: InputEdge> InputEdge for Pair<A, B> {}
+
+    #[derive(Clone)]
+    struct Scale(u32);
+
+    /// As `tests::erase`: wraps a body as `NetBuilder::transition` does.
+    fn erase<Edges, Outputs, M, F>(_inputs: Edges, _outputs: Outputs, body: F) -> ErasedBody
+    where
+        Edges: InputEdges,
+        Outputs: OutputPlaces,
+        F: TransitionBody<Edges, Outputs, M>,
+    {
+        BodySealed::into_erased(body).0
+    }
+
+    fn place<T>(index: u32) -> PlaceRef<T> {
+        PlaceRef::new(NetId(0), PlaceId(index))
+    }
+
+    /// The position describes its two edges where it stands, so the tuple's
+    /// list is flat and in declaration order.
+    #[test]
+    fn a_position_describes_every_edge_it_binds_in_order() {
+        let a = place::<u32>(0);
+        let b = place::<String>(1);
+        let c = place::<u32>(2);
+        let mut out = Vec::new();
+        EdgeTupleSealed::describe(
+            &(
+                TakeEdge(c),
+                Pair(TakeEdge(a), Param::<Scale>::new()),
+                SnapshotEdge(b),
+            ),
+            &mut out,
+        );
+        let kinds: Vec<Option<EdgeKind>> = out
+            .iter()
+            .map(|spec| match spec {
+                InputSpec::Edge { kind, .. } => Some(*kind),
+                InputSpec::Param { .. } => None,
+            })
+            .collect();
+        assert_eq!(
+            kinds,
+            [
+                Some(EdgeKind::Take),
+                Some(EdgeKind::Take),
+                None,
+                Some(EdgeKind::Snapshot)
+            ]
+        );
+    }
+
+    /// Each position takes as many arguments from the one cursor as it
+    /// described, a borrowed one included, and the next position starts
+    /// where it stopped.
+    #[test]
+    fn a_body_is_handed_one_argument_per_position() {
+        let counter = place::<u32>(0);
+        let notes = place::<String>(1);
+        let mut body = erase(
+            (
+                Pair(MutateEdge(counter), TakeAllEdge(counter)),
+                TakeEdge(notes),
+            ),
+            (counter, notes),
+            |(live, batch): (&mut u32, Vec<u32>), note: String| {
+                *live += batch.iter().sum::<u32>();
+                (*live, format!("{note}!"))
+            },
+        );
+
+        let mut token: ErasedToken = Box::new(10_u32);
+        let outcome = body(ErasedInputs::new(vec![
+            ErasedInput::Borrowed(&mut token),
+            ErasedInput::Tokens(vec![Box::new(1_u32), Box::new(2_u32)]),
+            ErasedInput::Token(Box::new(String::from("hi"))),
+        ]));
+        match outcome {
+            ErasedOutcome::Ok(tokens) => {
+                assert_eq!(*tokens[0].1.downcast_ref::<u32>().unwrap(), 13);
+                assert_eq!(tokens[1].1.downcast_ref::<String>().unwrap(), "hi!");
+            }
+            ErasedOutcome::Err(error) => panic!("unexpected failure: {error}"),
+        }
+        assert_eq!(*token.downcast_ref::<u32>().unwrap(), 13);
+    }
+
+    /// The builder, the read API, launch and the parameter lookup see the
+    /// flat list only: three edges and a parameter, wherever the positions
+    /// put them.
+    #[test]
+    fn a_net_sees_the_edges_of_a_position_flat() {
+        let mut b = NetBuilder::new();
+        let orders = b.place::<u32>("Orders");
+        let config = b.place::<String>("Config");
+        let counter = b.place::<u32>("Counter");
+        let out = b.place::<String>("Out");
+        b.param(Scale(10));
+        b.seed(orders, [1, 2]);
+        b.seed(config, [String::from("cfg")]);
+        b.seed(counter, [0]);
+        let bound = b
+            .transition(
+                "Bound",
+                (
+                    Pair(TakeEdge(orders), SnapshotEdge(config)),
+                    Param::<Scale>::new(),
+                    MutateEdge(counter),
+                ),
+                (out,),
+                |(order, cfg): (u32, String), scale: Scale, count: &mut u32| {
+                    *count += 1;
+                    (format!("{cfg}: {}", order * scale.0),)
+                },
+            )
+            .id();
+        let mut net = b.build().expect("the net builds");
+
+        let (_, info) = net.transitions().next().unwrap();
+        assert_eq!(
+            info.inputs,
+            [
+                (orders.id(), EdgeKind::Take),
+                (config.id(), EdgeKind::Snapshot),
+                (counter.id(), EdgeKind::Mutate),
+            ]
+        );
+        assert_eq!(info.params.len(), 1);
+        assert_eq!(net.edges().count(), 4, "three input edges and one output");
+
+        assert_eq!(net.step().unwrap(), Some(bound));
+        assert_eq!(net.step().unwrap(), Some(bound));
+        let written: Vec<&String> = net
+            .tokens(out.id())
+            .map(|(token, _)| net.token::<String>(out.id(), token).unwrap())
+            .collect();
+        assert_eq!(written, ["cfg: 10", "cfg: 20"]);
+        let (count, _) = net.tokens(counter.id()).next().unwrap();
+        assert_eq!(net.token::<u32>(counter.id(), count), Some(&2));
+        assert_eq!(net.count(config.id()), 1, "a snapshot inside a position");
+        assert_eq!(net.step().unwrap(), None, "no order left");
+    }
+
+    /// A failing body that restores its inputs puts back what the edges
+    /// inside a position took, with their ids, as it does for any edge.
+    #[test]
+    fn a_failing_body_restores_the_tokens_a_position_took() {
+        let mut b = NetBuilder::new();
+        let left = b.place::<u32>("Left");
+        let right = b.place::<u32>("Right");
+        let out = b.place::<u32>("Out");
+        b.seed(left, [1]);
+        b.seed(right, [2, 3]);
+        let jam = b
+            .transition(
+                "Jam",
+                (Pair(TakeEdge(left), TakeAllEdge(right)),),
+                (out,),
+                |_: (u32, Vec<u32>)| -> Result<(u32,), std::fmt::Error> { Err(std::fmt::Error) },
+            )
+            .restore_tokens_on_failure()
+            .id();
+        let mut net = b.build().expect("the net builds");
+        let before: Vec<_> = [left, right]
+            .iter()
+            .flat_map(|place| {
+                net.tokens(place.id())
+                    .map(|(token, _)| token)
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+
+        let failure = net.fire(jam).expect_err("the body fails");
+        assert!(matches!(failure, NetError::FiringFailed(ref f) if f.restored));
+        let after: Vec<_> = [left, right]
+            .iter()
+            .flat_map(|place| {
+                net.tokens(place.id())
+                    .map(|(token, _)| token)
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        assert_eq!(after, before, "every token back, ids kept");
+    }
+
+    /// One edge per place per transition counts the edges inside a position
+    /// like any other, within it and across positions; the source rule
+    /// counts the edge inside it that always takes a token, and only that.
+    #[test]
+    fn the_build_checks_count_the_edges_inside_a_position() {
+        /// Declares one transition over places `A` and `C`.
+        type Declare = fn(&mut NetBuilder, PlaceRef<u32>, PlaceRef<u32>);
+        let duplicate = |declare: Declare| {
+            let mut b = NetBuilder::new();
+            let a = b.place::<u32>("A");
+            let c = b.place::<u32>("C");
+            declare(&mut b, a, c);
+            matches!(
+                b.build(),
+                Err(BuildError::DuplicateInputPlace { ref place, .. }) if place == "A"
+            )
+        };
+        assert!(duplicate(|b, a, _| {
+            b.transition(
+                "Within",
+                (Pair(TakeEdge(a), SnapshotEdge(a)),),
+                (),
+                |_: (u32, u32)| (),
+            );
+        }));
+        assert!(duplicate(|b, a, c| {
+            b.transition(
+                "Across",
+                (Pair(SnapshotEdge(c), TakeEdge(a)), SnapshotEdge(a)),
+                (),
+                |_: (u32, u32), _: u32| (),
+            );
+        }));
+
+        let source = |drain: bool| {
+            let mut b = NetBuilder::new();
+            let a = b.place::<u32>("A");
+            let c = b.place::<u32>("C");
+            if drain {
+                b.transition(
+                    "Look",
+                    (Pair(SnapshotEdge(a), DrainEdge(c)),),
+                    (),
+                    |_: (u32, Vec<u32>)| (),
+                );
+            } else {
+                b.transition(
+                    "Look",
+                    (Pair(SnapshotEdge(a), TakeEdge(c)),),
+                    (),
+                    |_: (u32, u32)| (),
+                );
+            }
+            b.assert_no_source_transitions();
+            b.build().map(drop)
+        };
+        assert!(source(false).is_ok(), "the take inside the position counts");
+        assert!(matches!(
+            source(true),
+            Err(BuildError::SourceTransition { .. })
+        ));
     }
 }

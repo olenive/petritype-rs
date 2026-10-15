@@ -1,0 +1,5 @@
+error: `Inputs` cannot be derived for a generic struct: each field's type is what a net wires against, so it must be concrete; bind a generic body by position, with a tuple of edges
+ --> tests/ui/fail_inputs_type_parameter.rs:7:16
+  |
+7 | struct Pricing<T> {
+  |                ^

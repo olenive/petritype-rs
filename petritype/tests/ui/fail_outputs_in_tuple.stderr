@@ -1,0 +1,68 @@
+error[E0277]: a transition's outputs must be a tuple of place handles
+  --> tests/ui/fail_outputs_in_tuple.rs:31:9
+   |
+28 |     b.transition(
+   |       ---------- required by a bound introduced by this call
+...
+31 |         (PricedEdges { order: priced, note: notes }, log),
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ not a tuple of place handles
+   |
+   = help: the trait `OutputPlaces` is not implemented for `(PricedEdges<PlaceRef<Order>, PlaceRef<Note>>, PlaceRef<Log>)`
+   = note: write `(heavy, light, count)`, or `()` for a transition that produces nothing; a single output needs the trailing comma: `(count,)`
+   = note: or bind them by name: derive `Outputs` on the struct the body returns and pass the `...Edges` struct it generates, whole, as the outputs
+   = help: the following other types implement trait `OutputPlaces`:
+             ()
+             (PlaceRef<A0>, PlaceRef<A1>)
+             (PlaceRef<A0>, PlaceRef<A1>, PlaceRef<A2>)
+             (PlaceRef<A0>, PlaceRef<A1>, PlaceRef<A2>, PlaceRef<A3>)
+             (PlaceRef<A0>, PlaceRef<A1>, PlaceRef<A2>, PlaceRef<A3>, PlaceRef<A4>)
+             (PlaceRef<A0>, PlaceRef<A1>, PlaceRef<A2>, PlaceRef<A3>, PlaceRef<A4>, PlaceRef<A5>)
+             (PlaceRef<A0>, PlaceRef<A1>, PlaceRef<A2>, PlaceRef<A3>, PlaceRef<A4>, PlaceRef<A5>, PlaceRef<A6>)
+             (PlaceRef<A0>, PlaceRef<A1>, PlaceRef<A2>, PlaceRef<A3>, PlaceRef<A4>, PlaceRef<A5>, PlaceRef<A6>, PlaceRef<A7>)
+           and $N others
+note: required by a bound in `NetBuilder::transition`
+  --> src/builder.rs
+   |
+   |     pub fn transition<Edges, Outputs, Body, Marker>(
+   |            ---------- required by a bound in this associated function
+...
+   |         Outputs: OutputPlaces,
+   |                  ^^^^^^^^^^^^ required by this bound in `NetBuilder::transition`
+
+error[E0277]: a transition body must return its outputs, or a `Result` of them
+  --> tests/ui/fail_outputs_in_tuple.rs:32:9
+   |
+28 |     b.transition(
+   |       ---------- required by a bound introduced by this call
+...
+32 |         |order: Order| (Priced { order, note: None }, Log(String::from("priced"))),
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `(Priced, Log)` is not a transition outcome
+   |
+   = help: the trait `IntoOutcome<(PricedEdges<PlaceRef<Order>, PlaceRef<Note>>, PlaceRef<Log>), _>` is not implemented for `(Priced, Log)`
+   = note: positional: outputs `(PricedEdges<PlaceRef<Order>, PlaceRef<Note>>, PlaceRef<Log>)` want a tuple of that many slots, where slot i is `T`, `Option<T>` or `Vec<T>` for the type of output place i, and `()` for no outputs at all
+   = note: named: the struct whose `#[derive(Outputs)]` generated the outputs' `...Edges` struct, each field going to the output of the same name
+   = note: routed: a value that is not a tuple, whose every payload goes to the output place that holds its type — derive `Routed` on the enum or struct you return
+   = note: distribution: a `Distribution` of (place, token) pairs, built with `Distribution::new().to(place, token)`, for choosing between output places of the same type
+   = note: any of these may be wrapped in `Result<_, E>` where `E: std::error::Error + Send + Sync + 'static`; a `Result` always means failure, never routing
+help: the following other types implement trait `IntoOutcome<Outputs, Marker>`
+  --> src/body.rs
+   |
+   | / impl<Outputs, O, E, M> IntoOutcome<Outputs, marker::Failing<M>> for Result<O, E>
+   | | where
+   | |     O: IntoOutcome<Outputs, M>,
+   | |     E: Error + Send + Sync + 'static,
+   | |_____________________________________^ `Result<O, E>` implements `IntoOutcome<Outputs, Failing<M>>`
+   |
+  ::: src/distribution.rs
+   |
+   |   impl<Outputs: OutputPlaces> IntoOutcome<Outputs, marker::Distributed> for Distribution {}
+   |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `petritype::Distribution` implements `IntoOutcome<Outputs, petritype::marker::Distributed>`
+   = note: required for `{closure@$DIR/tests/ui/fail_outputs_in_tuple.rs:32:9: 32:23}` to implement `TransitionBody<(TakeEdge<Order>,), (PricedEdges<PlaceRef<Order>, PlaceRef<Note>>, PlaceRef<Log>), (_, (Priced, Log))>`
+note: required by a bound in `NetBuilder::transition`
+  --> src/builder.rs
+   |
+   |     pub fn transition<Edges, Outputs, Body, Marker>(
+   |            ---------- required by a bound in this associated function
+...
+   |         Body: TransitionBody<Edges, Outputs, Marker>,
+   |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `NetBuilder::transition`

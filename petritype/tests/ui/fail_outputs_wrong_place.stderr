@@ -1,0 +1,58 @@
+error[E0277]: `PlaceRef<Order>` cannot take a field of type `Option<Note>`
+  --> tests/ui/fail_outputs_wrong_place.rs:32:9
+   |
+32 |         PricedEdges { order: priced, note: held },
+   |         ^^^^^^^^^^^ this output does not accept `Option<Note>`
+   |
+   = help: the trait `Accepts<Option<Note>>` is not implemented for `PlaceRef<Order>`
+   = note: an output place of type `T` takes a field of type `T` (one token), `Option<T>` (zero or one) or `Vec<T>` (any number)
+note: required by a bound in `PricedEdges`
+  --> tests/ui/fail_outputs_wrong_place.rs:15:5
+   |
+13 | struct Priced {
+   |        ------ required by a bound in this struct
+14 |     order: Order,
+15 |     note: Option<Note>,
+   |     ^^^^ required by this bound in `PricedEdges`
+
+error[E0277]: a transition body must return its outputs, or a `Result` of them
+  --> tests/ui/fail_outputs_wrong_place.rs:33:9
+   |
+29 |     b.transition(
+   |       ---------- required by a bound introduced by this call
+...
+33 |         price,
+   |         ^^^^^ `Priced` is not a transition outcome
+   |
+help: the trait `IntoOutcome<PricedEdges<PlaceRef<Order>, PlaceRef<Order>>, _>` is not implemented for `Priced`
+  --> tests/ui/fail_outputs_wrong_place.rs:13:1
+   |
+13 | struct Priced {
+   | ^^^^^^^^^^^^^
+   = note: positional: outputs `PricedEdges<PlaceRef<Order>, PlaceRef<Order>>` want a tuple of that many slots, where slot i is `T`, `Option<T>` or `Vec<T>` for the type of output place i, and `()` for no outputs at all
+   = note: named: the struct whose `#[derive(Outputs)]` generated the outputs' `...Edges` struct, each field going to the output of the same name
+   = note: routed: a value that is not a tuple, whose every payload goes to the output place that holds its type — derive `Routed` on the enum or struct you return
+   = note: distribution: a `Distribution` of (place, token) pairs, built with `Distribution::new().to(place, token)`, for choosing between output places of the same type
+   = note: any of these may be wrapped in `Result<_, E>` where `E: std::error::Error + Send + Sync + 'static`; a `Result` always means failure, never routing
+help: the following other types implement trait `IntoOutcome<Outputs, Marker>`
+  --> src/body.rs
+   |
+   | / impl<Outputs, O, E, M> IntoOutcome<Outputs, marker::Failing<M>> for Result<O, E>
+   | | where
+   | |     O: IntoOutcome<Outputs, M>,
+   | |     E: Error + Send + Sync + 'static,
+   | |_____________________________________^ `Result<O, E>` implements `IntoOutcome<Outputs, Failing<M>>`
+   |
+  ::: src/distribution.rs
+   |
+   |   impl<Outputs: OutputPlaces> IntoOutcome<Outputs, marker::Distributed> for Distribution {}
+   |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `petritype::Distribution` implements `IntoOutcome<Outputs, petritype::marker::Distributed>`
+   = note: required for `fn(Order) -> Priced {price}` to implement `TransitionBody<(TakeEdge<Order>,), PricedEdges<PlaceRef<Order>, PlaceRef<Order>>, (_, Priced)>`
+note: required by a bound in `NetBuilder::transition`
+  --> src/builder.rs
+   |
+   |     pub fn transition<Edges, Outputs, Body, Marker>(
+   |            ---------- required by a bound in this associated function
+...
+   |         Body: TransitionBody<Edges, Outputs, Marker>,
+   |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `NetBuilder::transition`

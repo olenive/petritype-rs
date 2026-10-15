@@ -88,5 +88,13 @@ name = "shop"
 test = true
 required-features = ["serde"]
 
+# Binding by name (DESIGN §4.4): a pricing library whose function takes a
+# struct of inputs naming no place and no edge kind, wired into a shop by
+# field name. The library is `examples/pricing/library.rs`, the net
+# `examples/pricing/nets.rs`.
+[[example]]
+name = "pricing"
+test = true
+
 [package.metadata.docs.rs]
 all-features = true

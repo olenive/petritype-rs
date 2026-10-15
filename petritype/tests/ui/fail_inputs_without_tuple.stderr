@@ -1,0 +1,60 @@
+error[E0277]: a transition's inputs must be a tuple of input edges
+  --> tests/ui/fail_inputs_without_tuple.rs:33:9
+   |
+31 |     b.transition(
+   |       ---------- required by a bound introduced by this call
+32 |         "Price Order",
+33 |         PricingEdges { order: TakeEdge(orders), promos: SurveyEdge(promos) },
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ not a tuple of input edges
+   |
+help: the trait `InputEdges` is not implemented for `PricingEdges<TakeEdge<Order>, SurveyEdge<Promo>>`
+  --> tests/ui/fail_inputs_without_tuple.rs:16:8
+   |
+16 | struct Pricing {
+   |        ^^^^^^^
+   = note: write `(TakeEdge(p), SnapshotEdge(q))`, or `()` for a transition with no inputs; a single input needs the trailing comma: `(TakeEdge(p),)`
+   = note: a struct of edges that `#[derive(Inputs)]` generated is one input like any other, so it goes in the tuple too: `(PricingEdges { .. },)`
+   = help: the following other types implement trait `InputEdges`:
+             ()
+             (A0, A1)
+             (A0, A1, A2)
+             (A0, A1, A2, A3)
+             (A0, A1, A2, A3, A4)
+             (A0, A1, A2, A3, A4, A5)
+             (A0, A1, A2, A3, A4, A5, A6)
+             (A0, A1, A2, A3, A4, A5, A6, A7)
+           and $N others
+note: required by a bound in `NetBuilder::transition`
+  --> src/builder.rs
+   |
+   |     pub fn transition<Edges, Outputs, Body, Marker>(
+   |            ---------- required by a bound in this associated function
+...
+   |         Edges: InputEdges,
+   |                ^^^^^^^^^^ required by this bound in `NetBuilder::transition`
+help: use a unary tuple instead
+   |
+33 |         (PricingEdges { order: TakeEdge(orders), promos: SurveyEdge(promos) },),
+   |         +                                                                    ++
+
+error[E0277]: transition body parameters do not match its input edges
+  --> tests/ui/fail_inputs_without_tuple.rs:35:9
+   |
+31 |     b.transition(
+   |       ---------- required by a bound introduced by this call
+...
+35 |         price,
+   |         ^^^^^ this body cannot be called with what `PricingEdges<TakeEdge<Order>, SurveyEdge<Promo>>` produces
+   |
+   = help: the trait `TransitionBody<PricingEdges<TakeEdge<Order>, SurveyEdge<Promo>>, (PlaceRef<Order>,), _>` is not implemented for fn item `fn(Pricing) -> (Order,) {price}`
+   = note: one parameter per edge, in order: `TakeEdge(p)` gives `T`, `TakeAllEdge(p)` gives `Vec<T>`, `SnapshotEdge(p)` gives `T`, `MutateEdge(p)` gives `&mut T`; a struct of edges from `#[derive(Inputs)]` gives the struct it was derived from
+   = note: with `.output_distribution(f)`, the output distribution function `f` takes exactly what the body returns — the value inside the `Ok` if that is a `Result` — and returns the outputs in any form, usually a `Distribution`
+   = note: a body must be `Send + Sync + 'static`: capture an `Arc`, a `Mutex` or an atomic rather than an `Rc` or a `RefCell`
+note: required by a bound in `NetBuilder::transition`
+  --> src/builder.rs
+   |
+   |     pub fn transition<Edges, Outputs, Body, Marker>(
+   |            ---------- required by a bound in this associated function
+...
+   |         Body: TransitionBody<Edges, Outputs, Marker>,
+   |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `NetBuilder::transition`

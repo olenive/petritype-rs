@@ -1,0 +1,5 @@
+error[E0063]: missing field `promos` in initializer of `PricingEdges<_, _>`
+  --> tests/ui/fail_inputs_missing_field.rs:30:10
+   |
+30 |         (PricingEdges { order: TakeEdge(orders) },),
+   |          ^^^^^^^^^^^^ missing `promos`

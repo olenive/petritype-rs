@@ -404,9 +404,9 @@ pub struct MutateWhereEdge<T>(
 /// edges and its guard say so, and the body is handed whatever the place
 /// held when the firing started — in Petri-net terms a *reset arc*. It is
 /// for a place the transition must empty when it fires but must not wait
-/// on: "every car waiting goes when the light turns green", where nobody
-/// waiting is a perfectly good answer. Without it that is two transitions,
-/// one with the edge and one guarded on the place being empty.
+/// on, where an empty place is a perfectly good answer: "clear whatever
+/// arrived since the last tick". Without it that is two transitions, one
+/// with the edge and one guarded on the place being empty.
 ///
 /// Firing takes the tokens as a `TakeAllEdge` does: the firing's
 /// `consumed` ([`Event::Fired`](crate::Event::Fired)) names each of them,
@@ -419,37 +419,42 @@ pub struct MutateWhereEdge<T>(
 /// or [`assert_acyclic`](crate::NetBuilder::assert_acyclic): a transition
 /// whose only input is a `DrainEdge` fires for ever on an empty place.
 ///
+/// A traffic light's `Go` drains the cars waiting, every one of them in one
+/// firing, and reads the light through a [`SnapshotEdge`]. Since the drain
+/// would let it fire on an empty queue, taking nothing, at every green, its
+/// guard asks for someone waiting as well as for green
+/// (`examples/traffic_light/net.rs`):
+///
 /// ```
-/// # use petritype::{DrainEdge, NetBuilder, TakeEdge};
+/// # use petritype::{DrainEdge, NetBuilder, SnapshotEdge};
 /// let mut b = NetBuilder::new();
 /// // The light is one place, and its token is the colour.
 /// let light = b.place::<String>("Light");
 /// let waiting = b.place::<String>("Waiting");
 /// let passed = b.place::<String>("Passed");
-/// b.transition(
-///     "Turn Green",
-///     (TakeEdge(light), DrainEdge(waiting)),
-///     (light, passed),
-///     |_red: String, cars: Vec<String>| ("green".to_owned(), cars),
-/// )
-/// .guard(move |net| {
-///     let front = net.tokens(light.id()).next();
-///     front.and_then(|(token, _)| net.token::<String>(light.id(), token)).is_some_and(|c| c == "red")
-/// });
+/// let go = b
+///     .transition(
+///         "Go",
+///         (DrainEdge(waiting), SnapshotEdge(light)),
+///         (passed,),
+///         |cars: Vec<String>, _green: String| (cars,),
+///     )
+///     .guard(move |net| {
+///         let front = net.tokens(light.id()).next();
+///         let colour = front.and_then(|(token, _)| net.token::<String>(light.id(), token));
+///         colour.is_some_and(|c| c == "green") && net.count(waiting.id()) > 0
+///     })
+///     .id();
 /// let mut net = b.build()?;
 ///
-/// net.put(light, "red".to_owned());
-/// assert!(net.step()?.is_some(), "turns green with nobody waiting");
-/// assert_eq!(net.count(passed.id()), 0);
-/// assert!(net.fireable().is_empty(), "and waits for red");
+/// net.put(light, "green".to_owned());
+/// assert!(net.fireable().is_empty(), "green, but nobody waiting");
 ///
-/// // Red again (the rest of the light's cycle is left out here), and two
-/// // cars waiting.
-/// net.set_tokens(light, ["red".to_owned()]);
 /// net.extend(waiting, ["Car 1".to_owned(), "Car 2".to_owned()]);
-/// net.step()?;
-/// assert_eq!(net.count(waiting.id()), 0, "everyone waiting went");
+/// assert_eq!(net.step()?, Some(go));
+/// assert_eq!(net.count(waiting.id()), 0, "everyone waiting went, in one firing");
 /// assert_eq!(net.count(passed.id()), 2);
+/// assert_eq!(net.count(light.id()), 1, "the light read, not taken");
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
 pub struct DrainEdge<T>(

@@ -14,38 +14,30 @@
 //! one token whose value is the colour, `"red"`, `"green"` or `"amber"`; it
 //! starts red. Cars arrive in `Waiting` from outside, by `inject`, and go to
 //! `Passed`. The colours go round red, green, amber and red again
-//! ([`next_colour`]).
+//! ([`next_colour`]). Two transitions, one that moves the cars and one that
+//! changes the light, declared in this order:
 //!
-//! - `Turn Green`, guarded on red, takes the light and *drains* `Waiting` —
-//!   every car waiting, zero or more, all consumed — and writes the next
-//!   colour, green, back to `Light` and the cars, oldest first, to `Passed`.
-//!   With nobody waiting it still fires: [`DrainEdge`] does not require
-//!   presence, so the light does not wait for a car.
-//! - `Pass on Green`, guarded on green, takes the front car of `Waiting` and
-//!   *reads* `Light` ([`SnapshotEdge`]: the colour is cloned, not taken),
-//!   and writes the car to `Passed`. A car that arrives at amber or red
-//!   waits for the next `Turn Green`.
-//! - `Change`, guarded on anything but red, takes the light and writes the
-//!   next colour back: green to amber, amber to red.
+//! - `Go`, guarded on green and someone waiting, *drains* `Waiting` — every
+//!   car waiting, oldest first, all consumed — and *reads* `Light`
+//!   ([`SnapshotEdge`]: the colour is cloned, not taken), and writes the
+//!   cars, oldest first, to `Passed`. The light's token is untouched: it
+//!   keeps its id.
+//! - `Change`, unguarded, takes the light and writes the next colour back
+//!   to `Light`. It is always fireable: the light cycles by itself and the
+//!   net never quiesces, as a real junction does not.
 //!
-//! The light has two transitions, not one, because a drain is
-//! unconditional: whatever transition carries it takes every car waiting
-//! whenever it fires, so it must be the one that fires only as the light
-//! goes green, and `Change` does the other two steps. `Pass on Green` is
-//! guarded as well as reading the light because `Light` is never empty, so
-//! the read alone would let a car through at red; the read hands the colour
-//! to the body and shows the dependency in a drawing, and the guard is what
-//! holds the car back. (At first the light was three places, `Red`, `Green`
-//! and `Amber`, with one token standing in one of them and four transitions
-//! moving it round; it became one place the same day.)
-//!
-//! The light cycles by itself: some light transition is always fireable, so
-//! the net never quiesces, as a real junction does not. Every transition
-//! takes a token, so none is a source; `Turn Green` and `Change` each take
-//! from `Light` and write back to it, a loop that `assert_acyclic` would
-//! refuse, so this net does not ask for it. The transitions are declared in
-//! this order on purpose: under the default tie-break, the first declared, a
-//! car waiting while the light is green passes before the light changes.
+//! `Go` needs "someone waiting" in its guard because a [`DrainEdge`]
+//! accepts an empty place, and a step fires one transition, under the
+//! default tie-break the first declared: without it `Go` would fire at
+//! every green taking nothing, and `Change` would never fire. The guard hands the step
+//! to `Change` when the queue is empty, so this example never fires a drain
+//! on an empty queue (the shop's survey shows the zero case). `Go`'s only
+//! consuming edge is the drain, which is what
+//! `assert_no_source_transitions` flags; the guard is what makes it safe,
+//! so this net does not ask for that check. `Change` takes from `Light` and
+//! writes back to it, a loop that `assert_acyclic` would refuse, so this
+//! net does not ask for that one either. (On 2026-10-16 the light went from
+//! three places to one place, and then to two transitions in all.)
 
 use petritype::{
     BuildError, DrainEdge, Net, NetBuilder, PlaceRef, SnapshotEdge, TakeEdge, TransitionId,
@@ -60,11 +52,9 @@ pub struct TrafficLight {
     pub waiting: PlaceRef<String>,
     /// Every car that has gone past the light, in the order they went.
     pub passed: PlaceRef<String>,
-    /// `Turn Green`: the light from red to green, and everyone waiting goes.
-    pub turn_green: TransitionId,
-    /// `Pass on Green`: the front car goes, while the light is green.
-    pub pass_on_green: TransitionId,
-    /// `Change`: the light from green to amber, or from amber to red.
+    /// `Go`: everyone waiting goes, while the light is green.
+    pub go: TransitionId,
+    /// `Change`: the light to its next colour.
     pub change: TransitionId,
 }
 
@@ -79,23 +69,17 @@ pub fn next_colour(colour: &str) -> &'static str {
     }
 }
 
-/// The light's colour as the guards read it: the front token of `light`,
-/// or `None` while the place is empty.
+/// The light's colour as `Go`'s guard reads it: the front token of
+/// `light`, or `None` while the place is empty.
 pub fn colour(net: &Net, light: PlaceRef<String>) -> Option<&str> {
     let (token, _) = net.tokens(light.id()).next()?;
     net.token::<String>(light.id(), token).map(String::as_str)
 }
 
-/// `Turn Green`'s body: the next colour, green, for `Light`, and every car
-/// that waited at red, oldest first, for `Passed` — none when nobody was
-/// waiting.
-pub fn turn_green(light: String, cars: Vec<String>) -> (String, Vec<String>) {
-    (next_colour(&light).to_owned(), cars)
-}
-
-/// `Pass on Green`'s body: the car goes; the light was only read.
-pub fn pass_on_green(car: String, _light: String) -> (String,) {
-    (car,)
+/// `Go`'s body: every car that waited, oldest first, for `Passed`; the
+/// light was only read.
+pub fn go(cars: Vec<String>, _light: String) -> (Vec<String>,) {
+    (cars,)
 }
 
 /// `Change`'s body: the next colour, for `Light`.
@@ -117,27 +101,17 @@ pub fn build_traffic_light() -> Result<TrafficLight, BuildError> {
     }
     b.seed(light, ["red".to_owned()]);
 
-    let turn_green = b
+    let go = b
         .transition(
-            "Turn Green",
-            (TakeEdge(light), DrainEdge(waiting)),
-            (light, passed),
-            turn_green,
-        )
-        .guard(move |net| colour(net, light) == Some("red"))
-        .id();
-    let pass_on_green = b
-        .transition(
-            "Pass on Green",
-            (TakeEdge(waiting), SnapshotEdge(light)),
+            "Go",
+            (DrainEdge(waiting), SnapshotEdge(light)),
             (passed,),
-            pass_on_green,
+            go,
         )
-        .guard(move |net| colour(net, light) == Some("green"))
+        .guard(move |net| colour(net, light) == Some("green") && net.count(waiting.id()) > 0)
         .id();
     let change = b
         .transition("Change", (TakeEdge(light),), (light,), change)
-        .guard(move |net| colour(net, light).is_some_and(|colour| colour != "red"))
         .id();
 
     Ok(TrafficLight {
@@ -145,8 +119,7 @@ pub fn build_traffic_light() -> Result<TrafficLight, BuildError> {
         light,
         waiting,
         passed,
-        turn_green,
-        pass_on_green,
+        go,
         change,
     })
 }

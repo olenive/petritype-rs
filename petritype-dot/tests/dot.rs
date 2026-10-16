@@ -379,37 +379,36 @@ fn drain_and_survey_edges_have_a_hollow_arrowhead() {
     );
     assert!(shop.contains("  p0 -> t0 [color=black, penwidth=1];\n"));
 
-    // The light is one place, its token the colour: `Turn Green` takes it
-    // and writes the next colour back, and `Pass on Green` reads it.
+    // The light is one place, its token the colour: `Go` drains the cars
+    // and reads the light, and `Change` takes it and writes the next colour
+    // back. (The example's guard on `Go` changes nothing in the drawing.)
     let mut b = NetBuilder::new();
     let colour = b.place::<String>("Light");
     let waiting = b.place::<String>("Waiting");
     let passed = b.place::<String>("Passed");
     b.transition(
-        "Turn Green",
-        (TakeEdge(colour), DrainEdge(waiting)),
-        (colour, passed),
-        |_: String, cars: Vec<String>| ("green".to_owned(), cars),
-    );
-    b.transition(
-        "Pass on Green",
-        (TakeEdge(waiting), SnapshotEdge(colour)),
+        "Go",
+        (DrainEdge(waiting), SnapshotEdge(colour)),
         (passed,),
-        |car: String, _: String| (car,),
+        |cars: Vec<String>, _: String| (cars,),
     );
+    b.transition("Change", (TakeEdge(colour),), (colour,), |light: String| {
+        (light,)
+    });
     let light = dot(&b.build().expect("the light builds"));
     assert!(
         light.contains("  p1 -> t0 [color=black, arrowhead=empty, penwidth=1, label=\"*\"];\n"),
         "DrainEdge takes every token, possibly none",
     );
-    assert!(light.contains("  p0 -> t0 [color=black, penwidth=1];\n"));
     assert!(
-        light.contains("  t0 -> p0 [color=black, penwidth=1, label=\"0\"];\n"),
-        "taken from `Light` and written back: two edges, one each way",
-    );
-    assert!(
-        light.contains("  p0 -> t1 [style=dashed, color=dimgray, arrowhead=normal, penwidth=1];\n"),
+        light.contains("  p0 -> t0 [style=dashed, color=dimgray, arrowhead=normal, penwidth=1];\n"),
         "a SnapshotEdge keeps its plain arrowhead: it needs a token",
+    );
+    assert!(light.contains("  t0 -> p2 [color=black, penwidth=1];\n"));
+    assert!(light.contains("  p0 -> t1 [color=black, penwidth=1];\n"));
+    assert!(
+        light.contains("  t1 -> p0 [color=black, penwidth=1];\n"),
+        "taken from `Light` and written back: two edges, one each way",
     );
 }
 

@@ -15,9 +15,9 @@
 //! one), `wildlife`, whose species carry keys (`query {"filter":
 //! {"clauses": [{"key": "class", "values": ["Bird"]}]}}` finds the birds),
 //! `shop`, whose one transition reads a place that may be empty through a
-//! `survey` edge, and `traffic-light`, whose light takes every car waiting,
-//! possibly none, through a `drain` edge. This file is the whole of what an
-//! author writes besides them.
+//! `survey` edge, and `traffic-light`, whose `Go` takes every car waiting
+//! while the light is green through a `drain` edge. This file is the whole
+//! of what an author writes besides them.
 
 use std::process::ExitCode;
 

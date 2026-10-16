@@ -969,9 +969,12 @@ impl NetBuilder {
     /// assert!(matches!(error, BuildError::SourceTransition { ref transition } if transition == "Wave Through"));
     /// ```
     ///
-    /// Beside a [`TakeEdge`](crate::TakeEdge) — a traffic light's `Turn
-    /// Green` taking the light from `Light` and draining the cars waiting —
-    /// the transition is no source: the light is what each firing pays.
+    /// Beside a [`TakeEdge`](crate::TakeEdge) the transition is no source:
+    /// the token taken is what each firing pays. The check reads edges, not
+    /// guards: a traffic light's `Go`, draining the cars waiting and only
+    /// reading the light, is a source to it, although its guard holds it
+    /// until someone is waiting (`examples/traffic_light/net.rs`, which
+    /// therefore does not ask for this check).
     ///
     /// Passing proves that every firing shrinks the marking, not that the
     /// net stops: tokens can still go round a cycle for ever, since what one

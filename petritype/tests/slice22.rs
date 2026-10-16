@@ -13,8 +13,9 @@
 //! promotions; since 2026-10-16 it is two nets, as the examples are. The
 //! survey is tested on the shop, which prices each order with whatever
 //! promotions are running (`the_shop_runs_the_script_to_the_table`); the
-//! drain on the traffic light, whose `Turn Green` takes every car waiting at
-//! red, possibly none (`the_traffic_light_runs_the_script`). The examples
+//! drain on the traffic light, whose `Go` takes every car waiting while the
+//! light is green (`the_traffic_light_runs_the_script`), and, with its guard
+//! left off, takes none from an empty queue. The examples
 //! `examples/shop.rs` and `examples/traffic_light.rs` carry the same nets as
 //! the protocol's conformance nets `shop` and `traffic-light`.
 
@@ -90,12 +91,31 @@ struct Junction {
     light: PlaceRef<String>,
     waiting: PlaceRef<String>,
     passed: PlaceRef<String>,
-    turn_green: TransitionId,
-    pass_on_green: TransitionId,
+    go: TransitionId,
     change: TransitionId,
 }
 
-/// The light's colour, as the guards read it: the front token of `Light`.
+/// How [`declare_light`] declares `Go`: with the example's guard or none,
+/// and with a body that works or one that fails and restores what it took.
+#[derive(Clone, Copy)]
+struct Go {
+    guarded: bool,
+    jammed: bool,
+}
+
+/// `Go` as the example has it.
+const AS_BUILT: Go = Go {
+    guarded: true,
+    jammed: false,
+};
+
+/// `Go` with no guard: fireable whenever the light is lit, cars or none.
+const UNGUARDED: Go = Go {
+    guarded: false,
+    jammed: false,
+};
+
+/// The light's colour, as `Go`'s guard reads it: the front token of `Light`.
 fn colour(net: &Net, light: PlaceRef<String>) -> Option<&str> {
     let (token, _) = net.tokens(light.id()).next()?;
     net.token::<String>(light.id(), token).map(String::as_str)
@@ -112,62 +132,59 @@ fn next_colour(colour: &str) -> String {
 }
 
 /// The traffic light of `examples/traffic_light/net.rs`, declared into `b`,
-/// `"red"` seeded in `Light`: `Turn Green`, guarded on red, takes the light
-/// and drains `Waiting`, writing green back to `Light` and the cars to
-/// `Passed`; `Pass on Green`, guarded on green, takes a car and snapshots
-/// `Light`; `Change`, guarded on anything but red, writes the next colour
-/// back. With `jammed`, `Turn Green` fails and restores what it took.
-fn declare_light(b: &mut NetBuilder, jammed: bool) -> Junction {
+/// `"red"` seeded in `Light`: `Go`, guarded on green and someone waiting,
+/// drains `Waiting` and snapshots `Light`, writing the cars to `Passed`;
+/// `Change`, unguarded, takes the light and writes the next colour back.
+/// `go` says whether `Go` keeps its guard and whether it fails, restoring
+/// what it took.
+fn declare_light(b: &mut NetBuilder, go: Go) -> Junction {
     let light = b.place::<String>("Light");
     let waiting = b.place::<String>("Waiting");
     let passed = b.place::<String>("Passed");
     b.seed(light, [s("red")]);
-    let mut turn = b.transition(
-        "Turn Green",
-        (TakeEdge(light), DrainEdge(waiting)),
-        (light, passed),
-        move |light: String, cars: Vec<String>| -> Result<(String, Vec<String>), Broken> {
+    let Go { guarded, jammed } = go;
+    let mut drain = b.transition(
+        "Go",
+        (DrainEdge(waiting), SnapshotEdge(light)),
+        (passed,),
+        move |cars: Vec<String>, _light: String| -> Result<(Vec<String>,), Broken> {
             if jammed {
                 return Err(Broken);
             }
-            Ok((next_colour(&light), cars))
+            Ok((cars,))
         },
     );
-    turn.guard(move |net| colour(net, light) == Some("red"));
-    if jammed {
-        turn.restore_tokens_on_failure();
+    if guarded {
+        drain.guard(move |net| colour(net, light) == Some("green") && net.count(waiting.id()) > 0);
     }
-    let turn_green = turn.id();
-    let pass_on_green = b
-        .transition(
-            "Pass on Green",
-            (TakeEdge(waiting), SnapshotEdge(light)),
-            (passed,),
-            |car: String, _light: String| (car,),
-        )
-        .guard(move |net| colour(net, light) == Some("green"))
-        .id();
+    if jammed {
+        drain.restore_tokens_on_failure();
+    }
+    let go = drain.id();
     let change = b
         .transition("Change", (TakeEdge(light),), (light,), |l: String| {
             (next_colour(&l),)
         })
-        .guard(move |net| colour(net, light).is_some_and(|colour| colour != "red"))
         .id();
     Junction {
         light,
         waiting,
         passed,
-        turn_green,
-        pass_on_green,
+        go,
         change,
     }
 }
 
-/// The traffic light, built.
-fn junction() -> (Net, Junction) {
+/// The traffic light, built, `Go` as given.
+fn junction_with(go: Go) -> (Net, Junction) {
     let mut b = NetBuilder::new();
-    let junction = declare_light(&mut b, false);
+    let junction = declare_light(&mut b, go);
     (b.build().expect("the light builds"), junction)
+}
+
+/// The traffic light, built as the example has it.
+fn junction() -> (Net, Junction) {
+    junction_with(AS_BUILT)
 }
 
 fn s(text: &str) -> String {
@@ -235,26 +252,19 @@ fn the_shop_runs_the_script_to_the_table() {
 
 /// The traffic light's script (the shared transcript
 /// `08_traffic_light.json`), stepped with the default selector: the light
-/// turns green with nobody waiting, two cars wait through amber and red and
-/// are drained the moment it turns green again, a third arrives at green and
-/// passes on its own, and the light never stops. The light is one token in
-/// `Light`, its colour, and a fresh one after every `Turn Green` and
-/// `Change`.
+/// changes to green and to amber with nobody waiting, two cars wait through
+/// amber and red and are drained in one firing once it is green again, a
+/// third arrives at green and goes on its own, and the light never stops.
+/// The light is one token in `Light`, its colour, a fresh one after every
+/// `Change` and the same one through every `Go`.
 #[test]
 fn the_traffic_light_runs_the_script() {
     let (mut net, junction) = junction();
 
-    assert_eq!(
-        net.step().unwrap(),
-        Some(junction.turn_green),
-        "nobody waiting"
-    );
+    assert_eq!(net.fireable(), [junction.change], "red, nobody waiting");
+    assert_eq!(net.step().unwrap(), Some(junction.change));
     assert_eq!(strings(&net, junction.light), ["green"]);
-    assert!(
-        strings(&net, junction.passed).is_empty(),
-        "the drain took none"
-    );
-    assert_eq!(net.fireable(), [junction.change]);
+    assert_eq!(net.fireable(), [junction.change], "green, nobody waiting");
     assert_eq!(net.step().unwrap(), Some(junction.change));
     assert_eq!(strings(&net, junction.light), ["amber"]);
 
@@ -262,19 +272,24 @@ fn the_traffic_light_runs_the_script() {
     assert_eq!(net.fireable(), [junction.change], "the cars wait at amber");
     assert_eq!(net.step().unwrap(), Some(junction.change));
     assert_eq!(strings(&net, junction.light), ["red"]);
-    assert_eq!(net.fireable(), [junction.turn_green], "and at red");
-    assert_eq!(net.step().unwrap(), Some(junction.turn_green));
-    assert_eq!(strings(&net, junction.passed), ["Car 1", "Car 2"]);
-    assert_eq!(net.count(junction.waiting.id()), 0, "everyone waiting went");
-
-    net.put(junction.waiting, s("Car 3"));
+    assert_eq!(net.fireable(), [junction.change], "and at red");
+    assert_eq!(net.step().unwrap(), Some(junction.change));
+    assert_eq!(strings(&net, junction.light), ["green"]);
     assert_eq!(
         net.fireable(),
-        [junction.pass_on_green, junction.change],
-        "the car before the light changes"
+        [junction.go, junction.change],
+        "the cars before the light changes"
     );
     let lamp = ids(&net, junction.light);
-    assert_eq!(net.step().unwrap(), Some(junction.pass_on_green));
+    assert_eq!(net.step().unwrap(), Some(junction.go));
+    assert_eq!(strings(&net, junction.passed), ["Car 1", "Car 2"]);
+    assert_eq!(net.count(junction.waiting.id()), 0, "everyone waiting went");
+    assert_eq!(ids(&net, junction.light), lamp, "read, not taken");
+    assert_eq!(net.fireable(), [junction.change]);
+
+    net.put(junction.waiting, s("Car 3"));
+    assert_eq!(net.fireable(), [junction.go, junction.change]);
+    assert_eq!(net.step().unwrap(), Some(junction.go));
     assert_eq!(ids(&net, junction.light), lamp, "read, not taken");
     assert_eq!(strings(&net, junction.light), ["green"]);
     assert_eq!(net.step().unwrap(), Some(junction.change));
@@ -282,7 +297,7 @@ fn the_traffic_light_runs_the_script() {
     assert_eq!(strings(&net, junction.light), ["amber"]);
     assert_eq!(strings(&net, junction.passed), ["Car 1", "Car 2", "Car 3"]);
     assert_eq!(net.count(junction.waiting.id()), 0);
-    assert_eq!(net.fired_count(), 6);
+    assert_eq!(net.fired_count(), 7);
     assert_eq!(net.fireable(), [junction.change], "never quiescent");
 }
 
@@ -399,39 +414,36 @@ fn consumed_lists_nothing_a_survey_read() {
     }
 }
 
-/// A drain lists every token it took in the firing's `consumed`, after the
-/// light and oldest first, which from an empty place is none.
+/// A drain lists every token it took in the firing's `consumed`, oldest
+/// first, which from an empty place is none: `Go` reads the light, so the
+/// cars are all it lists. The example's guard never lets `Go` fire on an
+/// empty queue; with the guard left off, it does, and lists nothing.
 #[test]
 fn consumed_lists_what_a_drain_took_oldest_first() {
     let (mut net, junction) = junction();
-    let lamp = ids(&net, junction.light)[0];
+    assert_eq!(net.step().unwrap(), Some(junction.change));
+    let cars = net.extend(junction.waiting, [s("Car 1"), s("Car 2")]);
     net.drain_events().for_each(drop);
+    assert_eq!(net.step().unwrap(), Some(junction.go));
+    let events: Vec<Event> = net.drain_events().collect();
+    let expected: Vec<_> = cars.iter().map(|&id| (junction.waiting.id(), id)).collect();
+    assert!(
+        matches!(&events[..], [Event::Fired { transition, consumed, produced }]
+            if *transition == junction.go
+                && consumed == &expected
+                && produced.len() == 2),
+        "the cars oldest first, and not the light: {events:?}"
+    );
 
-    net.step().unwrap();
+    let (mut net, junction) = junction_with(UNGUARDED);
+    net.set_tokens(junction.light, [s("green")]);
+    net.drain_events().for_each(drop);
+    assert_eq!(net.step().unwrap(), Some(junction.go));
     let events: Vec<Event> = net.drain_events().collect();
     assert!(
         matches!(&events[..], [Event::Fired { transition, consumed, produced }]
-            if *transition == junction.turn_green
-                && consumed == &[(junction.light.id(), lamp)]
-                && produced.len() == 1
-                && produced[0].0 == junction.light.id()),
+            if *transition == junction.go && consumed.is_empty() && produced.is_empty()),
         "nothing from the empty Waiting: {events:?}"
-    );
-
-    assert_eq!(net.step().unwrap(), Some(junction.change));
-    let cars = net.extend(junction.waiting, [s("Car 1"), s("Car 2")]);
-    assert_eq!(net.step().unwrap(), Some(junction.change));
-    let lamp = ids(&net, junction.light)[0];
-    net.drain_events().for_each(drop);
-    net.step().unwrap();
-    let events: Vec<Event> = net.drain_events().collect();
-    let expected: Vec<_> = [(junction.light.id(), lamp)]
-        .into_iter()
-        .chain(cars.iter().map(|&id| (junction.waiting.id(), id)))
-        .collect();
-    assert!(
-        matches!(&events[..], [Event::Fired { consumed, .. }] if consumed == &expected),
-        "the light, then the cars oldest first: {events:?}"
     );
 }
 
@@ -453,8 +465,8 @@ fn launched_names_no_surveyed_token() {
 }
 
 /// The staged path says the same in its `Launched`: every drained token,
-/// taken from the place at launch. A drain borrows nothing, so the firing is
-/// detachable.
+/// taken from the place at launch, and not the light, which is read. A drain
+/// and a snapshot borrow nothing, so the firing is detachable.
 #[test]
 fn launched_names_the_drained_tokens() {
     let (mut net, junction) = junction();
@@ -466,28 +478,26 @@ fn launched_names_the_drained_tokens() {
             .detachable
     };
     assert!(
-        detachable(&net, junction.turn_green),
-        "a drain borrows nothing"
-    );
-    assert!(
-        detachable(&net, junction.pass_on_green),
-        "nor does a snapshot"
+        detachable(&net, junction.go),
+        "a drain and a snapshot borrow nothing"
     );
 
-    let lamp = ids(&net, junction.light)[0];
+    assert_eq!(net.step().unwrap(), Some(junction.change));
+    let lamp = ids(&net, junction.light);
     let car = net.put(junction.waiting, s("Car 1"));
     net.drain_events().for_each(drop);
-    let firing = net.launch(junction.turn_green).unwrap();
+    let firing = net.launch(junction.go).unwrap();
     assert!(firing.is_pending(), "not run inline");
     assert_eq!(net.count(junction.waiting.id()), 0, "drained at launch");
-    assert_eq!(net.count(junction.light.id()), 0, "the light taken too");
+    assert_eq!(ids(&net, junction.light), lamp, "the light left lit");
     assert!(matches!(
         net.drain_events().collect::<Vec<_>>()[..],
         [Event::Launched { ref consumed, .. }]
-            if consumed == &[(junction.light.id(), lamp), (junction.waiting.id(), car)]
+            if consumed == &[(junction.waiting.id(), car)]
     ));
     net.distribute(firing.run()).unwrap();
     assert_eq!(strings(&net, junction.passed), ["Car 1"]);
+    assert_eq!(ids(&net, junction.light), lamp);
     assert_eq!(strings(&net, junction.light), ["green"]);
 }
 
@@ -562,20 +572,22 @@ fn the_concurrent_driver_runs_the_shop() {
 
 // ----- failure --------------------------------------------------------------------
 
-/// A failing `Turn Green` that restores its inputs puts the cars back at the
-/// front of `Waiting`, oldest first, with their ids, ahead of one that
-/// arrived while the firing was in flight; the light goes back to `Light`,
-/// still red, under its id, and no green is written.
+/// A failing `Go` that restores its inputs puts the cars back at the front
+/// of `Waiting`, oldest first, with their ids, ahead of one that arrived
+/// while the firing was in flight; the light, only read, never left
+/// `Light`, and nothing reaches `Passed`.
 #[test]
-fn a_failing_turn_green_restores_the_cars_oldest_first_with_their_ids() {
-    let mut b = NetBuilder::new();
-    let junction = declare_light(&mut b, true);
-    let mut net = b.build().unwrap();
-    let lamp = ids(&net, junction.light)[0];
+fn a_failing_go_restores_the_cars_oldest_first_with_their_ids() {
+    let (mut net, junction) = junction_with(Go {
+        guarded: true,
+        jammed: true,
+    });
+    net.set_tokens(junction.light, [s("green")]);
+    let lamp = ids(&net, junction.light);
     let cars = net.extend(junction.waiting, [s("Car 1"), s("Car 2")]);
     net.drain_events().for_each(drop);
 
-    let firing = net.launch(junction.turn_green).unwrap();
+    let firing = net.launch(junction.go).unwrap();
     let late = net.put(junction.waiting, s("Car 3"));
     let failure = net.distribute(firing.run()).expect_err("the signal jams");
     assert!(matches!(failure, NetError::FiringFailed(ref f) if f.restored));
@@ -583,9 +595,8 @@ fn a_failing_turn_green_restores_the_cars_oldest_first_with_their_ids() {
     let events: Vec<Event> = net.drain_events().collect();
     assert!(
         matches!(events.last(), Some(Event::Failed { transition, consumed, restored: true, error })
-            if *transition == junction.turn_green
+            if *transition == junction.go
                 && consumed == &[
-                    (junction.light.id(), lamp),
                     (junction.waiting.id(), cars[0]),
                     (junction.waiting.id(), cars[1]),
                 ]
@@ -598,22 +609,26 @@ fn a_failing_turn_green_restores_the_cars_oldest_first_with_their_ids() {
         "back at the front, oldest first, ids kept"
     );
     assert_eq!(strings(&net, junction.waiting), ["Car 1", "Car 2", "Car 3"]);
-    assert_eq!(ids(&net, junction.light), [lamp]);
-    assert_eq!(strings(&net, junction.light), ["red"]);
+    assert_eq!(ids(&net, junction.light), lamp);
+    assert_eq!(strings(&net, junction.light), ["green"]);
     assert!(net.tokens(junction.passed.id()).next().is_none());
 
-    // With nobody waiting, the failing firing has only the light to put
-    // back.
-    net.set_tokens(junction.waiting, Vec::<String>::new());
+    // With the guard left off and nobody waiting, the failing firing took
+    // nothing and has nothing to put back.
+    let (mut net, junction) = junction_with(Go {
+        guarded: false,
+        jammed: true,
+    });
+    net.set_tokens(junction.light, [s("green")]);
+    let lamp = ids(&net, junction.light);
     net.drain_events().for_each(drop);
-    net.fire(junction.turn_green).expect_err("still jammed");
+    net.fire(junction.go).expect_err("still jammed");
     assert!(matches!(
         net.drain_events().collect::<Vec<_>>()[..],
-        [Event::Failed { ref consumed, restored: true, .. }]
-            if consumed == &[(junction.light.id(), lamp)]
+        [Event::Failed { ref consumed, restored: true, .. }] if consumed.is_empty()
     ));
-    assert_eq!(ids(&net, junction.light), [lamp]);
-    assert_eq!(strings(&net, junction.light), ["red"]);
+    assert_eq!(ids(&net, junction.light), lamp);
+    assert_eq!(net.count(junction.waiting.id()), 0);
 }
 
 // ----- build checks ---------------------------------------------------------------
@@ -736,10 +751,12 @@ fn a_drain_or_a_survey_reads_its_place_like_any_other_edge() {
 /// A transition whose only input is a drain is a source: a drain may take
 /// nothing, and does not hold its transition back on an empty place. A
 /// survey alone is a source as every read is. Beside a take, neither
-/// matters: the shop passes both checks, and the traffic light, whose every
-/// transition takes the light or a car, passes the source rule; its light
-/// is taken from `Light` and written back to it, a loop of one take, which
-/// the acyclicity check refuses, as it should.
+/// matters: the shop passes both checks. The traffic light's `Go` drains the
+/// cars and only reads the light, so the source rule names it, guarded or
+/// not: the rule reads edges, not guards, and it is `Go`'s guard, green and
+/// someone waiting, that keeps it from firing on an empty queue. Its light
+/// is taken from `Light` and written back to it by `Change`, a loop of one
+/// take, which the acyclicity check refuses, as it should.
 #[test]
 fn the_source_rule_does_not_count_a_drain() {
     let mut b = NetBuilder::new();
@@ -794,19 +811,24 @@ fn the_source_rule_does_not_count_a_drain() {
     declare_shop(&mut b);
     b.build().expect("Price Order takes the order it waits for");
 
-    let mut b = NetBuilder::new();
-    b.assert_no_source_transitions();
-    declare_light(&mut b, false);
-    b.build()
-        .expect("each transition takes one token it waits for");
+    for go in [AS_BUILT, UNGUARDED] {
+        let mut b = NetBuilder::new();
+        b.assert_no_source_transitions();
+        declare_light(&mut b, go);
+        let error = b.build().unwrap_err();
+        assert!(
+            matches!(error, BuildError::SourceTransition { ref transition } if transition == "Go"),
+            "{error:?}"
+        );
+    }
 
     let mut b = NetBuilder::new();
     b.assert_acyclic();
-    declare_light(&mut b, false);
+    declare_light(&mut b, AS_BUILT);
     let error = b.build().unwrap_err();
     assert!(
         matches!(error, BuildError::Cycle { ref path }
-            if path == &["Turn Green", "Light", "Turn Green"]),
+            if path == &["Change", "Light", "Change"]),
         "{error:?}"
     );
 }
@@ -919,18 +941,12 @@ fn the_read_api_carries_the_kinds() {
     assert_eq!(
         infos[0].1.inputs,
         [
-            (junction.light.id(), EdgeKind::Take),
-            (junction.waiting.id(), EdgeKind::Drain)
-        ]
-    );
-    assert_eq!(infos[0].1.filters, [None, None]);
-    assert_eq!(
-        infos[1].1.inputs,
-        [
-            (junction.waiting.id(), EdgeKind::Take),
+            (junction.waiting.id(), EdgeKind::Drain),
             (junction.light.id(), EdgeKind::Snapshot)
         ]
     );
+    assert_eq!(infos[0].1.filters, [None, None]);
+    assert_eq!(infos[1].1.inputs, [(junction.light.id(), EdgeKind::Take)]);
     let input = |place: PlaceRef<String>, transition, kind| EdgeInfo::Input {
         place: place.id(),
         transition,
@@ -946,18 +962,13 @@ fn the_read_api_carries_the_kinds() {
         light,
         waiting,
         passed,
-        turn_green,
-        pass_on_green,
+        go,
         change,
     } = junction;
     let expected = vec![
-        input(light, turn_green, EdgeKind::Take),
-        input(waiting, turn_green, EdgeKind::Drain),
-        output(turn_green, light, 0),
-        output(turn_green, passed, 1),
-        input(waiting, pass_on_green, EdgeKind::Take),
-        input(light, pass_on_green, EdgeKind::Snapshot),
-        output(pass_on_green, passed, 0),
+        input(waiting, go, EdgeKind::Drain),
+        input(light, go, EdgeKind::Snapshot),
+        output(go, passed, 0),
         input(light, change, EdgeKind::Take),
         output(change, light, 0),
     ];
@@ -1033,22 +1044,18 @@ mod json {
                 .all(|transition| transition.get("filters").is_none())
         );
 
-        // `Light` is place 0, `Waiting` 1 and `Passed` 2; `Turn Green` and
-        // `Change` each read from and write to place 0.
+        // `Light` is place 0, `Waiting` 1 and `Passed` 2; `Go` drains place
+        // 1 and reads place 0, and `Change` takes from and writes to place 0.
         let (net, _) = junction();
         let topology = serde_json::to_value(net.topology()).unwrap();
         assert_eq!(
             topology["edges"],
             json!([
-                {"edge": "input", "place": 0, "transition": 0, "kind": "take"},
                 {"edge": "input", "place": 1, "transition": 0, "kind": "drain"},
-                {"edge": "output", "transition": 0, "place": 0, "slot": 0},
-                {"edge": "output", "transition": 0, "place": 2, "slot": 1},
-                {"edge": "input", "place": 1, "transition": 1, "kind": "take"},
-                {"edge": "input", "place": 0, "transition": 1, "kind": "snapshot"},
-                {"edge": "output", "transition": 1, "place": 2, "slot": 0},
-                {"edge": "input", "place": 0, "transition": 2, "kind": "take"},
-                {"edge": "output", "transition": 2, "place": 0, "slot": 0},
+                {"edge": "input", "place": 0, "transition": 0, "kind": "snapshot"},
+                {"edge": "output", "transition": 0, "place": 2, "slot": 0},
+                {"edge": "input", "place": 0, "transition": 1, "kind": "take"},
+                {"edge": "output", "transition": 1, "place": 0, "slot": 0},
             ])
         );
         assert!(

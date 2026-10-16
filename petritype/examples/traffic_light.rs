@@ -147,7 +147,13 @@ fn list(items: &[String]) -> String {
 
 fn main() -> Result<(), Box<dyn Error>> {
     let mut light = build_traffic_light()?;
-    println!("{}", petritype_dot::dot(&light.net));
+    // Left to right, like the road: the light's loop along the top, the cars
+    // flowing from `Waiting` to `Passed` below it.
+    let road = petritype_dot::Style {
+        rankdir: petritype_dot::RankDir::LR,
+        ..petritype_dot::Style::default()
+    };
+    println!("{}", petritype_dot::dot_with(&light.net, &road));
 
     println!("| After | Light | Waiting | Passed |");
     println!("|---|---|---|---|");

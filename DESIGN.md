@@ -359,13 +359,20 @@ EdgeKind::Drain.consumes() == true;  EdgeKind::Survey.consumes() == false
   mutating one (D3); `requires_presence` is what either would reuse.
   Returning a token to the front of a place from a body (D6) is a separate
   feature.
-- **The example** is the proposal's shop (§2), `examples/shop.rs` with the
-  net in `examples/shop/net.rs`, the protocol's conformance net `shop`
-  (PROTOCOL.md §11): `Price Order` takes an order and surveys
-  `Promotions`, `Close Day` takes the day's end marker and drains them.
-  The proposal's §2 script gives its §6 table (`tests/slice22.rs` and the
-  example's tests), and the shared transcript `07_empty_place_edges.json`
-  drives it over the wire.
+- **The examples** are two since 2026-10-16, each a conformance net of
+  the protocol (PROTOCOL.md §11) with its net in a file of its own that a
+  runner can include. The shop, `examples/shop.rs` with the net in
+  `examples/shop/net.rs`, surveys: `Price Order` takes an order and reads
+  every promotion running, and leaves them running. The traffic light,
+  `examples/traffic_light.rs` with the net in
+  `examples/traffic_light/net.rs`, drains: `Turn Green` takes the light
+  from `Red` and every car waiting, none included, and `Pass on Green`
+  takes a car and reads the light through a plain snapshot, so a car goes
+  on green only. The light cycles for ever. The shared transcripts
+  `07_empty_place_edges.json` and `08_traffic_light.json` drive them over
+  the wire, and `tests/slice22.rs` holds both. (Until then the shop alone
+  was the proposal's example, and drained its promotions at the close of
+  the day.)
 
 **Binding by name, 2026-10-15** (slice 23). The proposal
 `dev-docs/BINDING_BY_NAME.md`, its R2 to R9; R1, the tuple cap (§5), is
@@ -1951,10 +1958,15 @@ edition (2026-10-13, §8.3) every transition but `Settle` is, and a plain
 run ends after nineteen firings.
 An eleventh, shop (slice 22), is the edges-on-empty-places proposal's
 example and the protocol's conformance net `shop`, split the same way
-(`examples/shop.rs` for the proposal's script and its table as tests,
+(`examples/shop.rs` for its script and its table as tests,
 `examples/shop/net.rs` for the net) and needing `serde` because every place
 is marked serializable for the wire's `inject`; its net depends on
-`petritype` alone.
+`petritype` alone. Since 2026-10-16 it shows the survey edge alone, and the
+drain edge has an example of its own, traffic light, the protocol's
+conformance net `traffic-light`, split and built the same way
+(`examples/traffic_light.rs`, `examples/traffic_light/net.rs`): cars
+waiting at a light that cycles red, green and amber, all going when it
+turns green.
 
 **Done, slice 12.**
 
@@ -2322,6 +2334,23 @@ the shared `05_nested_nets.json` again with nothing held back, and it replays
 here after one runner fix: an injected token's inner nets have their fireable
 sets taken silently at the inject (§19.3.11). Recorded again for the doors as
 two places, it replays here with no runner change.
+
+**2026-10-16: the shop reads, the traffic light drains** (no slice: examples,
+conformance nets and transcripts changed, the crates' API did not). Decided by
+Oleg: the shop of slice 22 mixed two mechanics, and draining promotions read
+badly. The shop keeps its survey alone: `Price Order` reads every promotion
+running and leaves them running, and `Day End`, `Expired` and `Close Day` are
+gone. A new example, the traffic light, shows the drain, with a plain snapshot
+beside it as the simpler kind of read: `Turn Green` takes the light from `Red`
+and every car waiting, none included; `Pass on Green` lets a car through while
+the light is green; `Turn Amber` and `Turn Red` move the light on, for ever.
+Both are conformance nets of PROTOCOL.md §11, and the runner's example carries
+`traffic-light` beside `shop`. The Python track recorded
+`07_empty_place_edges.json` again and `08_traffic_light.json` new; both replay
+here with no runner change. The pricing example's wholesaler surveys its
+promotions rather than draining them. The drain tests of `tests/slice22.rs`
+and `petritype-dot` moved from the shop's `Close Day` onto the traffic light;
+the drain edge itself is unchanged.
 
 ## 19. Interop: one protocol, two runtimes, two viewers
 
@@ -3153,6 +3182,15 @@ what a drain took, none from an empty place, and nothing a survey read.
   `describe`, which lists everything the example carries; 02 to 06 are
   untouched. A test drives a net of a take, a survey and a drain through
   `Owner` (`drain_and_survey_edges_go_out_with_their_kinds`).
+- **2026-10-16.** The shop was split in two (§18): `shop` keeps the survey,
+  under the description "Price orders with whatever promotions are
+  running", and the drain went to a new conformance net, `traffic-light`
+  ("Cars wait at a light that cycles red, green and amber, and all go when
+  it turns green"), which the example binary includes from
+  `petritype/examples/traffic_light/net.rs` and `nets::traffic_light_registry`
+  carries alone. `07_empty_place_edges.json` was recorded again over the
+  reduced shop and `08_traffic_light.json` is new; their copies here are
+  byte for byte the shared files, and our own `01` lists both nets.
 
 ### 19.4 Who spawns it
 

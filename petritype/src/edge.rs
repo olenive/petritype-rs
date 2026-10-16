@@ -19,8 +19,8 @@
 //! the two *keyed* edges require it to hold a token their filter accepts
 //! (DESIGN §8.3). The last two never hold the transition back: they read
 //! whatever the place holds, possibly nothing, which is right for a place a
-//! transition only needs to look at when something is there — the
-//! promotions running, the subscribers to notify — and saves the "empty
+//! transition only needs to look at, or to empty, when something is there —
+//! the promotions running, the cars waiting at a light — and saves the "empty
 //! twin", a second transition guarded on the place being empty
 //! ([`EdgeKind::requires_presence`], DESIGN §4.4). One transition may read
 //! one place through one edge only: two edges into the same place are a
@@ -404,8 +404,8 @@ pub struct MutateWhereEdge<T>(
 /// edges and its guard say so, and the body is handed whatever the place
 /// held when the firing started — in Petri-net terms a *reset arc*. It is
 /// for a place the transition must empty when it fires but must not wait
-/// on: "end every promotion running when the day closes", where none
-/// running is a perfectly good answer. Without it that is two transitions,
+/// on: "every car waiting goes when the light turns green", where nobody
+/// waiting is a perfectly good answer. Without it that is two transitions,
 /// one with the edge and one guarded on the place being empty.
 ///
 /// Firing takes the tokens as a `TakeAllEdge` does: the firing's
@@ -422,28 +422,30 @@ pub struct MutateWhereEdge<T>(
 /// ```
 /// # use petritype::{DrainEdge, NetBuilder, TakeEdge};
 /// let mut b = NetBuilder::new();
-/// let day_end = b.place::<String>("Day End");
-/// let promotions = b.place::<String>("Promotions");
-/// let expired = b.place::<String>("Expired");
+/// let red = b.place::<String>("Red");
+/// let waiting = b.place::<String>("Waiting");
+/// let green = b.place::<String>("Green");
+/// let passed = b.place::<String>("Passed");
 /// b.transition(
-///     "Close Day",
-///     (TakeEdge(day_end), DrainEdge(promotions)),
-///     (expired,),
-///     |_close: String, running: Vec<String>| {
-///         (running.into_iter().map(|p| format!("{p} expired")).collect::<Vec<_>>(),)
-///     },
+///     "Turn Green",
+///     (TakeEdge(red), DrainEdge(waiting)),
+///     (green, passed),
+///     |light: String, cars: Vec<String>| (light, cars),
 /// );
 /// let mut net = b.build()?;
 ///
-/// net.put(day_end, "close".to_owned());
-/// assert!(net.step()?.is_some(), "fires with no promotion running");
-/// assert_eq!(net.count(expired.id()), 0);
+/// net.put(red, "light".to_owned());
+/// assert!(net.step()?.is_some(), "turns green with nobody waiting");
+/// assert_eq!(net.count(passed.id()), 0);
 ///
-/// net.extend(promotions, ["10% off".to_owned(), "Free shipping".to_owned()]);
-/// net.put(day_end, "close".to_owned());
+/// // Red again (the rest of the light's cycle is left out here), and two
+/// // cars waiting.
+/// net.set_tokens(green, Vec::<String>::new());
+/// net.put(red, "light".to_owned());
+/// net.extend(waiting, ["Car 1".to_owned(), "Car 2".to_owned()]);
 /// net.step()?;
-/// assert_eq!(net.count(promotions.id()), 0, "every promotion ended");
-/// assert_eq!(net.count(expired.id()), 2);
+/// assert_eq!(net.count(waiting.id()), 0, "everyone waiting went");
+/// assert_eq!(net.count(passed.id()), 2);
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
 pub struct DrainEdge<T>(

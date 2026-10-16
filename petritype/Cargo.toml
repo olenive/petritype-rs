@@ -79,12 +79,22 @@ name = "wildlife"
 test = true
 required-features = ["serde"]
 
-# Input edges that accept an empty place (DESIGN §4.4): a shop pricing orders
-# with whatever promotions are running, and ending them at the close of the
-# day. The net itself is `examples/shop/net.rs`, the protocol's conformance
-# net `shop`, every place of which a host may inject into: hence the feature.
+# Input edges that accept an empty place (DESIGN §4.4), the survey: a shop
+# pricing orders with whatever promotions are running. The net itself is
+# `examples/shop/net.rs`, the protocol's conformance net `shop`, every place
+# of which a host may inject into: hence the feature.
 [[example]]
 name = "shop"
+test = true
+required-features = ["serde"]
+
+# Input edges that accept an empty place (DESIGN §4.4), the drain: cars
+# waiting at a light that cycles red, green and amber, all going when it
+# turns green. The net itself is `examples/traffic_light/net.rs`, the
+# protocol's conformance net `traffic-light`, every place of which a host may
+# inject into: hence the feature.
+[[example]]
+name = "traffic_light"
 test = true
 required-features = ["serde"]
 

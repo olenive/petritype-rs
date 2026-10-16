@@ -8,9 +8,15 @@
 //! the tokens handed over, the events, the restore, detachability — and the
 //! edges' place in everything else that reads edges: the build checks, the
 //! two opt-in checks, the read API and its serialised form, and the drivers.
-//! The proposal's acceptance test is its shop (§2) and the table of §6,
-//! which `the_shop_runs_the_script_to_the_table` holds; the example
-//! `examples/shop.rs` carries the same net as the protocol's conformance net.
+//!
+//! The proposal's example was one shop that surveyed and drained its
+//! promotions; since 2026-10-16 it is two nets, as the examples are. The
+//! survey is tested on the shop, which prices each order with whatever
+//! promotions are running (`the_shop_runs_the_script_to_the_table`); the
+//! drain on the traffic light, whose `Turn Green` takes every car waiting at
+//! red, possibly none (`the_traffic_light_runs_the_script`). The examples
+//! `examples/shop.rs` and `examples/traffic_light.rs` carry the same nets as
+//! the protocol's conformance nets `shop` and `traffic-light`.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -26,35 +32,29 @@ struct Broken;
 
 impl std::fmt::Display for Broken {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("the till jammed")
+        f.write_str("the signal jammed")
     }
 }
 
 impl std::error::Error for Broken {}
 
-/// The shop's places and transitions.
+/// The shop's places and transition.
 struct Shop {
     orders: PlaceRef<String>,
     promotions: PlaceRef<String>,
-    day_end: PlaceRef<String>,
     priced: PlaceRef<String>,
     discounts: PlaceRef<String>,
-    expired: PlaceRef<String>,
     price_order: TransitionId,
-    close_day: TransitionId,
 }
 
-/// The shop of the proposal's §2, declared into `b`, nothing seeded: six
-/// places of strings, `Price Order` taking an order and surveying the
-/// promotions, `Close Day` taking the day's end marker and draining them.
-/// With `jammed`, `Close Day` fails and restores what it took.
-fn declare_shop(b: &mut NetBuilder, jammed: bool) -> Shop {
+/// The shop of `examples/shop/net.rs`, declared into `b`, nothing seeded:
+/// four places of strings, `Price Order` taking an order and surveying the
+/// promotions.
+fn declare_shop(b: &mut NetBuilder) -> Shop {
     let orders = b.place::<String>("Orders");
     let promotions = b.place::<String>("Promotions");
-    let day_end = b.place::<String>("Day End");
     let priced = b.place::<String>("Priced");
     let discounts = b.place::<String>("Discounts Applied");
-    let expired = b.place::<String>("Expired");
     let price_order = b
         .transition(
             "Price Order",
@@ -69,41 +69,95 @@ fn declare_shop(b: &mut NetBuilder, jammed: bool) -> Shop {
             },
         )
         .id();
-    let mut close = b.transition(
-        "Close Day",
-        (TakeEdge(day_end), DrainEdge(promotions)),
-        (expired,),
-        move |_close: String, promotions: Vec<String>| -> Result<(Vec<String>,), Broken> {
-            if jammed {
-                return Err(Broken);
-            }
-            Ok((promotions
-                .into_iter()
-                .map(|promotion| format!("{promotion} expired"))
-                .collect(),))
-        },
-    );
-    if jammed {
-        close.restore_tokens_on_failure();
-    }
-    let close_day = close.id();
     Shop {
         orders,
         promotions,
-        day_end,
         priced,
         discounts,
-        expired,
         price_order,
-        close_day,
     }
 }
 
 /// The shop, built.
 fn shop() -> (Net, Shop) {
     let mut b = NetBuilder::new();
-    let shop = declare_shop(&mut b, false);
+    let shop = declare_shop(&mut b);
     (b.build().expect("the shop builds"), shop)
+}
+
+/// The traffic light's places and transitions.
+struct Light {
+    red: PlaceRef<String>,
+    green: PlaceRef<String>,
+    amber: PlaceRef<String>,
+    waiting: PlaceRef<String>,
+    passed: PlaceRef<String>,
+    turn_green: TransitionId,
+    pass_on_green: TransitionId,
+    turn_amber: TransitionId,
+    turn_red: TransitionId,
+}
+
+/// The traffic light of `examples/traffic_light/net.rs`, declared into `b`,
+/// the light seeded in `Red`: `Turn Green` takes the light from `Red` and
+/// drains `Waiting`, writing the light to `Green` and the cars to `Passed`;
+/// `Pass on Green` takes a car and snapshots `Green`; `Turn Amber` and `Turn
+/// Red` move the light on. With `jammed`, `Turn Green` fails and restores
+/// what it took.
+fn declare_light(b: &mut NetBuilder, jammed: bool) -> Light {
+    let red = b.place::<String>("Red");
+    let green = b.place::<String>("Green");
+    let amber = b.place::<String>("Amber");
+    let waiting = b.place::<String>("Waiting");
+    let passed = b.place::<String>("Passed");
+    b.seed(red, [s("light")]);
+    let mut turn = b.transition(
+        "Turn Green",
+        (TakeEdge(red), DrainEdge(waiting)),
+        (green, passed),
+        move |light: String, cars: Vec<String>| -> Result<(String, Vec<String>), Broken> {
+            if jammed {
+                return Err(Broken);
+            }
+            Ok((light, cars))
+        },
+    );
+    if jammed {
+        turn.restore_tokens_on_failure();
+    }
+    let turn_green = turn.id();
+    let pass_on_green = b
+        .transition(
+            "Pass on Green",
+            (TakeEdge(waiting), SnapshotEdge(green)),
+            (passed,),
+            |car: String, _light: String| (car,),
+        )
+        .id();
+    let turn_amber = b
+        .transition("Turn Amber", (TakeEdge(green),), (amber,), |l: String| (l,))
+        .id();
+    let turn_red = b
+        .transition("Turn Red", (TakeEdge(amber),), (red,), |l: String| (l,))
+        .id();
+    Light {
+        red,
+        green,
+        amber,
+        waiting,
+        passed,
+        turn_green,
+        pass_on_green,
+        turn_amber,
+        turn_red,
+    }
+}
+
+/// The traffic light, built.
+fn light() -> (Net, Light) {
+    let mut b = NetBuilder::new();
+    let light = declare_light(&mut b, false);
+    (b.build().expect("the light builds"), light)
 }
 
 fn s(text: &str) -> String {
@@ -122,49 +176,33 @@ fn ids<T>(net: &Net, place: PlaceRef<T>) -> Vec<TokenId> {
     net.tokens(place.id()).map(|(id, _)| id).collect()
 }
 
-/// The proposal's §6 table: after each of the script's four steps,
-/// `Priced`, `Discounts Applied`, `Expired` and `Promotions`.
-const TABLE: [[&[&str]; 4]; 4] = [
+/// The shop's table: after each of its script's two steps, `Priced`,
+/// `Discounts Applied` and `Promotions`.
+const TABLE: [[&[&str]; 3]; 2] = [
     // Price Order, no promotions.
-    [&["Order 1"], &[], &[], &[]],
+    [&["Order 1"], &[], &[]],
     // Price Order, two running.
     [
         &["Order 1", "Order 2"],
         &["10% off on Order 2", "Free shipping on Order 2"],
-        &[],
         &["10% off", "Free shipping"],
-    ],
-    // Close Day.
-    [
-        &["Order 1", "Order 2"],
-        &["10% off on Order 2", "Free shipping on Order 2"],
-        &["10% off expired", "Free shipping expired"],
-        &[],
-    ],
-    // Close Day, none running.
-    [
-        &["Order 1", "Order 2"],
-        &["10% off on Order 2", "Free shipping on Order 2"],
-        &["10% off expired", "Free shipping expired"],
-        &[],
     ],
 ];
 
-/// `Priced`, `Discounts Applied`, `Expired` and `Promotions`, as the table
-/// has them.
-fn row(net: &Net, shop: &Shop) -> [Vec<String>; 4] {
+/// `Priced`, `Discounts Applied` and `Promotions`, as the table has them.
+fn row(net: &Net, shop: &Shop) -> [Vec<String>; 3] {
     [
         strings(net, shop.priced),
         strings(net, shop.discounts),
-        strings(net, shop.expired),
         strings(net, shop.promotions),
     ]
 }
 
-// ----- the acceptance test ------------------------------------------------------
+// ----- the acceptance tests -----------------------------------------------------
 
-/// The proposal's §2 script, stepped with the default selector, and its §6
-/// table after each step.
+/// The shop's script (the shared transcript `07_empty_place_edges.json`),
+/// stepped with the default selector, and its table after each step: the
+/// survey reads the promotions and leaves them running.
 #[test]
 fn the_shop_runs_the_script_to_the_table() {
     let (mut net, shop) = shop();
@@ -174,23 +212,58 @@ fn the_shop_runs_the_script_to_the_table() {
     assert_eq!(row(&net, &shop), TABLE[0]);
 
     net.extend(shop.promotions, [s("10% off"), s("Free shipping")]);
+    assert!(net.fireable().is_empty(), "promotions alone fire nothing");
     net.put(shop.orders, s("Order 2"));
     let running = ids(&net, shop.promotions);
     assert_eq!(net.step().unwrap(), Some(shop.price_order));
     assert_eq!(row(&net, &shop), TABLE[1]);
     assert_eq!(ids(&net, shop.promotions), running, "surveyed, not touched");
 
-    net.put(shop.day_end, s("close"));
-    assert_eq!(net.step().unwrap(), Some(shop.close_day));
-    assert_eq!(row(&net, &shop), TABLE[2]);
-
-    net.put(shop.day_end, s("close"));
-    assert_eq!(net.step().unwrap(), Some(shop.close_day));
-    assert_eq!(row(&net, &shop), TABLE[3]);
-    assert_eq!(net.count(shop.day_end.id()), 0, "the marker consumed");
-
     assert_eq!(net.step().unwrap(), None, "quiescent");
-    assert_eq!(net.fired_count(), 4);
+    assert_eq!(net.fired_count(), 2);
+}
+
+/// The traffic light's script (the shared transcript
+/// `08_traffic_light.json`), stepped with the default selector: the light
+/// turns green with nobody waiting, two cars wait through amber and red and
+/// are drained the moment it turns green again, a third arrives at green and
+/// passes on its own, and the light never stops.
+#[test]
+fn the_traffic_light_runs_the_script() {
+    let (mut net, light) = light();
+
+    assert_eq!(
+        net.step().unwrap(),
+        Some(light.turn_green),
+        "nobody waiting"
+    );
+    assert_eq!(strings(&net, light.green), ["light"]);
+    assert!(
+        strings(&net, light.passed).is_empty(),
+        "the drain took none"
+    );
+    assert_eq!(net.step().unwrap(), Some(light.turn_amber));
+
+    net.extend(light.waiting, [s("Car 1"), s("Car 2")]);
+    assert_eq!(net.fireable(), [light.turn_red], "the cars wait at amber");
+    assert_eq!(net.step().unwrap(), Some(light.turn_red));
+    assert!(!net.is_fireable(light.pass_on_green), "and at red");
+    assert_eq!(net.step().unwrap(), Some(light.turn_green));
+    assert_eq!(strings(&net, light.passed), ["Car 1", "Car 2"]);
+    assert_eq!(net.count(light.waiting.id()), 0, "everyone waiting went");
+
+    net.put(light.waiting, s("Car 3"));
+    assert_eq!(net.step().unwrap(), Some(light.pass_on_green));
+    assert_eq!(strings(&net, light.green), ["light"], "read, not taken");
+    assert_eq!(net.step().unwrap(), Some(light.turn_amber));
+
+    assert_eq!(strings(&net, light.amber), ["light"]);
+    assert_eq!(strings(&net, light.passed), ["Car 1", "Car 2", "Car 3"]);
+    for place in [light.red, light.green, light.waiting] {
+        assert_eq!(net.count(place.id()), 0);
+    }
+    assert_eq!(net.fired_count(), 6);
+    assert_eq!(net.fireable(), [light.turn_red], "never quiescent");
 }
 
 // ----- fireability --------------------------------------------------------------
@@ -206,7 +279,7 @@ fn price_order_waits_for_an_order_whatever_the_promotions() {
         assert!(!net.fireable().contains(&shop.price_order));
         assert!(!net.is_fireable(shop.price_order));
     }
-    assert!(net.fireable().is_empty(), "no order and no marker");
+    assert!(net.fireable().is_empty(), "no order");
 
     net.put(shop.orders, s("Order 1"));
     assert_eq!(net.fireable(), [shop.price_order]);
@@ -285,57 +358,68 @@ fn a_drained_keyed_place_is_empty_to_the_index_too() {
 
 // ----- the tokens handed over, and the events -----------------------------------
 
-/// A drain lists every token it took in the firing's `consumed`, which from
-/// an empty place is none; a survey lists none, full or empty.
+/// A survey lists none of what it read in the firing's `consumed`, full or
+/// empty.
 #[test]
-fn consumed_lists_what_a_drain_took_and_nothing_a_survey_read() {
+fn consumed_lists_nothing_a_survey_read() {
     let (mut net, shop) = shop();
+    for running in [&[][..], &[s("10% off"), s("Free shipping")][..]] {
+        net.extend(shop.promotions, running.to_vec());
+        let order = net.put(shop.orders, s("Order 1"));
+        net.drain_events().for_each(drop);
+        net.step().unwrap();
+        let events: Vec<Event> = net.drain_events().collect();
+        assert!(
+            matches!(&events[..], [Event::Fired { transition, consumed, produced }]
+                if *transition == shop.price_order
+                    && consumed == &[(shop.orders.id(), order)]
+                    && produced.len() == 1 + running.len()),
+            "the survey consumed nothing: {events:?}"
+        );
+    }
+}
+
+/// A drain lists every token it took in the firing's `consumed`, after the
+/// light and oldest first, which from an empty place is none.
+#[test]
+fn consumed_lists_what_a_drain_took_oldest_first() {
+    let (mut net, light) = light();
+    let lamp = ids(&net, light.red)[0];
     net.drain_events().for_each(drop);
 
-    let marker = net.put(shop.day_end, s("close"));
-    net.drain_events().for_each(drop);
     net.step().unwrap();
     let events: Vec<Event> = net.drain_events().collect();
     assert!(
         matches!(&events[..], [Event::Fired { transition, consumed, produced }]
-            if *transition == shop.close_day
-                && consumed == &[(shop.day_end.id(), marker)]
-                && produced.is_empty()),
-        "nothing from the empty Promotions: {events:?}"
+            if *transition == light.turn_green
+                && consumed == &[(light.red.id(), lamp)]
+                && produced.len() == 1
+                && produced[0].0 == light.green.id()),
+        "nothing from the empty Waiting: {events:?}"
     );
 
-    let running = net.extend(shop.promotions, [s("10% off"), s("Free shipping")]);
-    let order = net.put(shop.orders, s("Order 1"));
+    assert_eq!(net.step().unwrap(), Some(light.turn_amber));
+    let cars = net.extend(light.waiting, [s("Car 1"), s("Car 2")]);
+    assert_eq!(net.step().unwrap(), Some(light.turn_red));
+    let lamp = ids(&net, light.red)[0];
     net.drain_events().for_each(drop);
     net.step().unwrap();
     let events: Vec<Event> = net.drain_events().collect();
-    assert!(
-        matches!(&events[..], [Event::Fired { transition, consumed, produced }]
-            if *transition == shop.price_order
-                && consumed == &[(shop.orders.id(), order)]
-                && produced.len() == 3),
-        "the survey consumed nothing: {events:?}"
-    );
-
-    let marker = net.put(shop.day_end, s("close"));
-    net.drain_events().for_each(drop);
-    net.step().unwrap();
-    let events: Vec<Event> = net.drain_events().collect();
-    let expected: Vec<_> = [(shop.day_end.id(), marker)]
+    let expected: Vec<_> = [(light.red.id(), lamp)]
         .into_iter()
-        .chain(running.iter().map(|&id| (shop.promotions.id(), id)))
+        .chain(cars.iter().map(|&id| (light.waiting.id(), id)))
         .collect();
     assert!(
         matches!(&events[..], [Event::Fired { consumed, .. }] if consumed == &expected),
-        "the marker, then the promotions oldest first: {events:?}"
+        "the light, then the cars oldest first: {events:?}"
     );
 }
 
-/// The staged path says the same in its `Launched`.
+/// The staged path says the same in its `Launched`: no surveyed token.
 #[test]
-fn launched_names_the_drained_tokens_and_no_surveyed_one() {
+fn launched_names_no_surveyed_token() {
     let (mut net, shop) = shop();
-    let running = net.extend(shop.promotions, [s("10% off")]);
+    net.extend(shop.promotions, [s("10% off")]);
     let order = net.put(shop.orders, s("Order 1"));
     net.drain_events().for_each(drop);
 
@@ -345,19 +429,41 @@ fn launched_names_the_drained_tokens_and_no_surveyed_one() {
         [Event::Launched { ref consumed, .. }] if consumed == &[(shop.orders.id(), order)]
     ));
     net.distribute(firing.run()).unwrap();
-    net.drain_events().for_each(drop);
+    assert_eq!(strings(&net, shop.discounts), ["10% off on Order 1"]);
+}
 
-    let marker = net.put(shop.day_end, s("close"));
+/// The staged path says the same in its `Launched`: every drained token,
+/// taken from the place at launch. A drain borrows nothing, so the firing is
+/// detachable.
+#[test]
+fn launched_names_the_drained_tokens() {
+    let (mut net, light) = light();
+    let detachable = |net: &Net, transition: TransitionId| {
+        net.transitions()
+            .find(|(id, _)| *id == transition)
+            .unwrap()
+            .1
+            .detachable
+    };
+    assert!(
+        detachable(&net, light.turn_green),
+        "a drain borrows nothing"
+    );
+    assert!(detachable(&net, light.pass_on_green), "nor does a snapshot");
+
+    let lamp = ids(&net, light.red)[0];
+    let car = net.put(light.waiting, s("Car 1"));
     net.drain_events().for_each(drop);
-    let firing = net.launch(shop.close_day).unwrap();
-    assert_eq!(net.count(shop.promotions.id()), 0, "drained at launch");
+    let firing = net.launch(light.turn_green).unwrap();
+    assert!(firing.is_pending(), "not run inline");
+    assert_eq!(net.count(light.waiting.id()), 0, "drained at launch");
     assert!(matches!(
         net.drain_events().collect::<Vec<_>>()[..],
         [Event::Launched { ref consumed, .. }]
-            if consumed == &[(shop.day_end.id(), marker), (shop.promotions.id(), running[0])]
+            if consumed == &[(light.red.id(), lamp), (light.waiting.id(), car)]
     ));
     net.distribute(firing.run()).unwrap();
-    assert_eq!(strings(&net, shop.expired), ["10% off expired"]);
+    assert_eq!(strings(&net, light.passed), ["Car 1"]);
 }
 
 // ----- detachable -----------------------------------------------------------------
@@ -369,15 +475,13 @@ fn launched_names_the_drained_tokens_and_no_surveyed_one() {
 #[test]
 fn a_survey_keeps_the_firing_detachable_and_sees_the_launch_marking() {
     let (mut net, shop) = shop();
-    let info = |net: &Net, transition: TransitionId| {
-        net.transitions()
-            .find(|(id, _)| *id == transition)
-            .unwrap()
-            .1
-            .detachable
-    };
-    assert!(info(&net, shop.price_order), "a survey borrows nothing");
-    assert!(info(&net, shop.close_day), "nor does a drain");
+    let detachable = net
+        .transitions()
+        .find(|(id, _)| *id == shop.price_order)
+        .unwrap()
+        .1
+        .detachable;
+    assert!(detachable, "a survey borrows nothing");
 
     let running = net.extend(shop.promotions, [s("10% off"), s("Free shipping")]);
     net.put(shop.orders, s("Order 1"));
@@ -433,58 +537,55 @@ fn the_concurrent_driver_runs_the_shop() {
 
 // ----- failure --------------------------------------------------------------------
 
-/// A failing `Close Day` that restores its inputs puts the promotions back
-/// at the front of their place, oldest first, with their ids, ahead of one
-/// that started while the firing was in flight; the marker goes back too.
+/// A failing `Turn Green` that restores its inputs puts the cars back at the
+/// front of `Waiting`, oldest first, with their ids, ahead of one that
+/// arrived while the firing was in flight; the light goes back to `Red`.
 #[test]
-fn a_failing_close_day_restores_the_promotions_oldest_first_with_their_ids() {
+fn a_failing_turn_green_restores_the_cars_oldest_first_with_their_ids() {
     let mut b = NetBuilder::new();
-    let shop = declare_shop(&mut b, true);
+    let light = declare_light(&mut b, true);
     let mut net = b.build().unwrap();
-    let running = net.extend(shop.promotions, [s("10% off"), s("Free shipping")]);
-    let marker = net.put(shop.day_end, s("close"));
+    let lamp = ids(&net, light.red)[0];
+    let cars = net.extend(light.waiting, [s("Car 1"), s("Car 2")]);
     net.drain_events().for_each(drop);
 
-    let firing = net.launch(shop.close_day).unwrap();
-    let late = net.put(shop.promotions, s("Two for one"));
-    let failure = net.distribute(firing.run()).expect_err("the till jams");
+    let firing = net.launch(light.turn_green).unwrap();
+    let late = net.put(light.waiting, s("Car 3"));
+    let failure = net.distribute(firing.run()).expect_err("the signal jams");
     assert!(matches!(failure, NetError::FiringFailed(ref f) if f.restored));
 
     let events: Vec<Event> = net.drain_events().collect();
     assert!(
         matches!(events.last(), Some(Event::Failed { transition, consumed, restored: true, error })
-            if *transition == shop.close_day
+            if *transition == light.turn_green
                 && consumed == &[
-                    (shop.day_end.id(), marker),
-                    (shop.promotions.id(), running[0]),
-                    (shop.promotions.id(), running[1]),
+                    (light.red.id(), lamp),
+                    (light.waiting.id(), cars[0]),
+                    (light.waiting.id(), cars[1]),
                 ]
-                && error == "the till jammed"),
+                && error == "the signal jammed"),
         "{events:?}"
     );
     assert_eq!(
-        ids(&net, shop.promotions),
-        [running[0], running[1], late],
+        ids(&net, light.waiting),
+        [cars[0], cars[1], late],
         "back at the front, oldest first, ids kept"
     );
-    assert_eq!(
-        strings(&net, shop.promotions),
-        ["10% off", "Free shipping", "Two for one"]
-    );
-    assert_eq!(ids(&net, shop.day_end), [marker]);
-    assert!(net.tokens(shop.expired.id()).next().is_none());
+    assert_eq!(strings(&net, light.waiting), ["Car 1", "Car 2", "Car 3"]);
+    assert_eq!(ids(&net, light.red), [lamp]);
+    assert!(net.tokens(light.green.id()).next().is_none());
+    assert!(net.tokens(light.passed.id()).next().is_none());
 
-    // With nothing running, the failing firing has only the marker to put
+    // With nobody waiting, the failing firing has only the light to put
     // back.
-    net.set_tokens(shop.promotions, Vec::<String>::new());
-    let marker = ids(&net, shop.day_end)[0];
+    net.set_tokens(light.waiting, Vec::<String>::new());
     net.drain_events().for_each(drop);
-    net.fire(shop.close_day).expect_err("still jammed");
+    net.fire(light.turn_green).expect_err("still jammed");
     assert!(matches!(
         net.drain_events().collect::<Vec<_>>()[..],
-        [Event::Failed { ref consumed, restored: true, .. }] if consumed == &[(shop.day_end.id(), marker)]
+        [Event::Failed { ref consumed, restored: true, .. }] if consumed == &[(light.red.id(), lamp)]
     ));
-    assert_eq!(ids(&net, shop.day_end), [marker]);
+    assert_eq!(ids(&net, light.red), [lamp]);
 }
 
 // ----- build checks ---------------------------------------------------------------
@@ -575,26 +676,26 @@ fn a_survey_of_a_place_that_cannot_clone_is_refused() {
 #[test]
 fn a_drain_or_a_survey_reads_its_place_like_any_other_edge() {
     let mut b = NetBuilder::new();
-    let promotions = b.place::<String>("Promotions");
+    let waiting = b.place::<String>("Waiting");
     let out = b.place::<String>("Out");
     b.transition(
         "Twice",
-        (DrainEdge(promotions), SurveyEdge(promotions)),
+        (DrainEdge(waiting), SurveyEdge(waiting)),
         (out,),
         |taken: Vec<String>, _: Vec<String>| (taken,),
     );
     assert!(matches!(
         b.build(),
         Err(BuildError::DuplicateInputPlace { ref transition, ref place })
-            if transition == "Twice" && place == "Promotions"
+            if transition == "Twice" && place == "Waiting"
     ));
 
     let mut b = NetBuilder::new();
-    let promotions = b.place::<String>("Promotions");
+    let waiting = b.place::<String>("Waiting");
     let out = b.place::<String>("Out");
     b.transition(
         "Twice",
-        (TakeEdge(promotions), SurveyEdge(promotions)),
+        (TakeEdge(waiting), SurveyEdge(waiting)),
         (out,),
         |one: String, _: Vec<String>| (one,),
     );
@@ -607,22 +708,25 @@ fn a_drain_or_a_survey_reads_its_place_like_any_other_edge() {
 /// A transition whose only input is a drain is a source: a drain may take
 /// nothing, and does not hold its transition back on an empty place. A
 /// survey alone is a source as every read is. Beside a take, neither
-/// matters, and the shop passes both checks.
+/// matters: the shop passes both checks, and the traffic light, whose every
+/// transition takes the light or a car, passes the source rule; its light
+/// goes round a loop of takes, which the acyclicity check refuses, as it
+/// should.
 #[test]
 fn the_source_rule_does_not_count_a_drain() {
     let mut b = NetBuilder::new();
     b.assert_no_source_transitions();
-    let promotions = b.place::<String>("Promotions");
-    let expired = b.place::<String>("Expired");
+    let waiting = b.place::<String>("Waiting");
+    let passed = b.place::<String>("Passed");
     b.transition(
-        "Expire All",
-        (DrainEdge(promotions),),
-        (expired,),
+        "Wave Through",
+        (DrainEdge(waiting),),
+        (passed,),
         |all: Vec<String>| (all,),
     );
     assert!(matches!(
         b.build(),
-        Err(BuildError::SourceTransition { ref transition }) if transition == "Expire All"
+        Err(BuildError::SourceTransition { ref transition }) if transition == "Wave Through"
     ));
 
     let mut b = NetBuilder::new();
@@ -642,26 +746,41 @@ fn the_source_rule_does_not_count_a_drain() {
 
     // Left to run, the drain alone fires on an empty place, and again.
     let mut b = NetBuilder::new();
-    let promotions = b.place::<String>("Promotions");
-    let expired = b.place::<String>("Expired");
-    let expire = b
+    let waiting = b.place::<String>("Waiting");
+    let passed = b.place::<String>("Passed");
+    let wave = b
         .transition(
-            "Expire All",
-            (DrainEdge(promotions),),
-            (expired,),
+            "Wave Through",
+            (DrainEdge(waiting),),
+            (passed,),
             |all: Vec<String>| (all,),
         )
         .id();
     let mut net = b.build().unwrap();
     for _ in 0..3 {
-        assert_eq!(net.step().unwrap(), Some(expire));
+        assert_eq!(net.step().unwrap(), Some(wave));
     }
 
     let mut b = NetBuilder::new();
     b.assert_no_source_transitions().assert_acyclic();
-    declare_shop(&mut b, false);
+    declare_shop(&mut b);
+    b.build().expect("Price Order takes the order it waits for");
+
+    let mut b = NetBuilder::new();
+    b.assert_no_source_transitions();
+    declare_light(&mut b, false);
     b.build()
         .expect("each transition takes one token it waits for");
+
+    let mut b = NetBuilder::new();
+    b.assert_acyclic();
+    declare_light(&mut b, false);
+    assert!(matches!(
+        b.build(),
+        Err(BuildError::Cycle { ref path }) if path == &[
+            "Turn Green", "Green", "Turn Amber", "Amber", "Turn Red", "Red", "Turn Green"
+        ]
+    ));
 }
 
 /// The acyclicity walk follows the edges that always take a token: a loop
@@ -719,7 +838,8 @@ fn the_acyclicity_walk_leaves_drains_and_surveys_out() {
 // ----- the read API ---------------------------------------------------------------
 
 /// `TransitionInfo::inputs`, `Net::edges` and the topology carry the two
-/// kinds as they carry the others, with no filter.
+/// kinds as they carry the others, with no filter: the survey on the shop,
+/// the drain on the traffic light.
 #[test]
 fn the_read_api_carries_the_kinds() {
     let (net, shop) = shop();
@@ -732,15 +852,6 @@ fn the_read_api_carries_the_kinds() {
         ]
     );
     assert_eq!(infos[0].1.filters, [None, None]);
-    assert_eq!(
-        infos[1].1.inputs,
-        [
-            (shop.day_end.id(), EdgeKind::Take),
-            (shop.promotions.id(), EdgeKind::Drain)
-        ]
-    );
-    assert_eq!(infos[1].1.filters, [None, None]);
-
     let expected = vec![
         EdgeInfo::Input {
             place: shop.orders.id(),
@@ -764,23 +875,6 @@ fn the_read_api_carries_the_kinds() {
             place: shop.discounts.id(),
             slot: 1,
         },
-        EdgeInfo::Input {
-            place: shop.day_end.id(),
-            transition: shop.close_day,
-            kind: EdgeKind::Take,
-            filter: None,
-        },
-        EdgeInfo::Input {
-            place: shop.promotions.id(),
-            transition: shop.close_day,
-            kind: EdgeKind::Drain,
-            filter: None,
-        },
-        EdgeInfo::Output {
-            transition: shop.close_day,
-            place: shop.expired.id(),
-            slot: 0,
-        },
     ];
     assert_eq!(net.edges().collect::<Vec<_>>(), expected);
     assert_eq!(
@@ -789,7 +883,58 @@ fn the_read_api_carries_the_kinds() {
     );
     let topology = net.topology();
     assert_eq!(topology.edges, expected);
-    assert_eq!(topology.transitions[1].filters, [None, None]);
+    assert_eq!(topology.transitions[0].filters, [None, None]);
+    assert_eq!(net.snapshot().unwrap().topology(), topology);
+
+    let (net, light) = light();
+    let infos: Vec<_> = net.transitions().collect();
+    assert_eq!(
+        infos[0].1.inputs,
+        [
+            (light.red.id(), EdgeKind::Take),
+            (light.waiting.id(), EdgeKind::Drain)
+        ]
+    );
+    assert_eq!(infos[0].1.filters, [None, None]);
+    assert_eq!(
+        infos[1].1.inputs,
+        [
+            (light.waiting.id(), EdgeKind::Take),
+            (light.green.id(), EdgeKind::Snapshot)
+        ]
+    );
+    let input = |place: PlaceRef<String>, transition, kind| EdgeInfo::Input {
+        place: place.id(),
+        transition,
+        kind,
+        filter: None,
+    };
+    let output = |transition, place: PlaceRef<String>, slot| EdgeInfo::Output {
+        transition,
+        place: place.id(),
+        slot,
+    };
+    let expected = vec![
+        input(light.red, light.turn_green, EdgeKind::Take),
+        input(light.waiting, light.turn_green, EdgeKind::Drain),
+        output(light.turn_green, light.green, 0),
+        output(light.turn_green, light.passed, 1),
+        input(light.waiting, light.pass_on_green, EdgeKind::Take),
+        input(light.green, light.pass_on_green, EdgeKind::Snapshot),
+        output(light.pass_on_green, light.passed, 0),
+        input(light.green, light.turn_amber, EdgeKind::Take),
+        output(light.turn_amber, light.amber, 0),
+        input(light.amber, light.turn_red, EdgeKind::Take),
+        output(light.turn_red, light.red, 0),
+    ];
+    assert_eq!(net.edges().collect::<Vec<_>>(), expected);
+    assert_eq!(
+        net.snapshot().unwrap().edges().collect::<Vec<_>>(),
+        expected
+    );
+    let topology = net.topology();
+    assert_eq!(topology.edges, expected);
+    assert_eq!(topology.transitions[0].filters, [None, None]);
     assert_eq!(net.snapshot().unwrap().topology(), topology);
 
     assert!(EdgeKind::Drain.consumes() && !EdgeKind::Drain.requires_presence());
@@ -832,7 +977,7 @@ mod json {
     }
 
     /// The topology writes the kinds on their edges, with no `filter` and
-    /// no `filters`.
+    /// no `filters`: the survey on the shop, the drain on the traffic light.
     #[test]
     fn the_topology_serialises_the_kinds() {
         let (net, _) = shop();
@@ -842,11 +987,34 @@ mod json {
             json!([
                 {"edge": "input", "place": 0, "transition": 0, "kind": "take"},
                 {"edge": "input", "place": 1, "transition": 0, "kind": "survey"},
-                {"edge": "output", "transition": 0, "place": 3, "slot": 0},
+                {"edge": "output", "transition": 0, "place": 2, "slot": 0},
+                {"edge": "output", "transition": 0, "place": 3, "slot": 1},
+            ])
+        );
+        assert!(
+            topology["transitions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|transition| transition.get("filters").is_none())
+        );
+
+        let (net, _) = light();
+        let topology = serde_json::to_value(net.topology()).unwrap();
+        assert_eq!(
+            topology["edges"],
+            json!([
+                {"edge": "input", "place": 0, "transition": 0, "kind": "take"},
+                {"edge": "input", "place": 3, "transition": 0, "kind": "drain"},
+                {"edge": "output", "transition": 0, "place": 1, "slot": 0},
                 {"edge": "output", "transition": 0, "place": 4, "slot": 1},
-                {"edge": "input", "place": 2, "transition": 1, "kind": "take"},
-                {"edge": "input", "place": 1, "transition": 1, "kind": "drain"},
-                {"edge": "output", "transition": 1, "place": 5, "slot": 0},
+                {"edge": "input", "place": 3, "transition": 1, "kind": "take"},
+                {"edge": "input", "place": 1, "transition": 1, "kind": "snapshot"},
+                {"edge": "output", "transition": 1, "place": 4, "slot": 0},
+                {"edge": "input", "place": 1, "transition": 2, "kind": "take"},
+                {"edge": "output", "transition": 2, "place": 2, "slot": 0},
+                {"edge": "input", "place": 2, "transition": 3, "kind": "take"},
+                {"edge": "output", "transition": 3, "place": 0, "slot": 0},
             ])
         );
         assert!(

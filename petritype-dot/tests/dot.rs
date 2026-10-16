@@ -356,41 +356,56 @@ fn every_edge_kind_has_its_own_attributes() {
 
 /// The two edges an empty place satisfies are drawn as their all-at-once
 /// counterparts, `TakeAllEdge` and `SnapshotEdge`, with a hollow arrowhead,
-/// and both say `*`: every token, possibly none.
+/// and both say `*`: every token, possibly none. The survey is the shop's,
+/// the drain the traffic light's.
 #[test]
 fn drain_and_survey_edges_have_a_hollow_arrowhead() {
     let mut b = NetBuilder::new();
     let orders = b.place::<String>("Orders");
     let promotions = b.place::<String>("Promotions");
-    let day_end = b.place::<String>("Day End");
     let priced = b.place::<String>("Priced");
-    let expired = b.place::<String>("Expired");
     b.transition(
         "Price Order",
         (TakeEdge(orders), SurveyEdge(promotions)),
         (priced,),
         |order: String, _: Vec<String>| (order,),
     );
-    b.transition(
-        "Close Day",
-        (TakeEdge(day_end), DrainEdge(promotions)),
-        (expired,),
-        |_: String, running: Vec<String>| (running,),
-    );
-    let net = b.build().expect("the net builds");
-    let text = dot(&net);
-
+    let shop = dot(&b.build().expect("the shop builds"));
     assert!(
-        text.contains(
+        shop.contains(
             "  p1 -> t0 [style=dashed, color=dimgray, arrowhead=empty, penwidth=1, label=\"*\"];\n"
         ),
         "SurveyEdge reads every token, possibly none",
     );
+    assert!(shop.contains("  p0 -> t0 [color=black, penwidth=1];\n"));
+
+    let mut b = NetBuilder::new();
+    let red = b.place::<String>("Red");
+    let waiting = b.place::<String>("Waiting");
+    let green = b.place::<String>("Green");
+    let passed = b.place::<String>("Passed");
+    b.transition(
+        "Turn Green",
+        (TakeEdge(red), DrainEdge(waiting)),
+        (green, passed),
+        |light: String, cars: Vec<String>| (light, cars),
+    );
+    b.transition(
+        "Pass on Green",
+        (TakeEdge(waiting), SnapshotEdge(green)),
+        (passed,),
+        |car: String, _: String| (car,),
+    );
+    let light = dot(&b.build().expect("the light builds"));
     assert!(
-        text.contains("  p1 -> t1 [color=black, arrowhead=empty, penwidth=1, label=\"*\"];\n"),
+        light.contains("  p1 -> t0 [color=black, arrowhead=empty, penwidth=1, label=\"*\"];\n"),
         "DrainEdge takes every token, possibly none",
     );
-    assert!(text.contains("  p0 -> t0 [color=black, penwidth=1];\n"));
+    assert!(light.contains("  p0 -> t0 [color=black, penwidth=1];\n"));
+    assert!(
+        light.contains("  p2 -> t1 [style=dashed, color=dimgray, arrowhead=normal, penwidth=1];\n"),
+        "a SnapshotEdge keeps its plain arrowhead: it needs a token",
+    );
 }
 
 /// A keyed edge is drawn as its plain counterpart, labelled with its filter:

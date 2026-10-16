@@ -1,0 +1,953 @@
+{
+ "net": "traffic-light",
+ "params": {},
+ "exchanges": [
+  {
+   "send": {
+    "method": "describe"
+   },
+   "expect": [
+    {
+     "id": "1",
+     "result": {
+      "protocol_version": 1,
+      "runtime": "<label>",
+      "runtime_version": "<label>",
+      "nets": [
+       {
+        "name": "traffic-light",
+        "description": "Cars wait at a light that cycles red, green and amber, and all go when it turns green",
+        "mode": "manual",
+        "params": []
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "load",
+    "params": {
+     "net": "traffic-light"
+    }
+   },
+   "expect": [
+    {
+     "method": "load_progress",
+     "params": {
+      "step": "build",
+      "message": "<label>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "reloaded",
+     "params": {
+      "generation": 1,
+      "reason": "load",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "2",
+     "result": {
+      "status": "loaded",
+      "generation": 1,
+      "marking_version": "<version>"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "get_state"
+   },
+   "expect": [
+    {
+     "id": "3",
+     "result": {
+      "protocol_version": 1,
+      "runtime": "<label>",
+      "net": "traffic-light",
+      "generation": 1,
+      "marking_version": "<version>",
+      "running": false,
+      "topology": {
+       "places": [
+        {
+         "name": "Red",
+         "type_name": "<label>",
+         "serializable": true
+        },
+        {
+         "name": "Green",
+         "type_name": "<label>",
+         "serializable": true
+        },
+        {
+         "name": "Amber",
+         "type_name": "<label>",
+         "serializable": true
+        },
+        {
+         "name": "Waiting",
+         "type_name": "<label>",
+         "serializable": true
+        },
+        {
+         "name": "Passed",
+         "type_name": "<label>",
+         "serializable": true
+        }
+       ],
+       "transitions": [
+        {
+         "name": "Turn Green",
+         "detail": "<any>"
+        },
+        {
+         "name": "Pass on Green",
+         "detail": "<any>"
+        },
+        {
+         "name": "Turn Amber",
+         "detail": "<any>"
+        },
+        {
+         "name": "Turn Red",
+         "detail": "<any>"
+        }
+       ],
+       "edges": {
+        "<unordered>": [
+         {
+          "place": "Red",
+          "transition": "Turn Green",
+          "direction": "in",
+          "kind": "take"
+         },
+         {
+          "place": "Waiting",
+          "transition": "Turn Green",
+          "direction": "in",
+          "kind": "drain"
+         },
+         {
+          "place": "Waiting",
+          "transition": "Pass on Green",
+          "direction": "in",
+          "kind": "take"
+         },
+         {
+          "place": "Green",
+          "transition": "Turn Amber",
+          "direction": "in",
+          "kind": "take"
+         },
+         {
+          "place": "Amber",
+          "transition": "Turn Red",
+          "direction": "in",
+          "kind": "take"
+         },
+         {
+          "place": "Green",
+          "transition": "Pass on Green",
+          "direction": "in",
+          "kind": "snapshot"
+         },
+         {
+          "place": "Green",
+          "transition": "Turn Green",
+          "direction": "out",
+          "slot": 0
+         },
+         {
+          "place": "Passed",
+          "transition": "Turn Green",
+          "direction": "out",
+          "slot": 1
+         },
+         {
+          "place": "Passed",
+          "transition": "Pass on Green",
+          "direction": "out"
+         },
+         {
+          "place": "Amber",
+          "transition": "Turn Amber",
+          "direction": "out"
+         },
+         {
+          "place": "Red",
+          "transition": "Turn Red",
+          "direction": "out"
+         }
+        ]
+       }
+      },
+      "transitions": {
+       "Turn Green": {
+        "enabled": true,
+        "fireable": true,
+        "in_flight": false,
+        "priority": 0.0
+       },
+       "Pass on Green": {
+        "enabled": true,
+        "fireable": false,
+        "in_flight": false,
+        "priority": 0.0
+       },
+       "Turn Amber": {
+        "enabled": true,
+        "fireable": false,
+        "in_flight": false,
+        "priority": 0.0
+       },
+       "Turn Red": {
+        "enabled": true,
+        "fireable": false,
+        "in_flight": false,
+        "priority": 0.0
+       }
+      },
+      "marking": {
+       "places": {
+        "Red": {
+         "count": 1,
+         "tokens": [
+          {
+           "id": "<id:light>",
+           "label": "<label>"
+          }
+         ]
+        },
+        "Green": {
+         "count": 0,
+         "tokens": []
+        },
+        "Amber": {
+         "count": 0,
+         "tokens": []
+        },
+        "Waiting": {
+         "count": 0,
+         "tokens": []
+        },
+        "Passed": {
+         "count": 0,
+         "tokens": []
+        }
+       }
+      },
+      "progress": {
+       "step_count": 0,
+       "last_fired": null,
+       "fired_counts": {},
+       "last_progress_at": null
+      }
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "step"
+   },
+   "expect": [
+    {
+     "method": "fired",
+     "params": {
+      "transition": "Turn Green",
+      "consumed": [
+       [
+        "Red",
+        "<id:light>"
+       ]
+      ],
+      "produced": [
+       [
+        "Green",
+        "<id:light_green>",
+        "<label>"
+       ]
+      ],
+      "duration_ms": "<ms>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "fireable",
+     "params": {
+      "transitions": [
+       "Turn Amber"
+      ],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "4",
+     "result": {
+      "fired": true,
+      "transition": "Turn Green",
+      "marking_version": "<version>",
+      "running": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "step"
+   },
+   "expect": [
+    {
+     "method": "fired",
+     "params": {
+      "transition": "Turn Amber",
+      "consumed": [
+       [
+        "Green",
+        "<id:light_green>"
+       ]
+      ],
+      "produced": [
+       [
+        "Amber",
+        "<id:light_amber>",
+        "<label>"
+       ]
+      ],
+      "duration_ms": "<ms>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "fireable",
+     "params": {
+      "transitions": [
+       "Turn Red"
+      ],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "5",
+     "result": {
+      "fired": true,
+      "transition": "Turn Amber",
+      "marking_version": "<version>",
+      "running": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "inject",
+    "params": {
+     "place": "Waiting",
+     "token": "Car 1"
+    }
+   },
+   "expect": [
+    {
+     "method": "added",
+     "params": {
+      "place": "Waiting",
+      "id": "<id:car>",
+      "label": "<label>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "6",
+     "result": {
+      "status": "injected",
+      "id": "<id:car>",
+      "marking_version": "<version>"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "inject",
+    "params": {
+     "place": "Waiting",
+     "token": "Car 2"
+    }
+   },
+   "expect": [
+    {
+     "method": "added",
+     "params": {
+      "place": "Waiting",
+      "id": "<id:car_waiting>",
+      "label": "<label>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "7",
+     "result": {
+      "status": "injected",
+      "id": "<id:car_waiting>",
+      "marking_version": "<version>"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "step"
+   },
+   "expect": [
+    {
+     "method": "fired",
+     "params": {
+      "transition": "Turn Red",
+      "consumed": [
+       [
+        "Amber",
+        "<id:light_amber>"
+       ]
+      ],
+      "produced": [
+       [
+        "Red",
+        "<id:light_red>",
+        "<label>"
+       ]
+      ],
+      "duration_ms": "<ms>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "fireable",
+     "params": {
+      "transitions": [
+       "Turn Green"
+      ],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "8",
+     "result": {
+      "fired": true,
+      "transition": "Turn Red",
+      "marking_version": "<version>",
+      "running": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "step"
+   },
+   "expect": [
+    {
+     "method": "fired",
+     "params": {
+      "transition": "Turn Green",
+      "consumed": [
+       [
+        "Red",
+        "<id:light_red>"
+       ],
+       [
+        "Waiting",
+        "<id:car>"
+       ],
+       [
+        "Waiting",
+        "<id:car_waiting>"
+       ]
+      ],
+      "produced": [
+       [
+        "Green",
+        "<id:light_green_2>",
+        "<label>"
+       ],
+       [
+        "Passed",
+        "<id:car_passed>",
+        "<label>"
+       ],
+       [
+        "Passed",
+        "<id:car_passed_2>",
+        "<label>"
+       ]
+      ],
+      "duration_ms": "<ms>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "fireable",
+     "params": {
+      "transitions": [
+       "Turn Amber"
+      ],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "9",
+     "result": {
+      "fired": true,
+      "transition": "Turn Green",
+      "marking_version": "<version>",
+      "running": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "inject",
+    "params": {
+     "place": "Waiting",
+     "token": "Car 3"
+    }
+   },
+   "expect": [
+    {
+     "method": "added",
+     "params": {
+      "place": "Waiting",
+      "id": "<id:car_waiting_2>",
+      "label": "<label>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "fireable",
+     "params": {
+      "transitions": [
+       "Pass on Green",
+       "Turn Amber"
+      ],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "10",
+     "result": {
+      "status": "injected",
+      "id": "<id:car_waiting_2>",
+      "marking_version": "<version>"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "step"
+   },
+   "expect": [
+    {
+     "method": "fired",
+     "params": {
+      "transition": "Pass on Green",
+      "consumed": [
+       [
+        "Waiting",
+        "<id:car_waiting_2>"
+       ]
+      ],
+      "produced": [
+       [
+        "Passed",
+        "<id:car_passed_3>",
+        "<label>"
+       ]
+      ],
+      "duration_ms": "<ms>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "fireable",
+     "params": {
+      "transitions": [
+       "Turn Amber"
+      ],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "11",
+     "result": {
+      "fired": true,
+      "transition": "Pass on Green",
+      "marking_version": "<version>",
+      "running": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "step"
+   },
+   "expect": [
+    {
+     "method": "fired",
+     "params": {
+      "transition": "Turn Amber",
+      "consumed": [
+       [
+        "Green",
+        "<id:light_green_2>"
+       ]
+      ],
+      "produced": [
+       [
+        "Amber",
+        "<id:light_amber_2>",
+        "<label>"
+       ]
+      ],
+      "duration_ms": "<ms>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "fireable",
+     "params": {
+      "transitions": [
+       "Turn Red"
+      ],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "12",
+     "result": {
+      "fired": true,
+      "transition": "Turn Amber",
+      "marking_version": "<version>",
+      "running": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "get_state"
+   },
+   "expect": [
+    {
+     "id": "13",
+     "result": {
+      "protocol_version": 1,
+      "runtime": "<label>",
+      "net": "traffic-light",
+      "generation": 1,
+      "marking_version": "<version>",
+      "running": false,
+      "topology": {
+       "places": [
+        {
+         "name": "Red",
+         "type_name": "<label>",
+         "serializable": true
+        },
+        {
+         "name": "Green",
+         "type_name": "<label>",
+         "serializable": true
+        },
+        {
+         "name": "Amber",
+         "type_name": "<label>",
+         "serializable": true
+        },
+        {
+         "name": "Waiting",
+         "type_name": "<label>",
+         "serializable": true
+        },
+        {
+         "name": "Passed",
+         "type_name": "<label>",
+         "serializable": true
+        }
+       ],
+       "transitions": [
+        {
+         "name": "Turn Green",
+         "detail": "<any>"
+        },
+        {
+         "name": "Pass on Green",
+         "detail": "<any>"
+        },
+        {
+         "name": "Turn Amber",
+         "detail": "<any>"
+        },
+        {
+         "name": "Turn Red",
+         "detail": "<any>"
+        }
+       ],
+       "edges": {
+        "<unordered>": [
+         {
+          "place": "Red",
+          "transition": "Turn Green",
+          "direction": "in",
+          "kind": "take"
+         },
+         {
+          "place": "Waiting",
+          "transition": "Turn Green",
+          "direction": "in",
+          "kind": "drain"
+         },
+         {
+          "place": "Waiting",
+          "transition": "Pass on Green",
+          "direction": "in",
+          "kind": "take"
+         },
+         {
+          "place": "Green",
+          "transition": "Turn Amber",
+          "direction": "in",
+          "kind": "take"
+         },
+         {
+          "place": "Amber",
+          "transition": "Turn Red",
+          "direction": "in",
+          "kind": "take"
+         },
+         {
+          "place": "Green",
+          "transition": "Pass on Green",
+          "direction": "in",
+          "kind": "snapshot"
+         },
+         {
+          "place": "Green",
+          "transition": "Turn Green",
+          "direction": "out",
+          "slot": 0
+         },
+         {
+          "place": "Passed",
+          "transition": "Turn Green",
+          "direction": "out",
+          "slot": 1
+         },
+         {
+          "place": "Passed",
+          "transition": "Pass on Green",
+          "direction": "out"
+         },
+         {
+          "place": "Amber",
+          "transition": "Turn Amber",
+          "direction": "out"
+         },
+         {
+          "place": "Red",
+          "transition": "Turn Red",
+          "direction": "out"
+         }
+        ]
+       }
+      },
+      "transitions": {
+       "Turn Green": {
+        "enabled": true,
+        "fireable": false,
+        "in_flight": false,
+        "priority": 0.0
+       },
+       "Pass on Green": {
+        "enabled": true,
+        "fireable": false,
+        "in_flight": false,
+        "priority": 0.0
+       },
+       "Turn Amber": {
+        "enabled": true,
+        "fireable": false,
+        "in_flight": false,
+        "priority": 0.0
+       },
+       "Turn Red": {
+        "enabled": true,
+        "fireable": true,
+        "in_flight": false,
+        "priority": 0.0
+       }
+      },
+      "marking": {
+       "places": {
+        "Red": {
+         "count": 0,
+         "tokens": []
+        },
+        "Green": {
+         "count": 0,
+         "tokens": []
+        },
+        "Amber": {
+         "count": 1,
+         "tokens": [
+          {
+           "id": "<id:light_amber_2>",
+           "label": "<label>"
+          }
+         ]
+        },
+        "Waiting": {
+         "count": 0,
+         "tokens": []
+        },
+        "Passed": {
+         "count": 3,
+         "tokens": [
+          {
+           "id": "<id:car_passed>",
+           "label": "<label>"
+          },
+          {
+           "id": "<id:car_passed_2>",
+           "label": "<label>"
+          },
+          {
+           "id": "<id:car_passed_3>",
+           "label": "<label>"
+          }
+         ]
+        }
+       }
+      },
+      "progress": {
+       "step_count": 6,
+       "last_fired": "Turn Amber",
+       "fired_counts": {
+        "Turn Green": 2,
+        "Turn Amber": 2,
+        "Turn Red": 1,
+        "Pass on Green": 1
+       },
+       "last_progress_at": "<time>"
+      }
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "get_token",
+    "params": {
+     "id": "<id:car_passed>"
+    }
+   },
+   "expect": [
+    {
+     "id": "14",
+     "result": {
+      "id": "<id:car_passed>",
+      "place": "Passed",
+      "type_name": "<label>",
+      "kind": "json",
+      "value": "Car 1"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "get_token",
+    "params": {
+     "id": "<id:car_passed_2>"
+    }
+   },
+   "expect": [
+    {
+     "id": "15",
+     "result": {
+      "id": "<id:car_passed_2>",
+      "place": "Passed",
+      "type_name": "<label>",
+      "kind": "json",
+      "value": "Car 2"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "get_token",
+    "params": {
+     "id": "<id:car_passed_3>"
+    }
+   },
+   "expect": [
+    {
+     "id": "16",
+     "result": {
+      "id": "<id:car_passed_3>",
+      "place": "Passed",
+      "type_name": "<label>",
+      "kind": "json",
+      "value": "Car 3"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "get_token",
+    "params": {
+     "id": "<id:light_amber_2>"
+    }
+   },
+   "expect": [
+    {
+     "id": "17",
+     "result": {
+      "id": "<id:light_amber_2>",
+      "place": "Amber",
+      "type_name": "<label>",
+      "kind": "json",
+      "value": "light"
+     }
+    }
+   ]
+  }
+ ]
+}

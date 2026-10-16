@@ -961,17 +961,17 @@ impl NetBuilder {
     /// # use petritype::{BuildError, DrainEdge, NetBuilder};
     /// let mut b = NetBuilder::new();
     /// b.assert_no_source_transitions();
-    /// let promotions = b.place::<String>("Promotions");
-    /// let expired = b.place::<String>("Expired");
-    /// b.transition("Expire All", (DrainEdge(promotions),), (expired,), |all: Vec<String>| (all,));
+    /// let waiting = b.place::<String>("Waiting");
+    /// let passed = b.place::<String>("Passed");
+    /// b.transition("Wave Through", (DrainEdge(waiting),), (passed,), |cars: Vec<String>| (cars,));
     ///
-    /// let error = b.build().expect_err("Expire All fires on an empty place");
-    /// assert!(matches!(error, BuildError::SourceTransition { ref transition } if transition == "Expire All"));
+    /// let error = b.build().expect_err("Wave Through fires on an empty place");
+    /// assert!(matches!(error, BuildError::SourceTransition { ref transition } if transition == "Wave Through"));
     /// ```
     ///
-    /// Beside a [`TakeEdge`](crate::TakeEdge) — `Close Day` taking the
-    /// day's end marker and draining the promotions — the transition is no
-    /// source: the marker is what each firing pays.
+    /// Beside a [`TakeEdge`](crate::TakeEdge) — a traffic light's `Turn
+    /// Green` taking the light from `Red` and draining the cars waiting — the
+    /// transition is no source: the light is what each firing pays.
     ///
     /// Passing proves that every firing shrinks the marking, not that the
     /// net stops: tokens can still go round a cycle for ever, since what one

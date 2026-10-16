@@ -2,11 +2,12 @@
 //! that the transcript tests can load the very same registry without a
 //! process.
 //!
-//! Besides the parcel nets it carries the protocol's three other conformance
-//! nets, `transit` (PROTOCOL.md §11, §12), `wildlife` (§11, §13) and `shop`
-//! (§11, §5.1): the core's own example nets, included from
-//! `petritype/examples/transit/net.rs`, `petritype/examples/wildlife/net.rs`
-//! and `petritype/examples/shop/net.rs` as they are, not copied.
+//! Besides the parcel nets it carries the protocol's four other conformance
+//! nets, `transit` (PROTOCOL.md §11, §12), `wildlife` (§11, §13), `shop` and
+//! `traffic-light` (§11, §5.1): the core's own example nets, included from
+//! `petritype/examples/transit/net.rs`, `petritype/examples/wildlife/net.rs`,
+//! `petritype/examples/shop/net.rs` and
+//! `petritype/examples/traffic_light/net.rs` as they are, not copied.
 
 use std::fmt;
 
@@ -280,12 +281,10 @@ pub fn wildlife_registry() -> Vec<NetEntry> {
 }
 
 /// The protocol's conformance net `shop` (PROTOCOL.md §11): orders priced
-/// with whatever promotions are running, through a survey edge, and every
-/// promotion ended at the close of the day, through a drain edge — the two
-/// input edges that accept an empty place, `"survey"` and `"drain"` on the
-/// wire (§5.1). The file is the core's example
-/// (`petritype/examples/shop/net.rs`), which depends on `petritype` only,
-/// for this.
+/// with whatever promotions are running, through a survey edge, an input
+/// edge that accepts an empty place, `"survey"` on the wire (§5.1). The file
+/// is the core's example (`petritype/examples/shop/net.rs`), which depends
+/// on `petritype` only, for this.
 #[path = "../../../petritype/examples/shop/net.rs"]
 #[allow(dead_code)]
 pub mod shop_net;
@@ -301,7 +300,7 @@ pub fn shop(_: &petritype_runner::Params) -> Result<Net, LoadError> {
 /// The `shop` entry, as PROTOCOL.md §11 names and describes it.
 fn shop_entry() -> NetEntry {
     NetEntry::new("shop", shop)
-        .description("Price orders with whatever promotions are running, and end them at the close")
+        .description("Price orders with whatever promotions are running")
         .hosting(Hosting::Manual)
 }
 
@@ -309,6 +308,43 @@ fn shop_entry() -> NetEntry {
 #[allow(dead_code)]
 pub fn shop_registry() -> Vec<NetEntry> {
     vec![shop_entry()]
+}
+
+/// The protocol's conformance net `traffic-light` (PROTOCOL.md §11): cars
+/// waiting at a light that cycles red, green and amber, every one of them
+/// going when it turns green, through a drain edge, the other input edge
+/// that accepts an empty place, `"drain"` on the wire (§5.1); a car that
+/// arrives while the light is green reads it through a snapshot edge and
+/// goes straight through. The file is the core's example
+/// (`petritype/examples/traffic_light/net.rs`), which depends on `petritype`
+/// only, for this.
+#[path = "../../../petritype/examples/traffic_light/net.rs"]
+#[allow(dead_code)]
+pub mod traffic_light_net;
+
+/// The light as §11 seeds it: the light in `Red`, nobody waiting, every
+/// place one a host may `inject` a string into. No parameters of either
+/// kind. The net never quiesces: some light transition is always fireable.
+pub fn traffic_light(_: &petritype_runner::Params) -> Result<Net, LoadError> {
+    traffic_light_net::build_traffic_light()
+        .map(|light| light.net)
+        .map_err(LoadError::from)
+}
+
+/// The `traffic-light` entry, as PROTOCOL.md §11 names and describes it.
+fn traffic_light_entry() -> NetEntry {
+    NetEntry::new("traffic-light", traffic_light)
+        .description(
+            "Cars wait at a light that cycles red, green and amber, and all go when it turns green",
+        )
+        .hosting(Hosting::Manual)
+}
+
+/// The `traffic-light` net alone, for the transcripts over it (PROTOCOL.md
+/// §11).
+#[allow(dead_code)]
+pub fn traffic_light_registry() -> Vec<NetEntry> {
+    vec![traffic_light_entry()]
 }
 
 /// The conformance net's entry, as PROTOCOL.md §11 names and describes it.
@@ -340,5 +376,6 @@ pub fn registry() -> Vec<NetEntry> {
         transit_entry(),
         wildlife_entry(),
         shop_entry(),
+        traffic_light_entry(),
     ]
 }

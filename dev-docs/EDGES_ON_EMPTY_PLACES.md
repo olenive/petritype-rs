@@ -1,3 +1,13 @@
+> **Example split, 2026-10-16.** The owner split this proposal's example in
+> two. The shop (§2, §6) keeps only the survey: `Price Order` reads the
+> promotions and leaves them running, and `Day End`, `Expired` and `Close
+> Day` are gone. The drain has an example of its own, a traffic light whose
+> `Turn Green` takes every car waiting at red, possibly none
+> (`petritype/examples/traffic_light.rs`, the conformance net
+> `traffic-light`, transcript `08_traffic_light.json`). The text below is
+> left as it was written; DESIGN §4.4 and §18 describe the examples as they
+> are.
+
 # Input edges that accept an empty place
 
 Written 2026-10-14 for the petritype owner by the agent working on the

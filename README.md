@@ -128,20 +128,22 @@ An input edge says how a transition reads a place, and so what its body is hande
 | `DrainEdge(p)` | every token, zero or more | `Vec<T>`, possibly empty | nothing |
 | `SurveyEdge(p)` | nothing (clones of every token, zero or more) | `Vec<T>`, possibly empty | nothing |
 
-The last two are for a place a transition only needs to look at when something is there. A shop prices an order with
-whatever promotions are running and ends them all when the day closes, and a shop with none running still sells things:
+The last two are for a place a transition only needs to read, or to empty, when something is there. A shop prices an
+order with whatever promotions are running, and a shop with none running still sells things; a traffic light turns
+green whether or not anyone is waiting, and everyone waiting goes when it does:
 
 ```rust
 b.transition("Price Order", (TakeEdge(orders), SurveyEdge(promotions)), (priced, discounts_applied),
     |order: String, promotions: Vec<String>| { /* one discount per promotion, maybe none */ });
-b.transition("Close Day", (TakeEdge(day_end), DrainEdge(promotions)), (expired,),
-    |_close: String, promotions: Vec<String>| { /* every promotion ends, maybe none */ });
+b.transition("Turn Green", (TakeEdge(red), DrainEdge(waiting)), (green, passed),
+    |light: String, cars: Vec<String>| { /* every car waiting goes, maybe none */ });
 ```
 
 Without them each transition needs an "empty twin" guarded on the place being empty. A drain consumes but may take
 nothing, so `assert_no_source_transitions` does not count it: a transition whose only input is a drain fires for ever.
-`petritype/examples/shop.rs` runs the shop (`cargo run -p petritype --example shop --features serde`); `DESIGN.md`
-§4.4 has the rules, and on the wire the two are `"drain"` and `"survey"` (PROTOCOL.md §5.1).
+`petritype/examples/shop.rs` runs the shop and `petritype/examples/traffic_light.rs` the light (`cargo run -p petritype
+--example shop --features serde`, and `--example traffic_light`); `DESIGN.md` §4.4 has the rules, and on the wire the
+two are `"drain"` and `"survey"` (PROTOCOL.md §5.1).
 
 ## Binding by name
 

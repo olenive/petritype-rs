@@ -73,12 +73,14 @@
 //! `transit`'s `destination` became a load parameter, as DESIGN §19.3.13
 //! has it) and `06_keys_query_filter.json` over
 //! `wildlife` (recorded again on 2026-10-13 for the net's second edition,
-//! which replays with no runner change), and `07_empty_place_edges.json`
-//! over `shop` (2026-10-14, the `drain` and `survey` edge kinds). The shared
-//! set of §11, over the conformance nets
-//! `parcel-distribution`, `transit`, `wildlife` and `shop`, lives in the Python
-//! repository and is replayed here from a sibling checkout by
-//! `the_shared_transcripts_hold`.
+//! which replays with no runner change), `07_empty_place_edges.json`
+//! over `shop` (2026-10-14, the `drain` and `survey` edge kinds; recorded
+//! again on 2026-10-16 for the shop that only surveys) and
+//! `08_traffic_light.json` over `traffic-light` (2026-10-16, the drain's own
+//! net). The shared set of §11, over the conformance nets
+//! `parcel-distribution`, `transit`, `wildlife`, `shop` and `traffic-light`,
+//! lives in the Python repository and is replayed here from a sibling
+//! checkout by `the_shared_transcripts_hold`.
 //! A transcript over a conformance net is replayed against a runner carrying
 //! that net alone (§11), whichever directory it is in, so that it may pin
 //! `describe` in full; any other against everything the example carries.
@@ -362,6 +364,7 @@ fn registry_for(net: &str) -> Vec<petritype_runner::NetEntry> {
         "transit" => nets::transit_registry(),
         "wildlife" => nets::wildlife_registry(),
         "shop" => nets::shop_registry(),
+        "traffic-light" => nets::traffic_light_registry(),
         _ => nets::registry(),
     }
 }
@@ -479,10 +482,11 @@ fn shared_dir() -> PathBuf {
 }
 
 /// The shared transcripts of PROTOCOL.md §11, over the conformance nets
-/// `parcel-distribution`, `transit`, `wildlife` and `shop`, replayed exactly as ours
-/// are, each against a registry carrying its own net alone, which §11 makes
-/// the rule so that a shared transcript may pin `describe` in full. A shared
-/// transcript over a net this runner does not carry fails at its `load`.
+/// `parcel-distribution`, `transit`, `wildlife`, `shop` and `traffic-light`,
+/// replayed exactly as ours are, each against a registry carrying its own
+/// net alone, which §11 makes the rule so that a shared transcript may pin
+/// `describe` in full. A shared transcript over a net this runner does not
+/// carry fails at its `load`.
 ///
 /// They live in the Python repository (§11 makes it the home of the shared
 /// set), not here, so this test reads them from a sibling checkout, or from

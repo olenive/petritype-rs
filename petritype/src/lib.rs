@@ -288,6 +288,14 @@
 //!   the token moves; [`Net::place_ref`] finds an inner place's typed handle
 //!   by name. With the `serde` feature such tokens can be saved, restored
 //!   and copied (below).
+//! - The [`style`] module is how a net's tokens and places look, as data a
+//!   viewer draws: [`NetBuilder::styled`] gives a place's tokens their
+//!   [`TokenStyle`](style::TokenStyle), [`Net::style`] reads one token's
+//!   colour, and [`NetBuilder::place_style`] fills a place with it.
+//! - The [`control`] module is the buttons a net declares:
+//!   [`NetBuilder::control`] adds a [`Control`](control::Control),
+//!   [`Net::controls`] lists them for a viewer's legend, and [`Net::press`]
+//!   runs one with its widget's value, every effect an ordinary [`Event`].
 //! - [`drivers::run`] drives a net until it has nothing left to fire, and
 //!   [`drivers::run_indefinitely`] drives it on a clock until a flag says
 //!   stop. [`Mode`](drivers::Mode) picks the loop — sequential, where the

@@ -50,6 +50,7 @@ use std::collections::{HashSet, VecDeque};
 use std::fmt;
 
 use crate::body::{OutputPlaces, TransitionBody};
+use crate::control::Control;
 use crate::edge::{EdgeKind, InputEdges, InputSpec};
 use crate::erased::RoutingProblem;
 use crate::error::BuildError;
@@ -234,6 +235,9 @@ pub struct NetBuilder {
     /// The first thing wrong with a [`keys`](NetBuilder::keys) declaration,
     /// kept until [`build`](NetBuilder::build) reports it.
     keys_problem: Option<KeysProblem>,
+    /// The controls declared with [`control`](NetBuilder::control), in
+    /// order; names are checked by [`build`](NetBuilder::build).
+    controls: Vec<Control>,
     /// The registry the net will restore its nested tokens from, as given
     /// to [`template`](NetBuilder::template) and
     /// [`templates`](NetBuilder::templates).
@@ -260,6 +264,7 @@ impl NetBuilder {
             resettable: false,
             not_nested: None,
             keys_problem: None,
+            controls: Vec::new(),
             #[cfg(feature = "serde")]
             templates: crate::template::Templates::new(),
         }
@@ -879,6 +884,21 @@ impl NetBuilder {
         TransitionBuilder { builder: self, id }
     }
 
+    /// Declares a control: a widget a viewer shows, with the code a press of
+    /// it runs (see the [`control`](crate::control) module). The built net
+    /// lists its controls in declaration order, [`Net::controls`], and runs
+    /// one with [`Net::press`].
+    ///
+    /// # Errors
+    ///
+    /// [`BuildError::DuplicateControlName`] from [`build`](NetBuilder::build)
+    /// if two controls share a name. The call itself is infallible, as the
+    /// other options are.
+    pub fn control(&mut self, control: Control) -> &mut Self {
+        self.controls.push(control);
+        self
+    }
+
     /// Sets the maximum number of characters [`Net::label`] returns before
     /// truncating. The default is 100.
     pub fn label_limit(&mut self, limit: usize) {
@@ -1196,6 +1216,15 @@ impl NetBuilder {
             }
         }
 
+        let mut seen = HashSet::with_capacity(self.controls.len());
+        for control in &self.controls {
+            if !seen.insert(control.name.as_str()) {
+                return Err(BuildError::DuplicateControlName {
+                    name: control.name.clone(),
+                });
+            }
+        }
+
         // The parameters, in the same spirit: a wire name two types share is
         // a naming mistake like a duplicate place name, and a declared
         // parameter with no value is this slice's version of a dangling
@@ -1327,6 +1356,7 @@ impl NetBuilder {
             resettable: self.resettable,
             label_limit: self.label_limit,
             events: Vec::new(),
+            controls: self.controls,
             // Filled by the seeds below, which go in through the one
             // insertion path like every other token.
             index: KeyIndex::new(),
@@ -1592,7 +1622,15 @@ impl fmt::Debug for NetBuilder {
             .field("deep_policy", &self.deep_policy)
             .field("resettable", &self.resettable)
             .field("not_nested", &self.not_nested)
-            .field("keys_problem", &self.keys_problem);
+            .field("keys_problem", &self.keys_problem)
+            .field(
+                "controls",
+                &self
+                    .controls
+                    .iter()
+                    .map(|control| control.name.as_str())
+                    .collect::<Vec<_>>(),
+            );
         #[cfg(feature = "serde")]
         out.field("templates", &self.templates);
         out.field(

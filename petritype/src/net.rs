@@ -80,6 +80,10 @@ pub struct Net {
     pub(crate) label_limit: usize,
     /// Appended to by the net, drained by the driver.
     pub(crate) events: Vec<Event>,
+    /// The controls the builder declared, in declaration order (see the
+    /// [`control`](crate::control) module). Never saved: a net rebuilt from
+    /// its template declares them again.
+    pub(crate) controls: Vec<crate::control::Control>,
     /// Per key name, per value, the tokens that hold it: what
     /// [`query`](Net::query) starts from (DESIGN §8.3). Kept in step by every
     /// method that moves or changes a token, never saved.
@@ -1074,6 +1078,14 @@ impl fmt::Debug for Net {
             .field("deep_cursor", &self.deep_cursor)
             .field("resettable", &self.resettable)
             .field("pending_events", &self.events.len())
+            .field(
+                "controls",
+                &self
+                    .controls
+                    .iter()
+                    .map(|control| control.name.as_str())
+                    .collect::<Vec<_>>(),
+            )
             .field("index", &self.index);
         #[cfg(feature = "serde")]
         out.field("template", &self.template())

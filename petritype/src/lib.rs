@@ -355,6 +355,7 @@ pub mod binding;
 mod body;
 mod builder;
 mod command;
+pub mod control;
 mod distribution;
 pub mod drivers;
 mod edge;
@@ -396,7 +397,7 @@ pub use edge::{
 };
 #[cfg(feature = "serde")]
 pub use error::TemplateError;
-pub use error::{BodyPanicked, BuildError, CommandError, FiringFailed, NetError};
+pub use error::{BodyPanicked, BuildError, CommandError, FiringFailed, NetError, PressError};
 pub use event::Event;
 pub use firing::{Completed, Firing, Selector, TieBreak};
 pub use ids::{NetId, PlaceId, PlaceRef, TokenId, TransitionId};

@@ -271,6 +271,43 @@ pub enum BuildError {
         /// and places and transitions alternate in between.
         path: Vec<String>,
     },
+    /// Two controls were given the same name, which
+    /// [`Net::press`](crate::Net::press) would then be unable to tell
+    /// apart.
+    #[error("duplicate control name: {name:?}")]
+    DuplicateControlName {
+        /// The name used more than once.
+        name: String,
+    },
+}
+
+/// A press that did not run, or whose handler refused, returned by
+/// [`Net::press`](crate::Net::press).
+///
+/// The first two leave the net untouched: the control's handler never ran.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+pub enum PressError {
+    /// The net declares no control by this name.
+    #[error("no control named {name:?}")]
+    UnknownControl {
+        /// The name pressed.
+        name: String,
+    },
+    /// The value cannot be the control's: the wrong type for its kind, an
+    /// option a select does not list, or a number outside a slider's
+    /// bounds.
+    #[error("control {control:?} cannot take that value: {reason}")]
+    WrongKind {
+        /// The control pressed.
+        control: String,
+        /// What was wrong with the value.
+        reason: String,
+    },
+    /// The handler ran and returned `Err` with this message: it could not
+    /// do what it was asked. What it did before that is in the log.
+    #[error("{0}")]
+    Refused(String),
 }
 
 /// Misuse of the net's API at run time.

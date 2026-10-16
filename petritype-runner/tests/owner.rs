@@ -4,6 +4,8 @@
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use petritype::control::{Control, ControlKind, Pressed, Value as Pressing};
+use petritype::style::{PlaceStyle, Rgb, Style};
 use petritype::{
     DeepPolicy, DrainEdge, Firing, MutateEdge, Nested, Net, NetBuilder, Param, SurveyEdge,
     TakeEdge, Templates, TieBreak,
@@ -316,10 +318,11 @@ fn every_method_but_describe_load_and_shutdown_needs_a_net() {
         "query",
         "distinct",
         "set_filter",
+        "press",
     ] {
         assert_eq!(h.error(method, json!({})), "not_loaded", "{method}");
     }
-    assert_eq!(tags(&h.send("shutdown", json!({}))), ["#16", "EXIT"]);
+    assert_eq!(tags(&h.send("shutdown", json!({}))), ["#17", "EXIT"]);
 }
 
 #[test]
@@ -2808,4 +2811,260 @@ fn a_run_follows_the_loaded_net_s_deep_policy() {
             h.land();
         }
     }
+}
+
+// ----- controls and styles (net-declared controls, 2026-10-16) -----------------
+
+/// A light that flips between red and green, styled and filled by its
+/// token; a queue whose names are keys; `Done`, keyed and styled; and one
+/// control of every kind and action, plus a handler that refuses and one
+/// that panics.
+fn panel(_: &Params) -> Result<Net, LoadError> {
+    let mut b = NetBuilder::new();
+    let light = b.place::<String>("Light");
+    let queue = b.place::<String>("Queue");
+    let done = b.place::<String>("Done");
+    for place in [light, queue, done] {
+        b.serializable(place);
+    }
+    b.style(light, |colour: &String| match colour.as_str() {
+        "red" => Style::default().with_colour(Rgb(0xff, 0x63, 0x47)),
+        "green" => Style::default().with_colour(Rgb(0x32, 0xcd, 0x32)),
+        _ => Style::default(),
+    });
+    b.place_style(light, PlaceStyle::fill_token());
+    b.keys(queue, ["name"], |name: &String| [name.as_str().into()]);
+    b.keys(done, ["name"], |name: &String| [name.as_str().into()]);
+    b.style(done, |_: &String| {
+        Style::default().with_colour(Rgb(0, 0, 0xff))
+    });
+    b.seed(light, ["red".to_owned()]);
+    let flip = b
+        .transition("Flip", (TakeEdge(light),), (light,), |colour: String| {
+            (if colour == "red" { "green" } else { "red" }.to_owned(),)
+        })
+        .id();
+    let serve = b
+        .transition("Serve", (TakeEdge(queue),), (done,), |name: String| (name,))
+        .id();
+    b.control(Control::fire("flip", "Flip", flip))
+        .control(
+            Control::inject("join", "+ Join", queue, |value| match value {
+                Pressing::Text(name) => name,
+                _ => "anon".to_owned(),
+            })
+            .with_kind(ControlKind::Text {
+                placeholder: Some("name".into()),
+            }),
+        )
+        .control(Control::fire("serve", "Serve", serve))
+        .control(Control::enable("serving", "Serving", serve))
+        .control(Control::slider(
+            "speed",
+            "Speed",
+            0.0,
+            10.0,
+            0.5,
+            1.0,
+            |_, _| Ok(Pressed::Applied),
+        ))
+        .control(Control::select("mode", "Mode", ["a", "b"], "a", |_, _| {
+            Ok(Pressed::Nothing("already so".into()))
+        }))
+        .control(Control::button("refuse", "Refuse", |_, _| {
+            Err("not now".to_owned())
+        }))
+        .control(Control::button("panic", "Panic", |_, _| panic!("boom")));
+    Ok(b.build()?)
+}
+
+fn panel_loaded() -> H {
+    let mut h = H::over(vec![NetEntry::new("panel", panel)]);
+    h.result("load", json!({"net": "panel"}));
+    h
+}
+
+/// `topology.controls` in declaration order, `node`, `action` and `config`
+/// only where there are some, `config.value` only for an initial value; the
+/// place style on its place; the colour on the token entry.
+#[test]
+fn get_state_lists_the_controls_and_the_styles() {
+    let mut h = panel_loaded();
+    let s = h.result("get_state", json!({}));
+    assert_eq!(
+        s["topology"]["controls"],
+        json!([
+            {"name": "flip", "label": "Flip", "kind": "button", "node": "Flip", "action": "fire"},
+            {"name": "join", "label": "+ Join", "kind": "text", "node": "Queue",
+             "action": "inject", "config": {"placeholder": "name"}},
+            {"name": "serve", "label": "Serve", "kind": "button", "node": "Serve", "action": "fire"},
+            {"name": "serving", "label": "Serving", "kind": "toggle", "node": "Serve",
+             "action": "enable", "config": {"value": true}},
+            {"name": "speed", "label": "Speed", "kind": "slider",
+             "config": {"value": 1.0, "start": 0.0, "stop": 10.0, "step": 0.5}},
+            {"name": "mode", "label": "Mode", "kind": "select",
+             "config": {"value": "a", "options": ["a", "b"]}},
+            {"name": "refuse", "label": "Refuse", "kind": "button"},
+            {"name": "panic", "label": "Panic", "kind": "button"},
+        ])
+    );
+    let places = &s["topology"]["places"];
+    assert_eq!(places[0]["style"], json!({"fill": "token"}));
+    assert!(places[1].get("style").is_none() && places[2].get("style").is_none());
+    let light = &s["marking"]["places"]["Light"]["tokens"][0];
+    assert_eq!(light["color"], "#ff6347");
+
+    // A net without controls or styles writes neither.
+    let mut h = H::loaded("pipeline");
+    let s = h.result("get_state", json!({}));
+    assert!(s["topology"].get("controls").is_none());
+    assert!(
+        s["topology"]["places"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|place| place.get("style").is_none())
+    );
+    let tokens = s["marking"]["places"]["Inbox"]["tokens"]
+        .as_array()
+        .unwrap();
+    assert!(tokens.iter().all(|token| token.get("color").is_none()));
+}
+
+/// A press's events come first, as ordinary notifications, then its answer
+/// with the version after them; a fire is logged and counted as a step is.
+#[test]
+fn press_runs_the_control_and_tells_its_events_first() {
+    let mut h = panel_loaded();
+    let lines = h.send("press", json!({"control": "flip"}));
+    assert_eq!(tags(&lines), ["fired", "#2"]);
+    let fired = find(&lines, "fired");
+    assert_eq!(fired["transition"], "Flip");
+    let produced = fired["produced"][0].as_array().unwrap();
+    assert_eq!(produced.len(), 4, "a colour and no keys: four elements");
+    assert_eq!(produced[3], "#32cd32");
+    assert_eq!(
+        lines[1]["result"],
+        json!({"status": "pressed", "marking_version": fired["marking_version"]})
+    );
+    let log = h.result("get_log", json!({}));
+    assert_eq!(log["entries"][0]["transition"], "Flip");
+    assert_eq!(log["entries"][0]["outcome"], "fired");
+    let progress = h.result("get_state", json!({}))["progress"].clone();
+    assert_eq!(progress["step_count"], 1);
+    assert_eq!(progress["fired_counts"], json!({"Flip": 1}));
+    assert_eq!(progress["last_fired"], "Flip");
+
+    // An inject control: an `added` with its keys, `fireable` as it changed.
+    let lines = h.send("press", json!({"control": "join", "value": "Ada"}));
+    assert_eq!(tags(&lines), ["added", "fireable", "#5"]);
+    let added = find(&lines, "added");
+    assert_eq!(
+        (&added["place"], &added["keys"]),
+        (&json!("Queue"), &json!({"name": "Ada"}))
+    );
+    assert!(added.get("color").is_none(), "Queue has no style");
+    assert_eq!(
+        find(&lines, "fireable")["transitions"],
+        json!(["Flip", "Serve"])
+    );
+
+    // Into a place keyed and styled: the colour fourth, the keys fifth.
+    let lines = h.send("press", json!({"control": "serve"}));
+    assert_eq!(
+        find(&lines, "fired")["produced"][0].as_array().unwrap()[3..],
+        [json!("#0000ff"), json!({"name": "Ada"})]
+    );
+}
+
+#[test]
+fn an_inject_into_a_styled_place_carries_its_colour() {
+    let mut h = panel_loaded();
+    let lines = h.send("inject", json!({"place": "Light", "token": "green"}));
+    assert_eq!(find(&lines, "added")["color"], "#32cd32");
+    let lines = h.send("inject", json!({"place": "Light", "token": "blue"}));
+    assert!(
+        find(&lines, "added").get("color").is_none(),
+        "a style without a colour sends none"
+    );
+}
+
+/// `nothing` with the control's reason, and the net untouched.
+#[test]
+fn a_press_that_does_nothing_says_why() {
+    let mut h = panel_loaded();
+    let lines = h.send("press", json!({"control": "serve"}));
+    assert_eq!(tags(&lines), ["#2"], "no event");
+    assert_eq!(
+        lines[0]["result"],
+        json!({"status": "nothing", "reason": "Serve is not fireable", "marking_version": 0})
+    );
+    assert_eq!(
+        h.result("press", json!({"control": "mode", "value": "b"})),
+        json!({"status": "nothing", "reason": "already so", "marking_version": 0})
+    );
+}
+
+#[test]
+fn a_toggle_sends_its_state_and_the_switch_follows() {
+    let mut h = panel_loaded();
+    let lines = h.send("press", json!({"control": "serving", "value": false}));
+    assert_eq!(tags(&lines), ["toggled", "#2"]);
+    assert_eq!(find(&lines, "toggled")["enabled"], false);
+    assert_eq!(
+        h.result("press", json!({"control": "speed", "value": 10}))["status"],
+        "pressed",
+        "an integer is a number, and the stop is in range"
+    );
+}
+
+#[test]
+fn press_errors() {
+    let mut h = panel_loaded();
+    for (params, code) in [
+        (json!({}), "invalid_params"),
+        (json!({"control": 3}), "invalid_params"),
+        (json!({"control": "nope"}), "unknown_control"),
+        (json!({"control": "flip", "value": true}), "invalid_params"),
+        (json!({"control": "join", "value": 7}), "invalid_params"),
+        (json!({"control": "join"}), "invalid_params"),
+        (
+            json!({"control": "join", "value": ["Ada"]}),
+            "invalid_params",
+        ),
+        (
+            json!({"control": "serving", "value": "on"}),
+            "invalid_params",
+        ),
+        (json!({"control": "speed", "value": 10.5}), "invalid_params"),
+        (json!({"control": "mode", "value": "c"}), "invalid_params"),
+        (
+            json!({"control": "flip", "path": "panel/Light/#0/"}),
+            "invalid_params",
+        ),
+        (json!({"control": "refuse"}), "internal"),
+        (json!({"control": "panic"}), "internal"),
+    ] {
+        assert_eq!(h.error("press", params.clone()), code, "{params}");
+    }
+    // A button pressed with `null` is pressed with no value.
+    assert_eq!(
+        h.result("press", json!({"control": "flip", "value": null}))["status"],
+        "pressed"
+    );
+}
+
+#[test]
+fn a_refused_press_says_what_the_handler_said() {
+    let mut h = panel_loaded();
+    let lines = h.send("press", json!({"control": "refuse"}));
+    assert_eq!(lines[0]["error"]["message"], "not now");
+    let lines = h.send("press", json!({"control": "panic"}));
+    let message = lines[0]["error"]["message"].as_str().unwrap();
+    assert!(message.contains("boom"), "{message}");
+    // The net goes on after a handler panicked.
+    assert_eq!(
+        h.result("press", json!({"control": "flip"}))["status"],
+        "pressed"
+    );
 }

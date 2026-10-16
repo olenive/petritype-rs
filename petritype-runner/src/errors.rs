@@ -1,7 +1,7 @@
 //! The core's errors mapped onto the protocol's closed set of codes
 //! (DESIGN §19.3.7): one function, a test per arm.
 
-use petritype::{CommandError, NetError};
+use petritype::{CommandError, NetError, PressError};
 
 use crate::protocol::ErrorCode;
 use crate::registry::LoadError;
@@ -18,6 +18,8 @@ pub(crate) enum CoreError<'a> {
     Load(&'a LoadError),
     /// From reading a request's filter (PROTOCOL.md §13.2).
     Filter(&'a FilterError),
+    /// From pressing a control (PROTOCOL.md §6).
+    Press(&'a PressError),
 }
 
 /// The protocol code for a core or factory error. The message sent with it is
@@ -70,6 +72,15 @@ pub(crate) fn code_of(error: CoreError<'_>) -> ErrorCode {
             FilterError::Shape(_) => ErrorCode::InvalidParams,
             FilterError::UnknownPlace(_) => ErrorCode::UnknownPlace,
         },
+        CoreError::Press(error) => match error {
+            PressError::UnknownControl { .. } => ErrorCode::UnknownControl,
+            // The type, an option not listed, a number out of range: the
+            // request's `value` is wrong.
+            PressError::WrongKind { .. } => ErrorCode::InvalidParams,
+            // The handler ran and could not do it: the net's own failure,
+            // as a handler that raises is in Python.
+            _ => ErrorCode::Internal,
+        },
     }
 }
 
@@ -93,6 +104,23 @@ mod tests {
 
     fn load(error: LoadError) -> ErrorCode {
         code_of(CoreError::Load(&error))
+    }
+
+    fn press(error: PressError) -> ErrorCode {
+        code_of(CoreError::Press(&error))
+    }
+
+    #[test]
+    fn press_errors_map_to_unknown_control_invalid_params_and_internal() {
+        use petritype::control::{Control, Pressed, Value};
+        let mut b = NetBuilder::new();
+        b.control(Control::button("no", "No", |_, _| Err("no".into())));
+        b.control(Control::button("yes", "Yes", |_, _| Ok(Pressed::Applied)));
+        let mut net = b.build().unwrap();
+        let mut code = |name: &str, value: Value| press(net.press(name, value).unwrap_err());
+        assert_eq!(code("maybe", Value::None), ErrorCode::UnknownControl);
+        assert_eq!(code("yes", Value::Bool(true)), ErrorCode::InvalidParams);
+        assert_eq!(code("no", Value::None), ErrorCode::Internal);
     }
 
     /// A net with one serializable place, one plain place and one

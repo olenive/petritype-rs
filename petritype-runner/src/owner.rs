@@ -14,6 +14,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, SystemTime};
 
+use petritype::control::Pressed;
 use petritype::{
     BodyPanicked, Completed, Event, Filter, Firing, FiringFailed, JsonCommand, Net, NetError,
     NetId, PlaceId, StagedStep, TokenId, Topology, TransitionId,
@@ -83,6 +84,7 @@ const OUTER_ONLY: &[&str] = &[
     "enable",
     "disable",
     "set_param",
+    "press",
 ];
 
 /// Every method of protocol version 1.
@@ -104,6 +106,7 @@ const METHODS: &[&str] = &[
     "query",
     "distinct",
     "set_filter",
+    "press",
     "shutdown",
 ];
 
@@ -666,6 +669,7 @@ fn produced(
                 place: names.place(place),
                 id: token.to_string(),
                 label: String::new(),
+                color: None,
                 keys: None,
             })
             .collect(),
@@ -697,6 +701,7 @@ fn token_line(
         place: names.place(place),
         id: token.to_string(),
         label: net.map_or_else(String::new, |net| translate::label(net, place, token)),
+        color: net.and_then(|net| translate::color(net, place, token)),
         keys: keys(place, token),
         marking_version,
         running,
@@ -771,6 +776,7 @@ fn view_lines(
             place: names.place(place),
             id: token.to_string(),
             label: translate::label(net, place, token),
+            color: translate::color(net, place, token),
             keys: translate::keys(net, place, token),
             marking_version: *version,
             running,
@@ -1684,6 +1690,7 @@ impl Owner {
                 );
             }
             "inject" => self.inject(id, args, now, out)?,
+            "press" => self.press(id, args, now, out)?,
             "enable" | "disable" => {
                 let transition = string_arg(args, "transition")?.to_owned();
                 self.apply(if method == "enable" {
@@ -1812,6 +1819,107 @@ impl Owner {
             }
         }
         Ok(())
+    }
+
+    /// `press {control, value?}` (PROTOCOL.md §6): the value read as the
+    /// core's ([`translate::press_value`]), the control run by
+    /// [`Net::press`], which checks the value against its kind, and its
+    /// events flushed as `inject`'s are. Each firing it made is logged and
+    /// counted as a step's is. The answer is `pressed`, or `nothing` with
+    /// the control's reason, and the version after the events; an unknown
+    /// control is `unknown_control`, a value its kind cannot take
+    /// `invalid_params`, and a handler that refuses or panics `internal`.
+    /// Outer-level only, as `OUTER_ONLY` has it.
+    fn press(
+        &mut self,
+        id: &str,
+        args: &Args,
+        now: SystemTime,
+        out: &mut Vec<Outgoing>,
+    ) -> Result<(), (ErrorCode, String)> {
+        let control = string_arg(args, "control")?.to_owned();
+        let value = translate::press_value(optional(args, "value"))
+            .map_err(|message| (ErrorCode::InvalidParams, message))?;
+        let loaded = self.loaded_mut();
+        let pressed = catch_unwind(AssertUnwindSafe(|| loaded.net.press(&control, value)));
+        // A token the control put into a nested place may carry nets nobody
+        // has seen: their fireable sets are taken now, silently (§7.2).
+        loaded.know_new();
+        let flushed = self.flush_events(now, None, true, out);
+        self.log_pressed(&flushed.events, now);
+        let pressed = pressed
+            .map_err(|panic| {
+                (
+                    ErrorCode::Internal,
+                    format!(
+                        "control {control:?} panicked: {}",
+                        panic_message(panic.as_ref())
+                    ),
+                )
+            })?
+            .map_err(|error| (code_of(CoreError::Press(&error)), error.to_string()))?;
+        let answer = match pressed {
+            Pressed::Applied => {
+                json!({"status": "pressed", "marking_version": self.marking_version})
+            }
+            Pressed::Nothing(reason) => json!({
+                "status": "nothing",
+                "reason": reason,
+                "marking_version": self.marking_version,
+            }),
+        };
+        respond(out, id, answer);
+        Ok(())
+    }
+
+    /// Logs and counts the firings a press made, as a step's landing does:
+    /// each `fired` and `failed` of the outer net, at `now`, taking no time.
+    fn log_pressed(&mut self, events: &[Event], now: SystemTime) {
+        let loaded = self.loaded_mut();
+        for event in events {
+            let (transition, consumed, produced, error, restored) = match event {
+                Event::Fired {
+                    transition,
+                    consumed,
+                    produced,
+                } => (transition, consumed, &produced[..], None, None),
+                Event::Failed {
+                    transition,
+                    consumed,
+                    restored,
+                    error,
+                } => (
+                    transition,
+                    consumed,
+                    &[][..],
+                    Some(error.clone()),
+                    Some(*restored),
+                ),
+                _ => continue,
+            };
+            let name = loaded.names.transition(*transition);
+            let failed = error.is_some();
+            loaded.log_seq += 1;
+            let entry = LogEntry {
+                seq: loaded.log_seq,
+                transition: name.clone(),
+                started_at: iso8601(now),
+                duration_ms: 0.0,
+                outcome: if failed { "failed" } else { "fired" }.to_owned(),
+                consumed: loaded.names.pairs(consumed),
+                produced: loaded.names.pairs(produced),
+                error,
+                restored,
+                path: None,
+                nested_id: None,
+            };
+            loaded.push_log(entry, Vec::new());
+            if !failed {
+                loaded.progress.fired(&name, now);
+            }
+        }
+        // A token a firing consumed took its inner nets with it (§12.6).
+        loaded.prune();
     }
 
     /// `query {filter?, token_limit?, path?, nested_id?}` (PROTOCOL.md
@@ -2171,7 +2279,16 @@ impl Owner {
             },
             marking_version: view.marking_version,
             running: loaded.running,
-            topology: translate::topology(view.topology, view.names),
+            topology: protocol::Topology {
+                // The outer net's alone: a control is pressed on the outer
+                // net (`press` is outer-level, §12.3).
+                controls: if view.inner.is_none() {
+                    translate::controls(net, view.names)
+                } else {
+                    Vec::new()
+                },
+                ..translate::topology(view.topology, view.names)
+            },
             transitions,
             marking: protocol::Marking { places },
             progress: protocol::Progress {

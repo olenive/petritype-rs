@@ -4,6 +4,7 @@
 use std::collections::HashMap;
 use std::fmt;
 
+use petritype::control::{ControlKind, Node};
 use petritype::{Clause, EdgeInfo, Filter, Net, PlaceId, TokenId, Topology, TransitionId};
 use serde_json::Value;
 
@@ -32,6 +33,13 @@ pub(crate) fn cut(text: String) -> String {
 /// A token's wire label: its `Debug`, cut. Empty for a token that is gone.
 pub(crate) fn label(net: &Net, place: PlaceId, token: TokenId) -> String {
     net.debug(place, token).map(cut).unwrap_or_default()
+}
+
+/// A token's wire colour (PROTOCOL.md §5.3): `#rrggbb` when its place has
+/// a style that gives it a colour, `None` otherwise, or for a token that is
+/// gone.
+pub(crate) fn color(net: &Net, place: PlaceId, token: TokenId) -> Option<String> {
+    net.style(place, token)?.colour.map(|rgb| rgb.to_string())
 }
 
 /// The name tables of one generation, taken from its [`Topology`] once.
@@ -93,6 +101,7 @@ impl Names {
                 place: self.place(place),
                 id: token.to_string(),
                 label: label(net, place, token),
+                color: color(net, place, token),
                 keys: keys(net, place, token),
             })
             .collect()
@@ -236,6 +245,7 @@ pub(crate) fn topology(topology: &Topology, names: &Names) -> protocol::Topology
                 nested: p.nested,
                 passive: p.passive,
                 key_names: p.key_names.iter().map(|name| (*name).to_owned()).collect(),
+                style: p.style.and_then(place_style),
             })
             .collect(),
         transitions: topology
@@ -290,7 +300,84 @@ pub(crate) fn topology(topology: &Topology, names: &Names) -> protocol::Topology
                 _ => None,
             })
             .collect(),
+        // From the net, not its topology: see `controls`.
+        controls: Vec::new(),
     }
+}
+
+/// A place style as the wire writes it (PROTOCOL.md §5.1), or `None` for a
+/// fill this runner does not know, which goes out as no style.
+fn place_style(style: petritype::style::PlaceStyle) -> Option<protocol::PlaceStyle> {
+    match style.fill {
+        petritype::style::Fill::Token => Some(protocol::PlaceStyle {
+            fill: protocol::Fill::Token,
+        }),
+        _ => None,
+    }
+}
+
+/// The controls `net` declares, in declaration order, as the topology
+/// carries them (PROTOCOL.md §5.1): the node by name, `action` and `config`
+/// only when there are some, `config.value` only for a control with an
+/// initial value, and the kind's own settings beside it.
+pub(crate) fn controls(net: &Net, names: &Names) -> Vec<protocol::Control> {
+    net.controls()
+        .iter()
+        .map(|control| {
+            let mut config = protocol::ControlConfig {
+                value: control.initial.as_ref().and_then(control_value),
+                ..protocol::ControlConfig::default()
+            };
+            match &control.kind {
+                ControlKind::Slider { start, stop, step } => {
+                    config.start = Some(*start);
+                    config.stop = Some(*stop);
+                    config.step = Some(*step);
+                }
+                ControlKind::Select { options } => config.options = Some(options.clone()),
+                ControlKind::Text { placeholder } => config.placeholder.clone_from(placeholder),
+                _ => {}
+            }
+            protocol::Control {
+                name: control.name.clone(),
+                label: control.label.clone(),
+                kind: control.kind.name().to_owned(),
+                node: control.node.map(|node| match node {
+                    Node::Place(place) => names.place(place),
+                    Node::Transition(transition) => names.transition(transition),
+                }),
+                action: control.action.map(|action| action.name().to_owned()),
+                config: (!config.is_empty()).then_some(config),
+            }
+        })
+        .collect()
+}
+
+/// A control's value as JSON: `None` for no value (a button's), and for a
+/// number JSON cannot hold.
+fn control_value(value: &petritype::control::Value) -> Option<Value> {
+    use petritype::control::Value as V;
+    match value {
+        V::Bool(on) => Some(Value::Bool(*on)),
+        V::Number(n) => serde_json::Number::from_f64(*n).map(Value::Number),
+        V::Text(text) => Some(Value::String(text.clone())),
+        _ => None,
+    }
+}
+
+/// A `press`'s `value` as the core's (PROTOCOL.md §6): absent (or `null`)
+/// is no value, a boolean, a number or a string is itself, and the core
+/// checks it against the control's kind. An array or an object can be no
+/// control's value.
+pub(crate) fn press_value(value: Option<&Value>) -> Result<petritype::control::Value, String> {
+    use petritype::control::Value as V;
+    Ok(match value {
+        None => V::None,
+        Some(Value::Bool(on)) => V::Bool(*on),
+        Some(Value::Number(n)) => V::Number(n.as_f64().ok_or("the value is not a number")?),
+        Some(Value::String(text)) => V::Text(text.clone()),
+        Some(_) => return Err("a control's value is a boolean, a number or a string".to_owned()),
+    })
 }
 
 /// The wire's name for an input edge's kind, or `None` for a kind this
@@ -329,7 +416,8 @@ pub(crate) fn tokens(
         .collect()
 }
 
-/// One token entry (PROTOCOL.md §5.3): its id, label, keys and nets.
+/// One token entry (PROTOCOL.md §5.3): its id, label, colour, keys and
+/// nets.
 pub(crate) fn entry(
     net: &Net,
     path: &str,
@@ -340,6 +428,7 @@ pub(crate) fn entry(
     protocol::Token {
         id: token.to_string(),
         label: label(net, place, token),
+        color: color(net, place, token),
         keys: keys(net, place, token),
         nets: nets(net, path, place, place_name, token),
     }

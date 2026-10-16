@@ -160,6 +160,8 @@ pub enum ErrorCode {
     InvalidToken,
     /// This runtime cannot do this.
     Unsupported,
+    /// `press` named a control the net does not declare.
+    UnknownControl,
     /// Anything else.
     Internal,
 }
@@ -179,6 +181,7 @@ impl ErrorCode {
             ErrorCode::NotSerializable => "not_serializable",
             ErrorCode::InvalidToken => "invalid_token",
             ErrorCode::Unsupported => "unsupported",
+            ErrorCode::UnknownControl => "unknown_control",
             ErrorCode::Internal => "internal",
         }
     }
@@ -304,6 +307,10 @@ pub enum Notification {
         id: String,
         /// Its label.
         label: String,
+        /// Its colour, `#rrggbb`, when its place has a style that gives
+        /// it one (§5.3).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        color: Option<String>,
         /// Its keys, when its place declares some (§13.1).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         keys: Option<Keys>,
@@ -475,13 +482,13 @@ pub enum HiddenKind {
 }
 
 /// One entry of a `produced` list (PROTOCOL.md §7.1): `[place, id, label]`,
-/// or, for a token whose place declares keys, `[place, id, label, null,
-/// keys]`.
+/// `[place, id, label, color]` for a token with a colour, or, for a token
+/// whose place declares keys, `[place, id, label, color, keys]`.
 ///
-/// The fourth element is the token's colour, which this runner never has:
-/// it is written, as `null`, only to keep the keys in fifth place — the one
-/// place the protocol writes `null` for an absent optional. Read back, a
-/// colour in fourth place is accepted and dropped.
+/// The fourth element is the token's colour, `#rrggbb`, which a token has
+/// when its place has a style that gives it one. With keys it is written
+/// even without a colour, as `null`, to keep the keys in fifth place — the
+/// one place the protocol writes `null` for an absent optional.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Produced {
     /// The place the token went to.
@@ -490,18 +497,27 @@ pub struct Produced {
     pub id: String,
     /// Its label.
     pub label: String,
+    /// Its colour, when it has one.
+    pub color: Option<String>,
     /// Its keys, when its place declares some.
     pub keys: Option<Keys>,
 }
 
 impl Serialize for Produced {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let mut seq = serializer.serialize_seq(Some(if self.keys.is_some() { 5 } else { 3 }))?;
+        let len = match (&self.color, &self.keys) {
+            (_, Some(_)) => 5,
+            (Some(_), None) => 4,
+            (None, None) => 3,
+        };
+        let mut seq = serializer.serialize_seq(Some(len))?;
         seq.serialize_element(&self.place)?;
         seq.serialize_element(&self.id)?;
         seq.serialize_element(&self.label)?;
+        if len > 3 {
+            seq.serialize_element(&self.color)?;
+        }
         if let Some(keys) = &self.keys {
-            seq.serialize_element(&None::<String>)?;
             seq.serialize_element(keys)?;
         }
         seq.end()
@@ -528,7 +544,7 @@ impl<'de> Deserialize<'de> for Produced {
                 let place = next("place")?;
                 let id = next("id")?;
                 let label = next("label")?;
-                let _colour: Option<Option<String>> = seq.next_element()?;
+                let color: Option<String> = seq.next_element::<Option<String>>()?.flatten();
                 let keys: Option<Keys> = seq.next_element()?;
                 if seq.next_element::<de::IgnoredAny>()?.is_some() {
                     return Err(de::Error::custom(
@@ -539,6 +555,7 @@ impl<'de> Deserialize<'de> for Produced {
                     place,
                     id,
                     label,
+                    color,
                     keys,
                 })
             }
@@ -713,6 +730,64 @@ pub struct Topology {
     pub transitions: Vec<Transition>,
     /// Every edge, transition by transition, inputs then outputs.
     pub edges: Vec<Edge>,
+    /// The controls the net declares, in declaration order (§5.1); written
+    /// only when there are some.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub controls: Vec<Control>,
+}
+
+/// A control in [`Topology`]: a widget a viewer renders, which `press`
+/// names (§5.1, §6).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Control {
+    /// Unique within the net; what `press` names.
+    pub name: String,
+    /// What the viewer shows.
+    pub label: String,
+    /// `"button"`, `"toggle"`, `"slider"`, `"select"` or `"text"`: the
+    /// widget, and the value a press carries.
+    pub kind: String,
+    /// The place or transition the control acts on, by name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node: Option<String>,
+    /// `"inject"`, `"fire"` or `"enable"`: what a press does, for the
+    /// viewer's lighting rule.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action: Option<String>,
+    /// The kind's settings; omitted when it has none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config: Option<ControlConfig>,
+}
+
+/// A [`Control`]'s `config`: what its kind needs, each field written only
+/// when it has one.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ControlConfig {
+    /// The initial value, for the kinds that have one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value: Option<Value>,
+    /// A select's choices.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub options: Option<Vec<String>>,
+    /// A slider's smallest value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start: Option<f64>,
+    /// A slider's largest value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stop: Option<f64>,
+    /// A slider's increment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step: Option<f64>,
+    /// A text box's hint while empty.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub placeholder: Option<String>,
+}
+
+impl ControlConfig {
+    /// Whether nothing is set, in which case a control has no `config`.
+    pub fn is_empty(&self) -> bool {
+        *self == ControlConfig::default()
+    }
 }
 
 /// A place in [`Topology`].
@@ -736,6 +811,27 @@ pub struct Place {
     /// (§13.1); written only when there are some.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub key_names: Vec<String>,
+    /// How the place itself is drawn (§5.1); written only when it has a
+    /// style.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub style: Option<PlaceStyle>,
+}
+
+/// A [`Place`]'s `style`: `{"fill": "token"}`, a rule the viewer
+/// evaluates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlaceStyle {
+    /// How the place is filled.
+    pub fill: Fill,
+}
+
+/// How a [`PlaceStyle`] fills its place.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Fill {
+    /// With the colour of the one token it holds, while it holds exactly
+    /// one that has a colour.
+    Token,
 }
 
 /// A transition in [`Topology`].
@@ -987,14 +1083,18 @@ pub struct PlaceMarking {
 }
 
 /// A token on the wire: its id, a label of at most 1000 characters (plus
-/// `"..."` when cut), its keys if its place declares some, and the nets it
-/// holds, if any.
+/// `"..."` when cut), its colour if it has one, its keys if its place
+/// declares some, and the nets it holds, if any.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Token {
     /// The decimal id.
     pub id: String,
     /// The token's `Debug`, cut.
     pub label: String,
+    /// Its colour, `#rrggbb`, when its place has a style that gives it one
+    /// (§5.3).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
     /// Its keys, when its place declares some (§13.1).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub keys: Option<Keys>,
@@ -1231,6 +1331,7 @@ mod tests {
                 place: "Door".into(),
                 id: "1".into(),
                 label: "\"Ada\"".into(),
+                color: None,
                 keys: None,
                 marking_version: 4,
                 running: false,
@@ -1257,6 +1358,7 @@ mod tests {
         let token = Token {
             id: "1".into(),
             label: "x".into(),
+            color: None,
             keys: None,
             nets: Vec::new(),
         };
@@ -1268,6 +1370,7 @@ mod tests {
             nested: false,
             passive: false,
             key_names: Vec::new(),
+            style: None,
         };
         assert_eq!(
             to_value(&place),
@@ -1323,6 +1426,7 @@ mod tests {
         let token = Token {
             id: "1".into(),
             label: "Robin".into(),
+            color: None,
             keys: Some(keys),
             nets: Vec::new(),
         };
@@ -1333,14 +1437,20 @@ mod tests {
     }
 
     #[test]
-    fn a_produced_entry_has_three_elements_or_five_with_keys() {
+    fn a_produced_entry_has_three_elements_four_with_a_colour_five_with_keys() {
         let plain = Produced {
             place: "Out".into(),
             id: "4".into(),
             label: "4".into(),
+            color: None,
             keys: None,
         };
         assert_eq!(to_value(&plain), json!(["Out", "4", "4"]));
+        let coloured = Produced {
+            color: Some("#d94f4f".into()),
+            ..plain.clone()
+        };
+        assert_eq!(to_value(&coloured), json!(["Out", "4", "4", "#d94f4f"]));
         let keyed = Produced {
             keys: Some(bird()),
             ..plain.clone()
@@ -1348,7 +1458,15 @@ mod tests {
         assert_eq!(
             to_value(&keyed),
             json!(["Out", "4", "4", null, {"species": "Robin", "legs": 2, "flies": true}]),
-            "the colour this runner never has is null, so the keys stay fifth"
+            "a token with keys and no colour has null fourth, so the keys stay fifth"
+        );
+        let both = Produced {
+            color: Some("#d94f4f".into()),
+            ..keyed.clone()
+        };
+        assert_eq!(
+            to_value(&both),
+            json!(["Out", "4", "4", "#d94f4f", {"species": "Robin", "legs": 2, "flies": true}])
         );
         // Read from text, as a line arrives: a `json!` value sorts its keys.
         for (line, entry) in [
@@ -1357,13 +1475,111 @@ mod tests {
                 r#"["Out","4","4",null,{"species":"Robin","legs":2,"flies":true}]"#,
                 &keyed,
             ),
-            (r##"["Out","4","4","#d94f4f"]"##, &plain),
+            (r##"["Out","4","4","#d94f4f"]"##, &coloured),
+            (
+                r##"["Out","4","4","#d94f4f",{"species":"Robin","legs":2,"flies":true}]"##,
+                &both,
+            ),
         ] {
             let back: Produced = serde_json::from_str(line).unwrap();
             assert_eq!(&back, entry, "{line}");
         }
         assert!(serde_json::from_value::<Produced>(json!(["Out", "4"])).is_err());
         assert!(serde_json::from_value::<Produced>(json!(["Out", "4", "4", null, {}, 6])).is_err());
+    }
+
+    #[test]
+    fn a_colour_is_written_where_a_token_has_one() {
+        let token = Token {
+            id: "1".into(),
+            label: "Red".into(),
+            color: Some("#ff6347".into()),
+            keys: None,
+            nets: Vec::new(),
+        };
+        assert_eq!(
+            to_value(&token),
+            json!({"id": "1", "label": "Red", "color": "#ff6347"})
+        );
+        let added = Notification::Added {
+            place: "Light".into(),
+            id: "1".into(),
+            label: "Red".into(),
+            color: Some("#ff6347".into()),
+            keys: None,
+            marking_version: 2,
+            running: false,
+        };
+        assert_eq!(
+            to_value(&added),
+            json!({"method": "added", "params": {"place": "Light", "id": "1", "label": "Red",
+                   "color": "#ff6347", "marking_version": 2, "running": false}})
+        );
+        let back: Notification = serde_json::from_value(to_value(&added)).unwrap();
+        assert_eq!(back, added);
+    }
+
+    #[test]
+    fn a_place_style_and_the_controls_have_the_wire_shape() {
+        let place = Place {
+            name: "Light".into(),
+            type_name: "Colour".into(),
+            serializable: true,
+            nested: false,
+            passive: false,
+            key_names: Vec::new(),
+            style: Some(PlaceStyle { fill: Fill::Token }),
+        };
+        assert_eq!(
+            to_value(&place),
+            json!({"name": "Light", "type_name": "Colour", "serializable": true,
+                   "style": {"fill": "token"}})
+        );
+        let change = Control {
+            name: "change".into(),
+            label: "Change".into(),
+            kind: "button".into(),
+            node: None,
+            action: None,
+            config: None,
+        };
+        assert_eq!(
+            to_value(&change),
+            json!({"name": "change", "label": "Change", "kind": "button"}),
+            "node, action and config only when there are some"
+        );
+        let car = Control {
+            node: Some("Waiting".into()),
+            action: Some("inject".into()),
+            kind: "text".into(),
+            config: Some(ControlConfig {
+                placeholder: Some("name".into()),
+                ..ControlConfig::default()
+            }),
+            ..change.clone()
+        };
+        assert_eq!(
+            to_value(&car),
+            json!({"name": "change", "label": "Change", "kind": "text", "node": "Waiting",
+                   "action": "inject", "config": {"placeholder": "name"}})
+        );
+        let topology = Topology {
+            places: vec![place],
+            transitions: Vec::new(),
+            edges: Vec::new(),
+            controls: Vec::new(),
+        };
+        assert!(
+            to_value(&topology).get("controls").is_none(),
+            "a net without controls writes none"
+        );
+        let back: Topology = serde_json::from_value(to_value(Topology {
+            controls: vec![car.clone()],
+            ..topology
+        }))
+        .unwrap();
+        assert_eq!(back.controls, [car]);
+        assert!(ControlConfig::default().is_empty());
     }
 
     #[test]
@@ -1464,6 +1680,7 @@ mod tests {
             ErrorCode::NotSerializable,
             ErrorCode::InvalidToken,
             ErrorCode::Unsupported,
+            ErrorCode::UnknownControl,
             ErrorCode::Internal,
         ] {
             assert_eq!(to_value(code), json!(code.as_str()));

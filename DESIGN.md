@@ -366,11 +366,17 @@ EdgeKind::Drain.consumes() == true;  EdgeKind::Survey.consumes() == false
   every promotion running, and leaves them running. The traffic light,
   `examples/traffic_light.rs` with the net in
   `examples/traffic_light/net.rs`, drains: the light is one place,
-  `Light`, whose one token is its colour; `Turn Green`, guarded on red,
-  takes the light and every car waiting, none included, and writes green
-  back; `Pass on Green` takes a car and reads the light through a plain
-  snapshot, guarded on green, so a car goes on green only; `Change` moves
-  the colour on from green and from amber. The light cycles for ever. The
+  `Light`, whose one token is its colour, and it has two transitions.
+  `Go`, guarded on green and someone waiting, takes every car waiting in
+  one firing and reads the light through a plain snapshot, leaving its
+  token alone; `Change`, unguarded, takes the light and writes the next
+  colour back, so the light cycles for ever. A drain accepts an empty
+  place, so without "someone waiting" `Go`, declared first, would fire at
+  every green taking nothing and the light would stick there; the example
+  never drains an empty queue (the shop's survey shows the zero case), and
+  `Go`, whose only consuming edge is the drain, is what
+  `assert_no_source_transitions` flags, its guard being what makes it
+  safe, so the example does not ask for that check. The
   shared transcripts `07_empty_place_edges.json` and
   `08_traffic_light.json` drive them over the wire, and `tests/slice22.rs`
   holds both. (Until then the shop alone was the proposal's example, and
@@ -2343,9 +2349,9 @@ Oleg: the shop of slice 22 mixed two mechanics, and draining promotions read
 badly. The shop keeps its survey alone: `Price Order` reads every promotion
 running and leaves them running, and `Day End`, `Expired` and `Close Day` are
 gone. A new example, the traffic light, shows the drain, with a plain snapshot
-beside it as the simpler kind of read: `Turn Green` takes the light and every
-car waiting, none included; `Pass on Green` lets a car through while the light
-is green; `Change` moves the light on, for ever. Both are conformance nets of
+beside it as the simpler kind of read: `Go` takes every car waiting while the
+light is green and reads the light; `Change` moves the light on, for ever
+(the shape as it ended the day, below). Both are conformance nets of
 PROTOCOL.md §11, and the runner's example carries `traffic-light` beside
 `shop`. The Python track recorded `07_empty_place_edges.json` again and
 `08_traffic_light.json` new; both replay here with no runner change. The
@@ -2356,13 +2362,15 @@ shop's `Close Day` onto the traffic light; the drain edge itself is unchanged.
 **2026-10-16, later: the traffic light is one place.** Decided by Oleg the
 same day: three places for the light (`Red`, `Green`, `Amber`, a token
 `"light"` standing in one) and four transitions would make a junction of
-several lights unreadable. `Light` holds one token whose value is the colour.
-`Turn Green` (guarded on red) keeps the drain, since a drain takes every car
-whenever its transition fires; `Change` (on green or amber) does the other two
-steps; `Pass on Green` still reads the light, and its guard on green is what
-holds a car at amber and red, `Light` never being empty. The two light
-transitions take from and write back to `Light`, which needed no core change.
+several lights unreadable. `Light` holds one token whose value is the colour,
+and `Change` takes from and writes back to it, which needed no core change.
 `08_traffic_light.json` was recorded again and replays with no runner change.
+
+**2026-10-16, later still: two transitions.** Oleg expected two, one for the
+light and one for the cars: the shape went three places → one place → two
+transitions, `Go` (guarded on green and someone waiting, a drain beside a
+read) and `Change` (unguarded); `08_traffic_light.json` was recorded again and
+replays with no runner change.
 
 ## 19. Interop: one protocol, two runtimes, two viewers
 
@@ -3204,8 +3212,8 @@ what a drain took, none from an empty place, and nothing a survey read.
   reduced shop and `08_traffic_light.json` is new; their copies here are
   byte for byte the shared files, and our own `01` lists both nets.
   `08_traffic_light.json` was recorded again the same day, for the light
-  as one place (§18); its copy here is again the shared file, and it
-  replays with no runner change.
+  as one place and then for its two transitions (§18); its copy here is
+  again the shared file each time, and it replays with no runner change.
 
 ### 19.4 Who spawns it
 

@@ -2,15 +2,16 @@
 > two. The shop (§2, §6) keeps only the survey: `Price Order` reads the
 > promotions and leaves them running, and `Day End`, `Expired` and `Close
 > Day` are gone. The drain has an example of its own, a traffic light whose
-> `Turn Green` takes every car waiting at red, possibly none
+> `Go` takes every car waiting while the light is green
 > (`petritype/examples/traffic_light.rs`, the conformance net
 > `traffic-light`, transcript `08_traffic_light.json`). The text below is
 > left as it was written; DESIGN §4.4 and §18 describe the examples as they
 > are.
 >
-> **The light as one place, later on 2026-10-16.** The traffic light's three
-> places became one, `Light`, whose token is the colour; guarded `Turn
-> Green` keeps the drain, and `Change` replaces `Turn Amber` and `Turn Red`.
+> **The light as one place, then two transitions, later on 2026-10-16.** The
+> traffic light went three places → one place, `Light`, whose token is the
+> colour → two transitions: `Go`, guarded on green and someone waiting,
+> drains the cars and reads the light, and `Change`, unguarded, cycles it.
 
 # Input edges that accept an empty place
 

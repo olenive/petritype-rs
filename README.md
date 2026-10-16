@@ -129,22 +129,24 @@ An input edge says how a transition reads a place, and so what its body is hande
 | `SurveyEdge(p)` | nothing (clones of every token, zero or more) | `Vec<T>`, possibly empty | nothing |
 
 The last two are for a place a transition only needs to read, or to empty, when something is there. A shop prices an
-order with whatever promotions are running, and a shop with none running still sells things; a traffic light turns
-green whether or not anyone is waiting, and everyone waiting goes when it does:
+order with whatever promotions are running, and a shop with none running still sells things; a traffic light lets
+everyone waiting go in one firing while it is green:
 
 ```rust
 b.transition("Price Order", (TakeEdge(orders), SurveyEdge(promotions)), (priced, discounts_applied),
     |order: String, promotions: Vec<String>| { /* one discount per promotion, maybe none */ });
-b.transition("Turn Green", (TakeEdge(light), DrainEdge(waiting)), (light, passed),
-    |red: String, cars: Vec<String>| { /* green, and every car waiting goes, maybe none */ })
-    .guard(move |net| colour(net, light) == Some("red"));
+b.transition("Go", (DrainEdge(waiting), SnapshotEdge(light)), (passed,),
+    |cars: Vec<String>, _green: String| { /* every car waiting goes; the light is only read */ })
+    .guard(move |net| colour(net, light) == Some("green") && net.count(waiting.id()) > 0);
 ```
 
 Without them each transition needs an "empty twin" guarded on the place being empty. A drain consumes but may take
-nothing, so `assert_no_source_transitions` does not count it: a transition whose only input is a drain fires for ever.
-`petritype/examples/shop.rs` runs the shop and `petritype/examples/traffic_light.rs` the light, one place whose token is
-its colour (`cargo run -p petritype --example shop --features serde`, and `--example traffic_light`); `DESIGN.md` §4.4
-has the rules, and on the wire the two are `"drain"` and `"survey"` (PROTOCOL.md §5.1).
+nothing, so `assert_no_source_transitions` does not count it: a transition whose only input is a drain fires for ever,
+and `Go`, whose other edge only reads, would fire at every green taking nothing, which is why its guard asks for someone
+waiting as well. `petritype/examples/shop.rs` runs the shop and `petritype/examples/traffic_light.rs` the light, one
+place whose token is its colour, moved on by an unguarded `Change`
+(`cargo run -p petritype --example shop --features serde`, and `--example traffic_light`); `DESIGN.md` §4.4 has the
+rules, and on the wire the two are `"drain"` and `"survey"` (PROTOCOL.md §5.1).
 
 ## Binding by name
 

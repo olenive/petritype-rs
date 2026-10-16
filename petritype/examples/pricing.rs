@@ -12,14 +12,16 @@
 //! - a shop, which takes each order, surveys the promotions running and
 //!   reads the price list off a parameter, and prices gift orders the same
 //!   way with a stamp beside the struct (the mixed form);
-//! - a wholesaler, which takes trade orders only, through a filter, uses
-//!   each promotion up, reads the price list off a place, and sends what
-//!   comes out to places of its own.
+//! - a wholesaler, which takes trade orders only, through a filter, surveys
+//!   the promotions as the shop does, leaving them running, reads the price
+//!   list off a place, and sends what comes out to places of its own.
 //!
 //! `main` runs both and prints what came out. The tests hold what the
-//! proposal's §6 asks of them: what is priced and noted, the promotions
-//! drained and restored, the mixed form, and that the net sees each struct
-//! as plain edges in field order.
+//! proposal's §6 asks of them: what is priced and noted, the order restored
+//! when a body fails, the mixed form, and that the net sees each struct as
+//! plain edges in field order. (Until 2026-10-16 the wholesaler drained the
+//! promotions, using each one up; promotions are read, never drained, and the
+//! drain edge has its own example, `examples/traffic_light.rs`.)
 
 // A crate root's `mod` looks beside it, so the paths are spelled out.
 #[path = "pricing/library.rs"]
@@ -100,7 +102,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         println!("  to the warehouse: {}", item.0);
     }
     println!(
-        "  left waiting: {}; promotions left: {}; price lists: {}",
+        "  left waiting: {}; promotions still running: {}; price lists: {}",
         values(&wholesale.net, wholesale.orders)
             .iter()
             .map(|order| order.customer.as_str())
@@ -117,7 +119,7 @@ mod tests {
     use super::*;
     use library::{Item, Note, Priced, Pricing};
     use nets::build_wholesale_with;
-    use petritype::{EdgeInfo, EdgeKind, NetError};
+    use petritype::{EdgeInfo, EdgeKind, Event, NetError};
 
     /// A body that always fails, for the wholesaler's restore.
     #[derive(Debug)]
@@ -259,11 +261,11 @@ mod tests {
     // ----- the wholesaler -----------------------------------------------
 
     /// The same function, wired differently: a trade order is chosen by its
-    /// tier past a retail one, every promotion is used up by it, the price
-    /// list stays on its place, and the outputs land in the wholesaler's
-    /// own places.
+    /// tier past a retail one, every promotion is read and left running, the
+    /// price list stays on its place, and the outputs land in the
+    /// wholesaler's own places.
     #[test]
-    fn the_wholesaler_prices_trade_orders_and_uses_the_promotions_up() {
+    fn the_wholesaler_prices_trade_orders_and_leaves_the_promotions_running() {
         let mut wholesale = build_wholesale(prices()).expect("the wholesaler builds");
         wholesale.net.extend(
             wholesale.orders,
@@ -289,7 +291,11 @@ mod tests {
             values(&wholesale.net, wholesale.audit),
             [note("25% off Tea Rooms Ltd's order (Trade fair, Bulk)")]
         );
-        assert_eq!(wholesale.net.count(wholesale.promos.id()), 0, "drained");
+        assert_eq!(
+            wholesale.net.count(wholesale.promos.id()),
+            2,
+            "surveyed, not used up"
+        );
         assert_eq!(wholesale.net.count(wholesale.price_list.id()), 1);
         assert_eq!(
             values(&wholesale.net, wholesale.orders)[0].customer,
@@ -298,8 +304,9 @@ mod tests {
         );
         assert_eq!(wholesale.net.step().unwrap(), None, "no trade order left");
 
-        // With no promotion left, the next trade order is priced in full,
-        // and what the list does not carry goes to the warehouse.
+        // The promotions still running, the next trade order is priced
+        // with them too, and what the list does not carry goes to the
+        // warehouse.
         wholesale.net.put(
             wholesale.orders,
             Order::trade("Cafe", &["scone", "crumpet"]),
@@ -307,9 +314,13 @@ mod tests {
         wholesale.net.step().unwrap();
         assert_eq!(
             values(&wholesale.net, wholesale.invoiced)[1].total,
-            Some(250)
+            Some(250 * 75 / 100)
         );
-        assert_eq!(values(&wholesale.net, wholesale.audit).len(), 1);
+        assert_eq!(
+            values(&wholesale.net, wholesale.audit)[1],
+            note("25% off Cafe's order (Trade fair, Bulk)")
+        );
+        assert_eq!(wholesale.net.count(wholesale.promos.id()), 2);
         assert_eq!(
             values(&wholesale.net, wholesale.warehouse),
             [Item(String::from("crumpet"))]
@@ -317,10 +328,11 @@ mod tests {
     }
 
     /// When the body fails, `restore_tokens_on_failure` puts back what the
-    /// struct's edges consumed: the trade order chosen by the filter and
-    /// every promotion the drain took, with their ids.
+    /// struct's edges consumed: the trade order chosen by the filter, with
+    /// its id. The survey consumed nothing, so the promotions never left
+    /// their place.
     #[test]
-    fn a_failing_wholesale_body_restores_the_order_and_the_drained_promotions() {
+    fn a_failing_wholesale_body_restores_the_order_and_leaves_the_promotions() {
         let mut wholesale =
             build_wholesale_with(prices(), |_: Pricing| -> Result<Priced, Jammed> {
                 Err(Jammed)
@@ -338,19 +350,26 @@ mod tests {
             .tokens(wholesale.orders.id())
             .map(|(id, _)| id)
             .collect();
+        wholesale.net.drain_events().for_each(drop);
 
         let failure = wholesale
             .net
             .fire(wholesale.price_trade_order)
             .expect_err("the body fails");
         assert!(matches!(failure, NetError::FiringFailed(ref f) if f.restored));
+        let events: Vec<Event> = wholesale.net.drain_events().collect();
+        assert!(
+            matches!(events.last(), Some(Event::Failed { consumed, restored: true, .. })
+                if consumed == &[(wholesale.orders.id(), orders[0])]),
+            "the order alone was consumed: {events:?}"
+        );
         let back = |place: petritype::PlaceId| -> Vec<_> {
             wholesale.net.tokens(place).map(|(id, _)| id).collect()
         };
         assert_eq!(
             back(wholesale.promos.id()),
             promos,
-            "every promotion back, ids kept"
+            "every promotion where it was, ids kept"
         );
         assert_eq!(back(wholesale.orders.id()), orders);
         assert_eq!(wholesale.net.count(wholesale.invoiced.id()), 0);

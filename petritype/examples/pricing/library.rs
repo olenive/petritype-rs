@@ -103,8 +103,8 @@ pub struct Note(pub String);
 pub struct Stamp(pub String);
 
 /// What pricing an order takes. A net decides where each comes from: the
-/// order taken or chosen by a filter, the promotions surveyed or used up,
-/// the prices a parameter or a token on a place.
+/// order taken or chosen by a filter, the promotions surveyed, the prices a
+/// parameter or a token on a place.
 #[derive(Inputs)]
 pub struct Pricing {
     /// The order to price.

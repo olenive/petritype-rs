@@ -477,3 +477,12 @@ suite's gate.
 **Commits**, on `binding-by-name`: 8850d43 (R2), debe8e0 (R3 and R4),
 f7c4521 (R5), 1848ea1 (R6, attempted and dropped), and the documentation
 commit that adds this section (R8).
+
+**2026-10-16: the wholesaler surveys.** The owner asked for promotions never
+to be drained, so the wholesaler's `promos` field is a `SurveyEdge(promos)`
+(`WholesaleInputs` names `SurveyEdge<Promo>`): it reads every promotion and
+leaves them running, as the shop does, and the nets still differ in the
+order (a filter) and the prices (a token on a place). The failing-body test
+now shows the order restored and the promotions never taken; §2 and §6 above
+are left as written. The drain edge's example is the traffic light
+(`petritype/examples/traffic_light.rs`).

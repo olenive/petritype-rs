@@ -169,7 +169,7 @@ b.transition(
 ```
 
 `PricingEdges` and `PricedEdges` are generated: each field takes any input that reads its type (`TakeWhereEdge` or
-`DrainEdge` would do for the wholesaler next door) or any place that accepts it, the order of the fields is the order
+`SnapshotEdge` would do for the wholesaler next door) or any place that accepts it, the order of the fields is the order
 of the edges the net and the wire see, and a wrong kind is a compile error at the field. A struct of inputs is one
 position of the input tuple; a struct of outputs is all of the outputs. Neither has the tuples' cap.
 `petritype/examples/pricing.rs` wires the library into a shop and a wholesaler (`cargo run -p petritype --example

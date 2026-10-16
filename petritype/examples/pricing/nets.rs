@@ -7,8 +7,8 @@
 //! neither.
 
 use petritype::{
-    BuildError, DrainEdge, Filter, Net, NetBuilder, Param, PlaceRef, SnapshotEdge, SurveyEdge,
-    TakeEdge, TakeWhereEdge, TransitionBody, TransitionId,
+    BuildError, Filter, Net, NetBuilder, Param, PlaceRef, SnapshotEdge, SurveyEdge, TakeEdge,
+    TakeWhereEdge, TransitionBody, TransitionId,
 };
 
 use super::library::{
@@ -108,21 +108,22 @@ pub fn build_shop(prices: Prices) -> Result<Shop, BuildError> {
 }
 
 /// The wholesale net's inputs: an order chosen by its tier, the promotions
-/// used up, the prices a token on a place. A type like any other, so the
+/// surveyed, the prices a token on a place. A type like any other, so the
 /// wiring can be named, built once and handed to more than one body.
 pub type WholesaleInputs =
-    PricingEdges<TakeWhereEdge<Order>, DrainEdge<Promo>, SnapshotEdge<Prices>>;
+    PricingEdges<TakeWhereEdge<Order>, SurveyEdge<Promo>, SnapshotEdge<Prices>>;
 
 /// The wholesale net's outputs: places of its own.
 pub type WholesaleOutputs = PricedEdges<PlaceRef<Order>, PlaceRef<Note>, PlaceRef<Item>>;
 
-/// A wholesaler: trade orders only, each promotion used once, the price
-/// list a token on a place, and every output somewhere else.
+/// A wholesaler: trade orders only, the promotions read and left running,
+/// the price list a token on a place, and every output somewhere else.
 pub struct Wholesale {
     pub net: Net,
     /// Orders of every tier; only trade orders are priced here.
     pub orders: PlaceRef<Order>,
-    /// Promotions, each used up by the next trade order priced.
+    /// Promotions running right now; every trade order priced reads them
+    /// and leaves them running.
     pub promos: PlaceRef<Promo>,
     /// The price list, one token, read and left in place.
     pub price_list: PlaceRef<Prices>,
@@ -145,7 +146,8 @@ pub fn build_wholesale(prices: Prices) -> Result<Wholesale, BuildError> {
 /// [`Priced`](super::library::Priced) (or a `Result` of one): the wiring
 /// does not depend on the
 /// function, which is the point. `Price Trade Order` restores what it took
-/// if its body fails: the order, and the promotions it drained.
+/// if its body fails: the order; the promotions it only read, and they
+/// never left their place.
 pub fn build_wholesale_with<B, M>(prices: Prices, body: B) -> Result<Wholesale, BuildError>
 where
     B: TransitionBody<(WholesaleInputs,), WholesaleOutputs, M>,
@@ -164,7 +166,7 @@ where
 
     let inputs: WholesaleInputs = PricingEdges {
         order: TakeWhereEdge(orders, Filter::new().key_in("tier", ["trade"])),
-        promos: DrainEdge(promos),
+        promos: SurveyEdge(promos),
         prices: SnapshotEdge(price_list),
     };
     let price_trade_order = b

@@ -401,10 +401,10 @@ pub struct Pricing { pub order: Order, pub promos: Vec<Promo>, pub prices: Price
 // A shop: the front order, the promotions running, the prices a parameter.
 PricingEdges { order: TakeEdge(orders), promos: SurveyEdge(promos), prices: Param::new() }
 
-// A wholesaler, the same function: trade orders only, each promotion used once.
+// A wholesaler, the same function: trade orders only, the prices on a place.
 PricingEdges {
     order: TakeWhereEdge(orders, Filter::new().key_in("tier", ["trade"])),
-    promos: DrainEdge(promos),
+    promos: SurveyEdge(promos),
     prices: SnapshotEdge(price_list),
 }
 ```

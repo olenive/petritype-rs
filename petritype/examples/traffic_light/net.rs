@@ -178,6 +178,7 @@ pub fn change(light: Colour) -> (Colour,) {
 /// and the two controls.
 pub fn build_traffic_light() -> Result<TrafficLight, BuildError> {
     let mut b = NetBuilder::new();
+    b.resettable();
     let light = b.place::<Colour>("Light");
     let waiting = b.place::<String>("Waiting");
     let passed = b.place::<String>("Passed");

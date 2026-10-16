@@ -135,15 +135,16 @@ green whether or not anyone is waiting, and everyone waiting goes when it does:
 ```rust
 b.transition("Price Order", (TakeEdge(orders), SurveyEdge(promotions)), (priced, discounts_applied),
     |order: String, promotions: Vec<String>| { /* one discount per promotion, maybe none */ });
-b.transition("Turn Green", (TakeEdge(red), DrainEdge(waiting)), (green, passed),
-    |light: String, cars: Vec<String>| { /* every car waiting goes, maybe none */ });
+b.transition("Turn Green", (TakeEdge(light), DrainEdge(waiting)), (light, passed),
+    |red: String, cars: Vec<String>| { /* green, and every car waiting goes, maybe none */ })
+    .guard(move |net| colour(net, light) == Some("red"));
 ```
 
 Without them each transition needs an "empty twin" guarded on the place being empty. A drain consumes but may take
 nothing, so `assert_no_source_transitions` does not count it: a transition whose only input is a drain fires for ever.
-`petritype/examples/shop.rs` runs the shop and `petritype/examples/traffic_light.rs` the light (`cargo run -p petritype
---example shop --features serde`, and `--example traffic_light`); `DESIGN.md` §4.4 has the rules, and on the wire the
-two are `"drain"` and `"survey"` (PROTOCOL.md §5.1).
+`petritype/examples/shop.rs` runs the shop and `petritype/examples/traffic_light.rs` the light, one place whose token is
+its colour (`cargo run -p petritype --example shop --features serde`, and `--example traffic_light`); `DESIGN.md` §4.4
+has the rules, and on the wire the two are `"drain"` and `"survey"` (PROTOCOL.md §5.1).
 
 ## Binding by name
 

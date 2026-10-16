@@ -7,6 +7,10 @@
 > `traffic-light`, transcript `08_traffic_light.json`). The text below is
 > left as it was written; DESIGN §4.4 and §18 describe the examples as they
 > are.
+>
+> **The light as one place, later on 2026-10-16.** The traffic light's three
+> places became one, `Light`, whose token is the colour; guarded `Turn
+> Green` keeps the drain, and `Change` replaces `Turn Amber` and `Turn Red`.
 
 # Input edges that accept an empty place
 

@@ -61,8 +61,10 @@ use serde::{Deserialize, Serialize};
 
 /// The light's colour: the one token of `Light`. Written in JSON as the
 /// lower-case string, `"red"`, `"green"` or `"amber"`, and shown as that
-/// too.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+/// too: `Display` is the name, and `Debug`, which is the token's label on
+/// the wire, the name as a string's `Debug` writes it, `"red"`, as it was
+/// when the token was a string (and as Python's `'red'` reads).
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Colour {
     /// Stop.
@@ -73,13 +75,26 @@ pub enum Colour {
     Amber,
 }
 
-impl std::fmt::Display for Colour {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
+impl Colour {
+    /// The colour's name, as JSON writes it.
+    fn name(self) -> &'static str {
+        match self {
             Colour::Red => "red",
             Colour::Green => "green",
             Colour::Amber => "amber",
-        })
+        }
+    }
+}
+
+impl std::fmt::Display for Colour {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.name())
+    }
+}
+
+impl std::fmt::Debug for Colour {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(self.name(), f)
     }
 }
 

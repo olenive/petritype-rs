@@ -505,6 +505,11 @@ mod tests {
                 colour
             );
             assert_eq!(colour.to_string(), name);
+            assert_eq!(
+                format!("{colour:?}"),
+                format!("{name:?}"),
+                "the label as a string's"
+            );
         }
         assert!(serde_json::from_value::<Colour>(json!("blue")).is_err());
 

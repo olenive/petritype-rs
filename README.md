@@ -136,8 +136,8 @@ everyone waiting go in one firing while it is green:
 b.transition("Price Order", (TakeEdge(orders), SurveyEdge(promotions)), (priced, discounts_applied),
     |order: String, promotions: Vec<String>| { /* one discount per promotion, maybe none */ });
 b.transition("Go", (DrainEdge(waiting), SnapshotEdge(light)), (passed,),
-    |cars: Vec<String>, _green: String| { /* every car waiting goes; the light is only read */ })
-    .guard(move |net| colour(net, light) == Some("green") && net.count(waiting.id()) > 0);
+    |cars: Vec<String>, _green: Colour| { /* every car waiting goes; the light is only read */ })
+    .guard(move |net| colour(net, light) == Some(Colour::Green) && net.count(waiting.id()) > 0);
 ```
 
 Without them each transition needs an "empty twin" guarded on the place being empty. A drain consumes but may take
@@ -147,6 +147,29 @@ waiting as well. `petritype/examples/shop.rs` runs the shop and `petritype/examp
 place whose token is its colour, moved on by an unguarded `Change`
 (`cargo run -p petritype --example shop --features serde`, and `--example traffic_light`); `DESIGN.md` §4.4 has the
 rules, and on the wire the two are `"drain"` and `"survey"` (PROTOCOL.md §5.1).
+
+## Controls and token styles
+
+A net can declare, as data, how its tokens look and which buttons it wants. A viewer draws them with widgets it
+already has and never names the net; pressing one runs code written beside the net, through the net's own API, so
+whatever it does is an ordinary event. The traffic light colours its token as the lamp it lights and fills its place
+with it, and offers two controls, a text box that adds a car and a button that changes the light:
+
+```rust
+b.styled(light);                                   // Colour: TokenStyle, red #ff6347, green #32cd32, amber #ffa500
+b.place_style(light, PlaceStyle::fill_token());    // Light is drawn in its token's colour
+b.control(Control::fire("change", "Change", change));
+b.control(car);                                    // + Car: a text box on Waiting, `Car N` when nothing is typed
+
+net.press("car", Value::Text("Taxi".into()))?;     // Pressed::Applied: an `Added` in Waiting
+net.style(light.id(), token)?.colour;              // Some(Rgb(0xff, 0x63, 0x47)) while it is red
+```
+
+A press's value is checked against the control's kind (a button none, a toggle a boolean, a slider a number in range,
+a select one of its options, a text box a string) before the handler runs. Served by `petritype-runner` the controls
+are `topology.controls`, a press is `press {control, value?}`, and a styled token carries its `color` (PROTOCOL.md
+§5.1, §6). `petritype/examples/traffic_light.rs` presses both after its script (`cargo run -p petritype --example
+traffic_light --features serde`); `DESIGN.md` §18 has the decisions.
 
 ## Binding by name
 

@@ -2076,6 +2076,9 @@ effects, which the viewer attributes; 232 tests with `http`.
 - Hover/click → `net.token::<T>()` or `net.json()` for a detail panel.
 - Edits from an inspector → `net.apply(Command)` → `Mutated` → view refresh.
   The view never writes to the net except through commands.
+- Controls and token styles are on the net (2026-10-16, §18): a legend lists
+  `net.controls()` and sends `net.press(name, value)`; a token's colour is
+  `net.style(place, token)`, a place's fill rule `PlaceInfo::style`.
 
 ## 16. Rust features used, and why
 
@@ -2372,6 +2375,58 @@ transitions, `Go` (guarded on green and someone waiting, a drain beside a
 read) and `Change` (unguarded); `08_traffic_light.json` was recorded again and
 replays with no runner change.
 
+**2026-10-16, last: net-declared controls and token styles.** Decided with
+Oleg the same day: a net declares, as data, the buttons it wants and how its
+tokens look; a viewer renders that with widgets it already has and never
+names a net, and a press runs code written beside the net, in the net's
+language. The core gained two public modules. `style`: `Rgb` (written and
+read as `#rrggbb`), `Style { colour }` (`#[non_exhaustive]`, `Default`; a
+glyph and an image join it later), the trait `TokenStyle`, and `PlaceStyle {
+fill: Fill::Token }`, a rule the viewer evaluates (the place filled with the
+colour of its one token). `NetBuilder::style(place, f)` keeps `f` in the
+place's vtable as `keys` keeps its extractor, an `Arc<dyn Fn(&dyn Any) ->
+Style>`; `styled(place)` is that with `T::style`, the one line that opts a
+place in, since places have no trait bound and Rust no specialisation to
+default one; `place_style` gives the place its rule. `Net::style(place,
+token)` reads one token's style, `None` for a place without one, and
+`PlaceInfo::style` and `TopologyPlace::style` carry the place's, the latter
+`{"fill": "token"}` under `serde`. `control`: a `Control` is a name, a label,
+a `ControlKind` (button, toggle, slider, select, text, each with its
+settings), an optional `Node` and `Action` (inject, fire, enable) for the
+viewer's lighting and hover, an initial `Value`, and a handler `Fn(&mut Net,
+Value) -> Result<Pressed, String>`; there is a constructor per kind and one
+per action, `Control::fire` answering `Pressed::Nothing("<transition> is not
+fireable")` where `Net::fire` refuses. `NetBuilder::control` declares one,
+`BuildError::DuplicateControlName` for a name used twice, and the net carries
+them: `Net::controls` in declaration order, `Net::press(name, value)`, which
+checks the value against the kind (`PressError::WrongKind` covers an option
+not listed and a number outside a slider's bounds, so a runner only decodes
+JSON), clones the handler's `Arc` and calls it with the net, `Refused` with
+its message for an `Err`. Carrying them on the net is the one point where
+Rust differs from Python's control map kept off it: the `Net` is what both a
+runner's factory and the viewer's `NetRes` hand over. Every effect of a press
+goes through the public API, so it is an ordinary event. The runner serves
+the outer net's `topology.controls` (`node`, `action` and `config` only when
+there are some, `config.value` only for an initial value) and
+`places[].style`; `press {control, value?}` joins `METHODS` and
+`OUTER_ONLY`, flushes the events as `inject` does, logs and counts each
+firing as a step's, and answers `{status: "pressed" | "nothing", reason?,
+marking_version}`, with the new code `unknown_control`, `invalid_params` for
+a value the kind cannot take, and `internal` for a handler that refuses or
+panics. And Rust now sends a token's `color` where its place's style gives
+one: in token entries, in `added`, and fourth in `produced` (three elements
+with neither colour nor keys, four with a colour, five with keys, the colour
+or `null` fourth). The traffic light's token became the example's own
+`Colour`, `"red"` on the wire still, styled with the lamps' hexes (red
+`#ff6347`, green `#32cd32`, amber `#ffa500`) and filling `Light`, with two
+controls, `car` (`+ Car`, a text box on `Waiting`) and `change` (`Change`, a
+button firing `Change`). `Control::inject`'s `make` sees the value only, and
+`car` names an untyped car `Car N` from the marking, so it is a
+`Control::text` given an inject's node and action (Python's `make` may take
+the net as a second argument). The Python track recorded
+`08_traffic_light.json` again with six `press` exchanges at the end; it
+replays here once the runner knew `press`. `tests/controls.rs`.
+
 ## 19. Interop: one protocol, two runtimes, two viewers
 
 **Decided 2026-10-03.** A net can run on the Python library or on this
@@ -2423,7 +2478,7 @@ The decisions that shape it, all of 2026-10-03:
 | inner `marking_version` (§12.3) | the runner's counter per inner net, one per state notification of that net; the outer one does not move |
 | `step` or a running net, inside (§12.3) | `step_deep_staged()` → `StagedStep::Inside`, inline: `nested` around `fired` (slice 21; `select()` and then `step_inside()` before) |
 | `topology.places[].key_names`, a token's `keys` (§13.1) | `TopologyPlace::key_names`, written only when non-empty; `Net::keys`, read when the line is written (slice 20, §19.3.12) |
-| a `produced` entry's fifth element (§7.1) | `protocol::Produced`: three elements, or five with `null` for the colour Rust never has when the place declares keys |
+| a `produced` entry's fourth and fifth elements (§7.1) | `protocol::Produced`: three elements, or five with `null` for the colour when the place declares keys; since 2026-10-16 the colour `Net::style` gives is fourth, so four elements without keys, and the colour rather than `null` with them |
 | a request's filter (§13.2) | `protocol::Filter::parse`, then place names resolved to the named net's ids: a `Filter` with `Clause::{In, IsParam}` |
 | `query`, `distinct` (§13.3) | `Net::query_ids` (slice 20), rendering only the matches written; `Net::distinct_values` |
 | `set_filter`, `matching`, `hidden` (§13.4) | a `Projection` per net, the runner's (§19.3.12): `Net::query_ids` for reads, `Net::matches` for each token an event names, a set of what was shown for the tokens that are gone |
@@ -2625,11 +2680,13 @@ last set sent. Only then does it write the response, which is the protocol's
 A token on the wire is `{id, label}`: the id is `TokenId`'s `Display`, the
 label `debug()` cut at 1000 characters on a character boundary with `"..."`
 (§19.1). Rust places are monomorphic, so `type_name` is never sent, and
-`color` is not either. What a token has instead, since slice 18, is keys
-(§8.3): named values its place derives from it, which the protocol's §13
-puts on a token entry as `keys: {name: value}` (from `Net::keys`) and on a
-place as `key_names` (from `TopologyPlace::key_names`), and the runner
-writes them since slice 20 (§19.3.12). A transition's `detail` is
+`color` was not either until 2026-10-16, when a place's style came to give
+one (`Net::style`, written `#rrggbb`, §18). What a token has besides, since
+slice 18, is keys (§8.3): named values its place derives from it, which the
+protocol's §13 puts on a token entry as `keys: {name: value}` (from
+`Net::keys`) and on a place as `key_names` (from
+`TopologyPlace::key_names`), and the runner writes them since slice 20
+(§19.3.12). A transition's `detail` is
 `{params, detachable}`; `priority` is `priority_of` behind `catch_unwind`
 and omitted if the closure panicked.
 
@@ -2749,7 +2806,8 @@ per arm.
 #### 19.3.9 Not in this slice
 
 HTTP and server-sent events (the host relays); protocol version 0; token
-colours and position hints (nothing in the core produces them); `get_state
+colours (until 2026-10-16, when a place's style came to give them, §18) and
+position hints (nothing in the core produces them); `get_state
 {token_limit}` beyond the default 200 and `get_place_tokens` paging are in,
 but no complete-snapshot cache, because reads are answered from the live net.
 
@@ -2979,7 +3037,10 @@ unchanged, both from the Python repository and from a verbatim copy in
   change. `get_token`'s answer is not a token entry and has none, as the
   transcript has it. A `produced` entry is `protocol::Produced`: three
   elements, or five when its place declares keys, `null` in the colour's
-  place, since a Rust token has no colour (and so never four).
+  place, since a Rust token had no colour (and so never four). Since
+  2026-10-16 a token whose place's style gives it a colour has it fourth:
+  four elements without keys, and the colour in place of `null` with them
+  (§18).
 - **Keyed edges** (§13.5) go out with `kind: "take_where"` or
   `"mutate_where"` and their `filter` as declared, places mapped from ids to
   names, a `{key, param}` clause unevaluated.

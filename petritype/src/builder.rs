@@ -1111,6 +1111,10 @@ impl NetBuilder {
     /// [`BuildError::UnroutableOutput`], [`BuildError::AmbiguousOutput`] or
     /// [`BuildError::UnreachableOutput`].
     ///
+    /// After the transitions' own checks and before the parameters,
+    /// [`BuildError::DuplicateControlName`] if two
+    /// [controls](NetBuilder::control) share a name.
+    ///
     /// Between the two, the parameters: with the `serde` feature,
     /// `BuildError::DuplicateParamName` if two parameter types were marked
     /// serialisable with `NetBuilder::serializable_param` under one wire

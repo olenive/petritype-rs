@@ -16,8 +16,9 @@
 //! {"clauses": [{"key": "class", "values": ["Bird"]}]}}` finds the birds),
 //! `shop`, whose one transition reads a place that may be empty through a
 //! `survey` edge, and `traffic-light`, whose `Go` takes every car waiting
-//! while the light is green through a `drain` edge. This file is the whole
-//! of what an author writes besides them.
+//! while the light is green through a `drain` edge, and whose own controls
+//! add a car and change the light (`press {"control": "car", "value":
+//! "Taxi"}`). This file is the whole of what an author writes besides them.
 
 use std::process::ExitCode;
 

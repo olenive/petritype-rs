@@ -315,16 +315,18 @@ pub fn shop_registry() -> Vec<NetEntry> {
 /// going in one firing of `Go` while it is green, through a drain edge, the
 /// other input edge that accepts an empty place, `"drain"` on the wire
 /// (§5.1); `Go` reads the light through a snapshot edge, and `Change` moves
-/// it on. The file is the core's example
-/// (`petritype/examples/traffic_light/net.rs`), which depends on `petritype`
-/// only, for this.
+/// it on. It declares two controls, `car` and `change`, which `press` runs,
+/// and colours the light's token, which fills its place (§5.1). The file is
+/// the core's example (`petritype/examples/traffic_light/net.rs`), which
+/// depends on `petritype` and `serde` only, for this.
 #[path = "../../../petritype/examples/traffic_light/net.rs"]
 #[allow(dead_code)]
 pub mod traffic_light_net;
 
-/// The light as §11 seeds it: `"red"` in `Light`, nobody waiting, every
-/// place one a host may `inject` a string into. No parameters of either
-/// kind. The net never quiesces: `Change` is always fireable.
+/// The light as §11 seeds it: red (`"red"` on the wire) in `Light`, nobody
+/// waiting, every place one a host may `inject` into, a car's name or a
+/// colour's. No parameters of either kind. The net never quiesces: `Change`
+/// is always fireable.
 pub fn traffic_light(_: &petritype_runner::Params) -> Result<Net, LoadError> {
     traffic_light_net::build_traffic_light()
         .map(|light| light.net)

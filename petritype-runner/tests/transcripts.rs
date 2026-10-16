@@ -79,7 +79,9 @@
 //! `08_traffic_light.json` over `traffic-light` (2026-10-16, the drain's own
 //! net; recorded again the same day for the light as one place, and again
 //! for its two transitions, `Go` and `Change`, each replaying with no runner
-//! change). The shared set of §11, over the
+//! change; and again for its controls and its colours, with six `press`
+//! exchanges at the end, which replays once the runner knew `press`). The
+//! shared set of §11, over the
 //! conformance nets `parcel-distribution`, `transit`, `wildlife`, `shop` and
 //! `traffic-light`, lives in the Python repository and is replayed here from
 //! a sibling checkout by `the_shared_transcripts_hold`.

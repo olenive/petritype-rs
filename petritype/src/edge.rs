@@ -427,9 +427,12 @@ pub struct MutateWhereEdge<T>(
 ///
 /// ```
 /// # use petritype::{DrainEdge, NetBuilder, SnapshotEdge};
+/// #[derive(Debug, Clone, Copy, PartialEq)]
+/// enum Colour { Red, Green, Amber }
+///
 /// let mut b = NetBuilder::new();
 /// // The light is one place, and its token is the colour.
-/// let light = b.place::<String>("Light");
+/// let light = b.place::<Colour>("Light");
 /// let waiting = b.place::<String>("Waiting");
 /// let passed = b.place::<String>("Passed");
 /// let go = b
@@ -437,17 +440,17 @@ pub struct MutateWhereEdge<T>(
 ///         "Go",
 ///         (DrainEdge(waiting), SnapshotEdge(light)),
 ///         (passed,),
-///         |cars: Vec<String>, _green: String| (cars,),
+///         |cars: Vec<String>, _green: Colour| (cars,),
 ///     )
 ///     .guard(move |net| {
 ///         let front = net.tokens(light.id()).next();
-///         let colour = front.and_then(|(token, _)| net.token::<String>(light.id(), token));
-///         colour.is_some_and(|c| c == "green") && net.count(waiting.id()) > 0
+///         let colour = front.and_then(|(token, _)| net.token::<Colour>(light.id(), token));
+///         colour == Some(&Colour::Green) && net.count(waiting.id()) > 0
 ///     })
 ///     .id();
 /// let mut net = b.build()?;
 ///
-/// net.put(light, "green".to_owned());
+/// net.put(light, Colour::Green);
 /// assert!(net.fireable().is_empty(), "green, but nobody waiting");
 ///
 /// net.extend(waiting, ["Car 1".to_owned(), "Car 2".to_owned()]);

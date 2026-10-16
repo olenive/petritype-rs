@@ -381,18 +381,24 @@ fn drain_and_survey_edges_have_a_hollow_arrowhead() {
 
     // The light is one place, its token the colour: `Go` drains the cars
     // and reads the light, and `Change` takes it and writes the next colour
-    // back. (The example's guard on `Go` changes nothing in the drawing.)
+    // back. (The example's guard on `Go`, its controls and its style change
+    // nothing in the drawing.)
+    #[derive(Debug, Clone, Copy)]
+    enum Colour {
+        Red,
+    }
     let mut b = NetBuilder::new();
-    let colour = b.place::<String>("Light");
+    let colour = b.place::<Colour>("Light");
     let waiting = b.place::<String>("Waiting");
     let passed = b.place::<String>("Passed");
+    b.seed(colour, [Colour::Red]);
     b.transition(
         "Go",
         (DrainEdge(waiting), SnapshotEdge(colour)),
         (passed,),
-        |cars: Vec<String>, _: String| (cars,),
+        |cars: Vec<String>, _: Colour| (cars,),
     );
-    b.transition("Change", (TakeEdge(colour),), (colour,), |light: String| {
+    b.transition("Change", (TakeEdge(colour),), (colour,), |light: Colour| {
         (light,)
     });
     let light = dot(&b.build().expect("the light builds"));

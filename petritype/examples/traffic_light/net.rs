@@ -4,18 +4,20 @@
 //! This is the conformance net `traffic-light` of the shared protocol
 //! (`../petritype/PROTOCOL.md` §11), the drain half of the
 //! edges-on-empty-places example, split from the shop on 2026-10-16:
-//! places, transitions, edges and outputs exactly as the two runtimes agreed
-//! them, so that a transcript recorded against the Python runner can replay
-//! against this one. It depends on `petritype` only, so that a runner's
-//! example binary can include this file as it is.
+//! places, transitions, edges, outputs, controls and styles exactly as the
+//! two runtimes agreed them, so that a transcript recorded against the
+//! Python runner can replay against this one. It depends on `petritype` and
+//! `serde` only, so that a runner's example binary can include this file as
+//! it is.
 //!
-//! Every place holds strings; every place is serializable, so that a host
-//! can `inject` into any of them. The light is one place, `Light`, holding
-//! one token whose value is the colour, `"red"`, `"green"` or `"amber"`; it
-//! starts red. Cars arrive in `Waiting` from outside, by `inject`, and go to
-//! `Passed`. The colours go round red, green, amber and red again
-//! ([`next_colour`]). Two transitions, one that moves the cars and one that
-//! changes the light, declared in this order:
+//! Every place is serializable, so that a host can `inject` into any of
+//! them. The light is one place, `Light`, holding one token, a [`Colour`]:
+//! red, green or amber, whose JSON form is the plain string, `"red"`, as it
+//! was when the token was a string. It starts red. Cars are strings; they
+//! arrive in `Waiting` from outside and go to `Passed`. The colours go round
+//! red, green, amber and red again ([`next_colour`]). Two transitions, one
+//! that moves the cars and one that changes the light, declared in this
+//! order:
 //!
 //! - `Go`, guarded on green and someone waiting, *drains* `Waiting` — every
 //!   car waiting, oldest first, all consumed — and *reads* `Light`
@@ -38,16 +40,67 @@
 //! writes back to it, a loop that `assert_acyclic` would refuse, so this
 //! net does not ask for that one either. (On 2026-10-16 the light went from
 //! three places to one place, and then to two transitions in all.)
+//!
+//! What the net declares beside its shape (2026-10-16, net-declared
+//! controls), which a viewer draws without knowing the net:
+//!
+//! - The light's token is coloured as the lamp it lights ([`TokenStyle`]:
+//!   red `#ff6347`, green `#32cd32`, amber `#ffa500`), and `Light` is
+//!   filled with its token's colour ([`PlaceStyle::fill_token`]).
+//! - Two controls, in this order: `car` (`+ Car`), a text box acting on
+//!   `Waiting`, which adds a car named as typed, or `Car N` when nothing is
+//!   typed ([`car_name`]); and `change` (`Change`), a button that fires
+//!   `Change`.
 
+use petritype::control::{Action, Control, Node, Pressed, Value};
+use petritype::style::{PlaceStyle, Rgb, Style, TokenStyle};
 use petritype::{
     BuildError, DrainEdge, Net, NetBuilder, PlaceRef, SnapshotEdge, TakeEdge, TransitionId,
 };
+use serde::{Deserialize, Serialize};
 
-/// The net, its places and its transitions.
+/// The light's colour: the one token of `Light`. Written in JSON as the
+/// lower-case string, `"red"`, `"green"` or `"amber"`, and shown as that
+/// too.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Colour {
+    /// Stop.
+    Red,
+    /// Go.
+    Green,
+    /// Stop, if you can.
+    Amber,
+}
+
+impl std::fmt::Display for Colour {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Colour::Red => "red",
+            Colour::Green => "green",
+            Colour::Amber => "amber",
+        })
+    }
+}
+
+/// The lamp each colour lights, the colour a viewer draws the token in (the
+/// junction notebook's tomato, lime green and orange).
+impl TokenStyle for Colour {
+    fn style(&self) -> Style {
+        Style::default().with_colour(match self {
+            Colour::Red => Rgb(0xff, 0x63, 0x47),
+            Colour::Green => Rgb(0x32, 0xcd, 0x32),
+            Colour::Amber => Rgb(0xff, 0xa5, 0x00),
+        })
+    }
+}
+
+/// The net, its places and its transitions. Its controls are on the net
+/// ([`Net::controls`]).
 pub struct TrafficLight {
     pub net: Net,
-    /// The light: one token, its colour, `"red"`, `"green"` or `"amber"`.
-    pub light: PlaceRef<String>,
+    /// The light: one token, its [`Colour`].
+    pub light: PlaceRef<Colour>,
     /// Cars waiting at the light, oldest first.
     pub waiting: PlaceRef<String>,
     /// Every car that has gone past the light, in the order they went.
@@ -59,47 +112,69 @@ pub struct TrafficLight {
 }
 
 /// The colour after `colour`: red to green, green to amber, amber to red.
-/// Anything else goes to red too, so a light given a colour it does not
-/// know is set right by its next `Change`.
-pub fn next_colour(colour: &str) -> &'static str {
+pub fn next_colour(colour: Colour) -> Colour {
     match colour {
-        "red" => "green",
-        "green" => "amber",
-        _ => "red",
+        Colour::Red => Colour::Green,
+        Colour::Green => Colour::Amber,
+        Colour::Amber => Colour::Red,
     }
 }
 
 /// The light's colour as `Go`'s guard reads it: the front token of
 /// `light`, or `None` while the place is empty.
-pub fn colour(net: &Net, light: PlaceRef<String>) -> Option<&str> {
+pub fn colour(net: &Net, light: PlaceRef<Colour>) -> Option<Colour> {
     let (token, _) = net.tokens(light.id()).next()?;
-    net.token::<String>(light.id(), token).map(String::as_str)
+    net.token::<Colour>(light.id(), token).copied()
+}
+
+/// The car a press of `+ Car` adds to `Waiting`: `typed` when something was
+/// typed, else `Car N`, `N` one more than the cars in `Waiting` and `Passed`
+/// together. Read off the marking, with no counter of its own, so that
+/// every runtime names it alike.
+pub fn car_name(
+    net: &Net,
+    waiting: PlaceRef<String>,
+    passed: PlaceRef<String>,
+    typed: &str,
+) -> String {
+    if typed.is_empty() {
+        format!(
+            "Car {}",
+            net.count(waiting.id()) + net.count(passed.id()) + 1
+        )
+    } else {
+        typed.to_owned()
+    }
 }
 
 /// `Go`'s body: every car that waited, oldest first, for `Passed`; the
 /// light was only read.
-pub fn go(cars: Vec<String>, _light: String) -> (Vec<String>,) {
+pub fn go(cars: Vec<String>, _light: Colour) -> (Vec<String>,) {
     (cars,)
 }
 
 /// `Change`'s body: the next colour, for `Light`.
-pub fn change(light: String) -> (String,) {
-    (next_colour(&light).to_owned(),)
+pub fn change(light: Colour) -> (Colour,) {
+    (next_colour(light),)
 }
 
-/// The traffic light as §11 seeds it: `"red"` in `Light`, every other place
-/// empty, every transition switched on, no parameters.
+/// The traffic light as §11 seeds it: red in `Light`, every other place
+/// empty, every transition switched on, no parameters; the light styled,
+/// and the two controls.
 pub fn build_traffic_light() -> Result<TrafficLight, BuildError> {
     let mut b = NetBuilder::new();
-    let light = b.place::<String>("Light");
+    let light = b.place::<Colour>("Light");
     let waiting = b.place::<String>("Waiting");
     let passed = b.place::<String>("Passed");
     // Every place takes a token injected over the wire, cars into `Waiting`
     // above all.
-    for place in [light, waiting, passed] {
-        b.serializable(place);
-    }
-    b.seed(light, ["red".to_owned()]);
+    b.serializable(light);
+    b.serializable(waiting);
+    b.serializable(passed);
+    b.seed(light, [Colour::Red]);
+    // The token as the lamp it lights, and the place filled with it.
+    b.styled(light);
+    b.place_style(light, PlaceStyle::fill_token());
 
     let go = b
         .transition(
@@ -108,11 +183,27 @@ pub fn build_traffic_light() -> Result<TrafficLight, BuildError> {
             (passed,),
             go,
         )
-        .guard(move |net| colour(net, light) == Some("green") && net.count(waiting.id()) > 0)
+        .guard(move |net| colour(net, light) == Some(Colour::Green) && net.count(waiting.id()) > 0)
         .id();
     let change = b
         .transition("Change", (TakeEdge(light),), (light,), change)
         .id();
+
+    // A text box, so its handler is the author's: the name of an untyped
+    // car is read off the marking, which an `inject` control's `make`
+    // cannot see. Its node and action are an inject's.
+    let mut car = Control::text("car", "+ Car", Some("name"), move |net, value| {
+        let Value::Text(typed) = value else {
+            return Err("a car's name is text".to_owned());
+        };
+        let name = car_name(net, waiting, passed, &typed);
+        net.put(waiting, name);
+        Ok(Pressed::Applied)
+    });
+    car.node = Some(Node::Place(waiting.id()));
+    car.action = Some(Action::Inject);
+    b.control(car)
+        .control(Control::fire("change", "Change", change));
 
     Ok(TrafficLight {
         net: b.build()?,

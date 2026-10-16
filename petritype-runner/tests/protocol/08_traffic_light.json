@@ -80,7 +80,10 @@
         {
          "name": "Light",
          "type_name": "<label>",
-         "serializable": true
+         "serializable": true,
+         "style": {
+          "fill": "token"
+         }
         },
         {
          "name": "Waiting",
@@ -134,7 +137,26 @@
           "direction": "out"
          }
         ]
-       }
+       },
+       "controls": [
+        {
+         "name": "car",
+         "label": "+ Car",
+         "kind": "text",
+         "node": "Waiting",
+         "action": "inject",
+         "config": {
+          "placeholder": "name"
+         }
+        },
+        {
+         "name": "change",
+         "label": "Change",
+         "kind": "button",
+         "node": "Change",
+         "action": "fire"
+        }
+       ]
       },
       "transitions": {
        "Go": {
@@ -157,7 +179,8 @@
          "tokens": [
           {
            "id": "<id:red>",
-           "label": "<label>"
+           "label": "<label>",
+           "color": "#ff6347"
           }
          ]
         },
@@ -200,7 +223,8 @@
        [
         "Light",
         "<id:green>",
-        "<label>"
+        "<label>",
+        "#32cd32"
        ]
       ],
       "duration_ms": "<ms>",
@@ -238,7 +262,8 @@
        [
         "Light",
         "<id:amber>",
-        "<label>"
+        "<label>",
+        "#ffa500"
        ]
       ],
       "duration_ms": "<ms>",
@@ -334,7 +359,8 @@
        [
         "Light",
         "<id:red_light>",
-        "<label>"
+        "<label>",
+        "#ff6347"
        ]
       ],
       "duration_ms": "<ms>",
@@ -372,7 +398,8 @@
        [
         "Light",
         "<id:green_light>",
-        "<label>"
+        "<label>",
+        "#32cd32"
        ]
       ],
       "duration_ms": "<ms>",
@@ -566,7 +593,8 @@
        [
         "Light",
         "<id:amber_light>",
-        "<label>"
+        "<label>",
+        "#ffa500"
        ]
       ],
       "duration_ms": "<ms>",
@@ -604,7 +632,10 @@
         {
          "name": "Light",
          "type_name": "<label>",
-         "serializable": true
+         "serializable": true,
+         "style": {
+          "fill": "token"
+         }
         },
         {
          "name": "Waiting",
@@ -658,7 +689,26 @@
           "direction": "out"
          }
         ]
-       }
+       },
+       "controls": [
+        {
+         "name": "car",
+         "label": "+ Car",
+         "kind": "text",
+         "node": "Waiting",
+         "action": "inject",
+         "config": {
+          "placeholder": "name"
+         }
+        },
+        {
+         "name": "change",
+         "label": "Change",
+         "kind": "button",
+         "node": "Change",
+         "action": "fire"
+        }
+       ]
       },
       "transitions": {
        "Go": {
@@ -681,7 +731,8 @@
          "tokens": [
           {
            "id": "<id:amber_light>",
-           "label": "<label>"
+           "label": "<label>",
+           "color": "#ffa500"
           }
          ]
         },
@@ -797,6 +848,155 @@
       "type_name": "<label>",
       "kind": "json",
       "value": "amber"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "press",
+    "params": {
+     "control": "change"
+    }
+   },
+   "expect": [
+    {
+     "method": "fired",
+     "params": {
+      "transition": "Change",
+      "consumed": [
+       [
+        "Light",
+        "<id:amber_light>"
+       ]
+      ],
+      "produced": [
+       [
+        "Light",
+        "<id:red_light_2>",
+        "<label>",
+        "#ff6347"
+       ]
+      ],
+      "duration_ms": "<ms>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "19",
+     "result": {
+      "status": "pressed",
+      "marking_version": "<version>"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "press",
+    "params": {
+     "control": "car",
+     "value": ""
+    }
+   },
+   "expect": [
+    {
+     "method": "added",
+     "params": {
+      "place": "Waiting",
+      "id": "<id:car_waiting_3>",
+      "label": "<label>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "20",
+     "result": {
+      "status": "pressed",
+      "marking_version": "<version>"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "press",
+    "params": {
+     "control": "car",
+     "value": "Taxi"
+    }
+   },
+   "expect": [
+    {
+     "method": "added",
+     "params": {
+      "place": "Waiting",
+      "id": "<id:taxi>",
+      "label": "<label>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "21",
+     "result": {
+      "status": "pressed",
+      "marking_version": "<version>"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "press",
+    "params": {
+     "control": "car",
+     "value": 7
+    }
+   },
+   "expect": [
+    {
+     "id": "22",
+     "error": {
+      "message": "<label>",
+      "code": "invalid_params"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "press",
+    "params": {
+     "control": "nope"
+    }
+   },
+   "expect": [
+    {
+     "id": "23",
+     "error": {
+      "message": "<label>",
+      "code": "unknown_control"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "press",
+    "params": {
+     "control": "change",
+     "value": true
+    }
+   },
+   "expect": [
+    {
+     "id": "24",
+     "error": {
+      "message": "<label>",
+      "code": "invalid_params"
      }
     }
    ]

@@ -25,7 +25,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use petritype::drivers::{self, Limits, Mode, OnFailure};
 use petritype::{
     BuildError, DrainEdge, EdgeInfo, EdgeKind, Event, Filter, Nested, Net, NetBuilder, NetError,
-    PlaceRef, SnapshotEdge, SurveyEdge, TakeAllEdge, TakeEdge, TokenId, TransitionId,
+    PlaceId, PlaceRef, SnapshotEdge, SurveyEdge, TakeAllEdge, TakeEdge, TokenId, TransitionId,
 };
 
 #[derive(Debug)]
@@ -86,9 +86,18 @@ fn shop() -> (Net, Shop) {
     (b.build().expect("the shop builds"), shop)
 }
 
+/// The light's colour, as the example's `Colour` is: the one token of
+/// `Light`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Colour {
+    Red,
+    Green,
+    Amber,
+}
+
 /// The traffic light's places and transitions.
 struct Junction {
-    light: PlaceRef<String>,
+    light: PlaceRef<Colour>,
     waiting: PlaceRef<String>,
     passed: PlaceRef<String>,
     go: TransitionId,
@@ -116,38 +125,45 @@ const UNGUARDED: Go = Go {
 };
 
 /// The light's colour, as `Go`'s guard reads it: the front token of `Light`.
-fn colour(net: &Net, light: PlaceRef<String>) -> Option<&str> {
+fn colour(net: &Net, light: PlaceRef<Colour>) -> Option<Colour> {
     let (token, _) = net.tokens(light.id()).next()?;
-    net.token::<String>(light.id(), token).map(String::as_str)
+    net.token::<Colour>(light.id(), token).copied()
 }
 
 /// The colour after `colour`: red, green, amber, red.
-fn next_colour(colour: &str) -> String {
+fn next_colour(colour: Colour) -> Colour {
     match colour {
-        "red" => "green",
-        "green" => "amber",
-        _ => "red",
+        Colour::Red => Colour::Green,
+        Colour::Green => Colour::Amber,
+        Colour::Amber => Colour::Red,
     }
-    .to_owned()
+}
+
+/// The colours in `Light`, in queue order: one, always.
+fn colours(net: &Net, light: PlaceRef<Colour>) -> Vec<Colour> {
+    net.tokens(light.id())
+        .map(|(id, _)| *net.token::<Colour>(light.id(), id).unwrap())
+        .collect()
 }
 
 /// The traffic light of `examples/traffic_light/net.rs`, declared into `b`,
-/// `"red"` seeded in `Light`: `Go`, guarded on green and someone waiting,
+/// red seeded in `Light` (its controls and its style left out: they are
+/// `tests/controls.rs`'s and the example's): `Go`, guarded on green and someone waiting,
 /// drains `Waiting` and snapshots `Light`, writing the cars to `Passed`;
 /// `Change`, unguarded, takes the light and writes the next colour back.
 /// `go` says whether `Go` keeps its guard and whether it fails, restoring
 /// what it took.
 fn declare_light(b: &mut NetBuilder, go: Go) -> Junction {
-    let light = b.place::<String>("Light");
+    let light = b.place::<Colour>("Light");
     let waiting = b.place::<String>("Waiting");
     let passed = b.place::<String>("Passed");
-    b.seed(light, [s("red")]);
+    b.seed(light, [Colour::Red]);
     let Go { guarded, jammed } = go;
     let mut drain = b.transition(
         "Go",
         (DrainEdge(waiting), SnapshotEdge(light)),
         (passed,),
-        move |cars: Vec<String>, _light: String| -> Result<(Vec<String>,), Broken> {
+        move |cars: Vec<String>, _light: Colour| -> Result<(Vec<String>,), Broken> {
             if jammed {
                 return Err(Broken);
             }
@@ -155,15 +171,17 @@ fn declare_light(b: &mut NetBuilder, go: Go) -> Junction {
         },
     );
     if guarded {
-        drain.guard(move |net| colour(net, light) == Some("green") && net.count(waiting.id()) > 0);
+        drain.guard(move |net| {
+            colour(net, light) == Some(Colour::Green) && net.count(waiting.id()) > 0
+        });
     }
     if jammed {
         drain.restore_tokens_on_failure();
     }
     let go = drain.id();
     let change = b
-        .transition("Change", (TakeEdge(light),), (light,), |l: String| {
-            (next_colour(&l),)
+        .transition("Change", (TakeEdge(light),), (light,), |l: Colour| {
+            (next_colour(l),)
         })
         .id();
     Junction {
@@ -263,18 +281,18 @@ fn the_traffic_light_runs_the_script() {
 
     assert_eq!(net.fireable(), [junction.change], "red, nobody waiting");
     assert_eq!(net.step().unwrap(), Some(junction.change));
-    assert_eq!(strings(&net, junction.light), ["green"]);
+    assert_eq!(colours(&net, junction.light), [Colour::Green]);
     assert_eq!(net.fireable(), [junction.change], "green, nobody waiting");
     assert_eq!(net.step().unwrap(), Some(junction.change));
-    assert_eq!(strings(&net, junction.light), ["amber"]);
+    assert_eq!(colours(&net, junction.light), [Colour::Amber]);
 
     net.extend(junction.waiting, [s("Car 1"), s("Car 2")]);
     assert_eq!(net.fireable(), [junction.change], "the cars wait at amber");
     assert_eq!(net.step().unwrap(), Some(junction.change));
-    assert_eq!(strings(&net, junction.light), ["red"]);
+    assert_eq!(colours(&net, junction.light), [Colour::Red]);
     assert_eq!(net.fireable(), [junction.change], "and at red");
     assert_eq!(net.step().unwrap(), Some(junction.change));
-    assert_eq!(strings(&net, junction.light), ["green"]);
+    assert_eq!(colours(&net, junction.light), [Colour::Green]);
     assert_eq!(
         net.fireable(),
         [junction.go, junction.change],
@@ -291,10 +309,10 @@ fn the_traffic_light_runs_the_script() {
     assert_eq!(net.fireable(), [junction.go, junction.change]);
     assert_eq!(net.step().unwrap(), Some(junction.go));
     assert_eq!(ids(&net, junction.light), lamp, "read, not taken");
-    assert_eq!(strings(&net, junction.light), ["green"]);
+    assert_eq!(colours(&net, junction.light), [Colour::Green]);
     assert_eq!(net.step().unwrap(), Some(junction.change));
 
-    assert_eq!(strings(&net, junction.light), ["amber"]);
+    assert_eq!(colours(&net, junction.light), [Colour::Amber]);
     assert_eq!(strings(&net, junction.passed), ["Car 1", "Car 2", "Car 3"]);
     assert_eq!(net.count(junction.waiting.id()), 0);
     assert_eq!(net.fired_count(), 7);
@@ -436,7 +454,7 @@ fn consumed_lists_what_a_drain_took_oldest_first() {
     );
 
     let (mut net, junction) = junction_with(UNGUARDED);
-    net.set_tokens(junction.light, [s("green")]);
+    net.set_tokens(junction.light, [Colour::Green]);
     net.drain_events().for_each(drop);
     assert_eq!(net.step().unwrap(), Some(junction.go));
     let events: Vec<Event> = net.drain_events().collect();
@@ -498,7 +516,7 @@ fn launched_names_the_drained_tokens() {
     net.distribute(firing.run()).unwrap();
     assert_eq!(strings(&net, junction.passed), ["Car 1"]);
     assert_eq!(ids(&net, junction.light), lamp);
-    assert_eq!(strings(&net, junction.light), ["green"]);
+    assert_eq!(colours(&net, junction.light), [Colour::Green]);
 }
 
 // ----- detachable -----------------------------------------------------------------
@@ -582,7 +600,7 @@ fn a_failing_go_restores_the_cars_oldest_first_with_their_ids() {
         guarded: true,
         jammed: true,
     });
-    net.set_tokens(junction.light, [s("green")]);
+    net.set_tokens(junction.light, [Colour::Green]);
     let lamp = ids(&net, junction.light);
     let cars = net.extend(junction.waiting, [s("Car 1"), s("Car 2")]);
     net.drain_events().for_each(drop);
@@ -610,7 +628,7 @@ fn a_failing_go_restores_the_cars_oldest_first_with_their_ids() {
     );
     assert_eq!(strings(&net, junction.waiting), ["Car 1", "Car 2", "Car 3"]);
     assert_eq!(ids(&net, junction.light), lamp);
-    assert_eq!(strings(&net, junction.light), ["green"]);
+    assert_eq!(colours(&net, junction.light), [Colour::Green]);
     assert!(net.tokens(junction.passed.id()).next().is_none());
 
     // With the guard left off and nobody waiting, the failing firing took
@@ -619,7 +637,7 @@ fn a_failing_go_restores_the_cars_oldest_first_with_their_ids() {
         guarded: false,
         jammed: true,
     });
-    net.set_tokens(junction.light, [s("green")]);
+    net.set_tokens(junction.light, [Colour::Green]);
     let lamp = ids(&net, junction.light);
     net.drain_events().for_each(drop);
     net.fire(junction.go).expect_err("still jammed");
@@ -947,15 +965,15 @@ fn the_read_api_carries_the_kinds() {
     );
     assert_eq!(infos[0].1.filters, [None, None]);
     assert_eq!(infos[1].1.inputs, [(junction.light.id(), EdgeKind::Take)]);
-    let input = |place: PlaceRef<String>, transition, kind| EdgeInfo::Input {
-        place: place.id(),
+    let input = |place: PlaceId, transition, kind| EdgeInfo::Input {
+        place,
         transition,
         kind,
         filter: None,
     };
-    let output = |transition, place: PlaceRef<String>, slot| EdgeInfo::Output {
+    let output = |transition, place: PlaceId, slot| EdgeInfo::Output {
         transition,
-        place: place.id(),
+        place,
         slot,
     };
     let Junction {
@@ -966,11 +984,11 @@ fn the_read_api_carries_the_kinds() {
         change,
     } = junction;
     let expected = vec![
-        input(waiting, go, EdgeKind::Drain),
-        input(light, go, EdgeKind::Snapshot),
-        output(go, passed, 0),
-        input(light, change, EdgeKind::Take),
-        output(change, light, 0),
+        input(waiting.id(), go, EdgeKind::Drain),
+        input(light.id(), go, EdgeKind::Snapshot),
+        output(go, passed.id(), 0),
+        input(light.id(), change, EdgeKind::Take),
+        output(change, light.id(), 0),
     ];
     assert_eq!(net.edges().collect::<Vec<_>>(), expected);
     assert_eq!(

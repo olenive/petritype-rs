@@ -4,6 +4,7 @@ use crate::edge::{EdgeInfo, EdgeKind};
 use crate::ids::{PlaceId, TransitionId};
 use crate::keys::Filter;
 use crate::net::PlaceInfo;
+use crate::style::PlaceStyle;
 use crate::transition::TransitionInfo;
 
 /// The shape of a net at one moment, owned: its places, its transitions and
@@ -96,6 +97,10 @@ pub struct TopologyPlace {
     /// written only when there are some, like `nested`.
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Vec::is_empty"))]
     pub key_names: Vec<&'static str>,
+    /// [`PlaceInfo::style`]: how the place itself is drawn. With `serde`,
+    /// written only when there is one, as `{"fill": "token"}`.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub style: Option<PlaceStyle>,
 }
 
 /// One transition of a [`Topology`]: what [`TransitionInfo`] reports, owned,
@@ -156,6 +161,7 @@ impl Topology {
                     nested: info.nested,
                     passive: info.passive,
                     key_names: info.key_names.to_vec(),
+                    style: info.style,
                 })
                 .collect(),
             transitions: transitions

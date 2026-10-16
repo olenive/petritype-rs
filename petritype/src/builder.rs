@@ -62,6 +62,7 @@ use crate::net::Net;
 use crate::param::ParamSlot;
 use crate::place::{CloneFn, DebugFn, ErasedToken, PlaceMeta, PlaceSlot, clone_of, debug_of};
 use crate::sealed::{BodySealed, EdgeTupleSealed, PlaceTupleSealed};
+use crate::style::{PlaceStyle, Style, TokenStyle, style_fn};
 use crate::transition::{ArgSource, TransitionBuilder, TransitionSlot};
 
 /// How many characters a label keeps by default, as in Python petritype.
@@ -479,6 +480,72 @@ impl NetBuilder {
             return;
         }
         meta.keys = Some(KeysVtable::of(names, extractor));
+    }
+
+    /// Gives a place's tokens a [`Style`]: what each looks like, derived
+    /// from its value by `f`, as its keys are by an extractor (see the
+    /// [`style`](crate::style) module). [`Net::style`] reads one token's.
+    ///
+    /// ```
+    /// use petritype::NetBuilder;
+    /// use petritype::style::{Rgb, Style};
+    ///
+    /// let mut b = NetBuilder::new();
+    /// let load = b.place::<u32>("Load");
+    /// b.style(load, |kg: &u32| {
+    ///     Style::default().with_colour(if *kg > 10 { Rgb(0xd9, 0x4f, 0x4f) } else { Rgb(0, 0x80, 0) })
+    /// });
+    /// b.seed(load, [12]);
+    /// let net = b.build()?;
+    ///
+    /// let (heavy, _) = net.tokens(load.id()).next().unwrap();
+    /// assert_eq!(net.style(load.id(), heavy).unwrap().colour, Some(Rgb(0xd9, 0x4f, 0x4f)));
+    /// # Ok::<(), petritype::BuildError>(())
+    /// ```
+    ///
+    /// A style is derived whenever a reader asks, never stored, so a token
+    /// that changes changes its look. Like a key extractor, `f` should be a
+    /// pure function of the token that does not panic. A second call for
+    /// the same place replaces the first.
+    ///
+    /// # Panics
+    ///
+    /// If `place` came from a different builder.
+    pub fn style<T: 'static>(
+        &mut self,
+        place: PlaceRef<T>,
+        f: impl Fn(&T) -> Style + Send + Sync + 'static,
+    ) {
+        let index = self.index_of(place, "style");
+        self.places[index].meta.style = Some(style_fn(f));
+    }
+
+    /// Styles a place's tokens with their own [`TokenStyle`]: the one line
+    /// that opts a place in, `self.style(place, T::style)`.
+    ///
+    /// Places have no trait bound, and Rust no specialisation to find the
+    /// implementation by itself, so a token type that implements the trait
+    /// is styled only where its place says so.
+    ///
+    /// # Panics
+    ///
+    /// If `place` came from a different builder.
+    pub fn styled<T: TokenStyle + 'static>(&mut self, place: PlaceRef<T>) {
+        self.style(place, <T as TokenStyle>::style);
+    }
+
+    /// Gives a place a [`PlaceStyle`]: a rule for drawing the place itself
+    /// that the viewer evaluates, such as
+    /// [`PlaceStyle::fill_token`]. It is shape, not state: on
+    /// [`PlaceInfo::style`](crate::PlaceInfo::style) and in the
+    /// [`Topology`](crate::Topology). A second call replaces the first.
+    ///
+    /// # Panics
+    ///
+    /// If `place` came from a different builder.
+    pub fn place_style<T: 'static>(&mut self, place: PlaceRef<T>, style: PlaceStyle) {
+        let index = self.index_of(place, "place_style");
+        self.places[index].meta.place_style = Some(style);
     }
 
     /// Gives a place its initial tokens. Repeated calls append.
@@ -1444,6 +1511,8 @@ impl NetBuilder {
                 nested: None,
                 passive: false,
                 keys: None,
+                style: None,
+                place_style: None,
             },
             tokens: VecDeque::new(),
         });

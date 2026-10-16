@@ -374,6 +374,7 @@ mod place;
 pub mod routing;
 mod sealed;
 mod snapshot;
+pub mod style;
 #[cfg(feature = "serde")]
 mod template;
 mod topology;

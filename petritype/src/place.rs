@@ -7,6 +7,7 @@ use std::fmt;
 use crate::ids::TokenId;
 use crate::keys::KeysVtable;
 use crate::nested::NestedVtable;
+use crate::style::{PlaceStyle, StyleFn};
 
 /// A token as the net stores it: owned, type-erased, and safe to move to
 /// another thread with the net.
@@ -101,6 +102,16 @@ pub(crate) struct PlaceMeta {
     /// whose tokens have no keys (DESIGN §8.3). Unlike the entries above it
     /// holds a closure, in an `Arc`, so cloning the metadata shares it.
     pub(crate) keys: Option<KeysVtable>,
+    /// The function declared with
+    /// [`NetBuilder::style`](crate::NetBuilder::style) (or
+    /// [`styled`](crate::NetBuilder::styled)) that gives each token its
+    /// [`Style`](crate::style::Style), or `None` for a place whose tokens
+    /// have none. A closure in an `Arc`, as `keys` is.
+    pub(crate) style: Option<StyleFn>,
+    /// The rule declared with
+    /// [`NetBuilder::place_style`](crate::NetBuilder::place_style) for
+    /// drawing the place itself, or `None`.
+    pub(crate) place_style: Option<PlaceStyle>,
 }
 
 impl fmt::Debug for PlaceMeta {
@@ -116,6 +127,8 @@ impl fmt::Debug for PlaceMeta {
                     .map(|keys| &keys.names[..])
                     .unwrap_or(&[]),
             )
+            .field("styled", &self.style.is_some())
+            .field("place_style", &self.place_style)
             .finish_non_exhaustive()
     }
 }

@@ -17,6 +17,7 @@ use crate::index::KeyIndex;
 use crate::nested::{DeepPolicy, lift_from};
 use crate::param::{ParamSlot, param_of, param_slot_index};
 use crate::place::{ErasedToken, PlaceSlot, erase_all};
+use crate::style::{PlaceStyle, Style};
 use crate::topology::Topology;
 use crate::transition::{TransitionInfo, TransitionSlot};
 
@@ -147,6 +148,11 @@ pub struct PlaceInfo<'a> {
     /// bar, before any token is there to ask. Borrowed from the net, so that
     /// `PlaceInfo` stays `Copy`.
     pub key_names: &'a [&'static str],
+    /// How the place itself is drawn, as declared with
+    /// [`NetBuilder::place_style`](crate::NetBuilder::place_style); `None`
+    /// for a place drawn as any other. A rule the viewer evaluates (see the
+    /// [`style`](crate::style) module).
+    pub style: Option<PlaceStyle>,
 }
 
 impl Net {
@@ -375,6 +381,19 @@ impl Net {
     /// token in full. `None` if the place or the token does not exist.
     pub fn debug(&self, place: PlaceId, token: TokenId) -> Option<String> {
         debug_in(&self.places, place, token)
+    }
+
+    /// What a token looks like: its place's style function, as declared with
+    /// [`NetBuilder::style`](crate::NetBuilder::style) or
+    /// [`styled`](crate::NetBuilder::styled), applied to it now.
+    ///
+    /// `None` when the place has no style function, or the place or the
+    /// token does not exist. See the [`style`](crate::style) module.
+    pub fn style(&self, place: PlaceId, token: TokenId) -> Option<Style> {
+        let slot = self.places.get(place.0 as usize)?;
+        let style = slot.meta.style.as_ref()?;
+        let index = slot.position(token)?;
+        Some(style(&*slot.tokens[index].1))
     }
 
     /// A token rendered as JSON, for an inspector that wants structure rather
@@ -1091,6 +1110,7 @@ pub(crate) fn places_of(
             nested: slot.meta.nested.is_some(),
             passive: slot.meta.passive,
             key_names: slot.meta.keys.as_ref().map_or(&[], |keys| &keys.names[..]),
+            style: slot.meta.place_style,
         };
         (id, info)
     })

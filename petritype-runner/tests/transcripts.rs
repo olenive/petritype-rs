@@ -77,10 +77,11 @@
 //! over `shop` (2026-10-14, the `drain` and `survey` edge kinds; recorded
 //! again on 2026-10-16 for the shop that only surveys) and
 //! `08_traffic_light.json` over `traffic-light` (2026-10-16, the drain's own
-//! net). The shared set of §11, over the conformance nets
-//! `parcel-distribution`, `transit`, `wildlife`, `shop` and `traffic-light`,
-//! lives in the Python repository and is replayed here from a sibling
-//! checkout by `the_shared_transcripts_hold`.
+//! net; recorded again the same day for the light as one place, which
+//! replays with no runner change). The shared set of §11, over the
+//! conformance nets `parcel-distribution`, `transit`, `wildlife`, `shop` and
+//! `traffic-light`, lives in the Python repository and is replayed here from
+//! a sibling checkout by `the_shared_transcripts_hold`.
 //! A transcript over a conformance net is replayed against a runner carrying
 //! that net alone (§11), whichever directory it is in, so that it may pin
 //! `describe` in full; any other against everything the example carries.

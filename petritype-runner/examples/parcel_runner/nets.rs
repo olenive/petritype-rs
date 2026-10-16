@@ -322,7 +322,7 @@ pub fn shop_registry() -> Vec<NetEntry> {
 #[allow(dead_code)]
 pub mod traffic_light_net;
 
-/// The light as §11 seeds it: the light in `Red`, nobody waiting, every
+/// The light as §11 seeds it: `"red"` in `Light`, nobody waiting, every
 /// place one a host may `inject` a string into. No parameters of either
 /// kind. The net never quiesces: some light transition is always fireable.
 pub fn traffic_light(_: &petritype_runner::Params) -> Result<Net, LoadError> {

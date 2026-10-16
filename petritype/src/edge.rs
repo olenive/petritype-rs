@@ -422,26 +422,30 @@ pub struct MutateWhereEdge<T>(
 /// ```
 /// # use petritype::{DrainEdge, NetBuilder, TakeEdge};
 /// let mut b = NetBuilder::new();
-/// let red = b.place::<String>("Red");
+/// // The light is one place, and its token is the colour.
+/// let light = b.place::<String>("Light");
 /// let waiting = b.place::<String>("Waiting");
-/// let green = b.place::<String>("Green");
 /// let passed = b.place::<String>("Passed");
 /// b.transition(
 ///     "Turn Green",
-///     (TakeEdge(red), DrainEdge(waiting)),
-///     (green, passed),
-///     |light: String, cars: Vec<String>| (light, cars),
-/// );
+///     (TakeEdge(light), DrainEdge(waiting)),
+///     (light, passed),
+///     |_red: String, cars: Vec<String>| ("green".to_owned(), cars),
+/// )
+/// .guard(move |net| {
+///     let front = net.tokens(light.id()).next();
+///     front.and_then(|(token, _)| net.token::<String>(light.id(), token)).is_some_and(|c| c == "red")
+/// });
 /// let mut net = b.build()?;
 ///
-/// net.put(red, "light".to_owned());
+/// net.put(light, "red".to_owned());
 /// assert!(net.step()?.is_some(), "turns green with nobody waiting");
 /// assert_eq!(net.count(passed.id()), 0);
+/// assert!(net.fireable().is_empty(), "and waits for red");
 ///
 /// // Red again (the rest of the light's cycle is left out here), and two
 /// // cars waiting.
-/// net.set_tokens(green, Vec::<String>::new());
-/// net.put(red, "light".to_owned());
+/// net.set_tokens(light, ["red".to_owned()]);
 /// net.extend(waiting, ["Car 1".to_owned(), "Car 2".to_owned()]);
 /// net.step()?;
 /// assert_eq!(net.count(waiting.id()), 0, "everyone waiting went");

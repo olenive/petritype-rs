@@ -379,20 +379,21 @@ fn drain_and_survey_edges_have_a_hollow_arrowhead() {
     );
     assert!(shop.contains("  p0 -> t0 [color=black, penwidth=1];\n"));
 
+    // The light is one place, its token the colour: `Turn Green` takes it
+    // and writes the next colour back, and `Pass on Green` reads it.
     let mut b = NetBuilder::new();
-    let red = b.place::<String>("Red");
+    let colour = b.place::<String>("Light");
     let waiting = b.place::<String>("Waiting");
-    let green = b.place::<String>("Green");
     let passed = b.place::<String>("Passed");
     b.transition(
         "Turn Green",
-        (TakeEdge(red), DrainEdge(waiting)),
-        (green, passed),
-        |light: String, cars: Vec<String>| (light, cars),
+        (TakeEdge(colour), DrainEdge(waiting)),
+        (colour, passed),
+        |_: String, cars: Vec<String>| ("green".to_owned(), cars),
     );
     b.transition(
         "Pass on Green",
-        (TakeEdge(waiting), SnapshotEdge(green)),
+        (TakeEdge(waiting), SnapshotEdge(colour)),
         (passed,),
         |car: String, _: String| (car,),
     );
@@ -403,7 +404,11 @@ fn drain_and_survey_edges_have_a_hollow_arrowhead() {
     );
     assert!(light.contains("  p0 -> t0 [color=black, penwidth=1];\n"));
     assert!(
-        light.contains("  p2 -> t1 [style=dashed, color=dimgray, arrowhead=normal, penwidth=1];\n"),
+        light.contains("  t0 -> p0 [color=black, penwidth=1, label=\"0\"];\n"),
+        "taken from `Light` and written back: two edges, one each way",
+    );
+    assert!(
+        light.contains("  p0 -> t1 [style=dashed, color=dimgray, arrowhead=normal, penwidth=1];\n"),
         "a SnapshotEdge keeps its plain arrowhead: it needs a token",
     );
 }

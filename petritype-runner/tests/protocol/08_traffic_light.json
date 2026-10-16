@@ -78,17 +78,7 @@
       "topology": {
        "places": [
         {
-         "name": "Red",
-         "type_name": "<label>",
-         "serializable": true
-        },
-        {
-         "name": "Green",
-         "type_name": "<label>",
-         "serializable": true
-        },
-        {
-         "name": "Amber",
+         "name": "Light",
          "type_name": "<label>",
          "serializable": true
         },
@@ -113,18 +103,14 @@
          "detail": "<any>"
         },
         {
-         "name": "Turn Amber",
-         "detail": "<any>"
-        },
-        {
-         "name": "Turn Red",
+         "name": "Change",
          "detail": "<any>"
         }
        ],
        "edges": {
         "<unordered>": [
          {
-          "place": "Red",
+          "place": "Light",
           "transition": "Turn Green",
           "direction": "in",
           "kind": "take"
@@ -142,25 +128,19 @@
           "kind": "take"
          },
          {
-          "place": "Green",
-          "transition": "Turn Amber",
+          "place": "Light",
+          "transition": "Change",
           "direction": "in",
           "kind": "take"
          },
          {
-          "place": "Amber",
-          "transition": "Turn Red",
-          "direction": "in",
-          "kind": "take"
-         },
-         {
-          "place": "Green",
+          "place": "Light",
           "transition": "Pass on Green",
           "direction": "in",
           "kind": "snapshot"
          },
          {
-          "place": "Green",
+          "place": "Light",
           "transition": "Turn Green",
           "direction": "out",
           "slot": 0
@@ -177,13 +157,8 @@
           "direction": "out"
          },
          {
-          "place": "Amber",
-          "transition": "Turn Amber",
-          "direction": "out"
-         },
-         {
-          "place": "Red",
-          "transition": "Turn Red",
+          "place": "Light",
+          "transition": "Change",
           "direction": "out"
          }
         ]
@@ -202,13 +177,7 @@
         "in_flight": false,
         "priority": 0.0
        },
-       "Turn Amber": {
-        "enabled": true,
-        "fireable": false,
-        "in_flight": false,
-        "priority": 0.0
-       },
-       "Turn Red": {
+       "Change": {
         "enabled": true,
         "fireable": false,
         "in_flight": false,
@@ -217,22 +186,14 @@
       },
       "marking": {
        "places": {
-        "Red": {
+        "Light": {
          "count": 1,
          "tokens": [
           {
-           "id": "<id:light>",
+           "id": "<id:red>",
            "label": "<label>"
           }
          ]
-        },
-        "Green": {
-         "count": 0,
-         "tokens": []
-        },
-        "Amber": {
-         "count": 0,
-         "tokens": []
         },
         "Waiting": {
          "count": 0,
@@ -265,14 +226,14 @@
       "transition": "Turn Green",
       "consumed": [
        [
-        "Red",
-        "<id:light>"
+        "Light",
+        "<id:red>"
        ]
       ],
       "produced": [
        [
-        "Green",
-        "<id:light_green>",
+        "Light",
+        "<id:green>",
         "<label>"
        ]
       ],
@@ -285,7 +246,7 @@
      "method": "fireable",
      "params": {
       "transitions": [
-       "Turn Amber"
+       "Change"
       ],
       "marking_version": "<version>",
       "running": false
@@ -310,17 +271,17 @@
     {
      "method": "fired",
      "params": {
-      "transition": "Turn Amber",
+      "transition": "Change",
       "consumed": [
        [
-        "Green",
-        "<id:light_green>"
+        "Light",
+        "<id:green>"
        ]
       ],
       "produced": [
        [
-        "Amber",
-        "<id:light_amber>",
+        "Light",
+        "<id:amber>",
         "<label>"
        ]
       ],
@@ -330,20 +291,10 @@
      }
     },
     {
-     "method": "fireable",
-     "params": {
-      "transitions": [
-       "Turn Red"
-      ],
-      "marking_version": "<version>",
-      "running": false
-     }
-    },
-    {
      "id": "5",
      "result": {
       "fired": true,
-      "transition": "Turn Amber",
+      "transition": "Change",
       "marking_version": "<version>",
       "running": false
      }
@@ -416,17 +367,17 @@
     {
      "method": "fired",
      "params": {
-      "transition": "Turn Red",
+      "transition": "Change",
       "consumed": [
        [
-        "Amber",
-        "<id:light_amber>"
+        "Light",
+        "<id:amber>"
        ]
       ],
       "produced": [
        [
-        "Red",
-        "<id:light_red>",
+        "Light",
+        "<id:red_light>",
         "<label>"
        ]
       ],
@@ -449,7 +400,7 @@
      "id": "8",
      "result": {
       "fired": true,
-      "transition": "Turn Red",
+      "transition": "Change",
       "marking_version": "<version>",
       "running": false
      }
@@ -467,8 +418,8 @@
       "transition": "Turn Green",
       "consumed": [
        [
-        "Red",
-        "<id:light_red>"
+        "Light",
+        "<id:red_light>"
        ],
        [
         "Waiting",
@@ -481,8 +432,8 @@
       ],
       "produced": [
        [
-        "Green",
-        "<id:light_green_2>",
+        "Light",
+        "<id:green_light>",
         "<label>"
        ],
        [
@@ -505,7 +456,7 @@
      "method": "fireable",
      "params": {
       "transitions": [
-       "Turn Amber"
+       "Change"
       ],
       "marking_version": "<version>",
       "running": false
@@ -546,7 +497,7 @@
      "params": {
       "transitions": [
        "Pass on Green",
-       "Turn Amber"
+       "Change"
       ],
       "marking_version": "<version>",
       "running": false
@@ -593,7 +544,7 @@
      "method": "fireable",
      "params": {
       "transitions": [
-       "Turn Amber"
+       "Change"
       ],
       "marking_version": "<version>",
       "running": false
@@ -618,17 +569,17 @@
     {
      "method": "fired",
      "params": {
-      "transition": "Turn Amber",
+      "transition": "Change",
       "consumed": [
        [
-        "Green",
-        "<id:light_green_2>"
+        "Light",
+        "<id:green_light>"
        ]
       ],
       "produced": [
        [
-        "Amber",
-        "<id:light_amber_2>",
+        "Light",
+        "<id:amber_light>",
         "<label>"
        ]
       ],
@@ -638,20 +589,10 @@
      }
     },
     {
-     "method": "fireable",
-     "params": {
-      "transitions": [
-       "Turn Red"
-      ],
-      "marking_version": "<version>",
-      "running": false
-     }
-    },
-    {
      "id": "12",
      "result": {
       "fired": true,
-      "transition": "Turn Amber",
+      "transition": "Change",
       "marking_version": "<version>",
       "running": false
      }
@@ -675,17 +616,7 @@
       "topology": {
        "places": [
         {
-         "name": "Red",
-         "type_name": "<label>",
-         "serializable": true
-        },
-        {
-         "name": "Green",
-         "type_name": "<label>",
-         "serializable": true
-        },
-        {
-         "name": "Amber",
+         "name": "Light",
          "type_name": "<label>",
          "serializable": true
         },
@@ -710,18 +641,14 @@
          "detail": "<any>"
         },
         {
-         "name": "Turn Amber",
-         "detail": "<any>"
-        },
-        {
-         "name": "Turn Red",
+         "name": "Change",
          "detail": "<any>"
         }
        ],
        "edges": {
         "<unordered>": [
          {
-          "place": "Red",
+          "place": "Light",
           "transition": "Turn Green",
           "direction": "in",
           "kind": "take"
@@ -739,25 +666,19 @@
           "kind": "take"
          },
          {
-          "place": "Green",
-          "transition": "Turn Amber",
+          "place": "Light",
+          "transition": "Change",
           "direction": "in",
           "kind": "take"
          },
          {
-          "place": "Amber",
-          "transition": "Turn Red",
-          "direction": "in",
-          "kind": "take"
-         },
-         {
-          "place": "Green",
+          "place": "Light",
           "transition": "Pass on Green",
           "direction": "in",
           "kind": "snapshot"
          },
          {
-          "place": "Green",
+          "place": "Light",
           "transition": "Turn Green",
           "direction": "out",
           "slot": 0
@@ -774,13 +695,8 @@
           "direction": "out"
          },
          {
-          "place": "Amber",
-          "transition": "Turn Amber",
-          "direction": "out"
-         },
-         {
-          "place": "Red",
-          "transition": "Turn Red",
+          "place": "Light",
+          "transition": "Change",
           "direction": "out"
          }
         ]
@@ -799,13 +715,7 @@
         "in_flight": false,
         "priority": 0.0
        },
-       "Turn Amber": {
-        "enabled": true,
-        "fireable": false,
-        "in_flight": false,
-        "priority": 0.0
-       },
-       "Turn Red": {
+       "Change": {
         "enabled": true,
         "fireable": true,
         "in_flight": false,
@@ -814,19 +724,11 @@
       },
       "marking": {
        "places": {
-        "Red": {
-         "count": 0,
-         "tokens": []
-        },
-        "Green": {
-         "count": 0,
-         "tokens": []
-        },
-        "Amber": {
+        "Light": {
          "count": 1,
          "tokens": [
           {
-           "id": "<id:light_amber_2>",
+           "id": "<id:amber_light>",
            "label": "<label>"
           }
          ]
@@ -856,11 +758,10 @@
       },
       "progress": {
        "step_count": 6,
-       "last_fired": "Turn Amber",
+       "last_fired": "Change",
        "fired_counts": {
         "Turn Green": 2,
-        "Turn Amber": 2,
-        "Turn Red": 1,
+        "Change": 3,
         "Pass on Green": 1
        },
        "last_progress_at": "<time>"
@@ -933,18 +834,18 @@
    "send": {
     "method": "get_token",
     "params": {
-     "id": "<id:light_amber_2>"
+     "id": "<id:amber_light>"
     }
    },
    "expect": [
     {
      "id": "17",
      "result": {
-      "id": "<id:light_amber_2>",
-      "place": "Amber",
+      "id": "<id:amber_light>",
+      "place": "Light",
       "type_name": "<label>",
       "kind": "json",
-      "value": "light"
+      "value": "amber"
      }
     }
    ]

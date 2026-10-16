@@ -970,8 +970,8 @@ impl NetBuilder {
     /// ```
     ///
     /// Beside a [`TakeEdge`](crate::TakeEdge) — a traffic light's `Turn
-    /// Green` taking the light from `Red` and draining the cars waiting — the
-    /// transition is no source: the light is what each firing pays.
+    /// Green` taking the light from `Light` and draining the cars waiting —
+    /// the transition is no source: the light is what each firing pays.
     ///
     /// Passing proves that every firing shrinks the marking, not that the
     /// net stops: tokens can still go round a cycle for ever, since what one

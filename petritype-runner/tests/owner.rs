@@ -2849,7 +2849,7 @@ fn panel(_: &Params) -> Result<Net, LoadError> {
         .id();
     b.control(Control::fire("flip", "Flip", flip))
         .control(
-            Control::inject("join", "+ Join", queue, |value| match value {
+            Control::inject("join", "+ Join", queue, |value, _| match value {
                 Pressing::Text(name) => name,
                 _ => "anon".to_owned(),
             })

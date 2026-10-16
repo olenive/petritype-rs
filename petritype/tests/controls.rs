@@ -225,7 +225,7 @@ fn panel() -> Panel {
             "inject",
             "Inject",
             inbox,
-            |value| match value {
+            |value, _: &Net| match value {
                 Value::Text(text) => text,
                 _ => "nothing".to_owned(),
             },
@@ -401,8 +401,8 @@ fn an_unknown_control_is_an_error_and_changes_nothing() {
 fn a_duplicate_control_name_does_not_build() {
     let mut b = NetBuilder::new();
     let place = b.place::<u32>("Place");
-    b.control(Control::inject("same", "One", place, |_| 1));
-    b.control(Control::inject("same", "Two", place, |_| 2));
+    b.control(Control::inject("same", "One", place, |_, _| 1));
+    b.control(Control::inject("same", "Two", place, |_, _| 2));
     match b.build() {
         Err(BuildError::DuplicateControlName { name }) => assert_eq!(name, "same"),
         other => panic!("expected DuplicateControlName, got {other:?}"),
@@ -434,7 +434,7 @@ fn an_inject_given_another_kind_takes_that_kind_s_value() {
     let mut b = NetBuilder::new();
     let names = b.place::<String>("Names");
     b.control(
-        Control::inject("name", "Name", names, |value| match value {
+        Control::inject("name", "Name", names, |value, _| match value {
             Value::Text(text) => text,
             _ => unreachable!("a text control is handed text"),
         })
@@ -553,8 +553,8 @@ fn a_handler_that_refuses_is_refused() {
 
 #[test]
 fn a_handler_reads_the_net_and_changes_it() {
-    // A text box that names a car after the cars there are when it is
-    // empty, as the traffic light's `car` does.
+    // A text box whose own handler names a car after the cars there are
+    // when it is empty, and puts it.
     let mut b = NetBuilder::new();
     let waiting = b.place::<String>("Waiting");
     let calls = Arc::new(AtomicUsize::new(0));
@@ -587,13 +587,56 @@ fn a_handler_reads_the_net_and_changes_it() {
     assert_eq!(net.state_counter(), 4, "four Added, one per press");
 }
 
+/// An inject's `make` is handed the net as it stands before the token goes
+/// in, so it can name what it makes from the marking, as the traffic
+/// light's `car` does; given another kind, the node and the action stay the
+/// constructor's.
+#[test]
+fn an_inject_s_make_reads_the_net_before_its_token_goes_in() {
+    let mut b = NetBuilder::new();
+    let waiting = b.place::<String>("Waiting");
+    let passed = b.place::<String>("Passed");
+    b.seed(passed, ["Car 1".to_owned()]);
+    b.control(
+        Control::inject("car", "+ Car", waiting, move |value, net| match value {
+            Value::Text(name) if !name.is_empty() => name,
+            _ => format!(
+                "Car {}",
+                net.count(waiting.id()) + net.count(passed.id()) + 1
+            ),
+        })
+        .with_kind(ControlKind::Text {
+            placeholder: Some("name".into()),
+        }),
+    );
+    let mut net = b.build().unwrap();
+    let car = &net.controls()[0];
+    assert_eq!(
+        (car.node, car.action),
+        (Some(Node::Place(waiting.id())), Some(Action::Inject))
+    );
+
+    for typed in ["", "Taxi", ""] {
+        assert_eq!(
+            net.press("car", Value::Text(typed.into())),
+            Ok(Pressed::Applied)
+        );
+    }
+    let cars: Vec<&String> = net
+        .tokens(waiting.id())
+        .map(|(token, _)| net.token::<String>(waiting.id(), token).unwrap())
+        .collect();
+    assert_eq!(cars, ["Car 2", "Taxi", "Car 4"]);
+    assert_eq!(net.state_counter(), 3, "one Added per press");
+}
+
 #[test]
 fn an_inject_into_another_net_s_place_is_refused() {
     let mut other = NetBuilder::new();
     let elsewhere = other.place::<u32>("Elsewhere");
     let mut b = NetBuilder::new();
     let _here = b.place::<u32>("Here");
-    b.control(Control::inject("stray", "Stray", elsewhere, |_| 1));
+    b.control(Control::inject("stray", "Stray", elsewhere, |_, _| 1));
     let mut net = b.build().unwrap();
     assert!(matches!(
         net.press("stray", Value::None),

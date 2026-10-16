@@ -47,12 +47,12 @@
 //! - The light's token is coloured as the lamp it lights ([`TokenStyle`]:
 //!   red `#ff6347`, green `#32cd32`, amber `#ffa500`), and `Light` is
 //!   filled with its token's colour ([`PlaceStyle::fill_token`]).
-//! - Two controls, in this order: `car` (`+ Car`), a text box acting on
-//!   `Waiting`, which adds a car named as typed, or `Car N` when nothing is
-//!   typed ([`car_name`]); and `change` (`Change`), a button that fires
-//!   `Change`.
+//! - Two controls, in this order: `car` (`+ Car`), an inject into
+//!   `Waiting` given a text box, which adds a car named as typed, or `Car N`
+//!   when nothing is typed ([`car_name`], read off the marking its `make` is
+//!   handed); and `change` (`Change`), a button that fires `Change`.
 
-use petritype::control::{Action, Control, Node, Pressed, Value};
+use petritype::control::{Control, ControlKind, Value};
 use petritype::style::{PlaceStyle, Rgb, Style, TokenStyle};
 use petritype::{
     BuildError, DrainEdge, Net, NetBuilder, PlaceRef, SnapshotEdge, TakeEdge, TransitionId,
@@ -204,19 +204,19 @@ pub fn build_traffic_light() -> Result<TrafficLight, BuildError> {
         .transition("Change", (TakeEdge(light),), (light,), change)
         .id();
 
-    // A text box, so its handler is the author's: the name of an untyped
-    // car is read off the marking, which an `inject` control's `make`
-    // cannot see. Its node and action are an inject's.
-    let mut car = Control::text("car", "+ Car", Some("name"), move |net, value| {
-        let Value::Text(typed) = value else {
-            return Err("a car's name is text".to_owned());
+    // An inject into `Waiting` given a text box: `make` is handed the net,
+    // so the name of an untyped car is read off the marking. A text control
+    // is only ever pressed with text.
+    let car = Control::inject("car", "+ Car", waiting, move |value, net| {
+        let typed = match value {
+            Value::Text(typed) => typed,
+            _ => String::new(),
         };
-        let name = car_name(net, waiting, passed, &typed);
-        net.put(waiting, name);
-        Ok(Pressed::Applied)
+        car_name(net, waiting, passed, &typed)
+    })
+    .with_kind(ControlKind::Text {
+        placeholder: Some("name".to_owned()),
     });
-    car.node = Some(Node::Place(waiting.id()));
-    car.action = Some(Action::Inject);
     b.control(car)
         .control(Control::fire("change", "Change", change));
 

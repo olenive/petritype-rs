@@ -2420,10 +2420,10 @@ or `null` fourth). The traffic light's token became the example's own
 `Colour`, `"red"` on the wire still, styled with the lamps' hexes (red
 `#ff6347`, green `#32cd32`, amber `#ffa500`) and filling `Light`, with two
 controls, `car` (`+ Car`, a text box on `Waiting`) and `change` (`Change`, a
-button firing `Change`). `Control::inject`'s `make` sees the value only, and
-`car` names an untyped car `Car N` from the marking, so it is a
-`Control::text` given an inject's node and action (Python's `make` may take
-the net as a second argument). The Python track recorded
+button firing `Change`). `Control::inject`'s `make` is handed the value and
+the net as it stands, `Fn(Value, &Net) -> T`, as Python's `make(value,
+graph)` may be, so `car` is an inject given a text box whose `make` names an
+untyped car `Car N` from the marking. The Python track recorded
 `08_traffic_light.json` again with six `press` exchanges at the end; it
 replays here once the runner knew `press`. `tests/controls.rs`.
 

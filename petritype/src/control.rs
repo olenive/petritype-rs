@@ -26,7 +26,7 @@
 //! let inbox = b.place::<u32>("Inbox");
 //! let out = b.place::<u32>("Out");
 //! let double = b.transition("Double", (TakeEdge(inbox),), (out,), |n: u32| (n * 2,)).id();
-//! b.control(Control::inject("add", "+ 21", inbox, |_| 21));
+//! b.control(Control::inject("add", "+ 21", inbox, |_, _| 21));
 //! b.control(Control::fire("double", "Double", double));
 //! let mut net = b.build()?;
 //!
@@ -313,22 +313,54 @@ impl Control {
         Control::new(name, label, kind, Some(Value::Text(initial.into())), f)
     }
 
-    /// Puts `make(value)` into `place`: a button by default, another kind
-    /// with [`with_kind`](Control::with_kind). Its node is the place and its
-    /// action [`Action::Inject`].
+    /// Puts `make(value, net)` into `place`: a button by default, another
+    /// kind with [`with_kind`](Control::with_kind). Its node is the place and
+    /// its action [`Action::Inject`].
+    ///
+    /// `make` is handed the net as it stands before the token goes in, so
+    /// that it can read the marking: to number what it makes from the tokens
+    /// there are, say, with no counter of its own (Python's `make(value,
+    /// graph)`). One that needs only the value ignores it, `|value, _| ...`.
+    ///
+    /// ```
+    /// use petritype::NetBuilder;
+    /// use petritype::control::{Control, ControlKind, Value};
+    ///
+    /// let mut b = NetBuilder::new();
+    /// let queue = b.place::<String>("Queue");
+    /// b.control(
+    ///     Control::inject("join", "+ Join", queue, move |value, net| match value {
+    ///         Value::Text(name) if !name.is_empty() => name,
+    ///         _ => format!("Guest {}", net.count(queue.id()) + 1),
+    ///     })
+    ///     .with_kind(ControlKind::Text { placeholder: Some("name".into()) }),
+    /// );
+    /// let mut net = b.build()?;
+    ///
+    /// for typed in ["", "Ada", ""] {
+    ///     net.press("join", Value::Text(typed.into()))?;
+    /// }
+    /// let names: Vec<&String> = net
+    ///     .tokens(queue.id())
+    ///     .filter_map(|(token, _)| net.token::<String>(queue.id(), token))
+    ///     .collect();
+    /// assert_eq!(names, ["Guest 1", "Ada", "Guest 3"]);
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
     ///
     /// A press of it on a net that `place` does not belong to is refused.
     pub fn inject<T: Send + Sync + 'static>(
         name: impl Into<String>,
         label: impl Into<String>,
         place: PlaceRef<T>,
-        make: impl Fn(Value) -> T + Send + Sync + 'static,
+        make: impl Fn(Value, &Net) -> T + Send + Sync + 'static,
     ) -> Control {
         let mut control = Control::button(name, label, move |net, value| {
             if place.net() != net.id() {
                 return Err(foreign_place("inject", place.id(), place.net(), net.id()));
             }
-            net.put(place, make(value));
+            let token = make(value, &*net);
+            net.put(place, token);
             Ok(Pressed::Applied)
         });
         control.node = Some(Node::Place(place.id()));

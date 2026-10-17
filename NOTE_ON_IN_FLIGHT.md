@@ -76,3 +76,29 @@ It does not record when the body started. The library reports the fact
 "this transition is running"; the timing belongs to the caller, who knows
 when it asked for the step. Keeping timestamps out of the graph keeps the
 graph a description of the net's state rather than a log.
+
+## The runtime's observers, 17 October 2026
+
+One reader had been left out. The Python runtime notifies its observers on
+every change of the graph, and in concurrent mode that includes the moment
+the in-flight set changes, but its sequential loop notified only after a
+firing had completed, so an observer on the event loop never saw the field
+non-empty in that mode, even though the field was set for the length of
+every body. An in-process consumer that draws a run as a strip of tiles
+found that a body running for seconds was never shown as working. On 17
+October 2026 the sequential path gained one more notification per firing,
+right after the assignment and before the body, through an optional hook on
+the one firing primitive, which the runtime's sequential paths pass their
+observer call to. The rule above holds: the fact lives on the graph and is
+read from there; what changed is that the readers the runtime already
+notifies are told when it changes, in both modes alike. No launch record was
+added to the engine's log, which keeps one record per firing.
+
+In Rust this needs nothing. The engine has no observer mechanism, and a
+caller who wants the working moment uses the staged firing API, `launch`,
+then the body, then `distribute`, which is how the Bevy viewer and the
+runner fire and which already reports `Launched` before the body. The
+sequential `step` stays what it is, the three stages in one call with one
+`Fired`. If an in-process Rust consumer ever drives the sequential driver
+and wants the moment, that driver can stage with a hook between launch and
+run, a small change with no consumer today.

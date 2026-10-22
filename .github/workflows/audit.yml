@@ -1,0 +1,28 @@
+# Known advisories against Cargo.lock, from the RustSec database: on every
+# change to the dependencies, and once a week so an advisory published after
+# the last change is still seen.
+name: Advisory audit
+
+on:
+  push:
+    branches: [main]
+    paths: ['Cargo.lock', 'Cargo.toml', '**/Cargo.toml', '.github/workflows/audit.yml']
+  pull_request:
+    paths: ['Cargo.lock', 'Cargo.toml', '**/Cargo.toml', '.github/workflows/audit.yml']
+  schedule:
+    - cron: '23 6 * * 1'
+
+permissions:
+  contents: read
+  issues: write
+  checks: write
+
+jobs:
+  audit:
+    name: cargo audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: rustsec/audit-check@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}

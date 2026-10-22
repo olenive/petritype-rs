@@ -1940,6 +1940,8 @@ Cargo workspace, edition 2024, MSRV = current stable minus two (must be
 | `petritype` | builder, `Net`, events, checks, `drivers` | `thiserror`; feature `serde` adds `serde`, `serde_json` |
 | `petritype-derive` | `#[derive(Routed)]` on enums (variants) and structs (leaf); `#[derive(Inputs)]` and `#[derive(Outputs)]` on structs (slice 23, §4.4) | `syn` 2, `quote`, `proc-macro2`; re-exported by `petritype` unconditionally as `petritype::Routed`, `petritype::Inputs` and `petritype::Outputs` |
 | `petritype-dot` | Graphviz DOT text of a net and its marking (**done, slice 12**) | `petritype` only |
+| `petritype-layout` | the layered layout: ranks, orders, clusters by name prefix and ghosted hubs, in its own `Point` and `Bounds` (moved out of `petritype-bevy` 2026-10-19, so a renderer that is not Bevy can share it) | `petritype` only |
+| `petritype-activity` | the activity model behind the viewer's thumbnail: a pulse and an ember per place and transition, decaying on wall time or on firings, with flow, failure and a base glow from the token count; `ActivitySettings`; the `Grid` of cells from a whole-net layout; the `Thumbnail`'s colour per cell and its SVG (2026-10-19; a record of activity over time comes later) | `petritype`, `petritype-layout`; feature `serde` adds `serde`, `serde_json` |
 | `petritype-bevy` | `NetRes`, mirror systems, token entities, in-flight highlighting, task-pool driver | pins one Bevy version |
 | `petritype-tokio` | only if a need appears | |
 | `petritype-runner` | turns a user's binary into a net process speaking the shared protocol (**done, slice 14**, §19.3) | `petritype` with `serde`, `serde_json`, `rustix` on Unix |

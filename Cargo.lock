@@ -83,6 +83,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "petritype-activity"
+version = "0.1.0"
+dependencies = [
+ "petritype",
+ "petritype-layout",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "petritype-derive"
 version = "0.1.0"
 dependencies = [
@@ -96,6 +106,14 @@ name = "petritype-dot"
 version = "0.1.0"
 dependencies = [
  "petritype",
+]
+
+[[package]]
+name = "petritype-layout"
+version = "0.1.0"
+dependencies = [
+ "petritype",
+ "serde",
 ]
 
 [[package]]

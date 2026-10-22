@@ -1,0 +1,28 @@
+# The gate, as `just check` runs it locally: the workspace suite with serde,
+# the core crate alone, clippy with warnings denied, the formatting check and
+# the docs with warnings denied. One recipe here and there, so the two never
+# drift apart.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: just check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just
+      - run: just check

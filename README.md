@@ -208,6 +208,8 @@ pricing`); `DESIGN.md` §4.4 and §4.5 have the rules.
 | `petritype` | the builder, `Net`, events, checks, drivers, commands, snapshots |
 | `petritype-derive` | `#[derive(Routed)]`, `#[derive(Inputs)]` and `#[derive(Outputs)]`, re-exported as `petritype::Routed`, `petritype::Inputs` and `petritype::Outputs` |
 | `petritype-dot` | Graphviz DOT text of a `Net` or a `Snapshot` |
+| `petritype-layout` | the layered layout of a net (ranks, orders, clusters, ghosted hubs) in plain `Point`s and `Bounds` any renderer converts; the Bevy visualiser draws with it |
+| `petritype-activity` | a net's activity as a fast and a slow level per place and transition, fed by its events and decaying on wall time or on firings, and the activity thumbnail it lights: a grid of cells from the layout, a colour per cell and an SVG writer, with no graphics dependency |
 | `petritype-runner` | turns your binary into a net process speaking the shared [net protocol](https://github.com/olenive/petritype/blob/main/PROTOCOL.md) on stdin and stdout, for petritype-server and the Bevy visualiser |
 | `petritype-bevy` | separate repository: a Bevy visualiser that mirrors a running net into entities |
 

@@ -1,0 +1,20 @@
+[package]
+name = "petritype-layout"
+version = "0.1.0"
+description = "A layered layout of a petritype net: ranks, orders and clusters, for any renderer."
+readme = "../README.md"
+keywords = ["petri-net", "layout", "graph-drawing", "visualization"]
+categories = ["data-structures", "simulation", "visualization"]
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+petritype = { path = "../petritype", version = "0.1.0" }
+serde = { version = "1", features = ["derive"], optional = true }
+
+[features]
+# `Direction` and `LayoutNode` as JSON, for a thumbnail's grid saved in a
+# record. A node's ids serialise by the core's own `serde` feature.
+serde = ["dep:serde", "petritype/serde"]

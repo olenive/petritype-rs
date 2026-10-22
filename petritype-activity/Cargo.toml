@@ -1,0 +1,32 @@
+[package]
+name = "petritype-activity"
+version = "0.1.0"
+description = "A petritype net's activity as levels per place and transition, and the thumbnail that draws it, for any renderer."
+readme = "../README.md"
+keywords = ["petri-net", "activity", "thumbnail", "visualization"]
+categories = ["data-structures", "simulation", "visualization"]
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+petritype = { path = "../petritype", version = "0.1.0" }
+petritype-layout = { path = "../petritype-layout", version = "0.1.0" }
+serde = { version = "1", features = ["derive"], optional = true }
+serde_json = { version = "1", optional = true }
+
+[dev-dependencies]
+# No `version`: path-only dev-dependencies are stripped when the crate is
+# packaged. The tests run the traffic light, petritype's example net, which
+# is included by path and whose places are serializable: hence the core's
+# `serde` feature and `serde` itself.
+petritype = { path = "../petritype", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
+
+[features]
+# `ActivitySettings` as JSON, for a file of settings per net, and a
+# `Record` with its grid and bins as JSON, for a file per recorded run. The
+# grid's nodes and the bins' ids serialise by the layout's and the core's
+# own `serde` features.
+serde = ["dep:serde", "dep:serde_json", "petritype/serde", "petritype-layout/serde"]

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["petritype", "petritype-derive", "petritype-dot", "petritype-runner"]
+members = ["petritype", "petritype-activity", "petritype-derive", "petritype-dot", "petritype-layout", "petritype-runner"]
 
 [workspace.package]
 edition = "2024"

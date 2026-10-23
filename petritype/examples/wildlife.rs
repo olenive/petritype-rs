@@ -5,8 +5,8 @@
 //! (`Cyberpunk2020-Simulation/dev-docs/TOKEN_QUERYING_AND_FILTERING.md` §2),
 //! built as the conformance net `wildlife` of the shared protocol
 //! (`PROTOCOL.md` §11), which lives in [`net`] so that a runner can carry the
-//! same file. Places are habitats — `Forest`, `Wetland`, `Savanna`, `Reef`,
-//! `Tundra` — and `Migrating`; a token is one species occurring in one
+//! same file. Places are habitats (`Forest`, `Wetland`, `Savanna`, `Reef`,
+//! `Tundra`) and `Migrating`; a token is one species occurring in one
 //! habitat, and every place declares the keys `species`, `class` and `diet`.
 //!
 //! `main` asks the proposal's five questions on the seed, then again after

@@ -186,26 +186,6 @@ surveys consumed nothing). A `Group` of one edge behaves like the edge.
   badly in practice.
 - **D4 Name.** `Group`. Alternatives: `Bundle`, `Edges`, `Many`.
 
-## 8. Rules for the implementing agent
-
-Work in the library repo only: do not touch `~/work/games/**` or
-`~/work/petritype-bevy/TODO_TEMP.md`. One branch per phase, tests green at
-each, the owner merges. When done, append an "As built" section to THIS file
-naming what differs from sections 2, 4 and 6 and why, with the commits and
-the compile-time numbers from R3.
-
-## 9. Prompt
-
-> Implement `~/work/petritype-rs/dev-docs/TRANSITION_ARITY.md`: let a
-> transition declare more than twelve inputs or outputs, by raising the flat
-> tuple cap to 16 (measured) and by adding `Group`, a wrapper that makes a
-> tuple of edges one input position and a tuple of places one output slot,
-> flattened everywhere downstream. Read the whole document first, then the
-> anchors in section 3. Take the defaults in section 7 unless told otherwise.
-> Build the section 2 net as the acceptance test and check section 6. Append
-> an "As built" section to the document when finished. Do not touch
-> `~/work/games/**` or `~/work/petritype-bevy/TODO_TEMP.md`.
-
 ## As built (R1, arity-16)
 
 Built 2026-10-15 on branch `arity-16`, as one commit on 3e76c11: the commit

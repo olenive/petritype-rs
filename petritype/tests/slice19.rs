@@ -3,9 +3,9 @@
 //!
 //! A `TakeWhereEdge` takes, and a `MutateWhereEdge` hands over, the first
 //! token in queue order whose keys a filter accepts, leaving every other
-//! token where it is with its id. What is tested here is that promise —
-//! fireability, the token chosen, the events, the restore, the index kept
-//! right — and the edges' place in everything else that reads edges: the
+//! token where it is with its id. What is tested here is that promise
+//! (fireability, the token chosen, the events, the restore, the index kept
+//! right) and the edges' place in everything else that reads edges: the
 //! build checks, the read API and its serialised form, detachability, the
 //! two opt-in checks and the drivers. The wildlife example
 //! (`examples/wildlife.rs`) holds the proposal's own acceptance test.

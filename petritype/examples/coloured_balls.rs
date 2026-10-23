@@ -5,7 +5,7 @@
 //!
 //! What it demonstrates: the third output form. Three output places all hold
 //! a `Ball`, so a type cannot say which one a ball belongs in and neither can
-//! a slot position — only the value can. A [`Distribution`] is the list of
+//! a slot position. Only the value can. A [`Distribution`] is the list of
 //! `(place, token)` pairs the firing names itself, and
 //! [`output_distribution`](petritype::OutputDistribution::output_distribution)
 //! composes the function that builds one *after* the domain function, so

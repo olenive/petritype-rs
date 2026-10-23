@@ -76,7 +76,7 @@ pub(crate) struct TransitionSlot {
     /// other. Apart rather than inside the kind so that the kind stays
     /// `Copy` and everything that reads only places reads on unchanged.
     pub(crate) filters: Vec<Option<Filter>>,
-    /// The declared parameter types by name, in declaration order — what
+    /// The declared parameter types by name, in declaration order: what
     /// [`TransitionInfo::params`](TransitionInfo::params) reports so that a
     /// renderer can badge the transition (DESIGN §10).
     pub(crate) params: Vec<&'static str>,
@@ -84,7 +84,7 @@ pub(crate) struct TransitionSlot {
     /// written: an index into [`inputs`](TransitionSlot::inputs), or a
     /// parameter type to look up in the net.
     pub(crate) args: Vec<ArgSource>,
-    /// Output places in declaration order — the order of the slots in what
+    /// Output places in declaration order, the order of the slots in what
     /// the body returns.
     pub(crate) outputs: Vec<PlaceId>,
     /// Whether the body returns its outputs by position, read off its return
@@ -95,7 +95,7 @@ pub(crate) struct TransitionSlot {
     /// travels with the [`Firing`](crate::Firing) from
     /// [`launch`](crate::Net::launch) until
     /// [`distribute`](crate::Net::distribute) puts it back, and an empty slot
-    /// is the whole of the in-flight mark — there is no register of airborne
+    /// is the whole of the in-flight mark: there is no register of airborne
     /// firings, which is also what stops one transition being launched twice
     /// ([`Net::in_flight`](crate::Net::in_flight)).
     pub(crate) body: Option<ErasedBody>,
@@ -165,8 +165,8 @@ pub struct TransitionInfo<'a> {
     /// are distinct.
     ///
     /// Edges only. A [`Param<T>`](crate::Param) is an input of the
-    /// transition but not an edge of the net — it reads no place and is no
-    /// node in a diagram — so it appears in [`params`](TransitionInfo::params)
+    /// transition but not an edge of the net (it reads no place and is no
+    /// node in a diagram), so it appears in [`params`](TransitionInfo::params)
     /// instead, and never in [`Net::edges`](crate::Net::edges).
     pub inputs: &'a [(PlaceId, EdgeKind)],
     /// One entry per input edge, in the order of
@@ -224,7 +224,7 @@ pub struct TransitionInfo<'a> {
     /// [distributed](crate::Net::distribute) yet.
     ///
     /// An in-flight transition is never fireable, whatever its places hold
-    /// and whatever its switch says. A diagram usually draws it differently —
+    /// and whatever its switch says. A diagram usually draws it differently:
     /// this is the transition that is *working*.
     pub in_flight: bool,
     /// Whether a firing of this transition can leave the net.
@@ -263,7 +263,7 @@ pub struct TransitionInfo<'a> {
 /// `output_distribution` is deliberately *not* here, although DESIGN §5 lists
 /// it: by the time this handle exists the body's return type has been erased,
 /// and the point of an output distribution function is that its own return
-/// type decides the output form. It is a method on the body instead —
+/// type decides the output form. It is a method on the body instead:
 /// [`OutputDistribution::output_distribution`](crate::OutputDistribution::output_distribution),
 /// applied before `transition()` is called.
 pub struct TransitionBuilder<'a> {
@@ -284,8 +284,8 @@ impl TransitionBuilder<'_> {
     /// [fireable](crate::Net::fireable) only while `f` returns true.
     ///
     /// The guard is asked with the whole net in hand, so it may look
-    /// anywhere — `net.count(place.id())`, `net.token::<T>(..)`, a clock, a
-    /// captured atomic — and it is asked once per transition per scan, so it
+    /// anywhere (`net.count(place.id())`, `net.token::<T>(..)`, a clock, a
+    /// captured atomic), and it is asked once per transition per scan, so it
     /// should be cheap and must not be counted on to run a fixed number of
     /// times. A guard that returns false is not an error: the transition
     /// simply does not appear in [`Net::fireable`](crate::Net::fireable).
@@ -331,17 +331,17 @@ impl TransitionBuilder<'_> {
     /// A failed firing loses its inputs by default: the body owns them by the
     /// time it fails, and may have changed or dropped them. This flag buys
     /// them back with a clone. Stage one clones every token a consuming edge
-    /// takes — [`TakeEdge`](crate::TakeEdge),
+    /// takes ([`TakeEdge`](crate::TakeEdge),
     /// [`TakeAllEdge`](crate::TakeAllEdge),
     /// [`TakeWhereEdge`](crate::TakeWhereEdge) and
     /// [`DrainEdge`](crate::DrainEdge), which took none from an empty place
-    /// and so has none to put back — before the body sees
+    /// and so has none to put back) before the body sees
     /// anything, the clones travel with the firing, and any failure of it (an
     /// `Err`, a panic, or a [`Distribution`](crate::Distribution) naming a
     /// place the transition may not write to) puts them back at the **front**
     /// of their places, in the order they were taken and with the ids they
     /// had. The firing is undone rather than recorded, so the transition can
-    /// simply fire again — which is what lets a driver retry one.
+    /// simply fire again, which is what lets a driver retry one.
     ///
     /// For a `TakeWhereEdge` the front is not where the token was: it may
     /// have been taken from the middle of its place. The id is kept and the

@@ -14,6 +14,6 @@ repository.workspace = true
 proc-macro = true
 
 [dependencies]
-syn = { version = "2", features = ["derive"] }
+syn = { version = "3", features = ["derive"] }
 quote = "1"
 proc-macro2 = "1"

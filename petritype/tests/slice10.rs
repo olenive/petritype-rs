@@ -2,11 +2,11 @@
 //! JSON form of both.
 //!
 //! A command is the typed input API with the types forgotten, for a sender
-//! that holds no `&mut Net` — the far side of a channel from a UI thread, or
+//! that holds no `&mut Net`: the far side of a channel from a UI thread, or
 //! a decoder. So most of what is tested here is sameness: the same marking
 //! and the same events as the typed method of the same name. The rest is what
-//! only the erased route can get wrong — a token of the wrong type, an id
-//! from another net — and the promise that getting it wrong changes nothing
+//! only the erased route can get wrong (a token of the wrong type, an id
+//! from another net) and the promise that getting it wrong changes nothing
 //! and says nothing.
 
 use std::any::Any;
@@ -360,7 +360,7 @@ fn a_place_id_this_net_does_not_have_is_rejected() {
 fn a_command_sent_to_the_wrong_net_lands_by_index_the_type_check_is_the_guard() {
     // The accepted consequence of carrying no `NetId`: a `Command` is data on
     // a wire, where the stamp would be meaningless, so `apply` can only ask
-    // whether the types agree — and here they do.
+    // whether the types agree, and here they do.
     let (_net_a, inbox_a) = small_net();
     let (mut net_b, inbox_b) = small_net();
 

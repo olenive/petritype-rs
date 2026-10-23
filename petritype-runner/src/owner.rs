@@ -204,9 +204,9 @@ struct Loaded {
 /// What the runner keeps about one inner net (PROTOCOL.md §12.3,
 /// DESIGN §19.3.11): what it keeps about the outer net, per net.
 ///
-/// Made when the net is first seen — at `load` and `reset` by walking the
+/// Made when the net is first seen (at `load` and `reset` by walking the
 /// marking, at an `inject` for the nets inside the token it brings, when a
-/// request names it, or when one of its events arrives —
+/// request names it, or when one of its events arrives)
 /// and dropped at the first landing (or inner firing) after which its
 /// nested id no longer resolves: the token that held it was consumed and
 /// not put back.
@@ -595,8 +595,8 @@ struct Flushed {
 /// The core lifts a mutated token's inner events just before that token's
 /// `Mutated` (DESIGN §6.6, rule 2) and a produced token's just after the
 /// firing's `Distributed` or `Fired`, under its new place and id (rule 4).
-/// Here every `Nested` of the landing comes first — those lifted for mutated
-/// tokens, then those for produced ones, each in the order logged — then the
+/// Here every `Nested` of the landing comes first (those lifted for mutated
+/// tokens, then those for produced ones, each in the order logged), then the
 /// `Mutated`s, then the event that ends the firing. The core's own log
 /// keeps its rules; only the wire is reordered.
 fn wire_order(events: &[Event]) -> Vec<&Event> {
@@ -676,7 +676,7 @@ fn produced(
     }
 }
 
-/// A token event — `Added`, `Removed` or `Mutated` — as the notification the
+/// A token event (`Added`, `Removed` or `Mutated`) as the notification the
 /// connection is told (PROTOCOL.md §7.1, §13.4), through `projection` when
 /// the net has one: a token the filter hides is told of as `hidden`, and a
 /// mutation that carries a token across the filter's boundary as an `added`
@@ -1923,8 +1923,8 @@ impl Owner {
     }
 
     /// `query {filter?, token_limit?, path?, nested_id?}` (PROTOCOL.md
-    /// §13.3): the tokens `filter` keeps — or, without one, the connection's
-    /// filter, or else every token — in place order then token order, from
+    /// §13.3): the tokens `filter` keeps (or, without one, the connection's
+    /// filter, or else every token) in place order then token order, from
     /// the key index; `count` all of them, and the first `token_limit` in
     /// full, each with its JSON where its place is serializable.
     fn query(
@@ -2601,9 +2601,9 @@ impl Owner {
     }
 
     /// Keeps a running net going: one firing in the loaded net's deep
-    /// policy's order, as `step` makes it — the outer net's next, launched,
-    /// or an inner one, inline (§12.3) — or handles quiescence — nothing
-    /// fireable anywhere — with `idle` once per spell for a `"24/7"` net and
+    /// policy's order, as `step` makes it (the outer net's next, launched,
+    /// or an inner one, inline, §12.3), or handles quiescence (nothing
+    /// fireable anywhere) with `idle` once per spell for a `"24/7"` net and
     /// `execution_stopped` for any other.
     fn drive(&mut self, now: SystemTime, out: &mut Vec<Outgoing>) {
         let Some(loaded) = &self.loaded else {

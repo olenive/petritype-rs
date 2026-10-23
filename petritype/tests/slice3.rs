@@ -805,7 +805,7 @@ fn two_input_edges_into_one_place_are_a_build_error() {
     ));
 }
 
-/// DESIGN §6.6: a body is an ordinary closure, so it may own a whole net —
+/// DESIGN §6.6: a body is an ordinary closure, so it may own a whole net,
 /// which is only true while `Net` is `Send + Sync` and needs no engine
 /// support at all.
 #[test]

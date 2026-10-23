@@ -11,7 +11,7 @@
 //!   [`Match`] with its place, id, keys, label and (for a serializable
 //!   place) JSON, in place order and then token order;
 //! - [`Net::distinct_values`] lists the values one key takes, in order of
-//!   first appearance — what a viewer builds its tabs from.
+//!   first appearance: what a viewer builds its tabs from.
 //!
 //! Keys are derived, never stored on the token: a [`MutateEdge`] body or a
 //! [`replace`](Net::replace) that changes the value changes its keys. The
@@ -53,8 +53,8 @@ use crate::place::PlaceSlot;
 /// assert_eq!(KeyValue::from(true).to_string(), "true");
 /// ```
 ///
-/// The order (`Ord`) is total but arbitrary across variants — every string
-/// before every integer before every boolean — and exists so that values can
+/// The order (`Ord`) is total but arbitrary across variants (every string
+/// before every integer before every boolean) and exists so that values can
 /// be sorted and kept in ordered sets. [`Net::distinct_values`] lists values
 /// in order of first appearance, not in this order.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -218,8 +218,8 @@ pub(crate) type ExtractFn = Arc<dyn Fn(&dyn Any) -> Vec<KeyValue> + Send + Sync>
 /// are.
 #[derive(Clone)]
 pub(crate) struct KeysVtable {
-    /// The declared names, in order. Static, so that they are known — and on
-    /// the wire as `key_names` — before any token exists.
+    /// The declared names, in order. Static, so that they are known (and on
+    /// the wire as `key_names`) before any token exists.
     pub(crate) names: Arc<[&'static str]>,
     /// The values for those names, in the same order.
     pub(crate) extract: ExtractFn,
@@ -313,12 +313,12 @@ impl fmt::Debug for KeysVtable {
 /// consulted (DESIGN §8.3).
 ///
 /// With the `serde` feature it is `Serialize` and `Deserialize` in the
-/// protocol's shape (PROTOCOL.md §13.2) — `{"clauses": [{"key", "values"} |
+/// protocol's shape (PROTOCOL.md §13.2): `{"clauses": [{"key", "values"} |
 /// {"key", "param"}], "places"?, "prefix"?}`, `clauses` defaulting to none
-/// and the two restrictions written only when set — except that `places`
-/// holds the core's [`PlaceId`]s, as everything the core serialises does
-/// (DESIGN §19.2). The protocol names places by name; a runner maps one to
-/// the other, as it does for every edge and event.
+/// and the two restrictions written only when set. The one difference is
+/// that `places` holds the core's [`PlaceId`]s, as everything the core
+/// serialises does (DESIGN §19.2). The protocol names places by name; a
+/// runner maps one to the other, as it does for every edge and event.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Filter {
@@ -362,8 +362,8 @@ pub enum Clause {
         values: Vec<KeyValue>,
     },
     /// The token's value for `key` equals the current value of the net
-    /// parameter whose wire name is `param` — the name given to
-    /// `NetBuilder::serializable_param` — read as a [`KeyValue`] from its
+    /// parameter whose wire name is `param` (the name given to
+    /// `NetBuilder::serializable_param`), read as a [`KeyValue`] from its
     /// JSON form.
     ///
     /// A parameter whose JSON is not a string, an integer or a boolean, or a
@@ -453,7 +453,7 @@ impl Filter {
     /// The clauses with every [`Clause::IsParam`] replaced by the value it
     /// reads now: the form a filter is evaluated in, token after token.
     ///
-    /// This is the primitive a query and a keyed edge share — a filter,
+    /// This is the primitive a query and a keyed edge share: a filter,
     /// resolved against the net's parameters once, then asked of one
     /// token's keys at a time.
     pub(crate) fn resolve(&self, param: impl Fn(&str) -> Option<KeyValue>) -> Resolved<'_> {
@@ -652,9 +652,9 @@ impl Net {
     /// rendered, so no label and no JSON is made for a token the caller
     /// will not show.
     ///
-    /// For a reader that counts matches, pages them or keeps a set of them —
-    /// a protocol runner's projection of the net through a client's filter
-    /// (PROTOCOL.md §13.4) — and renders only the tokens it writes. Answered
+    /// For a reader that counts matches, pages them or keeps a set of them
+    /// (a protocol runner's projection of the net through a client's filter,
+    /// PROTOCOL.md §13.4) and renders only the tokens it writes. Answered
     /// from the index, as `query` is.
     ///
     /// ```
@@ -698,16 +698,16 @@ impl Net {
     /// the net's parameter now. False for a place or a token that is not
     /// there.
     ///
-    /// The check a reader makes of one token at a time — whether a token
+    /// The check a reader makes of one token at a time (whether a token
     /// that has just been added, or has just changed, is one a filtered view
-    /// should show — where [`query`](Net::query) finds them all.
+    /// should show), where [`query`](Net::query) finds them all.
     pub fn matches(&self, filter: &Filter, place: PlaceId, token: TokenId) -> bool {
         matches_in(&self.places, &self.params, filter, place, token)
     }
 
     /// The token a keyed edge with this filter would choose from `place`
-    /// now: the first, in queue order, whose keys pass every clause — the
-    /// oldest, unless a failed firing has put a token back at the front.
+    /// now: the first, in queue order, whose keys pass every clause. That is
+    /// the oldest, unless a failed firing has put a token back at the front.
     /// `None` when no token of the place passes, or there is no such place.
     ///
     /// What a [`TakeWhereEdge`](crate::TakeWhereEdge) takes and a

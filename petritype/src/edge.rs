@@ -19,8 +19,8 @@
 //! the two *keyed* edges require it to hold a token their filter accepts
 //! (DESIGN §8.3). The last two never hold the transition back: they read
 //! whatever the place holds, possibly nothing, which is right for a place a
-//! transition only needs to look at, or to empty, when something is there —
-//! the promotions running, the cars waiting at a light — and saves the "empty
+//! transition only needs to look at, or to empty, when something is there
+//! (the promotions running, the cars waiting at a light), and saves the "empty
 //! twin", a second transition guarded on the place being empty
 //! ([`EdgeKind::requires_presence`], DESIGN §4.4). One transition may read
 //! one place through one edge only: two edges into the same place are a
@@ -52,9 +52,9 @@ use crate::sealed::{EdgeSealed, EdgeTupleSealed};
 /// [`EdgeInfo::Input`]'s `filter`.
 ///
 /// With the `serde` feature it is `Serialize` (never `Deserialize`) as a
-/// snake_case string — `"take"`, `"take_all"`, `"snapshot"`, `"mutate"`,
-/// `"take_where"`, `"mutate_where"`, `"drain"`, `"survey"`, the protocol's
-/// names (PROTOCOL.md §5.1) — for logs and tests.
+/// snake_case string, for logs and tests: `"take"`, `"take_all"`,
+/// `"snapshot"`, `"mutate"`, `"take_where"`, `"mutate_where"`, `"drain"`,
+/// `"survey"`, the protocol's names (PROTOCOL.md §5.1).
 ///
 /// `#[non_exhaustive]` since the two keyed kinds were added (slice 19):
 /// match with a `_` arm, which a reader of the protocol fills by drawing a
@@ -120,10 +120,10 @@ impl EdgeKind {
 
     /// Whether every firing through this edge takes at least one token out
     /// of its place: the [consuming](EdgeKind::consumes) kinds that
-    /// [require presence](EdgeKind::requires_presence) —
-    /// [`Take`](EdgeKind::Take), [`TakeAll`](EdgeKind::TakeAll) and
+    /// [require presence](EdgeKind::requires_presence)
+    /// ([`Take`](EdgeKind::Take), [`TakeAll`](EdgeKind::TakeAll) and
     /// [`TakeWhere`](EdgeKind::TakeWhere), but not
-    /// [`Drain`](EdgeKind::Drain), which may take nothing.
+    /// [`Drain`](EdgeKind::Drain), which may take nothing).
     ///
     /// What the termination proof counts: the source rule asks every
     /// transition for one such edge, and the acyclicity walk follows only
@@ -155,14 +155,14 @@ impl EdgeKind {
 /// Two variants because a transition's inputs are two different things
 /// (DESIGN §10): edges, which read places and are what a diagram draws, and
 /// [parameters](crate::Param), which read a value off the net and are not
-/// nodes at all. The builder splits them — the edges become
+/// nodes at all. The builder splits them (the edges become
 /// [`TransitionInfo::inputs`](crate::TransitionInfo::inputs), the parameters
-/// [`TransitionInfo::params`](crate::TransitionInfo::params) — and keeps the
+/// [`TransitionInfo::params`](crate::TransitionInfo::params)) and keeps the
 /// tuple order beside them so that the body's arguments can be rebuilt in it.
 ///
 /// [`EdgeKind`] deliberately gains no variant for a parameter: a parameter is
-/// not a *kind of edge*, and everything that reads edges — fireability,
-/// [`Net::edges`](crate::Net::edges), the acyclicity and source checks — must
+/// not a *kind of edge*, and everything that reads edges (fireability,
+/// [`Net::edges`](crate::Net::edges), the acyclicity and source checks) must
 /// go on seeing places only.
 ///
 /// Nameable only inside the crate: it is the argument of a sealed trait's
@@ -326,7 +326,7 @@ pub struct MutateEdge<T>(
 /// [fireable](crate::Net::fireable) only while the place holds a token whose
 /// [keys](crate::NetBuilder::keys) pass every clause of the filter (and its
 /// guard, asked after, passes), and a firing takes the first such token in
-/// queue order — the oldest, in a place nothing has been put back into —
+/// queue order (the oldest, in a place nothing has been put back into),
 /// wherever it stands. Every other token stays where it is, with its id: no
 /// [`Removed`](crate::Event::Removed) or [`Added`](crate::Event::Added) is
 /// emitted for them, and the firing's `consumed` names the one token taken.
@@ -402,7 +402,7 @@ pub struct MutateWhereEdge<T>(
 /// satisfied by an empty place ([`EdgeKind::requires_presence`] is false),
 /// so the transition is [fireable](crate::Net::fireable) whenever its other
 /// edges and its guard say so, and the body is handed whatever the place
-/// held when the firing started — in Petri-net terms a *reset arc*. It is
+/// held when the firing started (in Petri-net terms, a *reset arc*). It is
 /// for a place the transition must empty when it fires but must not wait
 /// on, where an empty place is a perfectly good answer: "clear whatever
 /// arrived since the last tick". Without it that is two transitions, one
@@ -481,7 +481,7 @@ pub struct DrainEdge<T>(
 /// is, so the body sees values that cannot change under it, and nothing
 /// moves: no token leaves the place, the firing's `consumed` names none of
 /// them, and a transition whose reads are snapshots and surveys stays
-/// *detachable* — its firing may run on another thread. A place declared
+/// *detachable*: its firing may run on another thread. A place declared
 /// with [`place_no_clone`](crate::NetBuilder::place_no_clone), a
 /// [nested](crate::NetBuilder::place_nested) one among them, cannot be the
 /// source of a survey edge: that is a
@@ -527,7 +527,7 @@ pub struct SurveyEdge<T>(
 /// The name says "edge" because that is what an input almost always is: one
 /// of the eight kinds in this module, reading one place. The ninth
 /// implementor is [`Param<T>`](crate::Param), which reads a value off the net
-/// instead (DESIGN §10) — no place, no node in the diagram — and is here
+/// instead (DESIGN §10), with no place and no node in the diagram, and is here
 /// because the tuple of inputs is also the list of the body's parameters,
 /// and a parameter occupies one of those positions like anything else.
 ///
@@ -538,9 +538,10 @@ pub struct SurveyEdge<T>(
 /// `#[derive(Inputs)]` generates, a struct of inputs that binds several
 /// edges in one position and hands the body the struct it was derived from
 /// (DESIGN §4.4); the derive reaches the engine half through a hidden
-/// module, which is the seal's one opening. The engine half — how an input describes itself to the builder
-/// and how its argument is taken out — is `EdgeSealed`, so that this trait
-/// carries nothing a place edge and a parameter cannot both answer.
+/// module, which is the seal's one opening. The engine half (how an input
+/// describes itself to the builder and how its argument is taken out) is
+/// `EdgeSealed`, so that this trait carries nothing a place edge and a
+/// parameter cannot both answer.
 #[diagnostic::on_unimplemented(
     message = "`{Self}` is not an input edge",
     label = "not an input edge",
@@ -711,7 +712,7 @@ impl<T: Send + Sync + 'static> EdgeSealed for TakeAllEdge<T> {
 impl<T: Send + Sync + 'static> InputEdge for TakeAllEdge<T> {}
 
 /// The `Clone` bound is the compile-time half of what a snapshot needs; the
-/// other half — that the *place* recorded a cloner — is checked at
+/// other half, that the *place* recorded a cloner, is checked at
 /// [`build`](crate::NetBuilder::build), because
 /// [`place_no_clone`](crate::NetBuilder::place_no_clone) can hold a type that
 /// happens to be `Clone`.
@@ -882,7 +883,7 @@ impl<'a, T: Clone + Send + Sync + 'static> Extract<'a, Vec<T>> for SurveyEdge<T>
 ///
 /// This is the type of the `inputs` argument of
 /// [`NetBuilder::transition`](crate::NetBuilder::transition). A single edge
-/// still goes in a tuple — `(TakeEdge(inbox),)` — because the tuple is what
+/// still goes in a tuple, as in `(TakeEdge(inbox),)`, because the tuple is what
 /// carries the arity, and a [`Param<T>`](crate::Param) may stand anywhere in
 /// it: the tuple is the body's parameter list, in order. So may a struct of
 /// edges that `#[derive(Inputs)]` generated, which is one position however
@@ -1152,7 +1153,7 @@ mod tests {
     }
 
     /// A tuple may mix the two kinds of input, and it describes them in the
-    /// order they were written — which is the order the body's parameters
+    /// order they were written, which is the order the body's parameters
     /// are in.
     #[test]
     fn a_tuple_may_mix_edges_and_parameters() {

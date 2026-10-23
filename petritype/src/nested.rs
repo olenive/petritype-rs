@@ -1,7 +1,7 @@
 //! Nets as tokens: a token that owns Petri nets of its own (DESIGN §6.6).
 //!
 //! A vehicle moving between the stations of a city has a life of its own
-//! inside — passengers sit down, stand, go to the door — and that life is a
+//! inside (passengers sit down, stand, go to the door), and that life is a
 //! net too. Here the vehicle is a token of the *outer* net, and the net it
 //! carries is an *inner* net. The outer net moves the token like any other;
 //! what is new is that the engine knows the inner net is there:
@@ -24,7 +24,7 @@
 //!   [`Net::nested_scope`].
 //! - **Observed.** Whatever an inner net logs ends up in the outer log,
 //!   wrapped in [`Event::Nested`] with the place and token it happened in,
-//!   at a moment fixed by the rules on [`Event::Nested`] — *lifted*, in this
+//!   at a moment fixed by the rules on [`Event::Nested`]: *lifted*, in this
 //!   crate's word. Nothing is left behind for a driver to collect.
 //!
 //! The coupling goes one way. An inner net never sees the outer one: its
@@ -45,8 +45,8 @@ use crate::place::{ErasedToken, PlaceSlot};
 
 /// A token type that owns Petri nets of its own, each under a name.
 ///
-/// Implement it for a token that carries an inner net — a vehicle with a
-/// cabin, a character with a body — and declare the place that holds such
+/// Implement it for a token that carries an inner net (a vehicle with a
+/// cabin, a character with a body), and declare the place that holds such
 /// tokens with
 /// [`NetBuilder::place_nested`](crate::NetBuilder::place_nested). The engine
 /// then runs the inner nets ([`Net::step_deep`]), lets the outer net read
@@ -73,7 +73,7 @@ use crate::place::{ErasedToken, PlaceSlot};
 /// ```
 ///
 /// The two methods must agree: the same nets, under the same names, in the
-/// same order — the order is the order the engine steps them in, and the
+/// same order. The order is the order the engine steps them in, and the
 /// name is what [`Event::Nested::net`](Event::Nested) and
 /// [`FiringFailed::path`] call each one. Names need not be unique, but a
 /// reader that addresses a net by name finds the first.
@@ -83,7 +83,7 @@ use crate::place::{ErasedToken, PlaceSlot};
 ///
 /// # Copies
 ///
-/// A `Net` cannot be cloned — its bodies are closures — so neither can a
+/// A `Net` cannot be cloned (its bodies are closures), so neither can a
 /// token that owns one. With the `serde` feature the trait has a third
 /// method, `fork`, a fallible copy: the plain fields cloned, each inner net
 /// through `Net::fork`, which rebuilds it from the template that built it.
@@ -331,10 +331,10 @@ impl DeepStep {
 /// nets its tokens carry (DESIGN §6.6).
 ///
 /// The nets form a cycle in *walk order*: the net itself, then its inner
-/// nets — nested places in place order,
+/// nets (nested places in place order,
 /// [passive](crate::NetBuilder::passive) ones skipped, each place's tokens
 /// oldest first, each token's nets in [`Nested::nets`] order, a net's own
-/// inner nets before the next token. A deep step fires once, in the first
+/// inner nets before the next token). A deep step fires once, in the first
 /// net it comes to that has a firing, chosen by that net's own selector; the
 /// policy says where it starts.
 ///
@@ -351,11 +351,10 @@ impl DeepStep {
 /// Interleaved's *cursor* is the net that fired last: this net's own
 /// [`NetId`], or an inner net's nested id, recorded by every deep step under
 /// either policy, a failed firing as well as one that landed, and read under
-/// this one alone. Where there is none — a
+/// this one alone. The round starts at this net where there is none: a
 /// fresh net, one restored from JSON or forked (`Net::fork`, with the
 /// `serde` feature), since the cursor is kept in memory only, or when that
-/// net has gone, its token consumed or moved to a passive place — the round
-/// starts at this net.
+/// net has gone, its token consumed or moved to a passive place.
 ///
 /// The policy of the net that is stepped governs the whole walk below it;
 /// an inner net's own policy counts only when it is stepped deep itself, by
@@ -428,7 +427,7 @@ impl Net {
     /// `None` if the place is not nested
     /// ([`place_nested`](crate::NetBuilder::place_nested)), or does not
     /// exist, or holds no such token. This is how a
-    /// [guard](crate::TransitionBuilder::guard) reads inside a token — the
+    /// [guard](crate::TransitionBuilder::guard) reads inside a token. The
     /// front one is what a [`MutateEdge`](crate::MutateEdge) would be handed,
     /// and [`first_match`](Net::first_match) names the one a
     /// [`MutateWhereEdge`](crate::MutateWhereEdge) would:
@@ -469,9 +468,9 @@ impl Net {
     /// Calls `f` with the inner nets of one token of a nested place, mutably,
     /// and lifts whatever they logged into this net's log when it returns.
     ///
-    /// The reach for a caller that is not a body — a driver that injects
+    /// The reach for a caller that is not a body (a driver that injects
     /// into an inner net, a test that sets one up, an inspector applying an
-    /// edit — with the same reporting a body gets: each event `f` caused
+    /// edit), with the same reporting a body gets: each event `f` caused
     /// inside comes out here as an [`Event::Nested`], under this place and
     /// token, and an `f` that changes nothing emits nothing. Deeper levels
     /// are reached by calling `nested_scope` on an inner net inside `f`;
@@ -530,15 +529,15 @@ impl Net {
     }
 
     /// Fires one transition, here or in an inner net: this net first, and
-    /// when it has nothing to fire, the first inner net that has — or, under
-    /// [`DeepPolicy::Interleaved`], the next net in turn that has.
+    /// when it has nothing to fire, the first inner net that has (or, under
+    /// [`DeepPolicy::Interleaved`], the next net in turn that has).
     ///
     /// Under the default [`DeepPolicy::OuterFirst`], [`step`](Net::step) is
     /// tried first, selector and all. When it fires nothing, the inner nets
-    /// are walked — nested places in place order,
+    /// are walked (nested places in place order,
     /// [passive](crate::NetBuilder::passive) ones skipped, each place's
     /// tokens oldest first, each token's nets in [`Nested::nets`] order, a
-    /// net's own inner nets before the next token — and each is stepped by
+    /// net's own inner nets before the next token), and each is stepped by
     /// its own selector, so the walk goes as deep as the nesting does. The
     /// first firing found is the step. Called in a loop, which is what
     /// [`drivers::run`](crate::drivers::run) does, this is DESIGN §6.6's
@@ -596,9 +595,9 @@ impl Net {
     /// falls to this net and its selector chooses, the choice is handed back
     /// rather than fired.
     ///
-    /// For a driver whose outer bodies run elsewhere — [`launch`](Net::launch)
+    /// For a driver whose outer bodies run elsewhere ([`launch`](Net::launch)
     /// here, [`run`](crate::Firing::run) on a thread of its own,
-    /// [`distribute`](Net::distribute) here — and whose inner firings are
+    /// [`distribute`](Net::distribute) here) and whose inner firings are
     /// inline, as the protocol runner (`petritype-runner`) does for `step`
     /// and a running net. It honours the [`DeepPolicy`] where
     /// [`select`](Net::select) followed by [`step_inside`](Net::step_inside)
@@ -679,9 +678,9 @@ impl Net {
     /// has one, without asking this net's own selector first.
     ///
     /// For a caller that has already asked it. A driver that runs this net's
-    /// own firings in stages — [`select`](Net::select), then
+    /// own firings in stages ([`select`](Net::select), then
     /// [`launch`](Net::launch) with the body on a thread of its own, then
-    /// [`distribute`](Net::distribute) — and wants the inner nets when that
+    /// [`distribute`](Net::distribute)) and wants the inner nets when that
     /// selector picks nothing calls this, where
     /// [`step_deep`](Net::step_deep) would ask the selector a second time
     /// and fire inline whatever it chose. It always walks from the start,

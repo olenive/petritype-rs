@@ -4,8 +4,8 @@
 //! Three properties, in the order they arrive. A body that panics fails its
 //! firing instead of unwinding out of it, wherever stage two happened to run.
 //! A failed firing is reported, once, as an `Event::Failed` naming the tokens
-//! it consumed. And those tokens come back — front of their places, same ids,
-//! same order — exactly for a transition declared with
+//! it consumed. And those tokens come back (front of their places, same ids,
+//! same order) exactly for a transition declared with
 //! `restore_tokens_on_failure`, which is what makes a failed firing undone
 //! rather than merely recorded.
 
@@ -75,7 +75,7 @@ fn counted(net: &Net, place: PlaceId) -> Vec<u32> {
         .collect()
 }
 
-/// Every token of a place as the `(place, token)` pairs an event carries —
+/// Every token of a place as the `(place, token)` pairs an event carries,
 /// which is also the whole of what "the same tokens, in the same order" means
 /// to a restored place.
 fn pairs(net: &Net, place: PlaceId) -> Vec<(PlaceId, TokenId)> {
@@ -601,7 +601,7 @@ fn restoring_clones_one_token_per_consumed_token_per_firing() {
     );
     assert_eq!(counted(&net, batch.id()), [10, 20, 30]);
 
-    // The price is per firing, and it is paid before the body runs — so the
+    // The price is per firing, and it is paid before the body runs, so the
     // second firing pays it again on the tokens the first one put back.
     net.step().expect_err("and again");
     assert_eq!(clones.load(Ordering::SeqCst), 8);

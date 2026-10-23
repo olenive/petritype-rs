@@ -28,7 +28,7 @@ impl Net {
     /// (DESIGN §8.2).
     ///
     /// Taking one changes nothing: no event is emitted and no counter moves,
-    /// including [`state_counter`](Net::state_counter) — reading is not a
+    /// including [`state_counter`](Net::state_counter). Reading is not a
     /// change.
     ///
     /// ```
@@ -51,8 +51,8 @@ impl Net {
     ///
     /// # Nested places
     ///
-    /// A [nested](crate::NetBuilder::place_nested) place has no cloner — a
-    /// token that owns a [`Net`] cannot be cloned — so without the `serde`
+    /// A [nested](crate::NetBuilder::place_nested) place has no cloner (a
+    /// token that owns a [`Net`] cannot be cloned), so without the `serde`
     /// feature it is refused like any no-clone place. With it, each of its
     /// tokens is copied with `Nested::fork`, which rebuilds the token's
     /// inner nets from their templates and gives them their markings,
@@ -63,8 +63,8 @@ impl Net {
     /// # Errors
     ///
     /// [`NetError::NoClonePlace`] if any place was declared with
-    /// [`place_no_clone`](crate::NetBuilder::place_no_clone) — or, without
-    /// `serde`, with `place_nested` — since its tokens cannot be copied, and
+    /// [`place_no_clone`](crate::NetBuilder::place_no_clone) (or, without
+    /// `serde`, with `place_nested`), since its tokens cannot be copied, and
     /// half a state is no state. Nothing is cloned before every place has
     /// been checked, so that refusal costs nothing. With `serde`,
     /// `NetError::CannotFork` naming the place and the first token whose
@@ -187,7 +187,7 @@ fn forks(slot: &PlaceSlot) -> bool {
 /// One transition inside a [`Snapshot`]: everything
 /// [`TransitionInfo`] reports, owned.
 ///
-/// The topology comes along with the state — it is a few small vectors, and a
+/// The topology comes along with the state: it is a few small vectors, and a
 /// renderer holding a snapshot can then draw the whole net from it rather
 /// than needing the `Net` for the wiring and the snapshot for the marking.
 struct SnapshotTransition {
@@ -207,14 +207,14 @@ struct SnapshotTransition {
 /// # Why it exists
 ///
 /// A driver holds `&mut Net` and is the only writer. Anything else that wants
-/// to look at the net — a renderer on another thread, an inspector, a test
-/// comparing one moment with another — either borrows the net and blocks the
+/// to look at the net (a renderer on another thread, an inspector, a test
+/// comparing one moment with another) either borrows the net and blocks the
 /// driver, or takes a copy. This is the copy: `Send + Sync + Clone`, owning
 /// its tokens and its parameter values, answering the same questions as
 /// [`Net`] in the same words ([`count`](Snapshot::count),
 /// [`tokens`](Snapshot::tokens), [`label`](Snapshot::label),
 /// [`param`](Snapshot::param), the counters) and going stale the moment the
-/// net moves on — which is the point: it is a *moment*, and the counters on
+/// net moves on. That is the point: it is a *moment*, and the counters on
 /// it say which one.
 ///
 /// # Why it is not a `Net`
@@ -222,7 +222,7 @@ struct SnapshotTransition {
 /// DESIGN §8.2 wrote `snapshot() -> Result<Net, NetError>`, a deep copy of
 /// the net. That cannot be built. A transition's body is a
 /// `Box<dyn FnMut ..>`, which has no `Clone`, and the body of a transition
-/// that is [in flight](Net::in_flight) is not in the net at all — it is
+/// that is [in flight](Net::in_flight) is not in the net at all. It is
 /// travelling with a [`Firing`](crate::Firing) somewhere else. So a snapshot
 /// is the net's *state*, not the net. A what-if copy that can be run is a
 /// second `build()` from the builder that declared the first.
@@ -241,9 +241,9 @@ struct SnapshotTransition {
 /// there is no `step`, no `priority_of` and no selector here: a snapshot is
 /// something to read, not something to run.
 ///
-/// `Debug` prints place names with counts and transition names — never a
-/// token's contents in bulk, and never a parameter value, which has no
-/// `Debug` bound at all (DESIGN §10).
+/// `Debug` prints place names with counts and transition names. It never
+/// prints a token's contents in bulk, and never a parameter value, which has
+/// no `Debug` bound at all (DESIGN §10).
 pub struct Snapshot {
     id: NetId,
     /// Each place in an `Arc`: a nested place's tokens were forked once,
@@ -298,8 +298,8 @@ impl Snapshot {
         })
     }
 
-    /// Every edge, as it was: [`Net::edges`], in the same order —
-    /// transition by transition, inputs and then outputs.
+    /// Every edge, as it was: [`Net::edges`], in the same order
+    /// (transition by transition, inputs and then outputs).
     pub fn edges(&self) -> impl Iterator<Item = EdgeInfo> {
         edges_of(self.transitions())
     }
@@ -464,7 +464,7 @@ impl Snapshot {
         self.topology_counter
     }
 
-    /// The net's [`state_counter`](Net::state_counter) at that moment — which
+    /// The net's [`state_counter`](Net::state_counter) at that moment, which
     /// is what says *which* moment this is, and what a view compares against
     /// to know whether it needs to redraw.
     pub fn state_counter(&self) -> u64 {
@@ -481,7 +481,7 @@ impl Snapshot {
 /// every parameter through its own: the copy is as independent of this
 /// snapshot as this snapshot is of the net. A nested place, whose tokens
 /// were forked rather than cloned, is shared between the two instead of
-/// forked again — a fork is fallible and `clone` is not — which no reader
+/// forked again (a fork is fallible and `clone` is not), which no reader
 /// can tell apart, since a snapshot is never written to.
 impl Clone for Snapshot {
     fn clone(&self) -> Self {
@@ -521,7 +521,7 @@ impl Clone for Snapshot {
 
 impl fmt::Debug for Snapshot {
     /// Place names with their counts, transition names, parameter type names
-    /// and the counters. Never a token's contents — there may be thousands —
+    /// and the counters. Never a token's contents (there may be thousands),
     /// and never a parameter's value, which has no `Debug` to print.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Snapshot")

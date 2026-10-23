@@ -7,10 +7,10 @@
 //! `Scale` **consumes** an item from `Inbox`, **reads** two places without
 //! consuming them, and writes `item × multiplier` to `Outbox`:
 //!
-//! - `Multiplier` through a [`SnapshotEdge`] — a read-only factor, cloned
+//! - `Multiplier` through a [`SnapshotEdge`]: a read-only factor, cloned
 //!   when the firing starts, so the transition cannot disturb it. Change it
 //!   between runs and later items scale differently.
-//! - `Processed` through a [`MutateEdge`] — a running tally the body
+//! - `Processed` through a [`MutateEdge`]: a running tally the body
 //!   increments *in place*, which the net reports as an
 //!   [`Event::Mutated`] per firing rather than as a new token.
 //!

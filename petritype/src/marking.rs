@@ -24,8 +24,8 @@ use crate::place::ErasedToken;
 /// of its place's type. Token ids are not part of it: a marking says *what*
 /// is where, and an import gives every token a fresh id.
 ///
-/// It is plain data — `Clone`, `PartialEq`, `Serialize`, `Deserialize`,
-/// transparent over the map — so two markings compare by place name, token
+/// It is plain data (`Clone`, `PartialEq`, `Serialize`, `Deserialize`,
+/// transparent over the map), so two markings compare by place name, token
 /// order and value, which is what a test of a save wants.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(transparent)]
@@ -114,8 +114,8 @@ impl Net {
     /// # Errors
     ///
     /// [`NetError::NotSerializable`] naming the first place, in id order,
-    /// that was not marked — every place is checked before any token is
-    /// encoded — and [`NetError::CannotSerialize`] for a token whose own
+    /// that was not marked (every place is checked before any token is
+    /// encoded), and [`NetError::CannotSerialize`] for a token whose own
     /// `Serialize` refused, such as one holding a net that no template
     /// built.
     pub fn export_marking(&self) -> Result<Marking, NetError> {

@@ -38,7 +38,7 @@ pub enum BuildError {
     ///
     /// A snapshot is a clone of the front token, a survey a clone of every
     /// token, and such a place recorded no cloner. The token type may well
-    /// be `Clone` — the place is what gave the ability up — so this cannot
+    /// be `Clone` (the place is what gave the ability up), so this cannot
     /// be a compile error. Use a [`TakeEdge`](crate::TakeEdge) (a
     /// [`DrainEdge`](crate::DrainEdge) for a survey), or declare the place
     /// with [`place`](crate::NetBuilder::place).
@@ -115,11 +115,11 @@ pub enum BuildError {
     /// Restoring works on clones taken before the body runs, because the body
     /// owns the tokens themselves and may have consumed or wrecked them by
     /// the time it fails; a place with no cloner has nothing to take. Only
-    /// the consuming edges are affected — [`TakeEdge`](crate::TakeEdge),
+    /// the consuming edges are affected ([`TakeEdge`](crate::TakeEdge),
     /// [`TakeAllEdge`](crate::TakeAllEdge),
     /// [`TakeWhereEdge`](crate::TakeWhereEdge) and
     /// [`DrainEdge`](crate::DrainEdge), however empty its place is when the
-    /// net is built — since a [`MutateEdge`](crate::MutateEdge) takes nothing
+    /// net is built), since a [`MutateEdge`](crate::MutateEdge) takes nothing
     /// out of its place and so has nothing to put back, and a
     /// [`SnapshotEdge`](crate::SnapshotEdge) or a
     /// [`SurveyEdge`](crate::SurveyEdge) of such a place is already refused
@@ -136,8 +136,8 @@ pub enum BuildError {
         /// The place it consumes.
         place: String,
     },
-    /// A keyed input edge — a [`TakeWhereEdge`](crate::TakeWhereEdge) or a
-    /// [`MutateWhereEdge`](crate::MutateWhereEdge) — reads a place that
+    /// A keyed input edge (a [`TakeWhereEdge`](crate::TakeWhereEdge) or a
+    /// [`MutateWhereEdge`](crate::MutateWhereEdge)) reads a place that
     /// declares no [keys](crate::NetBuilder::keys).
     ///
     /// A keyed edge chooses its token by the keys the place derives, and a
@@ -160,8 +160,8 @@ pub enum BuildError {
     /// not declared with
     /// [`place_nested`](crate::NetBuilder::place_nested).
     ///
-    /// Passive is a choice about inner nets — that
-    /// [`step_deep`](crate::Net::step_deep) leaves them to an outer body —
+    /// Passive is a choice about inner nets (that
+    /// [`step_deep`](crate::Net::step_deep) leaves them to an outer body),
     /// and an ordinary place has none, so the mark would say nothing. Declare
     /// the place with `place_nested`, or drop the mark. Reported for the
     /// first such place marked.
@@ -186,8 +186,8 @@ pub enum BuildError {
     },
     /// [`keys`](crate::NetBuilder::keys) was called twice for one place.
     ///
-    /// A place's keys are one declaration — the names and the one extractor
-    /// that gives their values in that order — so a second would either
+    /// A place's keys are one declaration (the names and the one extractor
+    /// that gives their values in that order), so a second would either
     /// replace the first or have to be merged with it, and neither is what a
     /// second call plainly says. Declare every key in one call. Reported for
     /// the first such place; the first declaration is the one kept until
@@ -205,7 +205,7 @@ pub enum BuildError {
     /// and a body is handed a clone of the value whenever it fires. So the
     /// value has to exist before the net does, and a net that cannot supply
     /// one is refused rather than left to fail at its first firing (DESIGN
-    /// §10). The reverse — a registered parameter no transition declares — is
+    /// §10). The reverse, a registered parameter no transition declares, is
     /// fine: it is a value the net carries, for a guard or a reader.
     ///
     /// Reported for the first transition in declaration order that wants
@@ -238,7 +238,8 @@ pub enum BuildError {
     /// [`assert_no_source_transitions`](crate::NetBuilder::assert_no_source_transitions).
     ///
     /// Such a *source* transition takes no token out of any place when it
-    /// fires — read edges do not count, since a
+    /// fires, so having fired changes nothing about whether it can fire
+    /// again, and the net never quiesces. Read edges do not count, since a
     /// [`SnapshotEdge`](crate::SnapshotEdge), a
     /// [`MutateEdge`](crate::MutateEdge), a
     /// [`MutateWhereEdge`](crate::MutateWhereEdge) and a
@@ -246,8 +247,7 @@ pub enum BuildError {
     /// them, and a [`Param<T>`](crate::Param) is not a place at all; nor
     /// does a [`DrainEdge`](crate::DrainEdge), which takes every token there
     /// is, possibly none, and so does not hold the transition back on an
-    /// empty place — so having fired changes nothing about whether it can
-    /// fire again, and the net never quiesces. Give it a
+    /// empty place. Give it a
     /// [`TakeEdge`](crate::TakeEdge), a
     /// [`TakeAllEdge`](crate::TakeAllEdge) or a
     /// [`TakeWhereEdge`](crate::TakeWhereEdge), or drop the assertion:
@@ -255,7 +255,7 @@ pub enum BuildError {
     /// sources, and are bounded while the net runs instead.
     #[error("transition {transition:?} consumes nothing, so it could fire forever")]
     SourceTransition {
-        /// The offending transition — the first one, in declaration order.
+        /// The offending transition: the first one, in declaration order.
         transition: String,
     },
     /// The net's token flow has a cycle, in a net built with
@@ -313,7 +313,7 @@ pub enum PressError {
 /// Misuse of the net's API at run time.
 ///
 /// These are recoverable in the sense that the net is left untouched: nothing
-/// is added, removed or mutated when one of these is returned — with the one
+/// is added, removed or mutated when one of these is returned, with the one
 /// exception of [`FiringFailed`](NetError::FiringFailed), where the net is
 /// consistent but the firing's inputs are gone (unless the transition asked
 /// to [restore](crate::TransitionBuilder::restore_tokens_on_failure) them).
@@ -323,7 +323,7 @@ pub enum PressError {
 /// An error escapes the scope the net lives in: a `?` in `main` prints the
 /// message and exits the process, and by then an id alone is useless to the
 /// person reading the log. These messages are read by humans far more often
-/// than they are matched on by programs — ids are the programs' side, and
+/// than they are matched on by programs. Ids are the programs' side, and
 /// [`Event`](crate::Event)s already serve it while the net is alive. So a
 /// variant about a thing that *exists* carries both its id and its `name`:
 /// the name goes in the `Display` message, and the id stays as the field a
@@ -370,7 +370,7 @@ pub enum NetError {
         /// The place that was searched.
         place: PlaceId,
         /// The place's name, for the message; the id is the field to match
-        /// on. The place exists — only the token is missing — so there is a
+        /// on. The place exists (only the token is missing), so there is a
         /// name to give.
         name: String,
         /// The token that was not found.
@@ -397,7 +397,7 @@ pub enum NetError {
     /// Checked before anything else, because a
     /// [`TransitionId`] means nothing outside its own net: every net numbers
     /// its transitions from zero, so the id would otherwise name whichever
-    /// transition happens to sit at that index here. The net is untouched —
+    /// transition happens to sit at that index here. The net is untouched,
     /// and so is the net that launched the firing, whose transition stays in
     /// flight, since the `Completed` was consumed by the call.
     ///
@@ -436,7 +436,7 @@ pub enum NetError {
     /// Parameters are fixed when the net is built: every type some
     /// transition declares has a value ([`BuildError::MissingParam`]), and
     /// nothing adds a parameter afterwards, so this means the type was never
-    /// registered — usually a value meant for another net, or a newtype
+    /// registered: usually a value meant for another net, or a newtype
     /// mixed up with the type inside it.
     ///
     /// On the erased route the type cannot be named: a `dyn Any` knows its
@@ -458,13 +458,13 @@ pub enum NetError {
     /// [`place_no_clone`](crate::NetBuilder::place_no_clone).
     ///
     /// A snapshot is a copy of the marking, and such a place recorded no
-    /// cloner, so its tokens cannot be copied — a `File` or a socket is a
+    /// cloner, so its tokens cannot be copied: a `File` or a socket is a
     /// resource, not a value. Nothing is copied at all: the snapshot is
     /// refused before any place is walked, so a caller never holds half a
     /// state.
     #[error("place {name:?} ({place:?}) cannot clone its tokens")]
     NoClonePlace {
-        /// The place whose tokens cannot be copied — the first such place, in
+        /// The place whose tokens cannot be copied: the first such place, in
         /// id order.
         place: PlaceId,
         /// The place's name, for the message; the id is the field to match
@@ -577,7 +577,7 @@ pub enum NetError {
 ///
 /// A rejected command changes nothing and emits nothing (DESIGN §9), so this
 /// error is always a complete report: the net is exactly as it was before the
-/// call. Most of it is a [`NetError`] — the erased route is where a wrong
+/// call. Most of it is a [`NetError`]: the erased route is where a wrong
 /// type or a stale id can really arrive, since the typed API makes both a
 /// compile error or a panic. The rest is the JSON route's own vocabulary,
 /// where places and transitions travel by name and tokens as
@@ -589,7 +589,7 @@ pub enum NetError {
 /// An error escapes the scope the net lives in: a `?` in `main` prints the
 /// message and exits the process, and by then an id alone is useless to the
 /// person reading the log. These messages are read by humans far more often
-/// than they are matched on by programs — ids are the programs' side, and
+/// than they are matched on by programs. Ids are the programs' side, and
 /// [`Event`](crate::Event)s already serve it while the net is alive. So a
 /// variant about a thing that *exists* carries both its id and its `name`:
 /// the name goes in the `Display` message, and the id stays as the field a
@@ -604,7 +604,7 @@ pub enum CommandError {
     Net(#[from] NetError),
     /// A JSON command names a place that was not marked
     /// [`serializable`](crate::NetBuilder::serializable), so the net has no
-    /// way to decode its tokens — or, for
+    /// way to decode its tokens or, for
     /// [`Command::to_json`](crate::Command::to_json), to encode them.
     ///
     /// Serialisation is opt-in per place; mark the place in the builder.
@@ -619,7 +619,7 @@ pub enum CommandError {
     },
     /// A token in a JSON command did not parse as the place's type.
     ///
-    /// The JSON is well-formed but the wrong shape — `"seven"` for a place of
+    /// The JSON is well-formed but the wrong shape: `"seven"` for a place of
     /// `u32`. Nothing is applied: the command is rejected at the first token
     /// that fails, before the net is touched.
     #[cfg(feature = "serde")]
@@ -666,7 +666,7 @@ pub enum CommandError {
     ///
     /// The wire name comes from
     /// [`serializable_param`](crate::NetBuilder::serializable_param), and a
-    /// parameter with no name cannot be addressed from JSON at all — so this
+    /// parameter with no name cannot be addressed from JSON at all, so this
     /// is both "no such parameter" and "that parameter was never marked" on
     /// the way in.
     ///
@@ -699,7 +699,7 @@ pub enum CommandError {
     /// The parameter twin of [`InvalidToken`](CommandError::InvalidToken),
     /// and separate from it because a parameter has no place to blame: it is
     /// named on the wire and typed in the net, and neither is a
-    /// [`PlaceId`]. Nothing is applied — decoding happens before the net is
+    /// [`PlaceId`]. Nothing is applied: decoding happens before the net is
     /// touched.
     #[cfg(feature = "serde")]
     #[error("parameter {param:?}: value does not parse as {expected}: {source}")]
@@ -747,11 +747,11 @@ pub enum TemplateError {
 /// those were.
 ///
 /// A panicking body arrives here like any other failure, with
-/// [`BodyPanicked`] as the [`error`](FiringFailed::error) — downcast it to
+/// [`BodyPanicked`] as the [`error`](FiringFailed::error). Downcast it to
 /// tell the two apart.
 ///
 /// The transition's name travels with its id. A failure is the error most
-/// likely to leave the net behind — a `?` in `main` prints it and exits — and
+/// likely to leave the net behind (a `?` in `main` prints it and exits), and
 /// by then `TransitionId(2)` says nothing to the person reading the log. The
 /// id is still the field to match on; the name is for the message.
 ///
@@ -813,13 +813,13 @@ fn inside(path: &[(PlaceId, TokenId, String)]) -> String {
 /// [`MutateEdge`](crate::MutateEdge) input, both in
 /// [`catch_unwind`](std::panic::catch_unwind). Either way the panic becomes
 /// this error, the firing fails like one whose body returned `Err`, and the
-/// body goes home to its slot — so one panicking token does not strand a
+/// body goes home to its slot, so one panicking token does not strand a
 /// transition in flight for good.
 ///
 /// What comes home is whatever the panic left behind: a body is `FnMut` and
 /// may keep state of its own, and a panic can stop it half way through
-/// changing it. The net's own state is not in question — nothing was
-/// distributed — and a token a [`MutateEdge`](crate::MutateEdge) body had
+/// changing it. The net's own state is not in question (nothing was
+/// distributed), and a token a [`MutateEdge`](crate::MutateEdge) body had
 /// already changed stays changed, since the change was made where the token
 /// lies.
 ///
@@ -831,7 +831,7 @@ fn inside(path: &[(PlaceId, TokenId, String)]) -> String {
 pub struct BodyPanicked {
     /// The panic payload as text: the message a `panic!` carried, or
     /// `"panic payload of unknown type"` for a payload that is neither a
-    /// `&str` nor a `String` — which only
+    /// `&str` nor a `String`, which only
     /// [`panic_any`](std::panic::panic_any) can produce.
     pub message: String,
 }
@@ -842,7 +842,7 @@ impl BodyPanicked {
     /// The two types `panic!` itself produces, in that order: a literal
     /// message is a `&'static str` and a formatted one a `String`. Anything
     /// else came from [`panic_any`](std::panic::panic_any) and has no text to
-    /// read, so the type is not named either — `Any` cannot say what it is.
+    /// read, so the type is not named either: `Any` cannot say what it is.
     pub(crate) fn from_payload(payload: Box<dyn Any + Send>) -> BodyPanicked {
         let message = if let Some(message) = payload.downcast_ref::<&'static str>() {
             (*message).to_owned()

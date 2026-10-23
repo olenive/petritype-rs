@@ -6,7 +6,7 @@
 //! person reading the log: the net that could have turned it into a name is
 //! gone. So the name goes in the `Display` message and the id stays as the
 //! field a program matches on, and these tests are the message half of that
-//! bargain — one per variant that gained a name, asserting the quoted name
+//! bargain: one per variant that gained a name, asserting the quoted name
 //! *and* the id.
 //!
 //! Three of the variants are not reachable from out here and are tested
@@ -15,8 +15,8 @@
 //! crate's own `firing` tests, both of which need a handle or a `Completed`
 //! only the crate can mint.
 //!
-//! A not-found error — [`NetError::NoSuchPlace`],
-//! [`NetError::NoSuchTransition`], [`NetError::ForeignFiring`] — carries its
+//! A not-found error ([`NetError::NoSuchPlace`],
+//! [`NetError::NoSuchTransition`], [`NetError::ForeignFiring`]) carries its
 //! id alone, and is not tested here: there is no name to carry.
 
 use std::any::Any;

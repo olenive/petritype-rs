@@ -5,7 +5,7 @@
 //! a value the net carries for its transitions rather than a token that flows
 //! between them (DESIGN §10): declared as an input, handed to the body as a
 //! clone, replaceable between steps, and deliberately invisible to everything
-//! that is about places — edges, fireability, the marking. A **snapshot** is
+//! that is about places: edges, fireability, the marking. A **snapshot** is
 //! the net's state, owned and independent (DESIGN §8.2), which is what a
 //! renderer on another thread or a test comparing two moments needs.
 //!
@@ -309,7 +309,7 @@ fn parameters_do_not_affect_fireability() {
 }
 
 /// A mutating edge is filled in after the other inputs have been taken, by
-/// argument position — so a parameter standing in front of one must not shift
+/// argument position, so a parameter standing in front of one must not shift
 /// the borrow onto the wrong argument. Such a transition runs inline, which is
 /// the other half of what this checks: a parameter does not make a firing
 /// detachable, and does not stop it being so either.

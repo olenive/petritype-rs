@@ -10,8 +10,8 @@
 //! wall clock:
 //!
 //! - [`Mode::Sequential`]: the selector picks one fireable transition, it
-//!   runs to completion, and the loop asks again — branch A all the way down,
-//!   then branch B. Six stages, so about the **sum**, `6 × STEP`.
+//!   runs to completion, and the loop asks again (branch A all the way down,
+//!   then branch B). Six stages, so about the **sum**, `6 × STEP`.
 //! - [`Mode::Concurrent`]: everything fireable is launched at once, each
 //!   detachable body on a thread of its own. The branches advance in
 //!   lockstep, so about the **max**, `3 × STEP`.

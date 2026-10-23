@@ -16,9 +16,9 @@
 ///
 /// The consumer matches `($(($t:ident, $r:ident, $i:tt)),*)` and uses what it
 /// needs: the edge and place impls only want `$t`, the positional output impl
-/// wants all three — `$t` for the place's token type, `$r` for the type of
+/// wants all three (`$t` for the place's token type, `$r` for the type of
 /// the value in that slot, and `$i` for the slot's index, which is a literal
-/// rather than a counter so that the generated code has nothing to increment.
+/// rather than a counter so that the generated code has nothing to increment).
 macro_rules! for_each_arity {
     ($m:ident) => {
         $m!();

@@ -4,8 +4,8 @@
 //!
 //! A `DrainEdge` takes, and a `SurveyEdge` reads a clone of, every token in
 //! its place, zero or more, and neither holds its transition back. What is
-//! tested here is that promise — fireability with the place empty or full,
-//! the tokens handed over, the events, the restore, detachability — and the
+//! tested here is that promise (fireability with the place empty or full,
+//! the tokens handed over, the events, the restore, detachability) and the
 //! edges' place in everything else that reads edges: the build checks, the
 //! two opt-in checks, the read API and its serialised form, and the drivers.
 //!

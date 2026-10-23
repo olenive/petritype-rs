@@ -3,7 +3,7 @@
 //! The protocol is newline-delimited JSON, specified once for every runtime
 //! and viewer in
 //! [PROTOCOL.md](https://github.com/olenive/petritype/blob/main/PROTOCOL.md)
-//! (version 1). A host — petritype-server's worker, the Bevy visualiser —
+//! (version 1). A host (a server's worker, the Bevy viewer)
 //! spawns a net process, asks it to `describe` and `load` a net, and then
 //! drives and watches it with `get_state`, `step`, `start`, `inject` and the
 //! rest, reading the notifications the process writes as the net changes.
@@ -51,7 +51,7 @@
 //!   string token ids. Nothing there knows about a [`Net`](petritype::Net).
 //! - [`Owner`]: the state machine. It turns an [`Input`] into the
 //!   [`Outgoing`] lines and firings it causes, creates no threads, reads no
-//!   clock but the one it is handed, and writes nothing — so a host or a
+//!   clock but the one it is handed, and writes nothing, so a host or a
 //!   test can embed it without a process.
 //! - [`main`]: the stdout guard, a reader, a writer, a heartbeat, a thread
 //!   per detachable body, and the loop around the owner.

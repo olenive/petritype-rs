@@ -19,17 +19,17 @@
 //! back, and is always fireable.
 //!
 //! The net also declares, as data a viewer draws without knowing it, how
-//! the light looks — its token a [`Colour`](net::Colour) drawn as the lamp
-//! it lights, its place filled with that colour — and two controls, `car`
+//! the light looks (its token a [`Colour`](net::Colour) drawn as the lamp
+//! it lights, its place filled with that colour) and two controls, `car`
 //! (`+ Car`, a text box) and `change` (`Change`, a button), which a press
 //! runs with code written beside the net.
 //!
 //! `main` runs the script of the shared transcript `08_traffic_light.json`
-//! — the light changes to green and to amber with nobody waiting, two cars
+//! (the light changes to green and to amber with nobody waiting, two cars
 //! arrive at amber and wait through red, both go in one firing when it
 //! turns green, a third arrives at green and goes straight through, the
 //! light changes to amber, and then the controls are pressed: `change` turns
-//! it red, `car` with nothing typed adds `Car 4`, and with `Taxi` a taxi —
+//! it red, `car` with nothing typed adds `Car 4`, and with `Taxi` a taxi)
 //! and prints `Light`, `Waiting` and `Passed` after each step, checking what
 //! fired and what is fireable as the transcript does, then the controls as a
 //! legend lists them and the light's colour. The light never stops: `Change`

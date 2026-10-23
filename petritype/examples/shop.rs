@@ -17,9 +17,9 @@
 //! (`examples/traffic_light.rs`).
 //!
 //! `main` runs the script of the shared transcript
-//! `07_empty_place_edges.json` — an order priced with no promotion running,
+//! `07_empty_place_edges.json` (an order priced with no promotion running,
 //! two promotions started, an order priced with both, then nothing left to
-//! fire — and prints the marking after each step, then shows that `Price
+//! fire) and prints the marking after each step, then shows that `Price
 //! Order` waits for an order however many promotions are running. The tests
 //! below hold the table, the net's shape as §11 has it, and what the survey
 //! does to the event log.

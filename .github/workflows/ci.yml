@@ -2,6 +2,13 @@
 # the core crate alone, clippy with warnings denied, the formatting check and
 # the docs with warnings denied. One recipe here and there, so the two never
 # drift apart.
+#
+# The Python repository is checked out beside this one, as the two sit on a
+# developer's disk, so that the runner's tests replay the protocol
+# transcripts the two runtimes share (`../petritype/tests/protocol`).
+#
+# A second job checks the workspace on the minimum supported Rust version,
+# the `rust-version` in Cargo.toml.
 name: CI
 
 on:
@@ -17,12 +24,31 @@ jobs:
     name: just check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
+        with:
+          path: petritype-rs
+      - uses: actions/checkout@v7
+        with:
+          repository: olenive/petritype
+          path: petritype
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: petritype-rs
       - uses: taiki-e/install-action@v2
         with:
           tool: just
       - run: just check
+        working-directory: petritype-rs
+
+  msrv:
+    name: cargo check on Rust 1.96
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.96
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check --workspace --all-features

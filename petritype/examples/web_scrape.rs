@@ -2,7 +2,7 @@
 //!
 //! A port of the Python
 //! `examples/illustrations/hypothetical_web_scrape.py`. The fetches are
-//! simulated, as they are there — the point is the shape of the pipeline, not
+//! simulated, as they are there: the point is the shape of the pipeline, not
 //! the network.
 //!
 //! What it demonstrates: a token branching **by type**, twice over.
@@ -11,7 +11,7 @@
 //! either a success or a [`FailedScrape`]. In Python those are `Union[...]`
 //! return annotations resolved by reflection; in Rust they are
 //! [`#[derive(Routed)]`](petritype::Routed) enums, whose payload types are
-//! matched to output places when the transition is declared — so a route with
+//! matched to output places when the transition is declared, so a route with
 //! nowhere to go is a build error rather than a surprise at run time.
 //!
 //! Note that a *failed* scrape here is ordinary data routed to a place, not a

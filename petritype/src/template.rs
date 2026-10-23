@@ -1,10 +1,10 @@
-//! Templates — nets built by name — and the JSON form of a net they make
+//! Templates (nets built by name) and the JSON form of a net they make
 //! possible: [`Templates`], `Serialize` and `Deserialize` for [`Net`], and
 //! [`Net::fork`] (DESIGN §6.6, `serde` feature).
 //!
 //! A `Net` cannot be written out whole: its bodies, guards and priorities
 //! are closures. What can be written is which function built it and what
-//! has happened to it since — the marking, the parameters, the switches —
+//! has happened to it since (the marking, the parameters, the switches),
 //! and that is enough to get it back, by calling the function again and
 //! putting the rest in. A *template* is such a function registered under a
 //! name, and a net built through one is *stamped* with it, so the net knows
@@ -45,9 +45,9 @@ type BoxedError = Box<dyn Error + Send + Sync>;
 /// A template is how a net that lives inside a token is saved and restored,
 /// and how it is copied: a [`Net`] cannot be cloned or written out whole,
 /// because its bodies are closures, but the function that built it can be
-/// called again. A net built with [`build`](Templates::build) is *stamped* —
+/// called again. A net built with [`build`](Templates::build) is *stamped*:
 /// it remembers the template's name, the [`Params`] it was given and the
-/// factory itself — so that [`Net::fork`] and `Serialize` need no registry.
+/// factory itself, so that [`Net::fork`] and `Serialize` need no registry.
 /// Restoring does, since a saved net is only text, and finds one through
 /// [`scope`](Templates::scope).
 ///
@@ -78,7 +78,7 @@ type BoxedError = Box<dyn Error + Send + Sync>;
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
 ///
-/// Cloning is cheap — the factories are shared — and a registry is `Send +
+/// Cloning is cheap (the factories are shared), and a registry is `Send +
 /// Sync`, so one can be handed to every net that needs it:
 /// [`NetBuilder::templates`](crate::NetBuilder::templates) gives a net the
 /// registry its nested tokens are restored from.
@@ -100,15 +100,15 @@ impl Templates {
     ///
     /// The factory is the shape of a runner's net factory: it takes
     /// [`Params`] and returns a built net or an error, which may be any
-    /// error that converts into a boxed one — a
+    /// error that converts into a boxed one: a
     /// [`BuildError`](crate::BuildError) from
     /// [`NetBuilder::build`](crate::NetBuilder::build), a `String`, a type
     /// of the author's own.
     ///
     /// When a saved net is restored, its factory is given the net's saved
-    /// parameters — those registered with
+    /// parameters (those registered with
     /// [`serializable_param`](crate::NetBuilder::serializable_param), by
-    /// wire name — and each is then set again over what the factory built,
+    /// wire name), and each is then set again over what the factory built,
     /// so a value changed at run time wins. A factory therefore reads what
     /// it needs from its net's own wire parameters, with a default for each.
     pub fn register<F, E>(&mut self, name: impl Into<String>, factory: F) -> &mut Self
@@ -156,10 +156,10 @@ impl Templates {
     /// Scopes nest, and a template is looked for innermost first, then
     /// outwards: a net restoring its own nested tokens opens a scope of its
     /// own registry inside whatever scope restored it. A net opens its scope
-    /// itself wherever it decodes tokens —
-    /// [`import_marking`](Net::import_marking),
+    /// itself wherever it decodes tokens
+    /// ([`import_marking`](Net::import_marking),
     /// [`Command::from_json`](crate::Command::from_json),
-    /// [`apply_json`](Net::apply_json) — so a caller that goes through the
+    /// [`apply_json`](Net::apply_json)), so a caller that goes through the
     /// net never needs this; [`restore`](Templates::restore) is the one-call
     /// form for a net saved on its own.
     ///
@@ -180,8 +180,8 @@ impl Templates {
         f()
     }
 
-    /// A net from its saved JSON — `Net`'s `Serialize` form,
-    /// `{"template", "marking", "params", "enabled"}` — rebuilt from this
+    /// A net from its saved JSON (`Net`'s `Serialize` form,
+    /// `{"template", "marking", "params", "enabled"}`), rebuilt from this
     /// registry: [`scope`](Templates::scope) around `serde_json::from_value`.
     ///
     /// The net is rebuilt by its template's factory, given the saved
@@ -195,7 +195,7 @@ impl Templates {
     /// A serde error for a value of the wrong shape, an unknown template, a
     /// factory that failed, a place or a transition or a parameter the
     /// rebuilt net does not have, or a token or a parameter value that does
-    /// not decode — each saying which.
+    /// not decode, each saying which.
     pub fn restore(&self, value: serde_json::Value) -> Result<Net, serde_json::Error> {
         self.scope(|| serde_json::from_value(value))
     }
@@ -340,8 +340,8 @@ impl Net {
     /// A copy of this net: built again by the template that built it, then
     /// given this net's marking, parameters and switches (DESIGN §6.6).
     ///
-    /// A `Net` cannot be cloned — its bodies are closures, and an airborne
-    /// body is not even in it — but the factory that built it can be called
+    /// A `Net` cannot be cloned (its bodies are closures, and an airborne
+    /// body is not even in it), but the factory that built it can be called
     /// again, and the rest is data. The factory is given the [`Params`] it
     /// was given first, with every wire parameter's current value over
     /// them. Then the marking goes across as
@@ -457,7 +457,7 @@ impl Net {
     }
 
     /// Empties the log and zeroes the counters of a net that was just made
-    /// — rebuilt, restored or forked — so that it starts, as a freshly
+    /// (rebuilt, restored or forked), so that it starts, as a freshly
     /// built net does, with nothing to report.
     fn forget_setup(&mut self) {
         self.events.clear();
@@ -490,7 +490,7 @@ impl Net {
 /// [`Net::export_marking`]; `params` the current value of every parameter
 /// registered with
 /// [`serializable_param`](crate::NetBuilder::serializable_param), by wire
-/// name — a parameter without a wire name is not saved — and `enabled`
+/// name (a parameter without a wire name is not saved), and `enabled`
 /// every transition's switch, by name. Places, parameters and transitions
 /// print in name order.
 ///

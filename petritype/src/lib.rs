@@ -6,24 +6,24 @@
 //! the net is an [`Event`], so a visualiser can mirror the net in O(changes)
 //! rather than O(state).
 //!
-//! This version covers *declaring* a net — places, tokens, transitions and
-//! the edges between them — reading it back, and firing it, one transition at
+//! This version covers *declaring* a net (places, tokens, transitions and
+//! the edges between them), reading it back, and firing it, one transition at
 //! a time or several at once. What a firing does when it goes wrong is
 //! settled too: an expected outcome is *data*, routed to an error place like
-//! any other token, while a body that returns `Err` or panics has **failed**
-//! — the panic is caught, the body goes back to its slot, nothing is
+//! any other token, while a body that returns `Err` or panics has **failed**:
+//! the panic is caught, the body goes back to its slot, nothing is
 //! distributed, and the tokens the firing consumed are lost, unless the
 //! transition was declared with
 //! [`restore_tokens_on_failure`](TransitionBuilder::restore_tokens_on_failure),
 //! which puts them back where they were. The wiring below is checked when it compiles. A
 //! body may return its outputs as a tuple, slot by slot, as one value to be
 //! [routed to the output place of its type](routing), or as a
-//! [`Distribution`] of `(place, token)` pairs it names itself — which
+//! [`Distribution`] of `(place, token)` pairs it names itself, which
 //! [`output_distribution`](OutputDistribution::output_distribution) lets an
 //! author write beside the net, leaving the domain function unchanged. What
 //! the compiler cannot check is checked when the net is built, including two
-//! opt-in assertions — [`NetBuilder::assert_acyclic`] and
-//! [`NetBuilder::assert_no_source_transitions`] — which together prove that a
+//! opt-in assertions, [`NetBuilder::assert_acyclic`] and
+//! [`NetBuilder::assert_no_source_transitions`], which together prove that a
 //! net left to itself stops.
 //!
 //! ```
@@ -100,7 +100,7 @@
 //! assert_eq!(net.fired_count(), 2);
 //!
 //! // One `Fired` per firing, naming exactly which tokens it consumed and
-//! // which it produced — the second firing took the parcel put in above.
+//! // which it produced: the second firing took the parcel put in above.
 //! let events: Vec<Event> = net.drain_events().collect();
 //! let landed = net.tokens(heavy.id()).next().unwrap().0;
 //! assert_eq!(events.len(), 2);
@@ -154,13 +154,13 @@
 //! The split exists because a body may be slow, and may want a thread, a task
 //! pool or a later frame: [`Firing`] and [`Completed`] are `Send` and own
 //! everything they need, so stage two can run anywhere while the net remains
-//! the single writer — nothing but [`launch`](Net::launch) and
+//! the single writer: nothing but [`launch`](Net::launch) and
 //! [`distribute`](Net::distribute) touches a place. Taking the tokens at
 //! launch is also what resolves conflicts: a peer transition that wanted one
 //! of them is simply not fireable any more, with no locks anywhere. A
 //! transition whose body borrows a token in its place ([`MutateEdge`]) cannot
 //! leave the net, so `launch` runs it inline and hands back a `Firing` that
-//! is already done — a driver can then treat every transition alike.
+//! is already done. A driver can then treat every transition alike.
 //!
 //! # Where things are
 //!
@@ -193,7 +193,7 @@
 //! - [`RoutedOutput`] is the second output form: a body that returns a value
 //!   rather than a tuple has each payload sent to the output place of its
 //!   type, which is what [`#[derive(Routed)]`](Routed) and [`Either`] are
-//!   for — see the [`routing`] module.
+//!   for. See the [`routing`] module.
 //! - [`Distribution`] is the third: `(place, token)` pairs the body names
 //!   itself, for choosing between output places of the same type or for
 //!   fanning out. [`OutputDistribution::output_distribution`] composes the
@@ -210,7 +210,7 @@
 //! - [`Net::extend`], [`Net::put`], [`Net::set_tokens`], [`Net::remove`] and
 //!   [`Net::replace`] change the marking from outside.
 //! - [`Command`] is that same input with the types forgotten, for a sender
-//!   that holds no `&mut Net` — across a channel from a UI thread, or from a
+//!   that holds no `&mut Net`, across a channel from a UI thread, or from a
 //!   source that never knew the types. [`Net::apply`] carries one out, and is
 //!   the one place in the engine where a type is checked at run time; it is
 //!   all-or-nothing, so a [`CommandError`] means the net neither changed nor
@@ -219,7 +219,7 @@
 //!   `Command::from_json`, `Command::to_json` and `Net::apply_json`
 //!   translate.
 //! - [`Param<T>`](Param) is an input that reads no place: a run-varying value
-//!   — a secret, a tuning constant, this run's configuration — declared
+//!   (a secret, a tuning constant, this run's configuration) declared
 //!   beside the edges as `Param::<T>::new()` and handed to the body as a
 //!   clone. [`NetBuilder::param`] gives the net its value, a declared
 //!   parameter without one is a [`BuildError::MissingParam`],
@@ -233,11 +233,11 @@
 //!   marking, the switches, the in-flight set, the parameters and the
 //!   counters, for a renderer on another thread or a test comparing two
 //!   moments. It is a [`Snapshot`] and not a `Net` because bodies cannot be
-//!   cloned — a what-if copy is a second `build()` — and it is a `Result`
+//!   cloned (a what-if copy is a second `build()`), and it is a `Result`
 //!   because a [`place_no_clone`](NetBuilder::place_no_clone) place cannot
 //!   copy its tokens ([`NetError::NoClonePlace`]).
 //! - [`NetBuilder::keys`] declares the *keys* of a place's tokens: named
-//!   attributes — a string, an integer or a boolean each, a [`KeyValue`] —
+//!   attributes (a string, an integer or a boolean each, a [`KeyValue`])
 //!   that an extractor the author writes derives from every token, so the
 //!   token type needs nothing for them. [`Net::keys`] reads one token's
 //!   [`Keys`]; [`Net::query`] finds every token a [`Filter`] of [`Clause`]s
@@ -254,7 +254,7 @@
 //!   borrow. [`Snapshot::edges`] is [`Net::edges`] on a snapshot.
 //! - **fireable** and **enabled** are two different questions:
 //!   [`Net::enable`] / [`Net::disable`] work the author's on/off switch,
-//!   while *fireable* means "could fire right now" — switched on, input
+//!   while *fireable* means "could fire right now": switched on, input
 //!   places non-empty (holding a token the filter accepts, for a keyed
 //!   edge; anything, nothing included, for a drain or a survey edge), guard
 //!   saying yes.
@@ -298,7 +298,7 @@
 //!   runs one with its widget's value, every effect an ordinary [`Event`].
 //! - [`drivers::run`] drives a net until it has nothing left to fire, and
 //!   [`drivers::run_indefinitely`] drives it on a clock until a flag says
-//!   stop. [`Mode`](drivers::Mode) picks the loop — sequential, where the
+//!   stop. [`Mode`](drivers::Mode) picks the loop: sequential, where the
 //!   selector chooses one transition at a time, or concurrent, where
 //!   everything fireable is launched at once on threads of its own;
 //!   [`Limits`](drivers::Limits) paces a run or blows a fuse on one that will
@@ -328,7 +328,7 @@
 //!   `Snapshot::json`, for inspectors
 //!   that want structure rather than a `Debug` string, and `JsonCommand`
 //!   with `Command::from_json`, `Command::to_json` and `Net::apply_json`, for
-//!   input that arrives as JSON rather than as Rust values —
+//!   input that arrives as JSON rather than as Rust values.
 //!   `NetBuilder::serializable_param` is the parameter half of that, giving a
 //!   parameter type the wire name a `set_param` command addresses it by. [`PlaceId`],
 //!   [`TransitionId`] and [`TokenId`] become `Serialize`/`Deserialize` as
@@ -341,8 +341,8 @@
 //!   by place name, oldest first) and `Net::import_marking` replaces the
 //!   whole marking with one, emitting a single [`Event::Resynced`]. A
 //!   `Templates` registry builds nets by name and stamps them, so that a
-//!   `Net` is itself `Serialize` — `{"template", "marking", "params",
-//!   "enabled"}` — and `Deserialize`, rebuilt from the registry in
+//!   `Net` is itself `Serialize` (`{"template", "marking", "params",
+//!   "enabled"}`) and `Deserialize`, rebuilt from the registry in
 //!   `Templates::scope`, and `Net::fork` copies one: which is how a token
 //!   that carries a net is saved, loaded, and snapshotted
 //!   ([`Nested`] gains `fork`). [`KeyValue`] becomes `Serialize` and

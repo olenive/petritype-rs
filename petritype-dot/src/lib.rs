@@ -1,7 +1,7 @@
 //! Graphviz DOT text of a petritype net and its marking.
 //!
 //! One function, [`dot`], turns a net into the source of a `digraph`. Feed
-//! the string to `dot -Tsvg` — or to any Graphviz binding — and you have the
+//! the string to `dot -Tsvg`, or to any Graphviz binding, and you have the
 //! picture: places as ovals holding their tokens, transitions as boxes, and
 //! the kinds of input edge drawn apart, so that a reader can tell a token
 //! being *taken* from one being *read*, and an edge that waits for a token
@@ -11,7 +11,7 @@
 //! it draws a live [`Net`] or an owned [`Snapshot`] alike ([`DotSource`] is
 //! the one trait the two share here). That is the point of the snapshot: a
 //! render thread owns a consistent copy of the state while the driver keeps
-//! `&mut Net`, and the two renders are the same text —
+//! `&mut Net`, and the two renders are the same text:
 //! `dot(&net) == dot(&net.snapshot()?)`.
 //!
 //! Nothing here is `&mut`, nothing drains events, and the output is a pure
@@ -30,7 +30,7 @@
 //! |---|---|
 //! | place | `shape=oval, style=filled, fillcolor=deepskyblue, color=black, penwidth=1`; the label is the place name, then one line per token |
 //! | transition | `shape=box, style=filled, fillcolor=lightgreen, color=black, penwidth=1`; a second label line `[A, B]` lists its [parameter](petritype::Param) types |
-//! | transition, in flight | `fillcolor=gold, color=darkorange, penwidth=2` — this one is *working* |
+//! | transition, in flight | `fillcolor=gold, color=darkorange, penwidth=2` (this one is *working*) |
 //! | transition, disabled | `fillcolor=lightgray, style="filled,dashed"` (*new*: the Python renderer had no disabled state) |
 //! | highlighted node | `color=magenta` (`color=red` for a failure), `penwidth=2` on a place and `3` on a transition; an in-flight transition keeps its gold, as in Python |
 //! | [`TakeEdge`](petritype::TakeEdge) | `color=black, penwidth=1` |
@@ -44,8 +44,8 @@
 //! | output edge | `color=black, penwidth=1`, plus `label="<slot>"` when the transition has more than one output (*new*: positional order is what a positional body returns into) |
 //! | highlighted edge | both its ends highlighted: the kind's shape is kept and its `color` and `penwidth` become `magenta`/`red` and `2` |
 //!
-//! A token is drawn as its [`label`](petritype::Net::label) — its `Debug`,
-//! truncated by the net's own limit — and never as its
+//! A token is drawn as its [`label`](petritype::Net::label), its `Debug`
+//! truncated by the net's own limit, and never as its
 //! [`TokenId`]: a diagram reads values, not ids. Long
 //! places are cut off after [`Style::max_tokens`] lines with one `… and N
 //! more`.
@@ -217,7 +217,7 @@ impl RankDir {
 /// [`from_event`](Highlight::from_event).
 ///
 /// One transition and the places that firing touched. A renderer holds the
-/// highlight for one frame — the event log is the cheap update channel, and
+/// highlight for one frame: the event log is the cheap update channel, and
 /// this is what a frame makes of the last entry in it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Highlight {
@@ -242,13 +242,13 @@ impl Highlight {
     ///   [`Launched`](Event::Launched) that opened the firing, which is not
     ///   this event.
     /// - [`Launched`](Event::Launched): the transition and the places it
-    ///   consumed from — the firing is airborne, and the transition will also
+    ///   consumed from. The firing is airborne, and the transition will also
     ///   draw itself gold.
     /// - [`Failed`](Event::Failed): the transition and the places it consumed
     ///   from, with [`failed`](Highlight::failed) set.
-    /// - Everything else — [`Added`](Event::Added), [`Removed`](Event::Removed),
+    /// - Everything else ([`Added`](Event::Added), [`Removed`](Event::Removed),
     ///   [`Mutated`](Event::Mutated), [`Toggled`](Event::Toggled),
-    ///   [`ParamChanged`](Event::ParamChanged) — names no firing, so there is
+    ///   [`ParamChanged`](Event::ParamChanged)) names no firing, so there is
     ///   nothing to outline: `None`.
     ///
     /// ```
@@ -706,7 +706,7 @@ fn last_segment(path: &str) -> &str {
 ///
 /// A token's label is whatever its `Debug` printed, so it may hold anything:
 /// a quote, a backslash, a newline. The first two are escaped and the third
-/// becomes a `\n`, which Graphviz draws as a line break — which is exactly
+/// becomes a `\n`, which Graphviz draws as a line break. That is exactly
 /// what the multi-line labels this crate builds want.
 fn escape(text: &str) -> String {
     let mut out = String::with_capacity(text.len());

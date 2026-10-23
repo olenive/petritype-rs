@@ -5,8 +5,8 @@
 //! (`Cyberpunk2020-Simulation/dev-docs/NETS_AS_TOKENS.md` §2), built as the
 //! conformance net `transit` of the shared protocol (`PROTOCOL.md` §11),
 //! which lives in [`net`] so that a runner can carry the same file. The
-//! outer net, `City`, has four stations — `Depot`, `Central`, `Harbour`,
-//! `Airport` — each holding the vehicles standing there, a
+//! outer net, `City`, has four stations (`Depot`, `Central`, `Harbour`,
+//! `Airport`), each holding the vehicles standing there, a
 //! `Platform@<station>` of passengers waiting at each, `In Transit` for the
 //! vehicles between them, and `Arrived` for the passengers who have stepped
 //! off. A vehicle is a token, and it carries an *inner* net, its `cabin`,
@@ -36,8 +36,8 @@
 //! [`DeepPolicy::Interleaved`], which takes the city and each cabin in turn,
 //! is the policy for a net that cannot give its outer transitions guards
 //! like these (DESIGN §6.6). On the way it saves the city's
-//! marking as JSON text — the vehicles' cabins in it, each as the template
-//! that built it with its marking, parameters and switches — the first time a
+//! marking as JSON text (the vehicles' cabins in it, each as the template
+//! that built it with its marking, parameters and switches) the first time a
 //! vehicle is between stations, loads it into a freshly built city, steps
 //! that one to the end too, and compares the two.
 //!

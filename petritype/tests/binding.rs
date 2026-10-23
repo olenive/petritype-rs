@@ -7,8 +7,8 @@
 //! written in the tuple one by one. A struct a body returns derives
 //! `Outputs`, and the struct of outputs it generates is the whole of the
 //! transition's outputs: each field's tokens go to the place wired to its
-//! name. What is tested here is that promise — the order, the kinds, the
-//! borrows, the restore, the build checks, the read API, the return forms —
+//! name. What is tested here is that promise (the order, the kinds, the
+//! borrows, the restore, the build checks, the read API, the return forms)
 //! and the by-name part of it: the fields are matched by name, whatever
 //! order a literal writes them in. The acceptance test is the till of
 //! `dev-docs/TRANSITION_ARITY.md` §2, written by name: fourteen inputs and

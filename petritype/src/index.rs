@@ -11,7 +11,7 @@
 //!
 //! The index holds no copy of any token's keys. Keys are derived from the
 //! value by the place's extractor, which is pure, so a token's entries are
-//! found again by extracting its keys once more — from the value about to
+//! found again by extracting its keys once more, from the value about to
 //! leave, or from the value as it stood before a body changed it. Every point
 //! where the net moves a token is a point where the value is in hand:
 //!
@@ -157,7 +157,7 @@ impl KeyIndex {
 
     /// Reindexes a token whose old value is gone: its entries are found by
     /// looking through every value of each of its place's keys, then it is
-    /// indexed afresh. For a change the net learns of only afterwards — an
+    /// indexed afresh. For a change the net learns of only afterwards: an
     /// inner net of a nested token firing, or a `nested_scope` closure.
     pub(crate) fn forget(
         &mut self,

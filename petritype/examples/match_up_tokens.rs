@@ -4,9 +4,9 @@
 //!
 //! What it demonstrates: a transition that reads *every* token of two places
 //! at once ([`TakeAllEdge`]), decides one match, and returns the rest of both
-//! lists to where they came from — positional outputs, one slot per place,
-//! with a `Vec` slot meaning "as many tokens as it holds" and an `Option`
-//! slot meaning "maybe nothing came of it".
+//! lists to where they came from through positional outputs, one slot per
+//! place, with a `Vec` slot meaning "as many tokens as it holds" and an
+//! `Option` slot meaning "maybe nothing came of it".
 //!
 //! Without a [guard](petritype::TransitionBuilder::guard) that would be a
 //! futile cycle: the transition is always fireable while either place holds

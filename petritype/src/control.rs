@@ -1,8 +1,8 @@
 //! Controls: the buttons a net declares, as data a viewer renders and code
 //! the net runs (DESIGN §18, 2026-10-16, net-declared controls).
 //!
-//! A [`Control`] is a widget — a button, a toggle, a slider, a select or a
-//! text box ([`ControlKind`]) — with a name, a label, and a handler written
+//! A [`Control`] is a widget of one [`ControlKind`] (a button, a toggle, a
+//! slider, a select or a text box) with a name, a label, and a handler written
 //! beside the net that does whatever pressing it means, through the net's
 //! public API: [`put`](Net::put), [`fire`](Net::fire),
 //! [`enable`](Net::enable). [`NetBuilder::control`](crate::NetBuilder::control)
@@ -457,7 +457,7 @@ impl Net {
     /// [`PressError::UnknownControl`] for a name the net does not declare,
     /// [`PressError::WrongKind`] for a value its kind cannot take (an
     /// option it does not list, or a number outside a slider's bounds,
-    /// included) — the net untouched in both cases — and
+    /// included), the net untouched in both cases, and
     /// [`PressError::Refused`] with the handler's message when it returns
     /// `Err`.
     ///

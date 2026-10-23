@@ -2,7 +2,7 @@
 //!
 //! The positional form matches slots to places by order and the routed form
 //! matches payloads to places by type. Both decide everything before the net
-//! runs, which is what makes them checkable — and what makes them unable to
+//! runs, which is what makes them checkable, and what makes them unable to
 //! answer "which of these three *same-typed* places does *this* value belong
 //! in?". That question is what a [`Distribution`] answers: a list of typed
 //! `(place, token)` pairs, built while the body runs, from the data the body
@@ -169,8 +169,8 @@ impl Distribution {
     ///
     /// The handle carries the place's token type, so a token of the wrong
     /// type does not compile. What the handle cannot carry is whether the
-    /// place is an output of the transition being declared — see
-    /// [`DistributionError`].
+    /// place is an output of the transition being declared (see
+    /// [`DistributionError`]).
     pub fn to<T: Send + Sync + 'static>(mut self, place: PlaceRef<T>, token: T) -> Self {
         self.push(place, token);
         self
@@ -261,8 +261,8 @@ impl<Outputs: OutputPlaces> IntoOutcome<Outputs, marker::Distributed> for Distri
 /// and the output places are known, and saying it twice would only move the
 /// error message further from the mistake.
 ///
-/// DESIGN §5 writes this as an option on the transition —
-/// `b.transition(..).output_distribution(f)` — but by then the body's return
+/// DESIGN §5 writes this as an option on the transition,
+/// `b.transition(..).output_distribution(f)`, but by then the body's return
 /// type has been erased, and the whole point is that *`f`'s* return type
 /// decides the output form. So it wraps the body instead, before
 /// `transition()` ever sees it.
@@ -290,8 +290,8 @@ pub trait OutputDistribution: Sized {
     /// Runs `f` on whatever this body returns, and makes *`f`'s* return value
     /// the transition's outputs.
     ///
-    /// `f` sees the body's result and nothing else — not the inputs, not the
-    /// net — and it runs in stage two, with the body, so in concurrent mode it
+    /// `f` sees the body's result and nothing else (not the inputs, not the
+    /// net), and it runs in stage two, with the body, so in concurrent mode it
     /// runs wherever the body ran. It may return any output form: a
     /// [`Distribution`], a positional tuple, or a value
     /// [routed](crate::RoutedOutput) by its type.
@@ -314,8 +314,8 @@ impl<F> OutputDistribution for F {}
 /// [`output_distribution`](OutputDistribution::output_distribution) returns,
 /// and itself a transition body.
 ///
-/// The pair is a body of the same arity as the one inside it — the wrapper
-/// changes only what the *return* value means — so
+/// The pair is a body of the same arity as the one inside it (the wrapper
+/// changes only what the *return* value means), so
 /// [`NetBuilder::transition`](crate::NetBuilder::transition) takes it wherever
 /// it takes a closure. The [`TransitionBody`](crate::TransitionBody) impls
 /// live beside the plain ones, so that one arity macro writes both.
@@ -342,8 +342,8 @@ impl<F, G> fmt::Debug for WithOutputDistribution<F, G> {
 /// are resolved, *before* any of its tokens are written, so a distribution
 /// with a good pair and a bad one writes neither (DESIGN §6.2). The firing
 /// then fails exactly as a body returning `Err`
-/// does: the consumed tokens are lost — or put back, for a transition that
-/// [restores them](crate::TransitionBuilder::restore_tokens_on_failure) — an
+/// does: the consumed tokens are lost (or put back, for a transition that
+/// [restores them](crate::TransitionBuilder::restore_tokens_on_failure)), an
 /// [`Event::Failed`](crate::Event::Failed) records them, and the error is the
 /// [`source`](std::error::Error::source) of the
 /// [`FiringFailed`](crate::FiringFailed) that comes back from
@@ -358,7 +358,7 @@ impl<F, G> fmt::Debug for WithOutputDistribution<F, G> {
 /// An error escapes the scope the net lives in: a `?` in `main` prints the
 /// message and exits the process, and by then an id alone is useless to the
 /// person reading the log. These messages are read by humans far more often
-/// than they are matched on by programs — ids are the programs' side, and
+/// than they are matched on by programs. Ids are the programs' side, and
 /// [`Event`](crate::Event)s already serve it while the net is alive. So both
 /// variants carry a name beside each id: the names go in the `Display`
 /// message, and the ids stay as the fields a program matches on.
@@ -366,7 +366,7 @@ impl<F, G> fmt::Debug for WithOutputDistribution<F, G> {
 #[non_exhaustive]
 pub enum DistributionError {
     /// A token was addressed to a place that is not one of the transition's
-    /// declared output places — including any place of another net, whose
+    /// declared output places, including any place of another net, whose
     /// handle carries a different [`NetId`].
     ///
     /// Add the place to the transition's output tuple, or send the token
@@ -386,7 +386,7 @@ pub enum DistributionError {
         place: PlaceId,
         /// The place's name, for the message; the id is the field to match
         /// on. `"<another net>"` when the handle was stamped with another
-        /// net, whose places this net cannot name — the id is then that
+        /// net, whose places this net cannot name. The id is then that
         /// net's, and means nothing here either.
         name: String,
     },
@@ -423,8 +423,8 @@ pub enum DistributionError {
 ///
 /// A [`PlaceRef`] stamped with a different [`NetId`] names nothing here, and
 /// the place at that index in *this* net is a different place entirely, so
-/// naming it would be a lie. Written like the engine's other stand-ins —
-/// `"<erased>"` for a type a `dyn Any` cannot name — so that a reader can see
+/// naming it would be a lie. Written like the engine's other stand-ins
+/// (`"<erased>"` for a type a `dyn Any` cannot name) so that a reader can see
 /// at a glance that it is not a name the author wrote.
 pub(crate) const FOREIGN_PLACE: &str = "<another net>";
 

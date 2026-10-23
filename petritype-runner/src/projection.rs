@@ -1,8 +1,8 @@
 //! A connection's projection of one net through its filter (PROTOCOL.md
 //! §13.4, DESIGN §19.3.12).
 //!
-//! `set_filter` gives a net — the outer one, or an inner one named by `path`
-//! or `nested_id` — a [`Projection`]. Reads ask it which tokens to list
+//! `set_filter` gives a net (the outer one, or an inner one named by `path`
+//! or `nested_id`) a [`Projection`]. Reads ask it which tokens to list
 //! ([`Projection::kept`], from the net's key index); the owner asks it, event
 //! by event, what the connection is told: a token that arrives or changes
 //! is checked against the filter where it stands ([`Net::matches`]), and a
@@ -185,8 +185,8 @@ impl Projection {
     }
 
     /// The tokens that came into view or went out of it with no token
-    /// event of their own — a change of a net parameter a clause names,
-    /// or of the inner nets a key reads — found by comparing what the
+    /// event of their own (a change of a net parameter a clause names,
+    /// or of the inner nets a key reads), found by comparing what the
     /// connection was shown with what the filter keeps now: over every
     /// token, or over `only` those. Out of view first, then into view, each
     /// in id order, as the Python runner tells them; the projection is

@@ -1,7 +1,7 @@
 //! Parameters: the inputs of a transition that are not places (DESIGN §10).
 //!
-//! Python petritype injected run-varying values — secrets, API tokens, tuning
-//! constants — into a transition as `kwargs`, and changed them at run time
+//! Python petritype injected run-varying values (secrets, API tokens, tuning
+//! constants) into a transition as `kwargs`, and changed them at run time
 //! with `SetParam`, without adding a node to the diagram. [`Param<T>`] is the
 //! Rust equivalent: an input position declared alongside the input edges,
 //! which hands the body a **clone** of the net's current value of type `T`.
@@ -69,7 +69,7 @@ use crate::sealed::EdgeSealed;
 /// DESIGN §10 writes the bare `Param::<ApiToken>`; a struct with a
 /// [`PhantomData`] field needs a value, so the spelling here is
 /// `Param::<ApiToken>::new()` (or `Param::default()` where the type can be
-/// inferred). Like the edge handles it is `Copy` and carries no data at all —
+/// inferred). Like the edge handles it is `Copy` and carries no data at all:
 /// the type parameter *is* the declaration.
 ///
 /// # What the body receives
@@ -84,8 +84,8 @@ use crate::sealed::EdgeSealed;
 ///
 /// `T: Clone + Send + Sync + 'static`, and deliberately **not** `Debug`: a
 /// parameter may be a secret, and nothing in the engine ever prints one. A
-/// visualiser is told the type name — [`TransitionInfo::params`](crate::TransitionInfo::params)
-/// — and no more.
+/// visualiser is told the type name
+/// ([`TransitionInfo::params`](crate::TransitionInfo::params)) and no more.
 pub struct Param<T>(PhantomData<fn() -> T>);
 
 impl<T> Param<T> {
@@ -107,7 +107,7 @@ impl<T> Default for Param<T> {
 }
 
 /// Hand-written, like the edge handles': a `Param<T>` is a declaration, not a
-/// value, so it is `Copy` and printable whatever `T` is — including a `T`
+/// value, so it is `Copy` and printable whatever `T` is, including a `T`
 /// that is deliberately not `Debug`.
 impl<T> Clone for Param<T> {
     fn clone(&self) -> Self {
@@ -157,9 +157,9 @@ impl<'a, T: Clone + Send + Sync + 'static> Extract<'a, T> for Param<T> {
 /// a JSON command replace it.
 ///
 /// The same hand-rolled vtable idea as [`PlaceMeta`](crate::place::PlaceMeta),
-/// and the same functions — [`clone_of`](crate::place::clone_of),
+/// and the same functions ([`clone_of`](crate::place::clone_of),
 /// [`to_json_of`](crate::place::to_json_of),
-/// [`from_json_of`](crate::place::from_json_of) — instantiated by the builder,
+/// [`from_json_of`](crate::place::from_json_of)) instantiated by the builder,
 /// which is the one place `T` is still known.
 pub(crate) struct ParamSlot {
     /// `TypeId::of::<T>()`: the key a parameter is stored under, and what an
@@ -266,7 +266,7 @@ mod tests {
         fn assert_handle<H: Copy + Send + Sync + fmt::Debug>() {}
 
         // `Rc<u32>` is neither `Copy`, `Send` nor `Sync`, and the handle is
-        // all three regardless — it carries no `T` at all.
+        // all three regardless: it carries no `T` at all.
         assert_handle::<Param<Rc<u32>>>();
     }
 

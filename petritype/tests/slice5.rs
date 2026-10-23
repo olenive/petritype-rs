@@ -3,7 +3,7 @@
 //! The question this slice answers is "which of these places, *this* time?".
 //! Neither order nor type can say, because the places that compete are the
 //! same type and the answer is in the data, so the author names the place and
-//! the engine checks the name — before it writes anything.
+//! the engine checks the name, before it writes anything.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -258,7 +258,7 @@ fn a_fallible_body_distributes_its_ok_and_fails_on_its_err() {
     );
 
     // The net is consistent: the body is back in its slot, so a further step
-    // works — there is simply nothing left to fire.
+    // works: there is simply nothing left to fire.
     assert_eq!(net.step().expect("nothing is fireable"), None);
 }
 

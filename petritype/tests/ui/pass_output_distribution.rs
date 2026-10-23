@@ -1,8 +1,8 @@
 //! The DESIGN §4.5 coloured-balls shape, with the two corrections the
 //! implementation made to the sketch there: `output_distribution` wraps the
-//! *body* rather than the `TransitionBuilder` — by the time `transition()`
+//! *body* rather than the `TransitionBuilder` (by the time `transition()`
 //! returns, the body's return type has been erased, and the whole point is
-//! that the distribution function's return type decides the output form — and
+//! that the distribution function's return type decides the output form), and
 //! a `Distribution` is built from its one constructor,
 //! `Distribution::new().to(place, token)`.
 

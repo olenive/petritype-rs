@@ -1,10 +1,10 @@
 //! Loops that drive a net: run it to quiescence, or run it on a clock.
 //!
 //! A driver is *thin* (DESIGN §13). It owns no state of its own and adds no
-//! semantics: it is a loop over the stages [`Net`] already exposes —
-//! [`step_deep`](Net::step_deep) for the sequential one,
+//! semantics: it is a loop over the stages [`Net`] already exposes
+//! ([`step_deep`](Net::step_deep) for the sequential one,
 //! [`launch`](Net::launch) / [`Firing::run`](crate::Firing::run) /
-//! [`distribute`](Net::distribute) for the concurrent one — plus a decision
+//! [`distribute`](Net::distribute) for the concurrent one), plus a decision
 //! about when to stop and what to do about a failure. Everything it knows is
 //! in its arguments and everything it did is in the [`RunSummary`] it
 //! returns, so two calls in a row continue each other exactly as far as the
@@ -35,11 +35,11 @@
 //!
 //! [`Mode::Sequential`] is [`Net::step_deep`] in a loop: one transition at a
 //! time, chosen by the net's [`Selector`](crate::Selector), each firing
-//! complete before the next begins — and, when the net has nothing to fire
+//! complete before the next begins, and, when the net has nothing to fire
 //! itself, one firing in the first inner net that has, if its tokens carry
 //! nets of their own ([`Nested`](crate::Nested)). It is **deterministic given
 //! the selectors**, which is what makes a sequential run the thing to write a
-//! test or a replay against — and what makes [`Net::set_selector`] a way to
+//! test or a replay against, and what makes [`Net::set_selector`] a way to
 //! shape a whole run rather than one step.
 //!
 //! [`Mode::Concurrent`] sweeps [`Net::fireable`] in declaration order and
@@ -59,9 +59,9 @@
 //!   bodies took. One flight per transition at a time, though: a transition
 //!   in flight is not fireable, so it is never launched twice over.
 //!
-//! A transition that is not detachable — one with a
+//! A transition that is not detachable (one with a
 //! [`MutateEdge`](crate::MutateEdge) input, whose body borrows a token where
-//! it lies — has already run by the time [`launch`](Net::launch) returns, so
+//! it lies) has already run by the time [`launch`](Net::launch) returns, so
 //! the concurrent driver distributes it on the spot and sweeps again rather
 //! than calling the net quiescent: the marking moved.
 //!
@@ -81,9 +81,9 @@
 //!
 //! # Limits: pacing and the fuse
 //!
-//! [`Limits`] holds two caps, and both count **launches** — attempts,
+//! [`Limits`] holds two caps, and both count **launches** (attempts,
 //! including ones that go on to fail, inside inner nets as well as in the net
-//! itself — rather than successes.
+//! itself) rather than successes.
 //!
 //! - [`stop_after_n_firings`](Limits::stop_after_n_firings) is *pacing*: the
 //!   driver stops launching and returns `Ok`, with
@@ -93,7 +93,7 @@
 //! - [`error_after_n_firings`](Limits::error_after_n_firings) is a *fuse*:
 //!   the driver returns [`DriverError::TooManyFirings`] **before** the
 //!   offending launch consumes anything. It is the guard against a net that
-//!   will not stop — most sharply against a transition that
+//!   will not stop, most sharply against a transition that
 //!   [restores its inputs](crate::TransitionBuilder::restore_tokens_on_failure)
 //!   and fails every time, which would otherwise put its tokens back and try
 //!   again for ever.
@@ -151,7 +151,7 @@
 //! of an error. A [`Firing`](crate::Firing) or
 //! [`Completed`] that is dropped instead of distributed
 //! takes its transition's body with it and **strands that transition in
-//! flight for good** — see the `#[must_use]` notes on both types. So the
+//! flight for good** (see the `#[must_use]` notes on both types). So the
 //! concurrent driver, once it has decided to stop, stops *launching* and then
 //! waits for every completion it is still owed, distributing each one
 //! (failures among them are counted in
@@ -192,7 +192,7 @@ pub enum Mode {
     /// detachable body on its own thread inside a
     /// [`std::thread::scope`]. The selector is not consulted and completion
     /// order is wall-clock order. Inner nets are stepped inline, one firing
-    /// at a time, whenever a sweep finds nothing to launch — or, under
+    /// at a time, whenever a sweep finds nothing to launch, or, under
     /// [`DeepPolicy::Interleaved`], in their turns between the sweeps.
     Concurrent,
 }
@@ -235,15 +235,15 @@ pub enum OnFailure {
     /// **first** failure of the call.
     ///
     /// In [`Mode::Concurrent`] the firings already airborne are still waited
-    /// for and distributed first — see
-    /// [the module docs](self#nothing-is-left-in-flight) — so later failures
+    /// for and distributed first (see
+    /// [the module docs](self#nothing-is-left-in-flight)), so later failures
     /// may be in the event log and in
     /// [`failed_count`](RunSummary::failed_count) even though the error
     /// reports the first.
     #[default]
     Stop,
-    /// Switch the failing transition off with [`Net::disable`] — which
-    /// appends a [`Toggled`](crate::Event::Toggled) event — and keep going.
+    /// Switch the failing transition off with [`Net::disable`], which
+    /// appends a [`Toggled`](crate::Event::Toggled) event, and keep going.
     ///
     /// The way to let the rest of a net make progress around one broken
     /// transition, and the way to make a failing transition stop being
@@ -269,7 +269,7 @@ pub enum OnFailure {
 /// and found nothing to do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct RunSummary {
-    /// True: there was nothing left to fire when the call returned — the net
+    /// True: there was nothing left to fire when the call returned. The net
     /// is quiescent and nothing is in flight, inner nets included
     /// ([`Net::is_quiescent_deep`]).
     ///
@@ -301,7 +301,7 @@ pub struct RunSummary {
 /// A driver error escapes the scope the net lives in even more readily than
 /// the rest: `drivers::run(&mut net, ..)?` in `main` prints the message and
 /// exits the process, and by then `TransitionId(2)` says nothing to the
-/// person reading the log. So the transition is named as well as numbered —
+/// person reading the log. So the transition is named as well as numbered:
 /// here in [`TooManyFirings`](DriverError::TooManyFirings), and inside the
 /// [`FiringFailed`] that [`FiringFailed`](DriverError::FiringFailed) carries.
 /// The ids stay as the fields a program matches on.
@@ -353,7 +353,7 @@ pub enum DriverError {
 /// `Runner.run` and `run_to_completion`, which differed only in their limits
 /// and their return type (DESIGN §13). `mode` picks the loop, `limits` says
 /// when to give up, and `on_failure` says what a failed firing means for the
-/// rest of the run — see the [module docs](self) for all three.
+/// rest of the run. See the [module docs](self) for all three.
 ///
 /// A returned [`RunSummary`] with [`quiesced`](RunSummary::quiesced) true is
 /// the net's own finish line: nothing is fireable and nothing is in flight,
@@ -412,15 +412,15 @@ pub fn run(
 /// Drives a net on a clock until `stop` is set: the real-time regime.
 ///
 /// The difference from [`run`] is the whole point: this loop **never returns
-/// because nothing is fireable**. An idle tick means the net is waiting —
-/// for input from outside, or for a time-based guard — not that it is
+/// because nothing is fireable**. An idle tick means the net is waiting
+/// (for input from outside, or for a time-based guard), not that it is
 /// finished (DESIGN §13). It ends when `stop` is set, which is checked at the
 /// top of every tick and again before every launch, so a stop is acted on
 /// promptly rather than at the end of the sweep.
 ///
 /// A tick is: call `each_tick`, fire, wait out the rest of `tick`. In
-/// [`Mode::Sequential`] "fire" is one [`step`](Net::step) — one firing per
-/// tick, which is what an animation wants, one firing per frame — followed by
+/// [`Mode::Sequential`] "fire" is one [`step`](Net::step) (one firing per
+/// tick, which is what an animation wants, one firing per frame), followed by
 /// a [`sleep`](std::thread::sleep). In [`Mode::Concurrent`] it is one launch
 /// sweep, and the wait is a
 /// [`recv_timeout`](std::sync::mpsc::Receiver::recv_timeout) on the
@@ -436,7 +436,7 @@ pub fn run(
 ///
 /// `each_tick(&mut Net)` is called once at the start of every tick, before
 /// the firing, and it is the only hook this loop has. Drain your own channel
-/// in it, apply commands, poll a UI, top up a source place — whatever the
+/// in it, apply commands, poll a UI, top up a source place, whatever the
 /// caller's side of the loop is. DESIGN §13 sketched an
 /// `inbox: Option<Receiver<Command>>` parameter instead; a closure is
 /// strictly more general and keeps the driver channel-agnostic, which is what
@@ -567,9 +567,9 @@ fn run_sequential(
 /// they return, because a completion that is never distributed strands its
 /// transition for good:
 ///
-/// - a sweep launched nothing and nothing was airborne — quiescence;
-/// - a limit or a failure said to stop launching — drain, then report;
-/// - the fuse blew before a launch — drain, then report.
+/// - a sweep launched nothing and nothing was airborne: quiescence;
+/// - a limit or a failure said to stop launching: drain, then report;
+/// - the fuse blew before a launch: drain, then report.
 fn run_concurrent(
     net: &mut Net,
     limits: Limits,

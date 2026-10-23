@@ -49,15 +49,15 @@
 //! Routing is for sum types and the wrappers around them, because a type is
 //! only a destination when it is unambiguously one:
 //!
-//! - [`#[derive(Routed)]`](crate::Routed) on an enum — one payload type per
+//! - [`#[derive(Routed)]`](crate::Routed) on an enum: one payload type per
 //!   variant, a unit variant emitting nothing;
-//! - `#[derive(Routed)]` on a struct — a leaf, routed whole to the place of
+//! - `#[derive(Routed)]` on a struct: a leaf, routed whole to the place of
 //!   its own type;
-//! - [`Either<A, B>`] — the two-way answer without declaring an enum;
-//! - `Option<T>` where `T: RoutedOutput` — `None` emits nothing;
-//! - `Vec<T>` where `T: RoutedOutput` — every element emits, so a `Vec` is
+//! - [`Either<A, B>`]: the two-way answer without declaring an enum;
+//! - `Option<T>` where `T: RoutedOutput`: `None` emits nothing;
+//! - `Vec<T>` where `T: RoutedOutput`: every element emits, so a `Vec` is
 //!   always a batch;
-//! - `Result<T, E>` where `T: RoutedOutput` — `Err` is a failure, as in every
+//! - `Result<T, E>` where `T: RoutedOutput`: `Err` is a failure, as in every
 //!   other output form (DESIGN §7), never a route.
 //!
 //! There is deliberately **no** impl for a bare `T`: it would overlap
@@ -73,12 +73,12 @@
 //! is built before the net runs. What that resolution finds is reported by
 //! [`NetBuilder::build`](crate::NetBuilder::build), naming the transition:
 //!
-//! - [`BuildError::UnroutableOutput`](crate::BuildError::UnroutableOutput) —
+//! - [`BuildError::UnroutableOutput`](crate::BuildError::UnroutableOutput):
 //!   a payload type with no output place to go to;
-//! - [`BuildError::AmbiguousOutput`](crate::BuildError::AmbiguousOutput) —
+//! - [`BuildError::AmbiguousOutput`](crate::BuildError::AmbiguousOutput):
 //!   two output places of one type, so the type no longer picks one;
-//! - [`BuildError::UnreachableOutput`](crate::BuildError::UnreachableOutput)
-//!   — an output place nothing can reach, because a diagram that draws an
+//! - [`BuildError::UnreachableOutput`](crate::BuildError::UnreachableOutput):
+//!   an output place nothing can reach, because a diagram that draws an
 //!   edge no token can travel is lying.
 
 use std::any::{TypeId, type_name};
@@ -91,9 +91,9 @@ use crate::place::ErasedToken;
 ///
 /// Implemented by [`#[derive(Routed)]`](crate::Routed), which is the
 /// documented way: the derive writes both halves from one declaration and so
-/// cannot let them disagree. A hand-written impl is allowed — for a type of
+/// cannot let them disagree. A hand-written impl is allowed (for a type of
 /// your own whose payloads are not simply its variants, such as a wrapper
-/// that spreads a map over two places — and then the two halves are a
+/// that spreads a map over two places), and then the two halves are a
 /// contract the author keeps:
 ///
 /// - [`describe`](RoutedOutput::describe) lists every payload type that
@@ -157,8 +157,8 @@ pub trait RoutedOutput: Send + Sync + 'static {
 /// The list [`RoutedOutput::describe`] fills in: one entry per payload type
 /// the value may emit.
 ///
-/// Repeating a type is harmless — two variants may carry the same payload and
-/// both mean the same place — so the entry is kept once.
+/// Repeating a type is harmless (two variants may carry the same payload and
+/// both mean the same place), so the entry is kept once.
 #[derive(Debug)]
 pub struct RouteSpec {
     /// Payload types in declaration order, each with its name for the error
@@ -248,8 +248,8 @@ impl fmt::Debug for RouteSink<'_> {
 ///
 /// The two-way answer without declaring an enum for it:
 /// `Either<Accepted, Rejected>` says as much as a two-variant enum would.
-/// Both sides are themselves [`RoutedOutput`] — a payload struct says it is a
-/// leaf by deriving [`Routed`](crate::Routed) — so `Either<Outcome, Rejected>`
+/// Both sides are themselves [`RoutedOutput`] (a payload struct says it is a
+/// leaf by deriving [`Routed`](crate::Routed)), so `Either<Outcome, Rejected>`
 /// nests around a routed enum, and `Option<Either<A, B>>` says "maybe one of
 /// two".
 ///
@@ -298,8 +298,8 @@ impl<A: RoutedOutput, B: RoutedOutput> RoutedOutput for Either<A, B> {
 
 /// Zero or one routed value: `None` emits nothing at all.
 ///
-/// The payload types are the same either way — what a transition *may*
-/// produce is what the diagram draws — so an empty `Option` does not make an
+/// The payload types are the same either way (what a transition *may*
+/// produce is what the diagram draws), so an empty `Option` does not make an
 /// output place unreachable.
 impl<T: RoutedOutput> RoutedOutput for Option<T> {
     fn describe(spec: &mut RouteSpec) {
@@ -316,7 +316,7 @@ impl<T: RoutedOutput> RoutedOutput for Option<T> {
 /// A batch: every element emits, in order.
 ///
 /// A routed `Vec<T>` is always the batch reading, never one token holding a
-/// vector. For the latter, make the `Vec` the payload of a variant —
+/// vector. For the latter, make the `Vec` the payload of a variant:
 /// `Batch(Vec<Job>)` sends one token to a `Vec<Job>` place, because a payload
 /// is a leaf.
 impl<T: RoutedOutput> RoutedOutput for Vec<T> {

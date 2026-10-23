@@ -261,7 +261,7 @@ fn a_body_may_have_no_outputs_or_twelve() {
     assert_eq!(widths, [0, 12]);
 }
 
-/// A slot is one token, zero or one, or many — decided by the place's type.
+/// A slot is one token, zero or one, or many: the place's type decides which.
 #[test]
 fn a_slot_may_be_one_token_maybe_one_or_many() {
     let mut b = NetBuilder::new();
@@ -314,7 +314,7 @@ fn a_body_may_return_a_result() {
 }
 
 /// Bodies are `FnMut` and must be `Send + Sync`, so private state is an
-/// `Arc`, a `Mutex` or an atomic — and a captured counter is allowed to
+/// `Arc`, a `Mutex` or an atomic, and a captured counter is allowed to
 /// change between firings.
 #[test]
 fn a_body_may_capture_state() {

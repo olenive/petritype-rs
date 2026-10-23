@@ -1,9 +1,8 @@
 # Why sequential firing marks the running transition in `in_flight`
 
 Written 28 September 2026, when the change was made in the petritype library
-(commit 58c6405 there, released after 0.1.1). Kept here, in the server's
-tracked docs, so the lesson can be carried into petritype-rs; the library
-repository ignores its own `dev-docs`.
+(commit 58c6405 there, released after 0.1.1). Kept here, in petritype-rs's
+`dev-docs`, so that the lesson carries into the Rust engine.
 
 ## The problem this solved
 

@@ -3,9 +3,9 @@
 //!
 //! Three questions have to be answered at compile time:
 //!
-//! 1. Do the body's parameters match the input edges? — [`TransitionBody`],
-//!    implemented for every arity from 0 to 16.
-//! 2. Does what the body returns match the output places? —
+//! 1. Do the body's parameters match the input edges? Answered by
+//!    [`TransitionBody`], implemented for every arity from 0 to 16.
+//! 2. Does what the body returns match the output places? Answered by
 //!    [`PositionalOutputs`], return position by return position, with
 //!    [`IntoTokens`] deciding how many tokens one position is worth; a
 //!    struct bound **by name** to the struct of outputs `#[derive(Outputs)]`
@@ -14,8 +14,8 @@
 //!    payload type; or nothing at all for a
 //!    [`Distribution`](crate::Distribution), which names its places itself
 //!    and is checked when its tokens land.
-//! 3. Is the return value an outcome at all? — [`IntoOutcome`], which also
-//!    recognises `Result` as failure rather than as data.
+//! 3. Is the return value an outcome at all? Answered by [`IntoOutcome`],
+//!    which also recognises `Result` as failure rather than as data.
 //!
 //! What answers question 2 may be the return type of the body or of an
 //! [output distribution function](crate::OutputDistribution) composed after
@@ -51,7 +51,7 @@ pub mod marker {
     //! the compiler picks the right reading by picking an impl. Two impls for
     //! the same return type would overlap, so each form carries a tag in the
     //! `Marker` parameter of [`IntoOutcome`](super::IntoOutcome) and
-    //! [`TransitionBody`](super::TransitionBody) — the trick Bevy's
+    //! [`TransitionBody`](super::TransitionBody), the trick Bevy's
     //! `IntoSystem` and axum's `Handler` use for the same reason.
     //!
     //! You never name these types: the compiler infers them. They are public
@@ -94,7 +94,7 @@ pub mod marker {
     /// after a body that returns `Result<R, E>`: the function takes the `R`,
     /// and an `Err` fails the firing without calling it.
     ///
-    /// The tag is what keeps the two wrapper impls apart — they differ only
+    /// The tag is what keeps the two wrapper impls apart: they differ only
     /// in the shape of the body's return type, which no where-clause of the
     /// other could rule in.
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -105,9 +105,9 @@ pub mod marker {
 ///
 /// For an output place of type `T`, a slot may be:
 ///
-/// - `T` — exactly one token;
-/// - `Option<T>` — zero or one;
-/// - `Vec<T>` — as many as it holds, in order.
+/// - `T`: exactly one token;
+/// - `Option<T>`: zero or one;
+/// - `Vec<T>`: as many as it holds, in order.
 ///
 /// The place's type decides which reading applies, so there is no ambiguity
 /// when `T` is itself an `Option` or a `Vec`: a slot of type `Option<u32>`
@@ -186,8 +186,8 @@ pub trait OutputPlaces: PlaceTupleSealed {}
 /// takes a field of type `T` (one token), `Option<T>` (zero or one) or
 /// `Vec<T>` (as many as it holds), as a return position does
 /// ([`IntoTokens`]), and the place's type decides which reading applies.
-/// This trait is where another kind of output would be added — one that
-/// replaces a place's token, or puts at the front — with an impl of its
+/// This trait is where another kind of output would be added (one that
+/// replaces a place's token, or puts at the front) with an impl of its
 /// own beside this one.
 ///
 /// ```
@@ -291,16 +291,16 @@ pub trait PositionalOutputs<Outputs>: PositionalSealed<Outputs> {}
 ///
 /// The four forms are told apart by the return type, and the outputs:
 ///
-/// - **positional** — a tuple, one return position per output place,
+/// - **positional**: a tuple, one return position per output place,
 ///   matched by order ([`PositionalOutputs`]);
-/// - **named** — a struct that derives `Outputs`, whose fields go to the
+/// - **named**: a struct that derives `Outputs`, whose fields go to the
 ///   outputs of the same names in the struct of outputs generated for it
 ///   ([`Accepts`]), when that struct is the outputs;
-/// - **routed** — a value that is not a tuple, matched by type
+/// - **routed**: a value that is not a tuple, matched by type
 ///   ([`RoutedOutput`](crate::RoutedOutput)), which is what
 ///   [`#[derive(Routed)]`](crate::Routed) implements, when the outputs are a
 ///   tuple;
-/// - **distribution** — a [`Distribution`](crate::Distribution), whose pairs
+/// - **distribution**: a [`Distribution`](crate::Distribution), whose pairs
 ///   name their places outright, for the decisions only the data can make.
 ///
 /// # How the output forms plug in
@@ -471,7 +471,7 @@ where
 ///
 /// It is also implemented for such a closure with an
 /// [output distribution function](crate::OutputDistribution) composed after
-/// it — a [`WithOutputDistribution`], which is a body of the same arity whose
+/// it: a [`WithOutputDistribution`], which is a body of the same arity whose
 /// outputs are read from what the *function* returns. The function takes the
 /// body's result, or, when the body returns `Result<R, E>`, the `R` inside an
 /// `Ok`.
@@ -491,13 +491,13 @@ where
 )]
 pub trait TransitionBody<Edges, Outputs, Marker>: BodySealed<Edges, Outputs, Marker> {}
 
-/// The heart of the slice: one impl per input arity, and now three of them —
-/// a bare closure, and a closure with an
+/// The heart of the slice: one impl per input arity, and now three of them.
+/// They cover a bare closure, and a closure with an
 /// [output distribution function](crate::OutputDistribution) composed after
 /// it, whose body returns its result either directly or in a `Result`.
 ///
-/// The marker is `(M, R)` for a bare body — the outcome form and the body's
-/// return type — because an impl may not leave a type parameter to be pinned
+/// The marker is `(M, R)` for a bare body (the outcome form and the body's
+/// return type), because an impl may not leave a type parameter to be pinned
 /// by a where clause alone, and `R` appears only in the `FnMut` bound. Putting
 /// it in the marker constrains it and costs nothing: the compiler infers the
 /// whole marker at the call site.
@@ -506,14 +506,14 @@ pub trait TransitionBody<Edges, Outputs, Marker>: BodySealed<Edges, Outputs, Mar
 /// `(M, R, R2, tag)`: `R` is what the body returns, `R2` what the
 /// distribution function returns and therefore what the output form is read
 /// from, and the tag is [`marker::Plain`] or [`marker::Fallible`]. The two
-/// tags exist because the impls differ only in the *shape* of `R` — `R`
-/// against `Result<R, E>` — which coherence cannot see, since a `Result` is a
+/// tags exist because the impls differ only in the *shape* of `R` (`R`
+/// against `Result<R, E>`), which coherence cannot see, since a `Result` is a
 /// perfectly good `R`. With different tags the impls cannot overlap, and at a
 /// call site the compiler discards whichever one the distribution function's
 /// own parameter type contradicts: a function taking `Ball` rules out the
 /// fallible reading of a body returning `Ball`, and a function taking `Ball`
 /// after a body returning `Result<Ball, E>` rules out the plain one. That is
-/// also why the crate asks for annotated closure parameters — an unannotated
+/// also why the crate asks for annotated closure parameters: an unannotated
 /// `|ball|` leaves nothing to choose by.
 macro_rules! impl_body {
     ($(($t:ident, $r:ident, $i:tt)),*) => {
@@ -586,7 +586,7 @@ macro_rules! impl_body {
                     let returned = (self.body)($(<$t as EdgeSealed>::extract(&mut cursor),)*);
                     cursor.finish();
                     // Both halves are stage two, so the routing decision runs
-                    // wherever the body ran — off-thread in concurrent mode.
+                    // wherever the body ran (off-thread in concurrent mode).
                     OutcomeSealed::into_outcome((self.distribute)(returned), &routes)
                 });
                 (body, problem)

@@ -39,8 +39,8 @@ use crate::ids::{NetId, PlaceId, TokenId, TransitionId};
 #[non_exhaustive]
 pub enum Event {
     /// One complete firing, consumed and produced together. Emitted by the
-    /// sequential path — [`step`](crate::Net::step) and
-    /// [`fire`](crate::Net::fire) — where no time passes between the two.
+    /// sequential path ([`step`](crate::Net::step) and
+    /// [`fire`](crate::Net::fire)), where no time passes between the two.
     Fired {
         /// The transition that fired.
         transition: TransitionId,
@@ -78,14 +78,14 @@ pub enum Event {
         /// The transition that failed.
         transition: TransitionId,
         /// The tokens this firing took out of the input places, and where
-        /// they were — the same list a successful firing reports as
+        /// they were: the same list a successful firing reports as
         /// `consumed`. Where they are now is what `restored` says.
         consumed: Vec<(PlaceId, TokenId)>,
         /// Whether the tokens in `consumed` were put back, as asked for by
         /// [`restore_tokens_on_failure`](crate::TransitionBuilder::restore_tokens_on_failure).
         ///
         /// True: every one of them is back at the *front* of its place, in
-        /// the order it was taken and with the id it had — the firing was
+        /// the order it was taken and with the id it had. The firing was
         /// undone, and an observer that re-reads the marking when this event
         /// arrives sees them there. Restoring emits no
         /// [`Added`](Event::Added) of its own, because nothing new appeared:
@@ -129,7 +129,7 @@ pub enum Event {
     Mutated {
         /// The place holding the token.
         place: PlaceId,
-        /// The token, whose id is unchanged — its label and JSON are not.
+        /// The token, whose id is unchanged (its label and JSON are not).
         token: TokenId,
     },
     /// A transition was switched on or off.
@@ -144,7 +144,7 @@ pub enum Event {
     /// [`Command::SetParam`](crate::Command::SetParam).
     ///
     /// Parameters are keyed by type and are deliberately not `Debug`, so only
-    /// the type name is reported — a parameter may be a secret, and an event
+    /// the type name is reported: a parameter may be a secret, and an event
     /// log is the last place for one. Firings already in flight are
     /// unaffected: each took its clone at launch.
     ParamChanged {
@@ -176,13 +176,13 @@ pub enum Event {
     /// 1. after an inner firing made by [`step_deep`](crate::Net::step_deep),
     ///    straight away, under the place the token sits in;
     /// 2. after a [`MutateEdge`](crate::MutateEdge) body ran on the token,
-    ///    just before that firing's [`Mutated`](Event::Mutated) for it — so a
+    ///    just before that firing's [`Mutated`](Event::Mutated) for it, so a
     ///    firing reads `Nested`*, `Mutated`, then
     ///    [`Fired`](Event::Fired), [`Distributed`](Event::Distributed) or
     ///    [`Failed`](Event::Failed);
     /// 3. when a firing consumes the token, at launch, before its
     ///    [`Launched`](Event::Launched) or [`Fired`](Event::Fired), under the
-    ///    place it was taken from and the id it had there — nothing is lost
+    ///    place it was taken from and the id it had there, so nothing is lost
     ///    with a token that is not put back;
     /// 4. when a firing produces the token, after its
     ///    [`Fired`](Event::Fired) or [`Distributed`](Event::Distributed),

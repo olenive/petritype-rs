@@ -10,8 +10,8 @@
 //!
 //! Every place holds strings and starts empty; every place is serializable,
 //! so that a host can `inject` into any of them. `Price Order` takes the
-//! front of `Orders` and *surveys* `Promotions` — every promotion running,
-//! zero or more, none consumed — and writes the order to `Priced` and one
+//! front of `Orders` and *surveys* `Promotions` (every promotion running,
+//! zero or more, none consumed) and writes the order to `Priced` and one
 //! `"{promotion} on {order}"` per promotion to `Discounts Applied`.
 //!
 //! A shop with no promotion running still sells things: the survey does not
@@ -40,7 +40,7 @@ pub struct Shop {
 }
 
 /// `Price Order`'s body: the order, for `Priced`, and one discount per
-/// promotion running, for `Discounts Applied` — none when none is running.
+/// promotion running, for `Discounts Applied` (none when none is running).
 pub fn apply_promotions(order: String, promotions: Vec<String>) -> (String, Vec<String>) {
     let applied = promotions
         .iter()

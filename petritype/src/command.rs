@@ -14,8 +14,8 @@ use crate::place::erase_all;
 /// The type name to blame in a [`NetError::TypeMismatch`](crate::NetError::TypeMismatch)
 /// raised on this route.
 ///
-/// An erased token knows its [`TypeId`](std::any::TypeId) — that is what the
-/// check compares — but a `TypeId` cannot be turned back into a name, and the
+/// An erased token knows its [`TypeId`](std::any::TypeId), which is what the
+/// check compares, but a `TypeId` cannot be turned back into a name, and the
 /// value has forgotten the `T` whose `type_name` the typed methods report. A
 /// literal is more honest than a guess: the place's own `expected` is the
 /// useful half of the message either way.
@@ -37,7 +37,7 @@ pub(crate) const ERASED: &str = "<erased>";
 /// Being data is the whole of it. A `Command` owns its tokens as
 /// `Box<dyn Any + Send + Sync>`, so it is `Send + Sync` and crosses a thread
 /// boundary; [`Net::apply`] is where the type comes back, by comparing each
-/// token's [`TypeId`](std::any::TypeId) with the one its place recorded — the
+/// token's [`TypeId`](std::any::TypeId) with the one its place recorded: the
 /// one runtime type check in the engine (DESIGN §9), and the reason nothing
 /// else in the crate needs one.
 ///
@@ -50,12 +50,12 @@ pub(crate) const ERASED: &str = "<erased>";
 ///
 /// # Typed on the way out, erased on the wire
 ///
-/// The constructors — [`put`](Command::put), [`extend`](Command::extend),
-/// [`set_tokens`](Command::set_tokens), [`replace`](Command::replace) — take
+/// The constructors ([`put`](Command::put), [`extend`](Command::extend),
+/// [`set_tokens`](Command::set_tokens), [`replace`](Command::replace)) take
 /// a `PlaceRef<T>` and `T`s, so an author on the sending side still gets the
 /// compile error for putting a `String` in a place of `u32`. Only the value
 /// that travels is erased. The variants are public too, for a sender that
-/// genuinely has no type to offer — a script, or a decoder — and pays the
+/// genuinely has no type to offer (a script, or a decoder) and pays the
 /// runtime check instead.
 ///
 /// A `Command` carries a [`PlaceId`], never the [`NetId`](crate::NetId) stamp
@@ -131,7 +131,7 @@ pub(crate) const ERASED: &str = "<erased>";
 /// # The JSON form
 ///
 /// With the `serde` feature, `JsonCommand` is the same instruction with the
-/// ids resolved to names and the tokens as `serde_json::Value`s — what a UI
+/// ids resolved to names and the tokens as `serde_json::Value`s, what a UI
 /// that never saw the Rust types can send:
 ///
 /// ```json
@@ -150,7 +150,7 @@ pub(crate) const ERASED: &str = "<erased>";
 /// resolves the names and decodes the tokens against a net without changing
 /// it, `Command::to_json` goes the other way, and `Net::apply_json` is the
 /// two steps in one call. Both directions need the place to be marked
-/// `NetBuilder::serializable` — or, for a parameter, which travels under a
+/// `NetBuilder::serializable` or, for a parameter, which travels under a
 /// name of its own rather than by type,
 /// `NetBuilder::serializable_param`.
 #[non_exhaustive]
@@ -256,7 +256,7 @@ impl Command {
     /// Removes one token by id.
     ///
     /// The only constructor that takes a [`PlaceId`] rather than a
-    /// `PlaceRef<T>`, because removal does not care what the place holds —
+    /// `PlaceRef<T>`, because removal does not care what the place holds,
     /// exactly as [`Net::remove`] does not.
     pub fn remove(place: PlaceId, token: TokenId) -> Command {
         Command::Remove { place, token }
@@ -315,7 +315,7 @@ impl Command {
 impl fmt::Debug for Command {
     /// Prints the variant, its ids, and how many tokens a batch carries.
     ///
-    /// An erased token has no `Debug` of its own — the formatter for it lives
+    /// An erased token has no `Debug` of its own: the formatter for it lives
     /// in the place it is destined for, which a `Command` does not have a
     /// handle on. The count is the part a reader of a log or a channel dump
     /// actually needs; [`Net::label`] renders a token once it has landed.
@@ -436,9 +436,9 @@ impl Net {
 ///
 /// The shape is documented, and tested, under
 /// [The JSON form](Command#the-json-form): an internally tagged object whose
-/// `"command"` field is the variant in `snake_case`. It is ordinary data —
-/// `Clone`, `PartialEq`, `Serialize`,
-/// `Deserialize` — because nothing in it is erased yet;
+/// `"command"` field is the variant in `snake_case`. It is ordinary data
+/// (`Clone`, `PartialEq`, `Serialize`,
+/// `Deserialize`) because nothing in it is erased yet;
 /// [`Command::from_json`] is what turns it into the erased form a net can
 /// apply, and the place it names must be marked
 /// [`serializable`](crate::NetBuilder::serializable) for that to be possible.
@@ -495,7 +495,7 @@ pub enum JsonCommand {
         ///
         /// A name and not a type name: `std::any::type_name::<T>()` is a
         /// compiler detail that changes when a type moves module, which is
-        /// no basis for a saved file or a UI — exactly the reasoning that
+        /// no basis for a saved file or a UI, exactly the reasoning that
         /// sends places by name.
         param: String,
         /// The new value, parsed as the parameter's type.
@@ -521,7 +521,7 @@ impl Command {
     /// [`CommandError::NotSerializable`] for a place with no decoder
     /// recorded, and [`CommandError::InvalidToken`] or
     /// [`CommandError::InvalidParam`] for a value that does not parse as the
-    /// type it is meant for — the first one that fails, with nothing
+    /// type it is meant for: the first one that fails, with nothing
     /// half-decoded kept.
     pub fn from_json(net: &Net, command: JsonCommand) -> Result<Command, CommandError> {
         match command {
@@ -591,20 +591,20 @@ impl Command {
     ///
     /// The net is read, never changed. The inverse of
     /// [`from_json`](Command::from_json), for a caller that builds commands
-    /// typed and sends them somewhere that has no types — a log, a replay
+    /// typed and sends them somewhere that has no types: a log, a replay
     /// file, a browser.
     ///
     /// # Errors
     ///
     /// [`CommandError::NotSerializable`] for a place with no encoder
     /// recorded, [`CommandError::ParamNotSerializable`] for a
-    /// [`SetParam`](Command::SetParam) whose type has no wire name — or is
+    /// [`SetParam`](Command::SetParam) whose type has no wire name (or is
     /// not a parameter of this net at all, which from here is
-    /// indistinguishable, the value having forgotten its type's name;
+    /// indistinguishable, the value having forgotten its type's name);
     /// [`CommandError::Net`] wrapping
     /// [`NoSuchPlace`](crate::NetError::NoSuchPlace) or
     /// [`NoSuchTransition`](crate::NetError::NoSuchTransition) for an id this
-    /// net does not have — which is what a command built for another net
+    /// net does not have, which is what a command built for another net
     /// usually looks like from here. A token whose type is not the place's is
     /// [`TypeMismatch`](crate::NetError::TypeMismatch) rather than a `null`
     /// in the output: the place's encoder would quietly produce one, and a
@@ -733,8 +733,8 @@ fn transition_name(net: &Net, transition: TransitionId) -> Result<String, Comman
 ///
 /// `place` has already been resolved from a name, so it indexes this net.
 /// The net's [`Templates`](crate::Templates) are in scope while the values
-/// are parsed, so a token that carries a [`Net`] of its own — a vehicle and
-/// its cabin — is rebuilt from the registry of the net it is going into.
+/// are parsed, so a token that carries a [`Net`] of its own (a vehicle and
+/// its cabin) is rebuilt from the registry of the net it is going into.
 #[cfg(feature = "serde")]
 fn decode_all(
     net: &Net,

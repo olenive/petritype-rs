@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 /// Every [`NetBuilder`](crate::NetBuilder) mints one, and every
 /// [`PlaceRef`] it hands out carries it. The net compares the stamp before it
 /// uses the index, so a handle from another net is caught instead of silently
-/// addressing whatever place happens to sit at that index — which matters as
+/// addressing whatever place happens to sit at that index. This matters as
 /// soon as two nets are in scope at once, as in composition, where one net is
 /// the body of a transition in another.
 ///
@@ -22,7 +22,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 /// their own: [`Event::Nested`](crate::Event::Nested) names the inner net it
 /// lifted an event from by its `NetId`, which stays the same while the token
 /// moves and its [`TokenId`] does not. So it prints as its bare number and,
-/// with the `serde` feature, serialises as one (never deserialises) — as an
+/// with the `serde` feature, serialises as one (never deserialises), as an
 /// opaque, process-local id to follow a token by, not as something to keep.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
@@ -31,7 +31,7 @@ pub struct NetId(pub(crate) u32);
 
 /// The source of [`NetId`]s. `Relaxed` is enough: the only requirement is
 /// that no two builders get the same number, which `fetch_add` guarantees on
-/// its own — nothing else is published through this counter.
+/// its own: nothing else is published through this counter.
 static NEXT_NET_ID: AtomicU32 = AtomicU32::new(0);
 
 impl NetId {
@@ -83,7 +83,7 @@ pub struct TransitionId(pub(crate) u32);
 /// removed or consumed token retires its id for good, so a visualiser can key
 /// its own state by `TokenId` without fear of collision.
 ///
-/// It is the one id a `JsonCommand` speaks in — places and transitions
+/// It is the one id a `JsonCommand` speaks in: places and transitions
 /// travel by name there, but a token has no name, and its id is what the
 /// event log already gave the sender. A bare JSON number with the `serde`
 /// feature.

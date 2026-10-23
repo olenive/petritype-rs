@@ -1,2 +1,7 @@
 /target
-/.claude/scheduled_tasks.lock
+/.claude/
+.DS_Store
+
+# Working briefs for agents, kept on disk and out of the repository
+/dev-docs/planning/
+/CLAUDE.local.md

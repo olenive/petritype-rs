@@ -487,8 +487,8 @@ pub enum HiddenKind {
 ///
 /// The fourth element is the token's colour, `#rrggbb`, which a token has
 /// when its place has a style that gives it one. With keys it is written
-/// even without a colour, as `null`, to keep the keys in fifth place — the
-/// one place the protocol writes `null` for an absent optional.
+/// even without a colour, as `null`, to keep the keys in fifth place. This
+/// is the one place the protocol writes `null` for an absent optional.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Produced {
     /// The place the token went to.

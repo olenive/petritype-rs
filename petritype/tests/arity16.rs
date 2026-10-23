@@ -370,8 +370,8 @@ fn a_failing_serve_restores_the_order_and_nothing_else() {
 }
 
 /// The topology carries every input and output of `Serve` in declaration
-/// order. Of its fourteen input positions thirteen are edges — the take,
-/// the snapshot and the eleven surveys — and one is the price list, which
+/// order. Of its fourteen input positions thirteen are edges (the take,
+/// the snapshot and the eleven surveys), and one is the price list, which
 /// is an input of the transition but not an edge of the net (DESIGN §10),
 /// so it is listed under `params` instead. Its thirteen outputs are thirteen
 /// output edges, slots 0 to 12, and the body is positional.

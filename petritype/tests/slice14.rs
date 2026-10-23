@@ -2,8 +2,8 @@
 //! the owned `Topology`, `Snapshot::edges`, and `Serialize` on `Event`,
 //! `EdgeInfo` and `EdgeKind`.
 //!
-//! All of it is additive, for a reader that lives on another thread — a
-//! runner serving a net to a viewer, or the Bevy visualiser — and needs the
+//! All of it is additive, for a reader that lives on another thread (a
+//! runner serving a net to a viewer, or the Bevy visualiser) and needs the
 //! net's *shape* without a borrow, and its events as JSON (DESIGN §19.2). A
 //! **topology** is that shape: places, transitions and edges in the core's
 //! ids, with no tokens and no switches, so most of what is tested here is

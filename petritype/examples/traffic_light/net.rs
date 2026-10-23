@@ -19,8 +19,8 @@
 //! that moves the cars and one that changes the light, declared in this
 //! order:
 //!
-//! - `Go`, guarded on green and someone waiting, *drains* `Waiting` — every
-//!   car waiting, oldest first, all consumed — and *reads* `Light`
+//! - `Go`, guarded on green and someone waiting, *drains* `Waiting` (every
+//!   car waiting, oldest first, all consumed) and *reads* `Light`
 //!   ([`SnapshotEdge`]: the colour is cloned, not taken), and writes the
 //!   cars, oldest first, to `Passed`. The light's token is untouched: it
 //!   keeps its id.

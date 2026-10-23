@@ -2,7 +2,7 @@
 //! a body can run somewhere else while the net stays the single writer.
 //!
 //! `launch` takes the tokens and the body out of the net, `run` calls the body
-//! wherever it likes, and `distribute` hands the outputs — and the body — back.
+//! wherever it likes, and `distribute` hands the outputs, and the body, back.
 //! Between the two the transition is *in flight*: its body slot is empty, which
 //! is the whole of the mark, and which is why it cannot be launched twice and
 //! why a peer that wanted the same token is no longer fireable.
@@ -304,7 +304,7 @@ fn a_transition_is_home_again_after_it_is_distributed() {
 
     // Distributing consumes the `Completed`, and only `launch` mints one, so
     // "distribute the same firing twice" cannot be written down. What would
-    // answer it — `NetError::NotInFlight` — is checked in the crate's own
+    // answer it (`NetError::NotInFlight`) is checked in the crate's own
     // tests, where such a value can be built by hand. Here the observable
     // property is that the body really did come home.
     assert!(!net.is_in_flight(double));
@@ -513,7 +513,7 @@ fn taking_the_tokens_at_launch_is_what_resolves_a_conflict() {
 
 /// `Firing` and `Completed` are `Send` whatever the transition: the body is
 /// `Send + Sync` and the airborne inputs are owned tokens. A static
-/// assertion — the property is checked when this file compiles.
+/// assertion: the property is checked when this file compiles.
 #[test]
 fn a_firing_and_a_completed_can_cross_threads() {
     const fn assert_send<T: Send>() {}
@@ -732,7 +732,7 @@ fn a_distribution_lands_where_it_says_through_the_stages() {
 }
 
 /// The routed form: no place is named and no slot is counted, so the payload's
-/// own type picks its place — which stage three does exactly as `step` does.
+/// own type picks its place, which stage three does exactly as `step` does.
 fn sorting_net() -> (Net, TransitionId, [PlaceId; 2]) {
     let mut b = NetBuilder::new();
     let inbox = b.place::<u32>("Inbox");

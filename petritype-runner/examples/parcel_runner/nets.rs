@@ -250,9 +250,9 @@ pub fn transit_registry() -> Vec<NetEntry> {
 /// across habitats, each place declaring the keys `species`, `class` and
 /// `diet`, and every transition but `Settle` a keyed edge (two migrations
 /// taking the oldest bird, a spread and two declines mutating the species
-/// their filters name) — the keys net of §13. The file is the core's example
-/// (`petritype/examples/wildlife/net.rs`), which depends on `petritype`,
-/// `serde` and `serde_json` only, for this.
+/// their filters name). It is the keys net of §13. The file is the core's
+/// example (`petritype/examples/wildlife/net.rs`), which depends on
+/// `petritype`, `serde` and `serde_json` only, for this.
 #[path = "../../../petritype/examples/wildlife/net.rs"]
 #[allow(dead_code)]
 pub mod wildlife_net;

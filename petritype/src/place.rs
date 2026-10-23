@@ -46,7 +46,7 @@ pub(crate) type FromJsonFn = fn(serde_json::Value) -> Result<ErasedToken, serde_
 ///
 /// `PlaceMeta` is a hand-rolled vtable. Instead of requiring the token type to
 /// implement some `Token` trait and storing `Box<dyn Token>` per token, the
-/// builder — which is the one place where the concrete `T` is still known —
+/// builder, which is the one place where the concrete `T` is still known,
 /// instantiates the generic functions below and coerces them to plain `fn`
 /// pointers. The cost is one pointer per place, not per token, and the token
 /// itself needs no bound beyond what the builder method asked for.
@@ -70,7 +70,7 @@ pub(crate) struct PlaceMeta {
     /// [restores its inputs](crate::TransitionBuilder::restore_tokens_on_failure),
     /// for. It is called by snapshot edges, by the clone stage one takes for
     /// such a transition, and by
-    /// [`Net::snapshot`](crate::Net::snapshot) — which is refused outright
+    /// [`Net::snapshot`](crate::Net::snapshot), which is refused outright
     /// when any place lacks it
     /// ([`NetError::NoClonePlace`](crate::NetError::NoClonePlace)), except a
     /// nested place under the `serde` feature, whose tokens it forks.
@@ -147,7 +147,7 @@ impl PlaceSlot {
         self.tokens.iter().position(|(id, _)| *id == token)
     }
 
-    /// A deep copy of this place — the same tokens under the same ids — or
+    /// A deep copy of this place (the same tokens under the same ids), or
     /// `None` for a place declared with
     /// [`place_no_clone`](crate::NetBuilder::place_no_clone), which recorded
     /// no cloner.
@@ -157,7 +157,7 @@ impl PlaceSlot {
     /// [`NetError::NoClonePlace`](crate::NetError::NoClonePlace), but for a
     /// nested place under the `serde` feature, which the snapshot forks token
     /// by token instead. The [`PlaceMeta`] comes along, so a copied place
-    /// answers the read API — labels, JSON, counts — exactly as the original
+    /// answers the read API (labels, JSON, counts) exactly as the original
     /// does.
     pub(crate) fn try_clone(&self) -> Option<PlaceSlot> {
         let clone = self.meta.clone?;
@@ -200,8 +200,8 @@ pub(crate) fn debug_of<T: fmt::Debug + 'static>(value: &dyn Any) -> String {
 ///
 /// Recorded by [`NetBuilder::place`](crate::NetBuilder::place) and never
 /// called unless the author asks for a snapshot, a snapshot edge or token
-/// restoration on failure — once per consumed token per firing, in that last
-/// case.
+/// restoration on failure (once per consumed token per firing, in that last
+/// case).
 pub(crate) fn clone_of<T: Clone + Send + Sync + 'static>(value: &dyn Any) -> ErasedToken {
     Box::new(
         value
@@ -213,7 +213,7 @@ pub(crate) fn clone_of<T: Clone + Send + Sync + 'static>(value: &dyn Any) -> Era
 
 /// `to_json_of::<T>` renders an erased token as JSON.
 ///
-/// Fallible, because a `Serialize` impl may refuse — a token holding a
+/// Fallible, because a `Serialize` impl may refuse: a token holding a
 /// [`Net`](crate::Net) that no template built, for one. Readers that only
 /// want something to show take [`json_or_message`]; a save takes the error.
 #[cfg(feature = "serde")]

@@ -1,8 +1,8 @@
 //! The engine half of the public traits.
 //!
-//! Each public trait in [`crate::edge`] and [`crate::body`] — `InputEdge`,
+//! Each public trait in [`crate::edge`] and [`crate::body`] (`InputEdge`,
 //! `InputEdges`, `OutputPlaces`, `PositionalOutputs`, `IntoOutcome`,
-//! `TransitionBody` — has a supertrait here, named after it with a `Sealed`
+//! `TransitionBody`) has a supertrait here, named after it with a `Sealed`
 //! suffix, which is also what a reader of the public documentation sees in
 //! the trait's header. The split does two jobs at once:
 //!
@@ -165,14 +165,14 @@ pub trait BodySealed<E, O, M> {
     /// returns.
     ///
     /// The routing table is resolved here too, where the return type and the
-    /// output places are both in scope, and captured by the wrapper — which
+    /// output places are both in scope, and captured by the wrapper, which
     /// is why no table is stored beside the transition. A table that cannot
     /// be resolved comes back as the second half of the pair, for
     /// [`build`](crate::NetBuilder::build) to refuse the net with.
     fn into_erased(self) -> (ErasedBody, Option<RoutingProblem>);
 
-    /// Whether what the body returns — what its output distribution
-    /// function returns, for a wrapped body — is the positional form, read
+    /// Whether what the body returns (what its output distribution
+    /// function returns, for a wrapped body) is the positional form, read
     /// where the return type is still known, so that the net can report it.
     fn positional() -> bool;
 }

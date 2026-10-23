@@ -10,7 +10,7 @@
 //! [`Routed`](crate::Routed), with one difference: `routing` is a public
 //! API in its own right, and this is not. Nothing here is covered by the
 //! crate's stability promises, and an impl written by hand against it is a
-//! contract the author keeps alone — a position that describes one number
+//! contract the author keeps alone: a position that describes one number
 //! of edges and takes another panics the firing.
 
 use std::any::TypeId;

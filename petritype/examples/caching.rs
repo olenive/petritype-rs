@@ -82,7 +82,7 @@ fn map(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
         .collect()
 }
 
-/// The caching net, seeded with three keys, one of which is already cached —
+/// The caching net, seeded with three keys, one of which is already cached,
 /// and cached *stale*, so that a hit is visibly not a fetch.
 fn build() -> Result<Lookups, BuildError> {
     let mut b = NetBuilder::new();

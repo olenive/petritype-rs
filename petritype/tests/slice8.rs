@@ -5,7 +5,7 @@
 //! `assert_acyclic` and `assert_no_source_transitions` are the questions the
 //! type system cannot ask: does the token flow loop, and does every firing
 //! take something out of the net. Both are opt-in because a feedback loop and
-//! a generator are perfectly good nets — together they are a static proof
+//! a generator are perfectly good nets. Together they are a static proof
 //! that the net quiesces, and the tests below are also the record of what
 //! each one means by an edge.
 
@@ -26,7 +26,7 @@ struct Config {
 }
 
 /// The DESIGN §5 net, plus a `Rework` transition that takes heavy parcels and
-/// sends them back to `Inbox` — the cycle `Weigh -> Heavy -> Rework -> Inbox`.
+/// sends them back to `Inbox`: the cycle `Weigh -> Heavy -> Rework -> Inbox`.
 ///
 /// The handles stay inside: every test below asks the built net or the error
 /// for names, which is what the check reports in.

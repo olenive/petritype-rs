@@ -233,7 +233,7 @@ fn todo(net: &Net) -> usize {
     net.count(net.place_named("Todo").expect("a worker has a Todo"))
 }
 
-/// An outer net that can always fire — `Spin` puts back what it takes — and
+/// An outer net that can always fire (`Spin` puts back what it takes) and
 /// a `Desk` of workers, plus a passive `Shelf` holding a worker no deep
 /// step may touch.
 struct Carousel {

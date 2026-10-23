@@ -1,8 +1,8 @@
 //! Integration tests for the ninth slice: the drivers, the loops that run a
 //! net rather than step it.
 //!
-//! A driver adds no semantics of its own — it is `step`, or
-//! `launch`/`run`/`distribute`, in a loop — so what these tests are about is
+//! A driver adds no semantics of its own (it is `step`, or
+//! `launch`/`run`/`distribute`, in a loop), so what these tests are about is
 //! the loop's own decisions: when it stops (quiescence, a pacing limit, a
 //! fuse), what it does about a failed firing, and the promise that it never
 //! goes home with a firing still in flight. Timing assertions are deliberately

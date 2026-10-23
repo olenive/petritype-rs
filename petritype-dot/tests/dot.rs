@@ -1,7 +1,7 @@
 //! Integration tests for `petritype-dot`: the text a net renders to.
 //!
-//! The renderer has no state and no opinions of its own — the DOT it produces
-//! is a pure function of the read API and the [`Style`] — so the tests here
+//! The renderer has no state and no opinions of its own (the DOT it produces
+//! is a pure function of the read API and the [`Style`]), so the tests here
 //! compare whole strings where they can and single attribute lines where a
 //! whole graph would bury the point. The first test is a golden file written
 //! out in full: everything else is a variation on it, and if the shape of a

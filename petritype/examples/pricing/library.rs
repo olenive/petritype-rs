@@ -17,7 +17,7 @@ use petritype::{Inputs, Outputs};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Item(pub String);
 
-/// A customer's order: who, at which trade tier, what, and — once priced —
+/// A customer's order: who, at which trade tier, what, and (once priced)
 /// what it came to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Order {

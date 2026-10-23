@@ -43,7 +43,7 @@ pub struct Net {
     /// A short linear list keyed by [`TypeId`] rather than a map: a net has a
     /// handful of parameters at most, and a scan over that many `TypeId`s
     /// beats hashing one. It never grows or shrinks after
-    /// [`build`](crate::NetBuilder::build) — only the values are replaced,
+    /// [`build`](crate::NetBuilder::build): only the values are replaced,
     /// by [`set_param`](Net::set_param).
     pub(crate) params: Vec<ParamSlot>,
     /// The id the next token will get. Monotonic for the life of the net.
@@ -69,8 +69,8 @@ pub struct Net {
     /// and its inner nets. Set by the builder or by
     /// [`set_deep_policy`](Net::set_deep_policy).
     pub(crate) deep_policy: DeepPolicy,
-    /// The net the last deep step fired in — this net's own id, or an inner
-    /// net's nested id — the cursor of [`DeepPolicy::Interleaved`]. In
+    /// The net the last deep step fired in (this net's own id, or an inner
+    /// net's nested id), the cursor of [`DeepPolicy::Interleaved`]. In
     /// memory only: never saved or forked.
     pub(crate) deep_cursor: Option<NetId>,
     /// Whether the author declared the net safe to rebuild as a reset. See
@@ -102,8 +102,8 @@ pub struct Net {
 /// The stand-in name for an id that indexes nothing, in the message of an
 /// error that carries both a name and an id.
 ///
-/// Unreachable in practice — an id only reaches an error message after the
-/// net has established that it is one of its own — and written like the
+/// Unreachable in practice (an id only reaches an error message after the
+/// net has established that it is one of its own), and written like the
 /// engine's other stand-ins (`"<erased>"` for a type a `dyn Any` cannot name)
 /// so that a reader can tell at a glance that it is not a name an author
 /// wrote.
@@ -165,7 +165,7 @@ impl Net {
     /// This net's id, the one every [`PlaceRef`] it handed out carries.
     ///
     /// Two nets built from two builders never share an id, so a handle can
-    /// always say which net it means — which is what makes composition, where
+    /// always say which net it means. That is what makes composition, where
     /// an inner net is the body of an outer net's transition, safe to write.
     pub fn id(&self) -> NetId {
         self.id
@@ -233,7 +233,7 @@ impl Net {
     /// The same wiring [`transitions`](Net::transitions) reports, one edge at
     /// a time and with both endpoints named, which is the form a layout or a
     /// DOT file is built from. It is topology, so it only changes when
-    /// [`topology_counter`](Net::topology_counter) does — never in this
+    /// [`topology_counter`](Net::topology_counter) does: never in this
     /// version, where a net is wired once and then run.
     ///
     /// ```
@@ -349,7 +349,7 @@ impl Net {
         count_in(&self.places, place)
     }
 
-    /// The tokens of a place, oldest first — the order in which they will be
+    /// The tokens of a place, oldest first: the order in which they will be
     /// consumed.
     ///
     /// The values are erased; use [`token`](Net::token) when the concrete type
@@ -362,7 +362,7 @@ impl Net {
     /// One token of a place, downcast to `T`.
     ///
     /// `None` if the place or the token does not exist, or if the place holds
-    /// some other type — the typed API cannot produce that last case, but a
+    /// some other type. The typed API cannot produce that last case, but a
     /// widget that was told a type by a human can ask for the wrong one.
     pub fn token<T: 'static>(&self, place: PlaceId, token: TokenId) -> Option<&T> {
         token_in::<T>(&self.places, place, token)
@@ -455,7 +455,7 @@ impl Net {
     /// [`Event::ParamChanged`] names a parameter by its type name alone, the
     /// one thing about a parameter the log ever tells. A reader that speaks
     /// a wire protocol says the name the parameter travels under instead,
-    /// and this is where it finds it — for a change it did not ask for
+    /// and this is where it finds it, for a change it did not ask for
     /// itself, such as an outer body setting an inner net's parameter.
     ///
     /// ```
@@ -496,14 +496,14 @@ impl Net {
     /// event emitted after the net was built. A view that has seen counter
     /// *n* and sees *n* again needs no refresh.
     ///
-    /// A freshly built net is at zero however it was seeded — the initial
+    /// A freshly built net is at zero however it was seeded: the initial
     /// marking is setup, not a change. It is also not a firing count; that is
     /// [`fired_count`](Net::fired_count).
     pub fn state_counter(&self) -> u64 {
         self.state_counter
     }
 
-    /// How many firings have completed — the statistic
+    /// How many firings have completed: the statistic
     /// [`state_counter`](Net::state_counter) is deliberately not. Always zero
     /// until transitions arrive.
     pub fn fired_count(&self) -> u64 {
@@ -521,13 +521,13 @@ impl Net {
     /// [`NetBuilder::resettable`](crate::NetBuilder::resettable), that this
     /// net may be reset.
     ///
-    /// A net cannot be cloned — its bodies are closures — so "reset" can
+    /// A net cannot be cloned (its bodies are closures), so "reset" can
     /// only mean building it again from the function that built it. Whether
     /// that really gives back an equivalent starting state is something only
     /// the author knows: a body may write files, call a network service,
     /// draw random numbers or touch global state, and none of that is undone
     /// by building a new net. So the author says so, and a tool that offers
-    /// a reset — the Bevy visualiser's Reset button — refuses for a net
+    /// a reset (the Bevy visualiser's Reset button) refuses for a net
     /// that does not. False unless declared.
     pub fn is_resettable(&self) -> bool {
         self.resettable
@@ -568,7 +568,7 @@ impl Net {
     ///
     /// # Panics
     ///
-    /// If `place` does not belong to this net — a `PlaceRef` is only valid
+    /// If `place` does not belong to this net. A `PlaceRef` is only valid
     /// for the net built from the builder that handed it out.
     pub fn extend<T, I>(&mut self, place: PlaceRef<T>, tokens: I) -> Vec<TokenId>
     where
@@ -698,8 +698,8 @@ impl Net {
     /// [launched](Net::launch) keeps the clone it was given at launch, so a
     /// body in flight is never handed a value that changes under it; the next
     /// launch sees the new one. Parameters do not affect
-    /// [fireability](Net::fireable) — every parameter has a value from the
-    /// moment the net is built — so replacing one enables nothing and
+    /// [fireability](Net::fireable) (every parameter has a value from the
+    /// moment the net is built), so replacing one enables nothing and
     /// disables nothing by itself, unless a guard reads it.
     ///
     /// ```
@@ -785,9 +785,9 @@ impl Net {
 
     /// The one insertion path: mint an id, check the type, push the token.
     ///
-    /// Everything that adds a token — the typed methods here, the seeds in
+    /// Everything that adds a token (the typed methods here, the seeds in
     /// [`build`](crate::NetBuilder::build), the erased
-    /// [`Command`](crate::Command) form and the output side of a firing —
+    /// [`Command`](crate::Command) form and the output side of a firing)
     /// goes through this function, so
     /// id minting and the type check are written once. It deliberately does
     /// *not* log: the caller decides whether the insertion is a change an
@@ -1012,8 +1012,8 @@ impl Net {
 
     /// The index of a handle in this net, or a panic naming both nets.
     ///
-    /// The infallible half of the API — [`extend`](Net::extend),
-    /// [`put`](Net::put), [`set_tokens`](Net::set_tokens) — has nowhere to
+    /// The infallible half of the API ([`extend`](Net::extend),
+    /// [`put`](Net::put), [`set_tokens`](Net::set_tokens)) has nowhere to
     /// report a foreign handle, and silently writing to whatever place sits
     /// at that index in *this* net would be the worse answer. The fallible
     /// half ([`remove`](Net::remove), [`replace`](Net::replace)) returns
@@ -1099,7 +1099,7 @@ impl fmt::Debug for Net {
 // A [`Snapshot`](crate::Snapshot) is the net's state without its bodies, and
 // a reader must be able to ask it the same questions in the same words. These
 // functions are those questions, written once over a plain slice of places,
-// and both `Net` and `Snapshot` are thin typed wrappers around them — which
+// and both `Net` and `Snapshot` are thin typed wrappers around them, which
 // is also why a snapshot's labels and JSON come out exactly as the net's do:
 // it carries the same [`PlaceMeta`](crate::place::PlaceMeta) vtables.
 

@@ -4,7 +4,7 @@
 //! The expected output lives in `tests/ui/*.stderr` next to each case, and is
 //! tied to one compiler version: regenerate with
 //! `TRYBUILD=overwrite cargo test --test ui` after a toolchain bump, and read
-//! the diff — a message that stops naming edges, slots or places is a
+//! the diff: a message that stops naming edges, slots or places is a
 //! regression even when it still fails to compile.
 //!
 //! Two things make these files move for reasons other than a bug. The paths

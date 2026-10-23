@@ -1,10 +1,10 @@
 # petritype-rs — Design
 
 Typed, executable, observable Petri nets in Rust. A port of the Python
-[petritype](../petritype) library, redesigned around ownership instead of
+[petritype](https://github.com/olenive/petritype) library, redesigned around ownership instead of
 runtime reflection.
 
-Status: design settled 2026-09-19, no code yet. This document is the reference
+Status: design settled 2026-09-19 and built since, with 0.1.0 the first release. This document is the reference
 for the first implementation. Vocabulary is fixed in
 `dev-docs/NAMING_CONVENTIONS.md`. Open questions are listed at the end.
 
@@ -2457,7 +2457,7 @@ The decisions that shape it, all of 2026-10-03:
 - **Rust nets reach petritype-server as a built Linux binary**: the server's
   build pipeline gains a cargo step and the worker spawns the artifact. No
   Rust toolchain on the worker. Details in
-  `../petritype-server/dev-docs/RUNTIMES_AND_PROTOCOL.md`.
+  the server's own docs, which are not yet public.
 - **Python adopts this crate's model of identity**: monotonic token ids that
   are never reused, and consumed/produced per firing. Nothing in §4.1 or
   §8.1 changes; the protocol's `fired`, `launched`, `distributed`, `failed`,

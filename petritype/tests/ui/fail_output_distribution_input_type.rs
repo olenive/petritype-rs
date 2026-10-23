@@ -7,7 +7,7 @@
 //!
 //! Every type in the declaration is this crate's own, so that the expected
 //! message does not depend on how rustc chooses to spell a standard-library
-//! path — which it does differently once the `serde` feature brings more
+//! path, which it does differently once the `serde` feature brings more
 //! paths into scope.
 
 use petritype::{Distribution, NetBuilder, OutputDistribution, TakeEdge};

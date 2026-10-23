@@ -3,27 +3,66 @@
 Typed, executable, observable Petri nets in Rust. A port of
 [petritype](https://github.com/olenive/petritype) (Python).
 
-*Work in progress: declaring a net, all three output forms, and firing either
-inline (`step`, `fire`) or in three stages (`launch`, `run`, `distribute`, so
-bodies may run on other threads) work, and failures (an `Err`, a panic) are caught with optional restoring of
-the consumed tokens, the `drivers` module runs a net to quiescence or on a
-clock, sequentially or with bodies on threads, erased `Command`s (JSON with
-the `serde` feature) feed a running net from another thread, transitions
-declare per-run `Param::<T>` values that never appear in the diagram, and
-`net.snapshot()` hands another thread an owned copy of the state, and
-`petritype-dot` draws a net or a snapshot as Graphviz DOT (slices 1–12 of
-`DESIGN.md` §18, including the opt-in `assert_acyclic` /
-`assert_no_source_transitions` checks). A token may carry Petri nets of its
-own, which the net runs after its own transitions and reports on in its event
-log (slice 15, nets as tokens). With `serde`, such a net is saved and loaded
-as JSON, its tokens' inner nets rebuilt from templates registered by name,
-and copied with `fork`, which is what lets it be snapshotted (slice 16). Tokens may carry keys, named values
-their place derives from them, and a net answers queries by them from an index it keeps (slice 18); a keyed edge takes
-or mutates the oldest token a filter accepts, leaving the others where they are (slice 19); a drain or a survey edge takes or reads
-every token of a place, zero or more, and never holds its transition back (slice 22); and a body may take its inputs and return its
-outputs as structs bound to the net by field name, which name no place, so one library function serves many nets (slice 23). The Bevy visualiser lives in its own
-repository, `petritype-bevy`, and depends on this crate. See `DESIGN.md` for the design and
-`dev-docs/NAMING_CONVENTIONS.md` for vocabulary shared with the Python library.*
+Version 0.1.0, an early release.
+The API will change.
+
+## Installation
+
+The crates are not yet on crates.io, so depend on this repository with git:
+
+```toml
+[dependencies]
+petritype = { git = "https://github.com/olenive/petritype-rs" }
+```
+
+Add `features = ["serde"]` for JSON commands and for saving and loading nets. The
+quickstart below also prints its net as Graphviz DOT, which needs `petritype-dot` as well:
+
+```toml
+petritype-dot = { git = "https://github.com/olenive/petritype-rs" }
+```
+
+## Requirements
+
+Rust 1.96 or newer, edition 2024. 1.96 is the minimum supported Rust version, and CI
+checks the workspace against it.
+
+## Build and test
+
+```sh
+cargo test --workspace --features serde
+```
+
+`just check` runs the full gate: that suite, the core crate alone, clippy with warnings
+denied, the formatting check and the docs with warnings denied. `just` comes from cargo
+(`cargo install just`) or Homebrew (`brew install just`).
+
+The runner's tests also replay the protocol transcripts shared with the Python runtime,
+read from `../petritype/tests/protocol` (the Python repository checked out beside this
+one) or from the directory in `PETRITYPE_PROTOCOL_TRANSCRIPTS`. With neither, that test
+passes with a note and replays nothing; CI checks out both repositories side by side, so
+it runs there.
+
+## Documentation
+
+```sh
+cargo doc --workspace --no-deps --features serde --open
+```
+
+`DESIGN.md` has the design, and `dev-docs/NAMING_CONVENTIONS.md` the vocabulary shared
+with the Python library.
+
+## Running the runner example
+
+```sh
+cargo run -p petritype-runner --example parcel_runner -- --describe
+cargo run -p petritype-runner --example parcel_runner
+```
+
+The first prints the nets the example carries. The second serves them over the net
+protocol: it reads one JSON request per line on stdin, such as
+`{"id":"1","method":"load","params":{"net":"parcel-fleet","params":{"trucks":3}}}`, and
+writes its answers and notifications on stdout.
 
 ## Quickstart
 
@@ -208,10 +247,10 @@ pricing`); `DESIGN.md` §4.4 and §4.5 have the rules.
 | `petritype` | the builder, `Net`, events, checks, drivers, commands, snapshots |
 | `petritype-derive` | `#[derive(Routed)]`, `#[derive(Inputs)]` and `#[derive(Outputs)]`, re-exported as `petritype::Routed`, `petritype::Inputs` and `petritype::Outputs` |
 | `petritype-dot` | Graphviz DOT text of a `Net` or a `Snapshot` |
-| `petritype-layout` | the layered layout of a net (ranks, orders, clusters, ghosted hubs) in plain `Point`s and `Bounds` any renderer converts; the Bevy visualiser draws with it |
+| `petritype-layout` | the layered layout of a net (ranks, orders, clusters, ghosted hubs) in plain `Point`s and `Bounds` any renderer converts; the Bevy visualiser (not yet public) draws with it |
 | `petritype-activity` | a net's activity as a fast and a slow level per place and transition, fed by its events and decaying on wall time or on firings, and the activity thumbnail it lights: a grid of cells from the layout, a colour per cell and an SVG writer, with no graphics dependency |
-| `petritype-runner` | turns your binary into a net process speaking the shared [net protocol](https://github.com/olenive/petritype/blob/main/PROTOCOL.md) on stdin and stdout, for petritype-server and the Bevy visualiser |
-| `petritype-bevy` | separate repository: a Bevy visualiser that mirrors a running net into entities |
+| `petritype-runner` | turns your binary into a net process speaking the shared [net protocol](https://github.com/olenive/petritype/blob/main/PROTOCOL.md) on stdin and stdout, for any host that spawns it |
+| `petritype-bevy` | separate repository, not yet public: a Bevy visualiser that mirrors a running net into entities |
 
 ## Core Idea
 

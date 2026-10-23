@@ -138,7 +138,7 @@ petritype-rs (ac80731):
 petritype-runner: the topology lists `edges[].kind` straight from
 `EdgeKind`'s serde names; the two keyed kinds carry `filter`.
 
-PROTOCOL.md (in the Python repo, `~/work/petritype/PROTOCOL.md`, §5.1 lines
+PROTOCOL.md (in the Python repository, §5.1 lines
 189-196): `kind?` is one of `take`, `take_all`, `snapshot`, `mutate`,
 `take_where`, `mutate_where`; "a reader that meets another value draws a
 plain edge".
@@ -286,26 +286,6 @@ topology lists the two kinds; the viewer draws them.
   re-entrant plan steps take all step tokens and put them back in order to get
   this). A separate feature if wanted; recorded here only so it is not lost.
 
-## 8. Rules for the implementing agent
-
-Work in the library repo(s) only: do not touch `~/work/games/**` or
-`~/work/petritype-bevy/TODO_TEMP.md`. One branch per phase, tests green at
-each, the owner merges. When done, append an "As built" section to THIS file
-naming what differs from sections 2, 4 and 6 and why, plus the commits.
-
-## 9. Prompt
-
-> Implement `~/work/petritype-rs/dev-docs/EDGES_ON_EMPTY_PLACES.md`: two input
-> edge kinds that read every token of a place, zero or more, and never hold the
-> transition back; `DrainEdge` consumes, `SurveyEdge` does not. Read the
-> whole document first, then the anchors in section 3. Section 7's decisions
-> are taken where marked; take the defaults elsewhere. Rust track: petritype-rs core, info, wire,
-> runner topology and DESIGN, then petritype-bevy. [Python track: the same in
-> `~/work/petritype`, with PROTOCOL.md §5.1.] Build the section 2 net as the
-> acceptance test and check section 6. Append an "As built" section to the
-> document when finished. Do not touch `~/work/games/**` or
-> `~/work/petritype-bevy/TODO_TEMP.md`.
-
 ## As built (Rust)
 
 Slice 22, 2026-10-14, branch `empty-place-edges` of petritype-rs, cut from
@@ -424,7 +404,7 @@ tests and DESIGN), and the commit that adds this section.
 
 **§6.** Everything is pinned except the no-clone build error, which does not apply in Python. The shared transcript adds a `get_token` of each output token after the final `get_state`, because labels are masked and only those reads pin the section 6 values.
 
-**§8.** The work was done in the Python repository only, in its own worktree and branch. This section was written in the Python track's report and appended here by the owner's agent, since the document lives in the Rust repository.
+The work was done in the Python repository only, on its own branch. This section was written in the Python track's report and appended here, since the document lives in the Rust repository.
 
 ## As built (Bevy)
 

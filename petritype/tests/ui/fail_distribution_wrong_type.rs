@@ -3,7 +3,7 @@
 //! This is the half of the `Distribution` form that *is* static:
 //! `to` takes a `PlaceRef<T>` and a `T`, so the handle carries the place's
 //! token type and rustc checks the pair like any other argument. What it
-//! cannot check is that the place is one of the transition's outputs — that
+//! cannot check is that the place is one of the transition's outputs. That
 //! is `DistributionError`, at firing time.
 
 use petritype::{Distribution, NetBuilder};

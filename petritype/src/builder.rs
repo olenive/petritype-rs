@@ -2,9 +2,9 @@
 //! type of each place is still known, so it is where the per-place vtable is
 //! filled in.
 //!
-//! It is also where the net is checked. Most checks always run — duplicate
+//! It is also where the net is checked. Most checks always run (duplicate
 //! names, two input edges into one place, a snapshot, a survey or a restore
-//! of a place that cannot clone, an output no payload type can reach —
+//! of a place that cannot clone, an output no payload type can reach),
 //! because each one is a wiring mistake with no sensible reading. Two more
 //! are opt-in, because what they forbid is legitimate in many nets:
 //! [`assert_acyclic`](NetBuilder::assert_acyclic) and
@@ -25,9 +25,9 @@
 //! tokens a firing consumes come back to where they started.
 //!
 //! The proof is about the net left to itself. Tokens put in from outside
-//! after [`build`](NetBuilder::build) — [`Net::put`](crate::Net::put),
+//! after [`build`](NetBuilder::build) ([`Net::put`](crate::Net::put),
 //! [`Net::extend`](crate::Net::extend),
-//! [`Net::set_tokens`](crate::Net::set_tokens) — are outside it: an
+//! [`Net::set_tokens`](crate::Net::set_tokens)) are outside it: an
 //! interactive net that is fed while it runs has no finish line, and is
 //! bounded while it runs instead. Read edges are outside it too, and are
 //! excluded from both checks, because they move no tokens: a configuration
@@ -38,9 +38,9 @@
 //! consumes, but it takes every token there is, which may be none, so a
 //! firing through it need not consume anything, and "every firing consumes
 //! at least one token" cannot lean on it. Both checks count only the edges
-//! that always take a token — [`TakeEdge`](crate::TakeEdge),
+//! that always take a token ([`TakeEdge`](crate::TakeEdge),
 //! [`TakeAllEdge`](crate::TakeAllEdge) and
-//! [`TakeWhereEdge`](crate::TakeWhereEdge) — and the proof holds over them
+//! [`TakeWhereEdge`](crate::TakeWhereEdge)), and the proof holds over them
 //! as stated: each transition has one, fed only from upstream of it, so it
 //! fires no more often than that place is fed, however many tokens a drain
 //! carries round meanwhile.
@@ -294,7 +294,7 @@ impl NetBuilder {
         self.insert::<T>(name.into(), Some(clone_of::<T> as CloneFn))
     }
 
-    /// Declares a place holding tokens that cannot be cloned — a `File`, a
+    /// Declares a place holding tokens that cannot be cloned: a `File`, a
     /// socket, a connection handle.
     ///
     /// Everything else works as in [`place`](NetBuilder::place). What such a
@@ -332,8 +332,8 @@ impl NetBuilder {
     /// it is the way an outer body reaches inside.
     ///
     /// With the `serde` feature, marking the place `serializable` as any
-    /// other — the token type deriving `Serialize` and `Deserialize`, its
-    /// nets saved in `Net`'s own form — is what lets the outer net's marking
+    /// other (the token type deriving `Serialize` and `Deserialize`, its
+    /// nets saved in `Net`'s own form) is what lets the outer net's marking
     /// be saved and loaded with its inner nets in it.
     ///
     /// ```
@@ -379,8 +379,8 @@ impl NetBuilder {
     ///
     /// For an outer net that wants manual control of what happens inside: a
     /// body with a [`MutateEdge`](crate::MutateEdge) on the place steps the
-    /// inner net itself — `vehicle.inner.step()`, or
-    /// [`drivers::run`](crate::drivers::run) on it — and what that does is
+    /// inner net itself (`vehicle.inner.step()`, or
+    /// [`drivers::run`](crate::drivers::run) on it), and what that does is
     /// reported in the outer log as for any body that reaches inside. A
     /// passive place's inner nets also do not count against
     /// [`Net::is_quiescent_deep`].
@@ -411,8 +411,8 @@ impl NetBuilder {
     /// §8.3).
     ///
     /// The names are given here, before any token exists, because a reader
-    /// needs them first — a viewer building a filter bar, the protocol's
-    /// `key_names` (PROTOCOL.md §13.1) — and the extractor returns exactly as
+    /// needs them first: a viewer building a filter bar, or the protocol's
+    /// `key_names` (PROTOCOL.md §13.1). The extractor returns exactly as
     /// many values, in the same order, so the two cannot drift apart. A
     /// value is a string, an integer or a boolean ([`KeyValue`]).
     ///
@@ -441,11 +441,11 @@ impl NetBuilder {
     /// token's keys, and the net's index follows. The extractor should be a
     /// pure function of the token: it is called whenever the net needs a
     /// token's keys, including to find a token's old entries in the index
-    /// before a change, and a key that changed behind the net's back — by
-    /// interior mutability, say — is one the index does not see. Nor should
+    /// before a change, and a key that changed behind the net's back (by
+    /// interior mutability, say) is one the index does not see. Nor should
     /// it panic: it runs inside the net's own bookkeeping, when a token is
-    /// put in or taken out, where a panic is not caught as a body's is — the
-    /// footing a token's `Debug` and `Clone` are on already.
+    /// put in or taken out, where a panic is not caught as a body's is. That
+    /// is the footing a token's `Debug` and `Clone` are on already.
     ///
     /// # Errors
     ///
@@ -611,7 +611,7 @@ impl NetBuilder {
     /// Gives the net its value for the parameter type `T` (DESIGN §10).
     ///
     /// A parameter is a run-varying value a transition needs but that is not
-    /// a token — an API key, a tuning constant, the configuration of this
+    /// a token: an API key, a tuning constant, the configuration of this
     /// run. It is declared as an input with
     /// [`Param::<T>::new()`](crate::Param), stored once per net keyed by
     /// type, and handed to a body as a clone. Registering one is setup, not
@@ -646,8 +646,8 @@ impl NetBuilder {
     /// One value per type: a second call with the same `T` replaces the
     /// first, and two values of one underlying type need newtypes
     /// (`GithubToken(String)`, `OpenAiToken(String)`). The bound is the token
-    /// bound minus `Debug` — deliberately, since a parameter may be a secret
-    /// and nothing in the engine ever prints one — plus `Clone`, because
+    /// bound minus `Debug` (deliberately, since a parameter may be a secret
+    /// and nothing in the engine ever prints one) plus `Clone`, because
     /// every firing gets a copy.
     ///
     /// Registering a parameter no transition declares is allowed: it is a
@@ -693,7 +693,7 @@ impl NetBuilder {
     ///
     /// Order-independent: marking a type may come before or after the
     /// [`param`](NetBuilder::param) that gives it a value, and a marking with
-    /// no value is reported exactly as a missing value is — as a
+    /// no value is reported exactly as a missing value is: as a
     /// [`BuildError::MissingParam`] if a transition declared that type, and
     /// as nothing at all if none did. Two parameter types marked with one
     /// name are a [`BuildError::DuplicateParamName`].
@@ -776,11 +776,11 @@ impl NetBuilder {
     /// The three type-checked relationships are:
     ///
     /// - one body parameter per input, of the type that input produces
-    ///   ([`InputEdge`](crate::InputEdge)) — which for the eight edge kinds
+    ///   ([`InputEdge`](crate::InputEdge)), which for the eight edge kinds
     ///   depends on how they read their place, and for a
     ///   [`Param<T>`](crate::Param), which reads no place at all, is `T`;
     /// - one returned slot per output place, holding one token, zero or one,
-    ///   or many ([`IntoTokens`](crate::IntoTokens)) — unless the body
+    ///   or many ([`IntoTokens`](crate::IntoTokens)), unless the body
     ///   returns a value that is not a tuple, which is
     ///   [routed](crate::RoutedOutput) to the output place of its type
     ///   instead, in which case the order of the outputs does not matter, or
@@ -791,8 +791,8 @@ impl NetBuilder {
     ///
     /// The body may be a closure, a function by name, or either of those with
     /// an output distribution function composed after it by
-    /// [`output_distribution`](crate::OutputDistribution::output_distribution)
-    /// — in which case it is *that* function's return type that answers the
+    /// [`output_distribution`](crate::OutputDistribution::output_distribution),
+    /// in which case it is *that* function's return type that answers the
     /// second and third questions.
     ///
     /// Annotate the closure's parameter types. Inference through the arity
@@ -934,7 +934,7 @@ impl NetBuilder {
     /// only the author knows whether a rebuild is a true reset: bodies that
     /// write files, call out over a network, draw random numbers or keep
     /// global state are not undone by building a new net. Tools that reset
-    /// — the Bevy visualiser's Reset button — check
+    /// (the Bevy visualiser's Reset button) check
     /// [`Net::is_resettable`] and refuse a net that was not declared. Off by
     /// default.
     pub fn resettable(&mut self) -> &mut Self {
@@ -950,7 +950,7 @@ impl NetBuilder {
     /// transition that takes from it ([`TakeEdge`](crate::TakeEdge),
     /// [`TakeAllEdge`](crate::TakeAllEdge) and
     /// [`TakeWhereEdge`](crate::TakeWhereEdge)), and every output edge, from
-    /// a transition to a place it writes. Read edges are left out —
+    /// a transition to a place it writes. Read edges are left out:
     /// [`SnapshotEdge`](crate::SnapshotEdge),
     /// [`MutateEdge`](crate::MutateEdge),
     /// [`MutateWhereEdge`](crate::MutateWhereEdge) and
@@ -994,8 +994,8 @@ impl NetBuilder {
     /// forward through a directed acyclic graph, so nothing a firing
     /// consumes can come back to it and the net runs out of things to do.
     /// The proof is about the net left to itself: tokens put in from outside
-    /// after `build` — [`Net::put`](crate::Net::put),
-    /// [`Net::extend`](crate::Net::extend) — are outside it, and a net that
+    /// after `build` ([`Net::put`](crate::Net::put),
+    /// [`Net::extend`](crate::Net::extend)) are outside it, and a net that
     /// is fed while it runs is bounded while it runs instead.
     ///
     /// # Errors
@@ -1014,7 +1014,7 @@ impl NetBuilder {
     /// Asks [`build`](NetBuilder::build) to refuse a net with a transition
     /// that consumes nothing.
     ///
-    /// Every transition must have at least one consuming input edge — a
+    /// Every transition must have at least one consuming input edge: a
     /// [`TakeEdge`](crate::TakeEdge), a
     /// [`TakeAllEdge`](crate::TakeAllEdge) or a
     /// [`TakeWhereEdge`](crate::TakeWhereEdge). A transition without one is
@@ -1068,8 +1068,8 @@ impl NetBuilder {
     /// firing consumes the next one puts back. Only paired with
     /// [`assert_acyclic`](NetBuilder::assert_acyclic) is it a termination
     /// proof, as that method's docs set out. A generator, or a transition fed
-    /// from outside the net, is a deliberate source — do not assert this on
-    /// such a net.
+    /// from outside the net, is a deliberate source. Leave this check off
+    /// for such a net.
     ///
     /// # Errors
     ///
@@ -1120,7 +1120,7 @@ impl NetBuilder {
     /// serialisable with `NetBuilder::serializable_param` under one wire
     /// name, and [`BuildError::MissingParam`] if a transition declared a
     /// [`Param<T>`](crate::Param) and no [`param`](NetBuilder::param) value
-    /// of that type was registered — the first offender in transition order,
+    /// of that type was registered: the first offender in transition order,
     /// then in the order the inputs were written.
     ///
     /// Then, only if they were asked for,
@@ -1179,8 +1179,8 @@ impl NetBuilder {
                     });
                 }
                 // A snapshot needs the place's cloner, which
-                // `place_no_clone` did not record — whether or not the type
-                // itself is `Clone` — and a survey is a snapshot of every
+                // `place_no_clone` did not record (whether or not the type
+                // itself is `Clone`), and a survey is a snapshot of every
                 // token. A nested place is such a place, so this is also
                 // what refuses a snapshot or a survey of one.
                 if matches!(kind, EdgeKind::Snapshot | EdgeKind::Survey)
@@ -1402,7 +1402,7 @@ impl NetBuilder {
     /// from the node the walk closed on round to itself, or `None` if there
     /// is none.
     ///
-    /// A depth-first walk with three colours — unseen, on the path, done —
+    /// A depth-first walk with three colours (unseen, on the path, done),
     /// where meeting a node that is on the path is a cycle. The stack is
     /// explicit rather than the call stack, so that a long pipeline cannot
     /// overflow it. Every transition is a root, in declaration order, which

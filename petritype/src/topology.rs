@@ -141,7 +141,7 @@ pub struct TopologyTransition {
 }
 
 impl Topology {
-    /// Builds a topology from a read API — the one constructor behind
+    /// Builds a topology from a read API. It is the one constructor behind
     /// [`Net::topology`](crate::Net::topology) and
     /// [`Snapshot::topology`](crate::Snapshot::topology), so the two cannot
     /// disagree.

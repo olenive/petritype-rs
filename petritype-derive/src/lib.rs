@@ -209,8 +209,8 @@ pub fn derive_inputs(input: TokenStream) -> TokenStream {
 /// generates the struct of outputs, named after it with `Edges` appended:
 /// the same field names, one type parameter per field, each bounded by
 /// `petritype::Accepts<field type>`. A net fills each field with a place
-/// that accepts that type — a field `T` one token, `Option<T>` zero or one,
-/// `Vec<T>` any number, into a place of `T` — and passes the struct of
+/// that accepts that type (a field `T` one token, `Option<T>` zero or one,
+/// `Vec<T>` any number, into a place of `T`) and passes the struct of
 /// outputs, whole, as the transition's outputs:
 ///
 /// ```ignore

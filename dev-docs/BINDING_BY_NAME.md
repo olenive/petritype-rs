@@ -311,33 +311,6 @@ till; (4) R6; (5) R8. One commit per step, tests green at each.
   coherence or diagnostics.
 - **D6** The hidden engine module is `petritype::binding`.
 
-## 8. Rules for the implementing agent
-
-Work in `~/work/petritype-rs` only: do not touch `~/work/games/**`,
-`~/work/petritype`, `~/work/petritype-bevy` (above all not its
-`TODO_TEMP.md`), the protocol or its transcripts. Never push. Use
-`/usr/bin/grep` when filtering piped output. Every commit message ends with
-the two trailer lines the brief gives, whatever model is running. Tests,
-clippy and fmt green at every commit (`cargo test --workspace --features
-serde`, `cargo clippy --workspace --all-targets --features serde`, `cargo
-fmt --check`). When done, append an "As built" section to THIS file naming
-what differs from sections 2, 4 and 6 and why, with the commits, the R1
-numbers, and the D3 outcome.
-
-## 9. Prompt
-
-> Implement `~/work/petritype-rs/dev-docs/BINDING_BY_NAME.md`: raise the
-> flat tuple cap to 16 on its own branch, then, on a second branch, let a
-> transition bind its inputs and outputs to a function's structs by field
-> name through `#[derive(Inputs)]` and `#[derive(Outputs)]`, with the
-> function's structs free of places and edge kinds. Read the whole document
-> first, then `TRANSITION_ARITY.md` §1 and §2 for the problem and the till,
-> then the anchors in section 3. Take the defaults in section 7 unless told
-> otherwise. Build the section 2 library and nets and the till as the
-> acceptance tests and check section 6. Append an "As built" section when
-> finished. Do not touch `~/work/games/**`, `~/work/petritype`,
-> `~/work/petritype-bevy` or `TODO_TEMP.md`.
-
 ## As built
 
 Slice 23, 2026-10-15, branch `binding-by-name` of petritype-rs, cut from

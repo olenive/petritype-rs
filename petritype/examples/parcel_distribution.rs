@@ -9,8 +9,8 @@
 //! What it demonstrates: [`TakeAllEdge`] for a truck that loads everything on
 //! the platform at once, a [guard](petritype::TransitionBuilder::guard) that
 //! holds the truck until it is worth dispatching, and an output edge that
-//! points back at an input place — the parcels left behind for the next
-//! truck.
+//! points back at an input place (the parcels left behind for the next
+//! truck).
 
 use petritype::drivers::{self, Limits, Mode, OnFailure};
 use petritype::{BuildError, Net, NetBuilder, PlaceRef, TakeAllEdge, TakeEdge};
@@ -64,7 +64,7 @@ fn build() -> Result<Line, BuildError> {
         },
     )
     .guard(move |net: &Net| {
-        // A truck waits for a load, unless nothing more is coming — which is
+        // A truck waits for a load, unless nothing more is coming, which is
         // this net's answer to the Python original's five-second timer.
         net.count(staging.id()) >= 2
             || (net.count(receiving.id()) == 0 && net.count(sorting.id()) == 0)

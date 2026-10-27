@@ -49,8 +49,9 @@ it runs there.
 cargo doc --workspace --no-deps --features serde --open
 ```
 
-`DESIGN.md` has the design, and `dev-docs/NAMING_CONVENTIONS.md` the vocabulary shared
-with the Python library.
+[`DESIGN.md`](https://github.com/olenive/petritype-rs/blob/main/DESIGN.md) has the design, and
+[`dev-docs/NAMING_CONVENTIONS.md`](https://github.com/olenive/petritype-rs/blob/main/dev-docs/NAMING_CONVENTIONS.md)
+the vocabulary shared with the Python library.
 
 ## Running the runner example
 
@@ -294,4 +295,4 @@ inside the function that computes the result.
 
 ## Licence
 
-MIT. See [LICENSE-MIT](LICENSE-MIT).
+MIT. See [LICENSE-MIT](https://github.com/olenive/petritype-rs/blob/main/LICENSE-MIT).

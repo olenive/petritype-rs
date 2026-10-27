@@ -1,14 +1,20 @@
 [package]
 name = "petritype-runner"
-version = "0.1.0"
+version.workspace = true
 description = "Serve a petritype net over the net protocol on stdin and stdout."
 readme = "../README.md"
 keywords = ["petri-net", "protocol", "json", "runner"]
 categories = ["data-structures", "simulation", "command-line-utilities"]
+authors.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+# Left out of the package: the tests and the example include petritype's
+# example nets from the sibling crate by `#[path]`, and `tests/process.rs`
+# spawns the example, so neither folder builds from the package alone. Both
+# run from the repository.
+exclude = ["tests/", "examples/"]
 
 [dependencies]
 petritype = { path = "../petritype", version = "0.1.0", features = ["serde"] }

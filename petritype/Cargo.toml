@@ -1,10 +1,11 @@
 [package]
 name = "petritype"
-version = "0.1.0"
+version.workspace = true
 description = "Typed, executable, observable Petri nets."
 readme = "../README.md"
 keywords = ["petri-net", "dataflow", "workflow", "simulation"]
 categories = ["data-structures", "simulation"]
+authors.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true

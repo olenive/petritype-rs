@@ -1,10 +1,11 @@
 [package]
 name = "petritype-activity"
-version = "0.1.0"
+version.workspace = true
 description = "A petritype net's activity as levels per place and transition, and the thumbnail that draws it, for any renderer."
 readme = "../README.md"
 keywords = ["petri-net", "activity", "thumbnail", "visualization"]
 categories = ["data-structures", "simulation", "visualization"]
+authors.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -30,3 +31,6 @@ serde = { version = "1", features = ["derive"] }
 # grid's nodes and the bins' ids serialise by the layout's and the core's
 # own `serde` features.
 serde = ["dep:serde", "dep:serde_json", "petritype/serde", "petritype-layout/serde"]
+
+[package.metadata.docs.rs]
+all-features = true

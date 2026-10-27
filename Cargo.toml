@@ -3,6 +3,8 @@ resolver = "3"
 members = ["petritype", "petritype-activity", "petritype-derive", "petritype-dot", "petritype-layout", "petritype-runner"]
 
 [workspace.package]
+version = "0.1.0"
+authors = ["Oleg Lenive <oleg@manifold-exp.com>"]
 edition = "2024"
 rust-version = "1.96"
 license = "MIT"

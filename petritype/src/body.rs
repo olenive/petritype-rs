@@ -332,7 +332,7 @@ pub trait PositionalOutputs<Outputs>: PositionalSealed<Outputs> {}
     note = "named: the struct whose `#[derive(Outputs)]` generated the outputs' `...Edges` \
             struct, each field going to the output of the same name",
     note = "routed: a value that is not a tuple, whose every payload goes to the output place \
-            that holds its type — derive `Routed` on the enum or struct you return",
+            that holds its type. Derive `Routed` on the enum or struct you return",
     note = "distribution: a `Distribution` of (place, token) pairs, built with \
             `Distribution::new().to(place, token)`, for choosing between output places of the \
             same type",
@@ -484,7 +484,7 @@ where
             `Vec<T>`, `SnapshotEdge(p)` gives `T`, `MutateEdge(p)` gives `&mut T`; a struct of \
             edges from `#[derive(Inputs)]` gives the struct it was derived from",
     note = "with `.output_distribution(f)`, the output distribution function `f` takes exactly \
-            what the body returns — the value inside the `Ok` if that is a `Result` — and \
+            what the body returns (the value inside the `Ok` if that is a `Result`) and \
             returns the outputs in any form, usually a `Distribution`",
     note = "a body must be `Send + Sync + 'static`: capture an `Arc`, a `Mutex` or an atomic \
             rather than an `Rc` or a `RefCell`"

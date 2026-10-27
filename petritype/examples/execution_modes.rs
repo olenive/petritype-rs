@@ -96,8 +96,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (concurrent, concurrent_marking) = run_in(Mode::Concurrent);
 
     println!("one stage takes {STEP:?}, and there are six of them");
-    println!("sequential: {sequential:?} — the sum of the branches");
-    println!("concurrent: {concurrent:?} — the longer of them");
+    println!("sequential: {sequential:?}, the sum of the branches");
+    println!("concurrent: {concurrent:?}, the longer of them");
     println!("both end with {sequential_marking:?}");
     assert_eq!(sequential_marking, concurrent_marking);
     Ok(())

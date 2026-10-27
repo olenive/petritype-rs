@@ -1,4 +1,4 @@
-# petritype-rs — Design
+# petritype-rs: Design
 
 Typed, executable, observable Petri nets in Rust. A port of the Python
 [petritype](https://github.com/olenive/petritype) library, redesigned around ownership instead of
@@ -100,8 +100,8 @@ Dropped, and why:
 - **Inner net**: a net carried by a token, in a *nested* place; the net
   holding the token is the **outer net** (§6.6, slice 15). *Quiescent deep*:
   quiescent here and in every inner net that is not passive.
-- **Key**: a named attribute of a token — a string, an integer or a
-  boolean — that its place derives from the token's value with an extractor
+- **Key**: a named attribute of a token (a string, an integer or a
+  boolean) that its place derives from the token's value with an extractor
   the author declared (§8.3, slice 18). A **filter** keeps the tokens whose
   keys pass its clauses; a **query** asks a net for them; a **keyed edge**
   (`TakeWhereEdge`, `MutateWhereEdge`, slice 19) takes or mutates the oldest
@@ -142,8 +142,8 @@ pub struct PlaceRef<T> { place: PlaceId, net: NetId, _t: PhantomData<fn() -> T> 
 - `Net` carries two change counters, plain `u64`s that increment by one:
   - `topology_counter`: connectivity changes only (place, transition, edge
     added or removed). v1 never bumps it.
-  - `state_counter`: everything else — token added, removed, mutated,
-    transition toggled. A change tick for observers, not a firing count:
+  - `state_counter`: everything else (token added, removed, mutated,
+    transition toggled). A change tick for observers, not a firing count:
     a freshly built net is at 0 however it was seeded.
   - `fired_count`: number of completed firings. A statistic, not a counter of
     changes.
@@ -471,7 +471,7 @@ are edges too, of one kind today, *put*: a place handle, which appends the
 tokens a value is worth to its place. The body's **return type**, and the
 outputs it meets, select one of four forms:
 
-**Positional** — the return type is a tuple. Return position *i* goes to
+**Positional**: the return type is a tuple. Return position *i* goes to
 output place *i*, and is `T`, `Option<T>` or `Vec<T>` for that place's `T`
 (trait `IntoTokens<T>`). Checked at compile time. A wrong order between
 *different* types fails to compile; between *same* types order is the only
@@ -481,7 +481,7 @@ distinguishing information and the author must care anyway.
 (heavy, light, count)  ⇐  |ps: Vec<Parcel>| -> (Vec<Parcel>, Vec<Parcel>, Option<u32>)
 ```
 
-**Named** (slice 23, §4.4) — the return type is a struct that derives
+**Named** (slice 23, §4.4): the return type is a struct that derives
 `Outputs`, and the outputs are the struct of outputs generated for it,
 `<Name>Edges`, whole: each field goes to the place wired to its name,
 whatever order the literal writes them in, and is `T`, `Option<T>` or
@@ -506,7 +506,7 @@ derives both `Routed` and `Outputs` is unambiguous: the routed form asks for
 a tuple of outputs, so the struct is routed whole where the outputs are a
 tuple and bound by name where they are its own struct of outputs.
 
-**Routed** — the return type is not a tuple, and the outputs are a tuple.
+**Routed**: the return type is not a tuple, and the outputs are a tuple.
 Each emitted payload goes to the unique output place of its type. Order of
 output places is irrelevant.
 Trait `RoutedOutput` (`petritype::routing`) lists the payload types
@@ -534,7 +534,7 @@ Build-time checks for routed bodies (`BuildError` naming transition and type):
   body is wrapped, so `transition()` stays infallible; the first problem per
   transition is kept by the builder and reported by `build()`.
 
-**Distribution** — the body, or an *output distribution function* composed
+**Distribution**: the body, or an *output distribution function* composed
 after it, returns a `Distribution`: typed `(place, token)` pairs. The escape
 hatch for data-dependent routing among same-typed places, dynamic fan-out, or
 anything else.
@@ -876,9 +876,9 @@ pub enum DeepStep {
   `step_inside()` (public since slice 17, `pub(crate) step_inner` before)
   is the second half alone: the walk, without asking this net's selector.
   It is for a driver that has already asked `select()` because it fires
-  this net's own transitions in stages — the concurrent driver, and the
+  this net's own transitions in stages: the concurrent driver, and the
   protocol runner, whose outer bodies run on threads of their own while its
-  inner firings are inline (§19.3.11) — and would otherwise ask the
+  inner firings are inline (§19.3.11). Such a driver would otherwise ask the
   selector twice and fire inline whatever it chose.
 - **The deep policy** (slice 21, 2026-10-12; decision B2 of the phase,
   Python petritype's `deep_policy`). What the paragraph above describes is
@@ -1033,25 +1033,25 @@ snapshot.nested(place, token) -> Option<Vec<(&str, &Net)>>
   `Templates::scope(f)` pushes a registry for the duration of `f`, and pops
   it on return or unwind. A template is looked for innermost scope first,
   then outwards. A net opens a scope of its own registry wherever it decodes
-  tokens — `import_marking`, `Command::from_json` and so `apply_json`, and
-  around the forks of `snapshot` — so a caller that goes through the net
+  tokens (`import_marking`, `Command::from_json` and so `apply_json`, and
+  around the forks of `snapshot`), so a caller that goes through the net
   never sees the stack. Depth two works either way: a cabin that carries
   the `Luggage` template itself finds it in its own scope, and one that does
   not finds it in the city's, one level out. Deserialising a `Net` with no
   scope open is a serde error saying so.
-- **Import is a resync.** `import_marking` checks everything first — every
+- **Import is a resync.** `import_marking` checks everything first: every
   name in the marking is a place (`NoSuchPlaceName`), every place of the net
   is serializable (`NotSerializable`, mentioned or not, since emptying a
   place that cannot be filled would lose what it holds), every token decodes
-  (`InvalidToken`) — and only then empties every place and fills it, with
+  (`InvalidToken`). Only then does it empty every place and fill it, with
   fresh token ids. A place the marking does not mention loads empty. It
   emits one `Event::Resynced` and no `Removed` or `Added`: it is a
   replacement, not a sequence of changes (§8.1). Incoming nested tokens are
   setup, their inner logs forgotten as a seed's are, so no stale `Nested`
   is lifted later. A rejected import changes nothing and emits nothing.
-- **Fork.** `Net::fork` builds the net again from its stamp — the factory
+- **Fork.** `Net::fork` builds the net again from its stamp (the factory
   given the stamp's `Params` with every wire parameter's current value over
-  them — imports this net's exported marking, clones every parameter value
+  them), imports this net's exported marking, clones every parameter value
   across (all of them: a fork never leaves the process, so it keeps what a
   save cannot), copies every switch, the label limit and the tie-break, and
   empties the log. The selector is a closure and is not copied. A net with
@@ -1125,9 +1125,9 @@ snapshot.nested(place, token) -> Option<Vec<(&str, &Net)>>
   end, the two cities' exported markings, which reach inside the vehicles,
   compared; the others are what the journey does, and its tests check it.
 
-The plan this section held before — a net as the *body* of a transition,
+The plan this section held before (a net as the *body* of a transition,
 run to completion by a stateful closure, with `inner.as_transition(..)`
-sugar — is superseded rather than forbidden: a body may still own a net, but
+sugar) is superseded rather than forbidden: a body may still own a net, but
 the engine sees nothing of it. A token is where an inner net lives when the
 outer net should see it.
 
@@ -1167,8 +1167,8 @@ outer net should see it.
   transition and continue, or `Continue`.
 
 Error types (`thiserror`, all `#[non_exhaustive]`):
-- `BuildError` — from `NetBuilder::build`.
-- `NetError` — API misuse: `NoSuchPlace`, `NoSuchToken`, `TypeMismatch`,
+- `BuildError`: from `NetBuilder::build`.
+- `NetError`: API misuse: `NoSuchPlace`, `NoSuchToken`, `TypeMismatch`,
   `NoSuchTransition`, `NotFireable`, `ForeignFiring`, `NotInFlight`,
   `NoSuchParam` (a `set_param` of a type no transition declared),
   `NoClonePlace` (a snapshot of a net with a `no_clone` place). Wraps
@@ -1183,22 +1183,22 @@ Error types (`thiserror`, all `#[non_exhaustive]`):
   (a snapshot that could not fork a nested token) and `RebuildFailed {
   template, source }` (a fork whose factory failed or whose marking did not
   load back).
-- `TemplateError` (`serde`, slice 16) — from `Templates::build`:
+- `TemplateError` (`serde`, slice 16): from `Templates::build`:
   `NoSuchTemplate { name }`, `Factory { name, source }`.
-- `FiringFailed` — a body returned `Err` or panicked; carries the transition,
+- `FiringFailed`: a body returned `Err` or panicked; carries the transition,
   the boxed error, and whether inputs were restored. Since slice 15 also
   `path: Vec<(PlaceId, TokenId, String)>`: where the transition is when it is
   inside a token's inner net, one `(place, token, net name)` per level, outer
   to inner, empty for the net's own. `step_deep` fills it in on the way up,
   and the message names it (`transition "Sit" (TransitionId(0)) inside
   PlaceId(0) #5 "cabin" failed: ..`).
-- `CommandError` — external input rejected. Wraps `NetError` transparently
+- `CommandError`: external input rejected. Wraps `NetError` transparently
   (unknown place, transition or token; type mismatch); with `serde`, also
   `NotSerializable`, `InvalidToken`, `NoSuchPlaceName`,
   `NoSuchTransitionName`, `NoSuchParamName`, `InvalidParam` and
   `ParamNotSerializable` from the JSON route. A rejected command changes
   nothing and emits nothing.
-- `TooManyFirings` — the driver fuse, carrying a `RunSummary`.
+- `TooManyFirings`: the driver fuse, carrying a `RunSummary`.
 
 **Names in errors (decided 2026-09-20).** An error escapes the scope where
 the net lives: a `?` in `main` prints the message and exits, and by then an
@@ -1356,8 +1356,8 @@ PlaceInfo::key_names: &[&'static str];  TopologyPlace::key_names: Vec<&'static s
 
 - **Declaring.** `b.keys(place, ["species", "class", "diet"], |s: &Species|
   [..])`. The names are given statically, before any token exists, because
-  a reader needs them first — a viewer's filter bar, the protocol's
-  `key_names` (PROTOCOL.md §13.1) — and the extractor returns an array of
+  a reader needs them first: a viewer's filter bar, the protocol's
+  `key_names` (PROTOCOL.md §13.1). The extractor returns an array of
   exactly as many values, in the same order, so the two cannot drift. The
   token type needs no trait: the closure form is the one the proposal asked
   for at least, and the only one built (Python likewise built only its
@@ -1397,8 +1397,8 @@ PlaceInfo::key_names: &[&'static str];  TopologyPlace::key_names: Vec<&'static s
   declare a clause's key passes no such clause, so a filter with a clause
   never keeps a token of a keyless place, while a filter with no clauses
   keeps every token of the places it covers. The restriction is by place
-  only — `places` by id, `prefix` by the start of a place's *name*, the
-  protocol's §13.2 and the Python as-built — and never by transition, which
+  only (`places` by id, `prefix` by the start of a place's *name*, the
+  protocol's §13.2 and the Python as-built) and never by transition, which
   holds no tokens. A place in `places` that the net does not have makes
   `query` fail with `NetError::NoSuchPlace` (the wire's `unknown_place`); a
   key no place declares finds nothing and is not an error. `Filter` and
@@ -1436,8 +1436,8 @@ PlaceInfo::key_names: &[&'static str];  TopologyPlace::key_names: Vec<&'static s
   (`HashMap<&'static str, HashMap<KeyValue, BTreeSet<..>>>`, values no token
   holds removed). A query with clauses resolves its parameters once, asks
   the index how many tokens hold each clause's values, starts from the
-  clause with the fewest, and reads only those tokens — found in their place
-  by binary search, since a place's queue is in id order — checking the
+  clause with the fewest, and reads only those tokens (found in their place
+  by binary search, since a place's queue is in id order), checking the
   other clauses against their keys. A query without clauses reads the
   places it covers in full; it keeps every token in them anyway.
   `distinct_values` reads the index alone. It is kept by the net at every
@@ -1450,8 +1450,8 @@ PlaceInfo::key_names: &[&'static str];  TopologyPlace::key_names: Vec<&'static s
   No token's keys are stored: the extractor is pure, so a token's old
   entries are found by extracting from the value about to leave, or from the
   value before the body changed it. The one change the net learns of only
-  afterwards is inside a nested token — an inner firing of `step_deep`, a
-  `nested_scope` closure — where a key may read the inner nets; there the
+  afterwards is inside a nested token (an inner firing of `step_deep`, a
+  `nested_scope` closure), where a key may read the inner nets; there the
   token's entries are found by looking through its keys' values, and it is
   indexed afresh. `import_marking` empties the index and refills it as it
   refills the places; nothing of it is ever saved (the proposal's R7). A
@@ -1561,10 +1561,10 @@ BuildError::KeyedEdgeOnUnkeyedPlace { transition, place }
 - **On the wire** (PROTOCOL.md §5.1, §13.5) a keyed edge is `kind:
   "take_where"` or `"mutate_where"` with `filter` as declared, a `{key,
   param}` clause unevaluated. The core's `Serialize` for `EdgeInfo` and
-  `Topology` writes that shape in its id form —
-  `{"edge":"input",..,"kind":"take_where","filter":{"clauses":[{"key":"class","values":["Bird"]}]}}`,
+  `Topology` writes that shape in its id form
+  (`{"edge":"input",..,"kind":"take_where","filter":{"clauses":[{"key":"class","values":["Bird"]}]}}`,
   `places` as `PlaceId`s, `filter` and `filters` written only where there
-  is one — because a `Filter` alone knows no names: the protocol's shapes
+  is one) because a `Filter` alone knows no names: the protocol's shapes
   keyed by name live in the runner (§19.2), which maps the ids; since the
   runner's half of keys (slice 20, §19.3.12) it sends `kind` and `filter`
   with places by name, and sent a keyed edge without `kind` until then.
@@ -1595,9 +1595,9 @@ BuildError::KeyedEdgeOnUnkeyedPlace { transition, place }
   halves the deer (`diet in {Herbivore}`) while above 10 and `Decline
   Tundra` the lemmings (`species in {Lemming}`) while above 100, floors
   that keep every population above 0. The seed is twenty tokens, four to a
-  habitat. Left alone, the net fires nineteen times — two migrations from
+  habitat. Left alone, the net fires nineteen times (two migrations from
   `Forest`, one from `Tundra`, three settlings, three spreads, five and
-  five declines, in that order under `FirstDeclared` — and stops. No engine
+  five declines, in that order under `FirstDeclared`) and stops. No engine
   change: the keyed edges of this slice already did all of it.
 
 **Pattern notes.** The game's pattern P2
@@ -1752,7 +1752,7 @@ allowed.
   typed constructor `Command::set_param(v)`, matched by `TypeId` in `apply`
   (`NoSuchParam` with `type_name = "<erased>"` otherwise). On the wire,
   `b.serializable_param::<T>("api_token")` gives the type a human-chosen
-  name — `type_name::<T>()` is a compiler detail, not a stable key — and
+  name (`type_name::<T>()` is a compiler detail, not a stable key) and
   `JsonCommand::SetParam { param: "api_token", value }` addresses it;
   `NoSuchParamName`, `InvalidParam`, `ParamNotSerializable` are the JSON
   route's failures.
@@ -1994,7 +1994,7 @@ turns green.
 - The examples live in `petritype/examples/` as cargo examples with
   `test = true`, so `cargo test` runs their assertions and `cargo run
   --example` shows them; they draw their nets with `petritype-dot`, which
-  makes it a path-only dev-dependency of `petritype` — a cycle cargo
+  makes it a path-only dev-dependency of `petritype`, a cycle cargo
   permits and strips at publish. Where the Python was perpetual or random
   (parcel distribution) the port is finite and deterministic; where it
   relied on `allow_token_copying` for two output places of one type
@@ -2016,8 +2016,8 @@ and the repository name already tells the two projects apart. `petritype`,
 member: Bevy compiles in minutes and releases every few months, and the
 core must not pay for either. It pins the released Bevy (0.19.1; 0.20 when
 final) and depends on `petritype` by path until `petritype` is published,
-then by version. First cut is layers (a) and (b) below — the resource, a
-per-frame stepping system, and the event mirror — with a plain grid
+then by version. First cut is layers (a) and (b) below (the resource, a
+per-frame stepping system, and the event mirror) with a plain grid
 layout, split as a headless `MirrorPlugin` (testable under
 `MinimalPlugins`) and a `RenderPlugin`. Layout, hover and the inspector
 follow once the demo moves. **2026-10-02:** the demo moved: the layered
@@ -2139,7 +2139,7 @@ effects, which the viewer attributes; 232 tests with `http`.
   Panics no longer strand (caught since slice 7), and the drivers (slice 9)
   never drop one: they drain everything airborne before returning, on the
   error path too. The misuse rejections could hand the value back.
-  **Decided 2026-09-20: deferred, and when it comes it is additive** — a
+  **Decided 2026-09-20: deferred, and when it comes it is additive**: a
   second method `try_distribute(done) -> Result<(), (NetError, Completed)>`
   beside the plain `distribute`, so net authors and ordinary drivers keep
   the simple shape and a hand-written driver that juggles several nets opts
@@ -2177,7 +2177,7 @@ Slices, each with tests, in order:
 10. `Command` / `apply`; `serde` feature: `json()`, serialisable commands.
 11. `snapshot()`; `Param::<T>`, `b.param`, `set_param`, `ParamChanged`.
 12. `petritype-dot`; port the Python examples as integration tests.
-13. `petritype-bevy` — first cut done 2026-09-20 in its own repository
+13. `petritype-bevy`, first cut done 2026-09-20 in its own repository
     (§15): `MirrorPlugin` (headless) + `RenderPlugin` + the parcel demo;
     run modes, animation, layered layout, hover, theme and reset added
     2026-10-02 (26 headless tests). Remote source designed 2026-10-03;
@@ -3001,7 +3001,7 @@ runner change.
   so `invalid_token` (§12.5) with no new arm.
 - **What the core gained**: `Net::step_inside` (§6.6); `Net::param_name`
   (§8.2); `TransitionInfo::positional` and `TopologyTransition::positional`
-  (§4.5), so that `slot` is written for positional outputs alone —
+  (§4.5), so that `slot` is written for positional outputs alone:
   `transit`'s `Arrive` distributes to one of four stations, and the shared
   transcript has no slots on its edges.
 - **The harness** (`tests/transcripts.rs`) replays a transcript over a
@@ -3032,7 +3032,7 @@ unchanged, both from the Python repository and from a verbatim copy in
 
 - **Keys on the wire** (§13.1). `topology.places[].key_names` comes from
   `TopologyPlace::key_names`, written only when there are some. A token
-  entry — in `get_state`, `get_place_tokens` and `query` — carries `keys`
+  entry (in `get_state`, `get_place_tokens` and `query`) carries `keys`
   (`protocol::Keys`, an object in declaration order) from `Net::keys` when
   its place declares keys, and so do `added` and `mutated`, read when the
   line is written, as labels are, so a `mutated` has the keys after the
@@ -3056,7 +3056,7 @@ unchanged, both from the Python repository and from a verbatim copy in
   `Clause::IsParam`, which reads the parameter by its wire name.
 - **Served from the index.** Every question of many tokens asks
   `Net::query_ids`, the core's one addition: `query`'s tokens as ids alone,
-  from the key index, so a reader renders — label, keys, nets, JSON — only
+  from the key index, so a reader renders (label, keys, nets, JSON) only
   the tokens it writes. `query` counts all its matches and renders the first
   `token_limit` (200 by default, 1 to 1000); `get_state` under a filter
   groups the kept ids by place, for `matching` and the first `token_limit`
@@ -3086,7 +3086,7 @@ unchanged, both from the Python repository and from a verbatim copy in
   goes through the net's projection (`token_line`, shared by the outer flush
   and the inner lift). An `added` is told when the filter keeps the token
   where it stands; a `removed` when the connection had been shown the
-  token; a `mutated` by where it crosses — kept before and after,
+  token; a `mutated` by where it crosses: kept before and after,
   `mutated`; after only, `added`; before only, `removed`; neither,
   `hidden`. In place of every line it hides the connection gets `hidden
   {kind, place}`, a state notification, so the version moves exactly as it

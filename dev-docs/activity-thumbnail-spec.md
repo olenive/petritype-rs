@@ -535,7 +535,12 @@ The history stays the canvas's: the outline goes round the canvas's picture
 alone, the controls act on the canvas's history, and the panes' pictures
 paint their live models, as the panes stay live. Hovering a picture shows
 the controls and a tooltip with its net's name and, for a pane's, `pane 1`
-by its place; a click on a pane's picture does nothing yet. The viewer's
+by its place. Since 2026-10-27 a click on a cell of a pane's picture does
+for that pane what a click on the canvas's does for the canvas: it pans the
+pane's own camera to the cell's node, centred in the pane's room, and the
+pane stops framing its net by itself until its next Fit; the side panel and
+a window showing the same inner net share one picture, so one click pans
+both. The viewer's
 *Thumbnails for panes* (on by default, under *Decay in the drawing* in the
 settings window) turns the panes' pictures and the labels off, leaving the
 canvas's picture alone. The activity crate is unchanged.

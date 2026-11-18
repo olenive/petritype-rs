@@ -45,6 +45,11 @@
 //! with no arguments serves the protocol. While serving, a `println!` in a
 //! body goes to stderr, never into the protocol stream (Unix).
 //!
+//! A program that builds a net and fires it from its own code (a game, a
+//! simulation) can be watched too: it gives the net to a [`HostServer`],
+//! which listens on a TCP port, and a viewer attaches to read it. Nothing
+//! is loaded or driven over that connection; see [`Host`].
+//!
 //! # Layers
 //!
 //! - [`protocol`]: the wire shapes as serde types, keyed by names, with
@@ -55,6 +60,8 @@
 //!   test can embed it without a process.
 //! - [`main`]: the stdout guard, a reader, a writer, a heartbeat, a thread
 //!   per detachable body, and the loop around the owner.
+//! - [`Host`]: the state machine around a net the program owns, and
+//!   [`HostServer`], the TCP listener in front of it.
 //!
 //! # How a Rust net looks on the wire
 //!
@@ -94,6 +101,7 @@
 #![forbid(unsafe_code)]
 
 mod errors;
+mod host;
 mod io;
 mod owner;
 mod projection;
@@ -102,6 +110,7 @@ mod registry;
 mod time;
 mod translate;
 
+pub use host::{Host, HostServer};
 pub use io::main;
 pub use owner::{Input, Outgoing, Owner, StatusCell};
 pub use registry::{Factory, Hosting, LoadError, NetEntry, ParamSpec, Params};

@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- `petritype-runner` serves a net the host program owns. A program that builds a net and fires it from its own code (a game, a simulation) gives it to a `HostServer`, which listens on a TCP port; any number of viewers attach and are told what the program does to the net, inner nets included. `Host` is the same without the listener, for a program with a transport of its own. The connection reads the net and nothing else: `load`, `reset`, `shutdown`, `step`, `start`, `stop`, `inject`, `enable`, `disable`, `set_param`, `press` and `set_filter` are `unsupported`.
+
 ## 0.1.0, 2026-10-23
 
 The first release, early: the API will change.

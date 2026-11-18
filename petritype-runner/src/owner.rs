@@ -27,7 +27,7 @@ use crate::protocol::{
     self, Describe, DistinctResult, ErrorCode, HiddenKind, LogEntry, Notification, PlaceTokens,
     QueryMatch, QueryResult, Request, Response, State, TokenBody, TokenValue,
 };
-use crate::registry::{Hosting, NetEntry, Params};
+use crate::registry::{Hosting, LoadError, NetEntry, Params};
 use crate::time::iso8601;
 use crate::translate::{self, FilterError, Names};
 
@@ -85,6 +85,21 @@ const OUTER_ONLY: &[&str] = &[
     "disable",
     "set_param",
     "press",
+];
+
+/// The methods a hosted owner answers ([`Owner::hosted`]): `describe` and
+/// the reads. The net is the host program's to load, fire and change, so
+/// every other method is `unsupported` there. `set_filter` is among the
+/// refused: the projection it sets is one connection's, and a hosted net may
+/// be read over several at once.
+const SERVED_WHEN_HOSTED: &[&str] = &[
+    "describe",
+    "get_state",
+    "get_place_tokens",
+    "get_token",
+    "get_log",
+    "query",
+    "distinct",
 ];
 
 /// Every method of protocol version 1.
@@ -167,6 +182,20 @@ pub struct Owner {
     /// Set when a run fired an inline body during the last `handle` and could
     /// fire again at once.
     poke: bool,
+    /// The loaded net is the host program's ([`Owner::hosted`]): the wire
+    /// reads it and never loads, fires or changes it.
+    hosted: bool,
+    /// The staged firings a host has launched and not yet landed, oldest
+    /// first: what each took and when, for its log entry.
+    host_flights: Vec<HostFlight>,
+}
+
+/// A staged firing the host program launched on a hosted net, between its
+/// `Launched` and its `Distributed` or `Failed`.
+struct HostFlight {
+    transition: TransitionId,
+    consumed: Vec<(PlaceId, TokenId)>,
+    started_at: SystemTime,
 }
 
 /// One generation of one net, and what the runner keeps about it
@@ -578,6 +607,8 @@ struct InnerFiring {
     transition: String,
     path: String,
     nested_id: String,
+    /// The firing failed: its net's progress did not count it.
+    failed: bool,
 }
 
 /// What one flush wrote: the events, for the caller to read ids off, and
@@ -926,6 +957,84 @@ impl Loaded {
         self.log.push_back(Logged { entry, chain });
     }
 
+    /// The log entry and the progress of one firing the host program made
+    /// on a hosted net, read off the event that told of it: `Fired` for a
+    /// firing in one piece, `Launched` and then `Distributed` or `Failed`
+    /// for a staged one, whose flight is kept in `flights` between the two.
+    /// Any other event is not a firing and does nothing.
+    fn record_host_firing(
+        &mut self,
+        event: &Event,
+        now: SystemTime,
+        flights: &mut Vec<HostFlight>,
+    ) {
+        let mut landed = |transition: TransitionId| {
+            let at = flights.iter().position(|f| f.transition == transition)?;
+            Some(flights.remove(at))
+        };
+        let (transition, consumed, produced, started_at, failure) = match event {
+            Event::Fired {
+                transition,
+                consumed,
+                produced,
+            } => (*transition, consumed.clone(), produced.clone(), now, None),
+            Event::Launched {
+                transition,
+                consumed,
+            } => {
+                flights.push(HostFlight {
+                    transition: *transition,
+                    consumed: consumed.clone(),
+                    started_at: now,
+                });
+                return;
+            }
+            Event::Distributed {
+                transition,
+                produced,
+            } => {
+                let (consumed, started_at) =
+                    landed(*transition).map_or((Vec::new(), now), |f| (f.consumed, f.started_at));
+                (*transition, consumed, produced.clone(), started_at, None)
+            }
+            Event::Failed {
+                transition,
+                consumed,
+                restored,
+                error,
+            } => {
+                let started_at = landed(*transition).map_or(now, |f| f.started_at);
+                (
+                    *transition,
+                    consumed.clone(),
+                    Vec::new(),
+                    started_at,
+                    Some((error.clone(), *restored)),
+                )
+            }
+            _ => return,
+        };
+        let name = self.names.transition(transition);
+        self.log_seq += 1;
+        let entry = LogEntry {
+            seq: self.log_seq,
+            transition: name.clone(),
+            started_at: iso8601(started_at),
+            duration_ms: duration_ms(started_at, now),
+            outcome: if failure.is_some() { "failed" } else { "fired" }.to_owned(),
+            consumed: self.names.pairs(&consumed),
+            produced: self.names.pairs(&produced),
+            error: failure.as_ref().map(|(error, _)| error.clone()),
+            restored: failure.as_ref().map(|&(_, restored)| restored),
+            path: None,
+            nested_id: None,
+        };
+        self.push_log(entry, Vec::new());
+        if failure.is_none() {
+            self.progress.fired(&name, now);
+        }
+    }
+
     /// The wire path of a lifted event: the loaded net's name, then per
     /// level the place's name in the net above, the token and the net's
     /// name. Makes a record for each net on the way that has none.
@@ -1141,6 +1250,7 @@ impl Loaded {
                 transition,
                 path: path.clone(),
                 nested_id: nested_id.to_string(),
+                failed: failure.is_some(),
             });
         }
         Notification::Nested {
@@ -1339,6 +1449,8 @@ impl Owner {
             marking_version: 0,
             loaded: None,
             poke: false,
+            hosted: false,
+            host_flights: Vec::new(),
         }
     }
 
@@ -1388,6 +1500,12 @@ impl Owner {
             Input::Completed(completed) => self.completed(completed, now, &mut out),
             Input::Tick => self.drive(now, &mut out),
         }
+        self.mirror_gauges();
+        out
+    }
+
+    /// Copies what the heartbeat thread reads into the gauges.
+    fn mirror_gauges(&self) {
         self.gauges
             .marking_version
             .store(self.marking_version, Ordering::Relaxed);
@@ -1398,7 +1516,6 @@ impl Owner {
         self.gauges
             .loaded
             .store(self.loaded.is_some(), Ordering::Relaxed);
-        out
     }
 
     // ----- dispatch ----------------------------------------------------------
@@ -1484,6 +1601,14 @@ impl Owner {
             }
         };
         match method.as_str() {
+            _ if self.hosted && !SERVED_WHEN_HOSTED.contains(&method.as_str()) => respond_error(
+                out,
+                &id,
+                ErrorCode::Unsupported,
+                format!(
+                    "the host program owns this net: it is read over the wire, and {method} is not served"
+                ),
+            ),
             "describe" => respond(out, &id, self.describe()),
             "shutdown" => {
                 respond(out, &id, json!({"status": "ok"}));
@@ -2102,7 +2227,7 @@ impl Owner {
     ) -> bool {
         let factory = &self.nets[entry].factory;
         let built = catch_unwind(AssertUnwindSafe(|| factory(&params)));
-        let mut net = match built {
+        let net = match built {
             Ok(Ok(net)) => net,
             Ok(Err(error)) => {
                 respond_error(out, id, code_of(CoreError::Load(&error)), error.to_string());
@@ -2118,6 +2243,22 @@ impl Owner {
                 return false;
             }
         };
+        self.install(entry, params, net);
+        push(
+            out,
+            Notification::Reloaded {
+                generation: self.generation,
+                reason: reason.to_owned(),
+                marking_version: self.marking_version,
+                running: false,
+            },
+        );
+        true
+    }
+
+    /// Installs `net` as the next generation of the entry at `entry`, with
+    /// nothing running and every inner net recorded afresh.
+    fn install(&mut self, entry: usize, params: Params, mut net: Net) {
         // A new generation starts from its built marking; whatever the
         // factory did to it on the way is part of that.
         net.drain_events().for_each(drop);
@@ -2148,16 +2289,6 @@ impl Owner {
         loaded.know_all();
         self.loaded = Some(loaded);
         *lock(&self.status) = None;
-        push(
-            out,
-            Notification::Reloaded {
-                generation: self.generation,
-                reason: reason.to_owned(),
-                marking_version: self.marking_version,
-                running: false,
-            },
-        );
-        true
     }
 
     // ----- reads -------------------------------------------------------------
@@ -2609,7 +2740,8 @@ impl Owner {
         let Some(loaded) = &self.loaded else {
             return;
         };
-        if !loaded.running || loaded.in_flight.is_some() {
+        // A hosted net is the host program's to fire, running or not.
+        if self.hosted || !loaded.running || loaded.in_flight.is_some() {
             return;
         }
         let continuous = self.nets[loaded.entry].hosting == Hosting::Continuous;
@@ -2692,10 +2824,26 @@ impl Owner {
         compare_fireable: bool,
         out: &mut Vec<Outgoing>,
     ) -> Flushed {
-        let generation = self.generation;
-        let marking_version = &mut self.marking_version;
         let loaded = self.loaded.as_mut().expect("events need a net");
         let events: Vec<Event> = loaded.net.drain_events().collect();
+        self.tell_events(events, now, flight, compare_fireable, out)
+    }
+
+    /// Writes one notification per event of `events`, a batch drained from
+    /// the net's log, as [`flush_events`](Owner::flush_events) says.
+    fn tell_events(
+        &mut self,
+        events: Vec<Event>,
+        now: SystemTime,
+        flight: Option<&InFlight>,
+        compare_fireable: bool,
+        out: &mut Vec<Outgoing>,
+    ) -> Flushed {
+        let generation = self.generation;
+        let hosted = self.hosted;
+        let host_flights = &mut self.host_flights;
+        let marking_version = &mut self.marking_version;
+        let loaded = self.loaded.as_mut().expect("events need a net");
         let running = loaded.running;
         let inline = flight.is_some_and(|f| f.inline);
         let duration = flight.map_or(0.0, |f| duration_ms(f.started_at, now));
@@ -2865,8 +3013,17 @@ impl Owner {
                 *marking_version = version;
             }
             push(out, notification);
+            if hosted {
+                // Nobody launched this over the wire, so no landing will
+                // log it: the firings of a hosted net are logged here, in
+                // order with the inner ones.
+                loaded.record_host_firing(event, now, host_flights);
+            }
         }
         loaded.reproject(marking_version, &params_changed, &lifted_through, out);
+        // A staged firing the host has in flight is between its `launched`
+        // and its `distributed`: the sets are compared when it lands.
+        let compare_fireable = compare_fireable && host_flights.is_empty();
         if compare_fireable && !events.is_empty() {
             let fireable = fireable_names(&loaded.net, &loaded.names);
             if fireable != loaded.last_fireable {
@@ -2886,6 +3043,110 @@ impl Owner {
             events,
             inner_firings,
         }
+    }
+}
+
+// ----- a net the host program owns ---------------------------------------------
+
+/// What a hosted owner's net is called when something reaches for it.
+const HOSTED: &str = "a hosted owner always holds its net";
+
+impl Owner {
+    /// An owner of `net`, which the host program built and keeps firing:
+    /// what [`Host`](crate::Host) wraps.
+    ///
+    /// The net is loaded from the start, as generation 1, under `name`. The
+    /// wire reads it (`describe` and the reads) and nothing else: every
+    /// other method is `unsupported`, and the owner never fires it. It
+    /// reports `running: true` until [`set_running`](Owner::set_running)
+    /// says otherwise.
+    pub(crate) fn hosted(
+        name: &'static str,
+        net: Net,
+        status: StatusCell,
+        heartbeat: Duration,
+    ) -> Owner {
+        let entry = NetEntry::new(name, |_: &Params| {
+            Err(LoadError::Other("the host program owns this net".into()))
+        })
+        .description("Owned by the program that serves it.");
+        let mut owner = Owner::new(vec![entry], status, heartbeat);
+        owner.hosted = true;
+        owner.install(0, Params::new(), net);
+        owner.loaded.as_mut().expect(HOSTED).running = true;
+        owner.mirror_gauges();
+        owner
+    }
+
+    /// The hosted net, to read.
+    pub(crate) fn hosted_net(&self) -> &Net {
+        &self.loaded.as_ref().expect(HOSTED).net
+    }
+
+    /// The version the hosted net's marking is at.
+    pub(crate) fn marking_version(&self) -> u64 {
+        self.marking_version
+    }
+
+    /// Whether the hosted net is reported as running.
+    pub(crate) fn running(&self) -> bool {
+        self.loaded.as_ref().is_some_and(|l| l.running)
+    }
+
+    /// What every later line says of the hosted net's `running`: whether
+    /// the host program is firing it.
+    pub(crate) fn set_running(&mut self, running: bool) {
+        self.loaded.as_mut().expect(HOSTED).running = running;
+        self.mirror_gauges();
+    }
+
+    /// Hands the hosted net to `change`, then reports whatever it did as
+    /// the lines a step or an inject would have caused: one notification
+    /// per event, the fireable sets that changed, and a log entry and
+    /// progress for every firing.
+    ///
+    /// The fireable sets are compared once no staged firing the host
+    /// launched is still in flight, as a runner compares them at a landing
+    /// and never between a `launched` and its `distributed`.
+    ///
+    /// A call that leaves the net's event log empty costs the closure and
+    /// nothing else.
+    pub(crate) fn host_changes<R>(
+        &mut self,
+        now: SystemTime,
+        change: impl FnOnce(&mut Net) -> R,
+    ) -> (R, Vec<Outgoing>) {
+        let mut out = Vec::new();
+        let loaded = self.loaded.as_mut().expect(HOSTED);
+        let result = change(&mut loaded.net);
+        let events: Vec<Event> = loaded.net.drain_events().collect();
+        if events.is_empty() {
+            return (result, out);
+        }
+        // A token the host put in or a firing produced may carry nets
+        // nobody has seen: their fireable sets are taken silently (§7.2).
+        loaded.know_new();
+        let flushed = self.tell_events(events, now, None, true, &mut out);
+        let loaded = self.loaded.as_mut().expect(HOSTED);
+        // The outer net counts each firing inside its tokens too, under its
+        // path without the outer net's name, as a `step` that made it does.
+        for firing in flushed.inner_firings.iter().filter(|f| !f.failed) {
+            let below = firing
+                .path
+                .strip_prefix(loaded.name)
+                .and_then(|rest| rest.strip_prefix('/'))
+                .unwrap_or(&firing.path);
+            loaded
+                .progress
+                .fired_inside(&format!("{below}/{}", firing.transition), now);
+        }
+        // While a staged firing's body holds tokens, the nets inside them
+        // keep their records, as they do under `launch`.
+        if self.host_flights.is_empty() {
+            loaded.prune();
+        }
+        self.mirror_gauges();
+        (result, out)
     }
 }
 

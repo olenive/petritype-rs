@@ -65,6 +65,22 @@ protocol: it reads one JSON request per line on stdin, such as
 `{"id":"1","method":"load","params":{"net":"parcel-fleet","params":{"trucks":3}}}`, and
 writes its answers and notifications on stdout.
 
+## A net inside your own program
+
+A program that builds a net and fires it from its own code, a game or a simulation, can let a viewer watch it
+while it runs. It gives the net to a `HostServer` and reaches it through the server from then on:
+
+```rust
+let mut server = petritype_runner::HostServer::bind("127.0.0.1:7878", "my-net", net)?;
+// On every tick of the program:
+server.change(|net| net.step())?; // fire, put tokens in, anything a `&mut Net` allows
+server.serve(); // let viewers in and answer them; never blocks
+```
+
+A viewer connects to the port and speaks the net protocol line by line, starting with `get_state`. It reads the
+net, inner nets included, and is told of every change; it cannot load, fire or change anything. The Bevy viewer
+attaches with `cargo run --example remote -- --attach 127.0.0.1:7878` in `petritype-bevy`.
+
 ## Quickstart
 
 ```rust

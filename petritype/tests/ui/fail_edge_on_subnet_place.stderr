@@ -1,0 +1,76 @@
+error[E0308]: mismatched types
+  --> tests/ui/fail_edge_on_subnet_place.rs:12:35
+   |
+12 |     b.transition("Rob", (TakeEdge(level),), (inbox,), |n: u32| (n,));
+   |                          -------- ^^^^^ expected `PlaceRef<_>`, found `SubnetRef`
+   |                          |
+   |                          arguments to this struct are incorrect
+   |
+   = note: expected struct `PlaceRef<_>`
+              found struct `SubnetRef`
+note: tuple struct defined here
+  --> src/edge.rs
+   |
+   | pub struct TakeEdge<T>(
+   |            ^^^^^^^^
+
+error[E0277]: a transition's outputs must be a tuple of place handles
+  --> tests/ui/fail_edge_on_subnet_place.rs:13:47
+   |
+13 |     b.transition("Stuff", (TakeEdge(inbox),), (level,), |n: u32| (n,));
+   |       ----------                              ^^^^^^^^ not a tuple of place handles
+   |       |
+   |       required by a bound introduced by this call
+   |
+   = help: the trait `OutputPlaces` is not implemented for `(SubnetRef,)`
+   = note: write `(heavy, light, count)`, or `()` for a transition that produces nothing; a single output needs the trailing comma: `(count,)`
+   = note: or bind them by name: derive `Outputs` on the struct the body returns and pass the `...Edges` struct it generates, whole, as the outputs
+   = help: the following other types implement trait `OutputPlaces`:
+             (T₁, T₂, …, Tₙ) up to tuples of arity 16
+note: required by a bound in `NetBuilder::transition`
+  --> src/builder.rs
+   |
+   | impl NetBuilder {
+...
+   |     pub fn transition<Edges, Outputs, Body, Marker>(
+...
+   |         Outputs: OutputPlaces,
+   |                  ^^^^^^^^^^^^ required by this bound in `NetBuilder::transition`
+
+error[E0277]: a transition body must return its outputs, or a `Result` of them
+  --> tests/ui/fail_edge_on_subnet_place.rs:13:57
+   |
+13 |     b.transition("Stuff", (TakeEdge(inbox),), (level,), |n: u32| (n,));
+   |       ----------                                        ^^^^^^^^^^^^^ `(u32,)` is not a transition outcome
+   |       |
+   |       required by a bound introduced by this call
+   |
+   = help: the trait `IntoOutcome<(SubnetRef,), _>` is not implemented for `(u32,)`
+   = note: positional: outputs `(SubnetRef,)` want a tuple of that many slots, where slot i is `T`, `Option<T>` or `Vec<T>` for the type of output place i, and `()` for no outputs at all
+   = note: named: the struct whose `#[derive(Outputs)]` generated the outputs' `...Edges` struct, each field going to the output of the same name
+   = note: routed: a value that is not a tuple, whose every payload goes to the output place that holds its type. Derive `Routed` on the enum or struct you return
+   = note: distribution: a `Distribution` of (place, token) pairs, built with `Distribution::new().to(place, token)`, for choosing between output places of the same type
+   = note: any of these may be wrapped in `Result<_, E>` where `E: std::error::Error + Send + Sync + 'static`; a `Result` always means failure, never routing
+help: the following other types implement trait `IntoOutcome<Outputs, Marker>`
+  --> src/body.rs
+   |
+   | / impl<Outputs, O, E, M> IntoOutcome<Outputs, marker::Failing<M>> for Result<O, E>
+   | | where
+   | |     O: IntoOutcome<Outputs, M>,
+   | |     E: Error + Send + Sync + 'static,
+   | |_____________________________________^ `Result<O, E>` implements `IntoOutcome<Outputs, Failing<M>>`
+   |
+  ::: src/distribution.rs
+   |
+   |   impl<Outputs: OutputPlaces> IntoOutcome<Outputs, marker::Distributed> for Distribution {}
+   |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `petritype::Distribution` implements `IntoOutcome<Outputs, petritype::marker::Distributed>`
+   = note: required for `{closure@$DIR/tests/ui/fail_edge_on_subnet_place.rs:13:57: 13:65}` to implement `TransitionBody<(TakeEdge<u32>,), (SubnetRef,), (_, (u32,))>`
+note: required by a bound in `NetBuilder::transition`
+  --> src/builder.rs
+   |
+   | impl NetBuilder {
+...
+   |     pub fn transition<Edges, Outputs, Body, Marker>(
+...
+   |         Body: TransitionBody<Edges, Outputs, Marker>,
+   |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `NetBuilder::transition`

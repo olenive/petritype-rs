@@ -113,12 +113,16 @@ impl Net {
     ///
     /// # Errors
     ///
+    /// [`NetError::HoldsSubnet`] for a net with a
+    /// [subnet place](crate::NetBuilder::subnet_place), whose subnet a
+    /// marking does not carry in this version.
     /// [`NetError::NotSerializable`] naming the first place, in id order,
     /// that was not marked (every place is checked before any token is
     /// encoded), and [`NetError::CannotSerialize`] for a token whose own
     /// `Serialize` refused, such as one holding a net that no template
     /// built.
     pub fn export_marking(&self) -> Result<Marking, NetError> {
+        self.no_subnets()?;
         let mut encoders = Vec::with_capacity(self.places.len());
         for (index, slot) in self.places.iter().enumerate() {
             let to_json = slot.meta.to_json.ok_or_else(|| NetError::NotSerializable {
@@ -191,6 +195,8 @@ impl Net {
     ///
     /// Checked in this order, and all before anything changes, so a
     /// rejected import leaves the net untouched and silent:
+    /// [`NetError::HoldsSubnet`](crate::NetError::HoldsSubnet) for a net
+    /// with a [subnet place](crate::NetBuilder::subnet_place);
     /// [`CommandError::NoSuchPlaceName`] for a place the marking names and
     /// this net does not have; [`CommandError::NotSerializable`] for the
     /// first place of this net, in id order, that was not marked
@@ -199,6 +205,7 @@ impl Net {
     /// [`CommandError::InvalidToken`] for the first token that does not
     /// decode as its place's type.
     pub fn import_marking(&mut self, marking: &Marking) -> Result<(), CommandError> {
+        self.no_subnets()?;
         for (name, _) in marking.iter() {
             if self.place_named(name).is_none() {
                 return Err(CommandError::NoSuchPlaceName {

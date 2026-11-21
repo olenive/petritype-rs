@@ -251,6 +251,76 @@ impl<T> Hash for PlaceRef<T> {
     }
 }
 
+/// A handle to a subnet place, returned by
+/// [`NetBuilder::subnet_place`](crate::NetBuilder::subnet_place).
+///
+/// A subnet place holds a net of its own, a *subnet*, and no tokens, so it
+/// is not a [`PlaceRef`]: no edge can name it, and that is a compile error.
+/// The net around it reaches the subnet's ports, one typed handle each,
+/// through [`NetBuilder::port_of`](crate::NetBuilder::port_of), and sets the
+/// place's [`Stepping`](crate::Stepping) rule with
+/// [`NetBuilder::stepping`](crate::NetBuilder::stepping), which takes this
+/// handle as it takes a `PlaceRef`. Like a `PlaceRef` it carries the
+/// [`NetId`] of the net that handed it out.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SubnetRef {
+    pub(crate) place: PlaceId,
+    pub(crate) net: NetId,
+}
+
+impl SubnetRef {
+    /// Wraps a raw id. Only the builder knows that `place` really is a
+    /// subnet place of the net `net`.
+    pub(crate) fn new(net: NetId, place: PlaceId) -> Self {
+        SubnetRef { place, net }
+    }
+
+    /// The erased id of the subnet place, for the read API
+    /// ([`Net::subnet`](crate::Net::subnet)), events and
+    /// [`Net::set_stepping`](crate::Net::set_stepping).
+    pub fn id(self) -> PlaceId {
+        self.place
+    }
+
+    /// The net this handle belongs to, as in [`Net::id`](crate::Net::id).
+    pub fn net(self) -> NetId {
+        self.net
+    }
+}
+
+impl fmt::Debug for SubnetRef {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("SubnetRef")
+            .field(&self.place)
+            .field(&self.net)
+            .finish()
+    }
+}
+
+/// A handle to a place of a net being built, whatever it holds: a
+/// [`PlaceRef`] or a [`SubnetRef`]. It is what
+/// [`NetBuilder::stepping`](crate::NetBuilder::stepping) takes, since both a
+/// place whose tokens carry nets and a subnet place have a rule.
+///
+/// Sealed: the two handles are the only implementations.
+pub trait PlaceHandle: crate::sealed::PlaceHandleSealed {}
+
+impl<T> crate::sealed::PlaceHandleSealed for PlaceRef<T> {
+    fn handle(&self) -> (PlaceId, NetId) {
+        (self.place, self.net)
+    }
+}
+
+impl<T> PlaceHandle for PlaceRef<T> {}
+
+impl crate::sealed::PlaceHandleSealed for SubnetRef {
+    fn handle(&self) -> (PlaceId, NetId) {
+        (self.place, self.net)
+    }
+}
+
+impl PlaceHandle for SubnetRef {}
+
 /// What a method says when it is handed a place from another net.
 ///
 /// Written once because both the builder and the net say it, and because the

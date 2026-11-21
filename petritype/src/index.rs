@@ -65,9 +65,9 @@ use std::fmt;
 
 use crate::ids::{PlaceId, TokenId};
 use crate::keys::{Filter, KeyValue, Keys, Match, Resolved, keys_or_none, match_of};
-use crate::net::Net;
+use crate::net::{Net, slot_of};
 use crate::param::ParamSlot;
-use crate::place::{PlaceMeta, PlaceSlot};
+use crate::place::{PlaceMeta, PlaceSlot, Window};
 
 /// The tokens holding one value of one key, in place order then id order.
 type Postings = BTreeSet<(PlaceId, TokenId)>;
@@ -203,6 +203,63 @@ impl KeyIndex {
     pub(crate) fn clear(&mut self) {
         self.postings.clear();
         self.unordered.clear();
+    }
+
+    /// The tokens that could pass `resolved`, in place order and then id
+    /// order: those holding one of the values of the clause whose values the
+    /// fewest tokens hold, in `only` alone if it is given. Empty when none
+    /// could, as for a clause whose key, or every one of whose values, no
+    /// token holds. A value a clause names twice is counted once.
+    fn candidates(
+        &self,
+        resolved: &Resolved<'_>,
+        only: Option<PlaceId>,
+    ) -> Vec<(PlaceId, TokenId)> {
+        let within = |postings: &Postings| match only {
+            None => postings.len(),
+            Some(place) => postings
+                .range((place, TokenId(0))..=(place, TokenId(u64::MAX)))
+                .count(),
+        };
+        let mut best: Option<(usize, Vec<&Postings>)> = None;
+        for clause in &resolved.clauses {
+            let Some(values) = self.postings.get(clause.key) else {
+                return Vec::new();
+            };
+            let mut seen: Vec<&KeyValue> = Vec::new();
+            let mut sets = Vec::new();
+            for value in clause.values() {
+                if seen.contains(&value) {
+                    continue;
+                }
+                seen.push(value);
+                if let Some(postings) = values.get(value) {
+                    sets.push(postings);
+                }
+            }
+            let held: usize = sets.iter().map(|postings| within(postings)).sum();
+            if held == 0 {
+                return Vec::new();
+            }
+            if best.as_ref().is_none_or(|(fewest, _)| held < *fewest) {
+                best = Some((held, sets));
+            }
+        }
+        let Some((held, sets)) = best else {
+            return Vec::new();
+        };
+        let mut candidates: Vec<(PlaceId, TokenId)> = Vec::with_capacity(held);
+        for postings in sets {
+            match only {
+                None => candidates.extend(postings.iter().copied()),
+                Some(place) => candidates.extend(
+                    postings
+                        .range((place, TokenId(0))..=(place, TokenId(u64::MAX)))
+                        .copied(),
+                ),
+            }
+        }
+        candidates
     }
 
     /// Removes one token from the postings of each of these values.
@@ -348,11 +405,29 @@ pub(crate) fn first_match(
     filter: &Filter,
 ) -> Option<(usize, TokenId)> {
     let slot = places.get(place.0 as usize)?;
+    if let Some(window) = slot.meta.window {
+        return first_match_in_port(places, params, window, filter);
+    }
     if filter.clauses.is_empty() {
         return slot.tokens.front().map(|(token, _)| (0, *token));
     }
     slot.meta.keys.as_ref()?;
     index.first_in(slot, place, &filter.resolve_in(params))
+}
+
+/// [`first_match`] for a window. Its tokens are its port's, indexed by the
+/// subnet, so the question is the subnet's, about the port, with this net's
+/// parameters, since the filter is this net's. Kept out of line, so that a
+/// net without subnet places asks as it always has.
+#[cold]
+fn first_match_in_port(
+    places: &[PlaceSlot],
+    params: &[ParamSlot],
+    window: Window,
+    filter: &Filter,
+) -> Option<(usize, TokenId)> {
+    let subnet = &places.get(window.subnet.0 as usize)?.subnet.as_deref()?.net;
+    first_match(&subnet.places, params, &subnet.index, window.port, filter)
 }
 
 /// [`first_match`] by reading the place front to back and extracting each
@@ -364,7 +439,7 @@ pub(crate) fn first_match_scan(
     place: PlaceId,
     filter: &Filter,
 ) -> Option<(usize, TokenId)> {
-    let slot = places.get(place.0 as usize)?;
+    let slot = slot_of(places, place)?;
     if !filter.clauses.is_empty() && slot.meta.keys.is_none() {
         return None;
     }
@@ -431,6 +506,10 @@ impl Net {
                 if !filter.covers(place, &slot.meta.name) {
                     continue;
                 }
+                // A window's tokens are its port's.
+                let Some(slot) = slot_of(&self.places, place) else {
+                    continue;
+                };
                 for (token, value) in &slot.tokens {
                     found(slot, place, *token, &**value, None);
                 }
@@ -438,39 +517,23 @@ impl Net {
             return;
         }
 
-        // The candidates: the tokens holding one of the values of the clause
-        // whose values the fewest tokens hold. A value a clause names twice
-        // is counted once, and a key no token holds ends the query at once.
-        let mut best: Option<(usize, Vec<&Postings>)> = None;
-        for clause in &resolved.clauses {
-            let Some(values) = self.index.postings.get(clause.key) else {
-                return;
+        // The candidates of this net's own places, from its index, and of
+        // each window the filter covers, from its subnet's index about the
+        // port, under the window's id here.
+        let mut candidates = self.index.candidates(&resolved, None);
+        for (position, slot) in self.places.iter().enumerate() {
+            let Some(window) = slot.meta.window else {
+                continue;
             };
-            let mut seen: Vec<&KeyValue> = Vec::new();
-            let mut sets = Vec::new();
-            for value in clause.values() {
-                if seen.contains(&value) {
-                    continue;
-                }
-                seen.push(value);
-                if let Some(postings) = values.get(value) {
-                    sets.push(postings);
-                }
+            let place = PlaceId(position as u32);
+            if !filter.covers(place, &slot.meta.name) {
+                continue;
             }
-            let held: usize = sets.iter().map(|postings| postings.len()).sum();
-            if held == 0 {
-                return;
-            }
-            if best.as_ref().is_none_or(|(fewest, _)| held < *fewest) {
-                best = Some((held, sets));
-            }
-        }
-        let Some((held, sets)) = best else {
-            return;
-        };
-        let mut candidates: Vec<(PlaceId, TokenId)> = Vec::with_capacity(held);
-        for postings in sets {
-            candidates.extend(postings.iter().copied());
+            let Some(subnet) = self.places[window.subnet.0 as usize].subnet.as_deref() else {
+                continue;
+            };
+            let found = subnet.net.index.candidates(&resolved, Some(window.port));
+            candidates.extend(found.into_iter().map(|(_, token)| (place, token)));
         }
         // One token has one value per key, so the sets are disjoint, and
         // sorting puts them in place order then id order.
@@ -478,17 +541,33 @@ impl Net {
 
         for group in candidates.chunk_by(|a, b| a.0 == b.0) {
             let place = group[0].0;
-            let slot = &self.places[place.0 as usize];
-            if !filter.covers(place, &slot.meta.name) {
+            let own = &self.places[place.0 as usize];
+            if !filter.covers(place, &own.meta.name) {
                 continue;
             }
+            // Where the tokens are, and whether their queue is in id order:
+            // a window's answer is its port's, in the subnet.
+            let (slot, unordered) = match own.meta.window {
+                None => (own, self.index.unordered.contains(&place)),
+                Some(window) => {
+                    let Some(subnet) = self.places[window.subnet.0 as usize].subnet.as_deref()
+                    else {
+                        continue;
+                    };
+                    let subnet = &subnet.net;
+                    (
+                        &subnet.places[window.port.0 as usize],
+                        subnet.index.unordered.contains(&window.port),
+                    )
+                }
+            };
             let mut keep = |token: TokenId, value: &dyn Any| {
                 let keys = keys_or_none(slot, value);
                 if resolved.accepts(&keys) {
                     found(slot, place, token, value, Some(keys));
                 }
             };
-            if self.index.unordered.contains(&place) {
+            if unordered {
                 // Queue order is not id order here: one pass, in queue order.
                 for (token, value) in &slot.tokens {
                     if group
@@ -517,9 +596,6 @@ impl Net {
     /// the places asked about, ordered by place and then by where it stands
     /// in its place.
     pub(crate) fn distinct_indexed(&self, key: &str, only: Option<&[PlaceId]>) -> Vec<KeyValue> {
-        let Some(values) = self.index.postings.get(key) else {
-            return Vec::new();
-        };
         // The places to look in, in place order, or every place.
         let only: Option<Vec<PlaceId>> = only.map(|only| {
             let mut only = only.to_vec();
@@ -527,8 +603,39 @@ impl Net {
             only.dedup();
             only
         });
-        let mut firsts: Vec<((PlaceId, u64), &KeyValue)> = Vec::with_capacity(values.len());
-        for (value, postings) in values {
+        let values = self.index.postings.get(key);
+        let mut firsts: Vec<((PlaceId, u64), &KeyValue)> =
+            Vec::with_capacity(values.map_or(0, HashMap::len));
+        // Each window's values, from its subnet's index about the port,
+        // first: a value may then be found in this net's places too, and
+        // only its earliest place counts.
+        let mut windows = false;
+        for (position, slot) in self.places.iter().enumerate() {
+            let Some(window) = slot.meta.window else {
+                continue;
+            };
+            let place = PlaceId(position as u32);
+            if only
+                .as_ref()
+                .is_some_and(|only| only.binary_search(&place).is_err())
+            {
+                continue;
+            }
+            let Some(subnet) = self.places[window.subnet.0 as usize].subnet.as_deref() else {
+                continue;
+            };
+            let Some(held) = subnet.net.index.postings.get(key) else {
+                continue;
+            };
+            for (value, postings) in held {
+                let rank = subnet.net.earliest(postings, window.port);
+                if rank != u64::MAX {
+                    firsts.push(((place, rank), value));
+                    windows = true;
+                }
+            }
+        }
+        for (value, postings) in values.into_iter().flatten() {
             let first = match &only {
                 None => postings
                     .first()
@@ -543,7 +650,15 @@ impl Net {
             }
         }
         firsts.sort_unstable_by_key(|(first, _)| *first);
-        firsts.into_iter().map(|(_, value)| value.clone()).collect()
+        if !windows {
+            return firsts.into_iter().map(|(_, value)| value.clone()).collect();
+        }
+        let mut seen: HashSet<&KeyValue> = HashSet::with_capacity(firsts.len());
+        firsts
+            .into_iter()
+            .filter(|(_, value)| seen.insert(*value))
+            .map(|(_, value)| value.clone())
+            .collect()
     }
 
     /// Where the first of these tokens stands in `place`, as a number that
@@ -953,6 +1068,113 @@ mod tests {
         net.nested_scope(desk.id(), token, |nets| nets[0].1.put(todo, 9));
         net.index_agrees().unwrap();
         assert_eq!(todo_is(&net, 2), 1);
+    }
+
+    /// A port's tokens are indexed by its subnet, under the port's id
+    /// there, and the outer net's index holds nothing for them. Both stay
+    /// right as tokens cross the border, change in the port, come back from
+    /// a failed firing and arrive from outside, and the outer net's queries
+    /// read the port as a scan of it would.
+    #[test]
+    fn the_index_of_a_port_is_its_subnets_and_both_stay_right() {
+        let mut b = NetBuilder::new();
+        let field = b.place::<Animal>("Field");
+        let barn = b.place::<Animal>("Barn");
+        declare_keys(&mut b, field);
+        declare_keys(&mut b, barn);
+        b.port(field);
+        b.seed(
+            field,
+            [animal("Hen", "Bird", 2), animal("Cow", "Mammal", 4)],
+        );
+        b.transition(
+            "Graze",
+            (TakeWhereEdge(
+                field,
+                Filter::new().key_in("class", ["Mammal"]),
+            ),),
+            (barn,),
+            |a: Animal| (a,),
+        );
+        let level = b.build().expect("a level");
+
+        let mut b = NetBuilder::new();
+        let pen = b.place::<Animal>("Pen");
+        declare_keys(&mut b, pen);
+        let farm = b.subnet_place("Farm", level);
+        let w_field = b.port_of::<Animal>(farm, "Field");
+        b.seed(pen, [animal("Duck", "Bird", 2), animal("Ram", "Mammal", 4)]);
+        b.transition("Let In", (TakeEdge(pen),), (w_field,), |a: Animal| (a,));
+        let birds = Filter::new().key_in("class", ["Bird"]);
+        b.transition(
+            "Pick",
+            (TakeWhereEdge(w_field, birds.clone()),),
+            (pen,),
+            |a: Animal| (a,),
+        );
+        b.transition(
+            "Shear",
+            (MutateWhereEdge(
+                w_field,
+                Filter::new().key_in("class", ["Mammal"]),
+            ),),
+            (),
+            |a: &mut Animal| {
+                a.name.push('~');
+                a.legs -= 1;
+            },
+        );
+        b.transition(
+            "Drop a bird",
+            (TakeWhereEdge(w_field, birds),),
+            (pen,),
+            |_: Animal| -> Result<(Animal,), Broken> { Err(Broken) },
+        )
+        .restore_tokens_on_failure();
+        let mut net = b.build().expect("a farm around a field");
+        let all: Vec<_> = net.transitions().map(|(id, _)| id).collect();
+        for transition in all {
+            net.disable(transition).unwrap();
+        }
+        let both = |net: &Net| {
+            check(net);
+            net.subnet(farm.id()).unwrap().index_agrees().unwrap();
+        };
+        both(&net);
+
+        fire(&mut net, "Let In").unwrap();
+        both(&net);
+        fire(&mut net, "Pick").unwrap();
+        both(&net);
+        fire(&mut net, "Shear").unwrap();
+        both(&net);
+        fire(&mut net, "Drop a bird").expect_err("fails, the hen goes back");
+        both(&net);
+        let fox = net.put(w_field, animal("Fox", "Mammal", 4));
+        both(&net);
+        net.replace(w_field, fox, animal("Vixen", "Mammal", 3))
+            .unwrap();
+        both(&net);
+        net.subnet_scope(farm.id(), |level| level.step().unwrap())
+            .unwrap()
+            .expect("Graze takes a mammal into the barn");
+        both(&net);
+        net.remove(w_field.id(), fox).unwrap();
+        both(&net);
+        let pick = net.transition_named("Pick").unwrap();
+        net.enable(pick).unwrap();
+        let firing = net.launch(pick).unwrap();
+        both(&net);
+        net.distribute(firing.run()).unwrap();
+        both(&net);
+        net.set_tokens(w_field, [animal("Yak", "Mammal", 4)]);
+        both(&net);
+        assert!(
+            net.index.postings.values().all(|values| values
+                .values()
+                .all(|postings| postings.iter().all(|(place, _)| *place == pen.id()))),
+            "the outer index holds the pen alone"
+        );
     }
 
     #[cfg(feature = "serde")]

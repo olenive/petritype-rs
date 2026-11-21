@@ -750,7 +750,7 @@ pub(crate) fn keys_in(
     place: PlaceId,
     token: TokenId,
 ) -> Option<Keys> {
-    let slot = places.get(place.0 as usize)?.borrow();
+    let slot = crate::net::slot_of(places, place)?;
     let keys = slot.meta.keys.as_ref()?;
     let index = slot.position(token)?;
     Some(keys.keys(&*slot.tokens[index].1))
@@ -838,11 +838,14 @@ fn scan(
     check_places(places, filter)?;
     let resolved = filter.resolve_in(params);
     for (index, slot) in places.iter().enumerate() {
-        let slot = slot.borrow();
         let place = PlaceId(index as u32);
-        if !filter.covers(place, &slot.meta.name) {
+        if !filter.covers(place, &slot.borrow().meta.name) {
             continue;
         }
+        // A window's tokens are its port's.
+        let Some(slot) = crate::net::slot_of(places, place) else {
+            continue;
+        };
         // A clause asks for a key, which a place without keys never has.
         if !filter.clauses.is_empty() && slot.meta.keys.is_none() {
             continue;
@@ -864,11 +867,15 @@ pub(crate) fn distinct_scan(
     only: Option<&[PlaceId]>,
 ) -> Vec<KeyValue> {
     let mut seen: Vec<KeyValue> = Vec::new();
-    for (index, slot) in places.iter().enumerate() {
-        let slot = slot.borrow();
-        if only.is_some_and(|only| !only.contains(&PlaceId(index as u32))) {
+    for index in 0..places.len() {
+        let place = PlaceId(index as u32);
+        if only.is_some_and(|only| !only.contains(&place)) {
             continue;
         }
+        // A window's tokens are its port's.
+        let Some(slot) = crate::net::slot_of(places, place) else {
+            continue;
+        };
         let Some(keys) = &slot.meta.keys else {
             continue;
         };
@@ -893,7 +900,7 @@ pub(crate) fn matches_in(
     place: PlaceId,
     token: TokenId,
 ) -> bool {
-    let Some(slot) = places.get(place.0 as usize).map(Borrow::borrow) else {
+    let Some(slot) = crate::net::slot_of(places, place) else {
         return false;
     };
     let Some(index) = slot.position(token) else {

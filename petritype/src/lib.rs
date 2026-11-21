@@ -408,7 +408,7 @@ pub use error::TemplateError;
 pub use error::{BodyPanicked, BuildError, CommandError, FiringFailed, NetError, PressError};
 pub use event::Event;
 pub use firing::{Completed, Firing, Selector, TieBreak};
-pub use ids::{NetId, PlaceId, PlaceRef, TokenId, TransitionId};
+pub use ids::{NetId, PlaceHandle, PlaceId, PlaceRef, SubnetRef, TokenId, TransitionId};
 pub use keys::{Clause, Filter, KeyValue, Keys, Match};
 #[cfg(feature = "serde")]
 pub use marking::Marking;

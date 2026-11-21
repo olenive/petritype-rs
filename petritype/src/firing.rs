@@ -98,9 +98,9 @@ use crate::ids::{NetId, PlaceId, TokenId, TransitionId};
 use crate::index::{KeyIndex, first_match};
 use crate::keys::KeyValue;
 use crate::nested::lift_from;
-use crate::net::Net;
+use crate::net::{Net, slot_of};
 use crate::param::{ParamSlot, param_slot};
-use crate::place::{ErasedToken, PlaceMeta, PlaceSlot};
+use crate::place::{ErasedToken, PlaceMeta, PlaceSlot, Window};
 use crate::transition::{ArgSource, TransitionSlot};
 
 /// Why an input place is never empty once stage one starts, for an edge
@@ -803,9 +803,9 @@ impl Net {
                 // body could change the token, never the place around it,
                 // so each token is still where it was lent.
                 for (((place, token), lent), before) in mutated.iter().zip(&lent).zip(before) {
-                    let slot = &places[place.0 as usize];
+                    let (slot, key_index, at) = resolve_mut(places, key_index, *place);
                     let (_, value) = &slot.tokens[lent.at];
-                    key_index.changed(&slot.meta, *place, *token, before, &**value);
+                    key_index.changed(&slot.meta, at, *token, before, &**value);
                 }
                 Stage::Ran { body, outcome }
             }
@@ -1064,10 +1064,12 @@ impl Net {
             return false;
         };
         for (place, token, value) in restore.into_iter().rev() {
-            let slot = &mut self.places[place.0 as usize];
+            // A token taken from a port goes back into the port.
+            let (holder, at) = self.holder_mut(place);
+            let slot = &mut holder.places[at.0 as usize];
             let front = slot.tokens.front().map(|(front, _)| *front);
-            self.index.pushed_front(place, token, front);
-            self.index.enter(&slot.meta, place, token, &*value);
+            holder.index.pushed_front(at, token, front);
+            holder.index.enter(&slot.meta, at, token, &*value);
             slot.tokens.push_front((token, value));
         }
         true
@@ -1451,6 +1453,11 @@ struct Lent {
     arg: usize,
     /// The token's position in its place's queue.
     at: usize,
+    /// The index of this net's slot that holds the token: its place's own,
+    /// or, for a window, its subnet place's.
+    holder: usize,
+    /// For a window, the port's index in that slot's subnet.
+    port: Option<usize>,
 }
 
 /// Stage one: one argument per input, in declaration order, taking out of the
@@ -1531,7 +1538,6 @@ fn consume(
             }
         };
         let (place, kind) = transition.inputs[edge];
-        let position = place.0 as usize;
         // The token a keyed edge chooses, with where it stands, asked before
         // anything of its place has moved.
         let chosen = |places: &[PlaceSlot], index: &KeyIndex| {
@@ -1546,11 +1552,13 @@ fn consume(
                     EdgeKind::TakeWhere => chosen(places, index).0,
                     _ => 0,
                 };
-                let slot = &mut places[position];
+                // The holder's slot and index, and the place's id there: a
+                // window's are its port's. What is reported is this net's.
+                let (slot, index, here) = resolve_mut(places, index, place);
                 let (token, mut value) = slot.tokens.remove(at).expect(NON_EMPTY);
-                index.leave(&slot.meta, place, token, &*value);
+                index.leave(&slot.meta, here, token, &*value);
                 if slot.tokens.is_empty() {
-                    index.emptied(place);
+                    index.emptied(here);
                 }
                 if let Some(restore) = restore.as_deref_mut() {
                     restore.push((place, token, restore_clone(&slot.meta, &value)));
@@ -1564,11 +1572,11 @@ fn consume(
             // A drain is a take-all that its place cannot hold back, so an
             // empty place gives it an empty batch through the same code.
             EdgeKind::TakeAll | EdgeKind::Drain => {
-                let slot = &mut places[position];
+                let (slot, index, here) = resolve_mut(places, index, place);
                 let nested = slot.meta.nested;
                 let mut values = Vec::with_capacity(slot.tokens.len());
                 for (token, mut value) in slot.tokens.drain(..) {
-                    index.leave(&slot.meta, place, token, &*value);
+                    index.leave(&slot.meta, here, token, &*value);
                     if let Some(restore) = restore.as_deref_mut() {
                         restore.push((place, token, restore_clone(&slot.meta, &value)));
                     }
@@ -1578,11 +1586,11 @@ fn consume(
                     consumed.push((place, token));
                     values.push(value);
                 }
-                index.emptied(place);
+                index.emptied(here);
                 args.push(ErasedInput::Tokens(values));
             }
             EdgeKind::Snapshot => {
-                let slot = &places[position];
+                let slot = slot_of(places, place).expect(NON_EMPTY);
                 let clone = slot
                     .meta
                     .clone
@@ -1593,7 +1601,7 @@ fn consume(
                 args.push(ErasedInput::Token(clone(&**value)));
             }
             EdgeKind::Survey => {
-                let slot = &places[position];
+                let slot = slot_of(places, place).expect(NON_EMPTY);
                 let clone = slot
                     .meta
                     .clone
@@ -1610,12 +1618,21 @@ fn consume(
             EdgeKind::Mutate | EdgeKind::MutateWhere => {
                 let (at, token) = match kind {
                     EdgeKind::MutateWhere => chosen(places, index),
-                    _ => (0, places[position].tokens.front().expect(NON_EMPTY).0),
+                    _ => {
+                        let slot = slot_of(places, place).expect(NON_EMPTY);
+                        (0, slot.tokens.front().expect(NON_EMPTY).0)
+                    }
                 };
                 mutated.push((place, token));
+                let (holder, port) = match places[place.0 as usize].meta.window {
+                    None => (place.0 as usize, None),
+                    Some(window) => (window.subnet.0 as usize, Some(window.port.0 as usize)),
+                };
                 lent.push(Lent {
                     arg: args.len(),
                     at,
+                    holder,
+                    port,
                 });
                 // Overwritten by `borrow_mutated`, which is the only caller
                 // allowed to hold the borrow; a body never sees this.
@@ -1639,11 +1656,48 @@ fn keys_before(
         .iter()
         .zip(lent)
         .map(|((place, _), lent)| {
-            let slot = &places[place.0 as usize];
+            let slot = slot_of(places, *place).expect(NON_EMPTY);
             let (_, value) = &slot.tokens[lent.at];
             KeyIndex::before(&slot.meta, &**value)
         })
         .collect()
+}
+
+/// The slot that holds a place's tokens, the key index that holds their
+/// entries, and the place's id there: the place's own and this net's index,
+/// or, for a window, its port's slot, index and id in the subnet.
+///
+/// The mutable half of [`slot_of`], over the places and the index alone, as
+/// [`consume`] needs them.
+#[inline]
+fn resolve_mut<'a>(
+    places: &'a mut [PlaceSlot],
+    index: &'a mut KeyIndex,
+    place: PlaceId,
+) -> (&'a mut PlaceSlot, &'a mut KeyIndex, PlaceId) {
+    let at = place.0 as usize;
+    match places[at].meta.window {
+        None => (&mut places[at], index, place),
+        Some(window) => resolve_port(places, window),
+    }
+}
+
+/// [`resolve_mut`]'s other branch, for a window, kept out of line.
+#[cold]
+fn resolve_port(
+    places: &mut [PlaceSlot],
+    window: Window,
+) -> (&mut PlaceSlot, &mut KeyIndex, PlaceId) {
+    let subnet = &mut places[window.subnet.0 as usize]
+        .subnet
+        .as_deref_mut()
+        .expect("a window's subnet place holds its subnet")
+        .net;
+    (
+        &mut subnet.places[window.port.0 as usize],
+        &mut subnet.index,
+        window.port,
+    )
 }
 
 /// The clone a restoring transition takes of one token it consumes, with that
@@ -1711,18 +1765,33 @@ fn borrow_mutated<'a>(
     // `slice::get_disjoint_mut` wants its indices as a fixed-size array and a
     // transition's mutating edges are only counted at run time, so the same
     // job is done with `iter_mut`: its items borrow the slice rather than the
-    // iterator, so every borrow this pass takes may be alive at once. That
+    // iterator, so every borrow this pass takes may be alive at once, a
+    // subnet's ports included, through the subnet's own `iter_mut`. That
     // they are disjoint is `BuildError::DuplicateInputPlace`'s doing: no two
-    // input edges of one transition name the same place.
+    // input edges of one transition name the same place, and a port has one
+    // window.
     for (index, slot) in places.iter_mut().enumerate() {
-        let Some((_, lent)) = mutated
+        let PlaceSlot { tokens, subnet, .. } = slot;
+        if let Some(subnet) = subnet.as_deref_mut() {
+            for (port, slot) in subnet.net.places.iter_mut().enumerate() {
+                let Some(lent) = lent
+                    .iter()
+                    .find(|lent| lent.holder == index && lent.port == Some(port))
+                else {
+                    continue;
+                };
+                let (_, value) = slot.tokens.get_mut(lent.at).expect(NON_EMPTY);
+                args[lent.arg] = ErasedInput::Borrowed(value);
+            }
+            continue;
+        }
+        let Some(lent) = lent
             .iter()
-            .zip(lent)
-            .find(|((place, _), _)| place.0 as usize == index)
+            .find(|lent| lent.holder == index && lent.port.is_none())
         else {
             continue;
         };
-        let (_, value) = slot.tokens.get_mut(lent.at).expect(NON_EMPTY);
+        let (_, value) = tokens.get_mut(lent.at).expect(NON_EMPTY);
         args[lent.arg] = ErasedInput::Borrowed(value);
     }
 

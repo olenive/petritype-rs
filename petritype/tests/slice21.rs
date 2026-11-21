@@ -306,7 +306,11 @@ fn fired_in(step: &DeepStep) -> Option<NetId> {
         DeepStep::Here { .. } => None,
         DeepStep::Inside {
             nested_id, step, ..
+        }
+        | DeepStep::Subnet {
+            nested_id, step, ..
         } => Some(fired_in(step).unwrap_or(*nested_id)),
+        _ => unreachable!("a deep step of a kind this test does not know: {step:?}"),
     }
 }
 

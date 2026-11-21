@@ -225,4 +225,34 @@ pub enum Event {
         #[cfg_attr(feature = "serde", serde(rename = "inner"))]
         event: Box<Event>,
     },
+    /// Something happened inside the subnet of one of this net's subnet
+    /// places ([`NetBuilder::subnet_place`](crate::NetBuilder::subnet_place)):
+    /// `event` is what the subnet logged, in its own ids, and the other
+    /// fields say which subnet it was. A subnet inside a subnet nests, as a
+    /// [`Nested`](Event::Nested) does.
+    ///
+    /// A change is told once, by the net whose transition made it. A firing
+    /// of this net that takes from or puts into a port tells it here, in its
+    /// own [`Fired`](Event::Fired) or [`Launched`](Event::Launched) and
+    /// [`Distributed`](Event::Distributed), under the place this net has for
+    /// the port; a firing of the subnet tells it in the subnet's log, which
+    /// is lifted into this one wrapped in this variant: right after an inner
+    /// firing made by [`step_deep`](crate::Net::step_deep), and when the
+    /// closure given to [`subnet_scope`](crate::Net::subnet_scope) returns.
+    /// Each lifted event is one change here, and moves
+    /// [`state_counter`](crate::Net::state_counter) by one.
+    ///
+    /// With the `serde` feature the wrapped event is under `"inner"`, as
+    /// for [`Nested`](Event::Nested): `{"event":"subnet","place":2,
+    /// "nested_id":7,"inner":{"event":"fired",...}}`.
+    Subnet {
+        /// The subnet place.
+        place: PlaceId,
+        /// The subnet's own [`Net::id`](crate::Net::id), process-local like
+        /// every [`NetId`].
+        nested_id: NetId,
+        /// What the subnet logged.
+        #[cfg_attr(feature = "serde", serde(rename = "inner"))]
+        event: Box<Event>,
+    },
 }

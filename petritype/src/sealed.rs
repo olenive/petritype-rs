@@ -176,3 +176,10 @@ pub trait BodySealed<E, O, M> {
     /// where the return type is still known, so that the net can report it.
     fn positional() -> bool;
 }
+
+/// The engine half of [`PlaceHandle`](crate::PlaceHandle): which place of
+/// which net the handle names, whatever the place holds.
+pub trait PlaceHandleSealed {
+    /// `(place, net)` of the place this handle names.
+    fn handle(&self) -> (PlaceId, NetId);
+}

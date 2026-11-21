@@ -113,6 +113,7 @@ fn firing(net: &Net, step: &DeepStep) -> String {
                 );
             format!("{} / #{token} / {name}: {inside}", place_name(net, *place))
         }
+        other => unreachable!("the city holds no subnet places: {other:?}"),
     }
 }
 
@@ -313,6 +314,7 @@ mod tests {
                     transition_name(&vehicle.cabin, step.transition())
                 )
             }
+            other => unreachable!("the city holds no subnet places: {other:?}"),
         }
     }
 
@@ -725,6 +727,7 @@ mod tests {
                 path.insert(0, (*place, *token, net.clone()));
                 (path, transition)
             }
+            other => unreachable!("the city holds no subnet places: {other:?}"),
         }
     }
 

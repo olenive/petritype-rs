@@ -4,9 +4,10 @@ use std::any::{Any, TypeId, type_name};
 use std::collections::VecDeque;
 use std::fmt;
 
-use crate::ids::TokenId;
+use crate::ids::{PlaceId, TokenId, TransitionId};
 use crate::keys::KeysVtable;
 use crate::nested::{NestedVtable, Stepping};
+use crate::net::Net;
 use crate::style::{PlaceStyle, StyleFn};
 
 /// A token as the net stores it: owned, type-erased, and safe to move to
@@ -114,15 +115,59 @@ pub(crate) struct PlaceMeta {
     /// [`NetBuilder::place_style`](crate::NetBuilder::place_style) for
     /// drawing the place itself, or `None`.
     pub(crate) place_style: Option<PlaceStyle>,
+    /// Whether the place is a subnet place
+    /// ([`NetBuilder::subnet_place`](crate::NetBuilder::subnet_place)): it
+    /// holds a subnet in its slot and no tokens of its own.
+    pub(crate) subnet: bool,
+    /// For the place that stands in this net for a port of one of its
+    /// subnet places, where the port is. `None` for every other place. See
+    /// [`Window`].
+    pub(crate) window: Option<Window>,
+    /// Whether the place was marked a port of this net with
+    /// [`NetBuilder::port`](crate::NetBuilder::port), for a net around it to
+    /// reach it through.
+    pub(crate) port: bool,
 }
 
 impl PlaceMeta {
-    /// Whether the place holds nets, and so has a [`Stepping`] rule: a place
-    /// declared with [`place_nested`](crate::NetBuilder::place_nested),
-    /// whose tokens carry nets of their own.
+    /// Whether the place holds nets that this net steps, and so has a
+    /// [`Stepping`] rule: a place declared with
+    /// [`place_nested`](crate::NetBuilder::place_nested), whose tokens carry
+    /// nets of their own, or a subnet place. A window is neither: the nets
+    /// in its port's tokens are its subnet's to step, under the port's own
+    /// rule.
     pub(crate) fn holds_nets(&self) -> bool {
-        self.nested.is_some()
+        (self.nested.is_some() || self.subnet) && self.window.is_none()
     }
+}
+
+/// Where the tokens of a *window* live: the place a net has for each port of
+/// each of its subnet places.
+///
+/// A window is a real place of the net around the subnet, with its own
+/// [`PlaceId`] there, the port's name and a copy of the port's metadata, so
+/// that edges, guards, the read API and external input name it as any other
+/// place. Its own queue stays empty: every function that touches a place's
+/// tokens finds the port's queue in the subnet through this, along with the
+/// subnet's key index and token counter, so that the port has one queue and
+/// one set of ids whichever net looks at it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Window {
+    /// The subnet place, in the net around the subnet.
+    pub(crate) subnet: PlaceId,
+    /// The port, as a place of the subnet.
+    pub(crate) port: PlaceId,
+}
+
+/// What a subnet place holds: the subnet, and which of the outer net's
+/// transitions reach it through its ports.
+pub(crate) struct Subnet {
+    /// The subnet itself, for the outer net's whole life.
+    pub(crate) net: Net,
+    /// Every transition of the outer net with an edge on one of this
+    /// subnet's windows, in declaration order: while one of them is in
+    /// flight the subnet takes no turn and cannot be entered.
+    pub(crate) through: Vec<TransitionId>,
 }
 
 impl fmt::Debug for PlaceMeta {
@@ -140,6 +185,9 @@ impl fmt::Debug for PlaceMeta {
             )
             .field("styled", &self.style.is_some())
             .field("place_style", &self.place_style)
+            .field("subnet", &self.subnet)
+            .field("window", &self.window)
+            .field("port", &self.port)
             .finish_non_exhaustive()
     }
 }
@@ -148,7 +196,11 @@ impl fmt::Debug for PlaceMeta {
 pub(crate) struct PlaceSlot {
     pub(crate) meta: PlaceMeta,
     /// FIFO: tokens are pushed at the back and consumed from the front.
+    /// Always empty for a subnet place and for a window.
     pub(crate) tokens: VecDeque<(TokenId, ErasedToken)>,
+    /// The subnet of a subnet place, boxed so that every other place pays
+    /// one pointer for it; `None` for every other place.
+    pub(crate) subnet: Option<Box<Subnet>>,
 }
 
 impl PlaceSlot {
@@ -182,18 +234,33 @@ impl PlaceSlot {
                 .iter()
                 .map(|(id, value)| (*id, clone(&**value)))
                 .collect(),
+            // A subnet place records no cloner, so it never gets this far.
+            subnet: None,
         })
     }
 }
 
 impl fmt::Debug for PlaceSlot {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("PlaceSlot")
-            .field("meta", &self.meta)
-            .field("count", &self.tokens.len())
-            .finish()
+        let mut out = f.debug_struct("PlaceSlot");
+        out.field("meta", &self.meta)
+            .field("count", &self.tokens.len());
+        if let Some(subnet) = &self.subnet {
+            out.field("subnet", &subnet.net.id());
+        }
+        out.finish()
     }
 }
+
+/// The type id of a subnet place: a type no value outside this crate can
+/// have, so that the one type check on the insertion path refuses every
+/// token offered to a subnet place.
+#[derive(Debug)]
+pub(crate) struct SubnetMarker;
+
+/// The type name a subnet place reports, a stand-in in the style of
+/// `"<erased>"`: it holds no tokens, so it has no token type to name.
+pub(crate) const SUBNET_TYPE_NAME: &str = "<subnet>";
 
 /// `debug_of::<T>` formats an erased token with `T`'s `Debug`.
 ///

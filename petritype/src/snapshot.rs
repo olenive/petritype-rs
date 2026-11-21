@@ -62,7 +62,9 @@ impl Net {
     ///
     /// # Errors
     ///
-    /// [`NetError::NoClonePlace`] if any place was declared with
+    /// [`NetError::HoldsSubnet`] for a net with a
+    /// [subnet place](crate::NetBuilder::subnet_place), whose subnet this
+    /// does not copy. [`NetError::NoClonePlace`] if any place was declared with
     /// [`place_no_clone`](crate::NetBuilder::place_no_clone) (or, without
     /// `serde`, with `place_nested`), since its tokens cannot be copied, and
     /// half a state is no state. Nothing is cloned before every place has
@@ -71,6 +73,7 @@ impl Net {
     /// fork failed, and why: a token type that keeps the default `fork`, an
     /// inner net that no template built.
     pub fn snapshot(&self) -> Result<Snapshot, NetError> {
+        self.no_subnets()?;
         // Checked first, all of it, so that a net with a `no_clone` place in
         // the middle does not pay for copying the places before it.
         if let Some((index, slot)) = self
@@ -171,6 +174,7 @@ impl Net {
                     Ok(Arc::new(PlaceSlot {
                         meta: Clone::clone(&slot.meta),
                         tokens,
+                        subnet: None,
                     }))
                 })
                 .collect()

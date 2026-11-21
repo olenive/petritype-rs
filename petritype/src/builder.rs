@@ -55,13 +55,16 @@ use crate::edge::{EdgeKind, InputEdges, InputSpec};
 use crate::erased::RoutingProblem;
 use crate::error::BuildError;
 use crate::firing::TieBreak;
-use crate::ids::{NetId, PlaceId, PlaceRef, TransitionId, foreign_place};
+use crate::ids::{NetId, PlaceHandle, PlaceId, PlaceRef, SubnetRef, TransitionId, foreign_place};
 use crate::index::KeyIndex;
 use crate::keys::{KeyValue, KeysVtable};
 use crate::nested::{Nested, NestedVtable, Stepping, forget_inner_events};
 use crate::net::Net;
 use crate::param::ParamSlot;
-use crate::place::{CloneFn, DebugFn, ErasedToken, PlaceMeta, PlaceSlot, clone_of, debug_of};
+use crate::place::{
+    CloneFn, DebugFn, ErasedToken, PlaceMeta, PlaceSlot, SUBNET_TYPE_NAME, Subnet, SubnetMarker,
+    Window, clone_of, debug_of,
+};
 use crate::sealed::{BodySealed, EdgeTupleSealed, PlaceTupleSealed};
 use crate::style::{PlaceStyle, Style, TokenStyle, style_fn};
 use crate::transition::{ArgSource, TransitionBuilder, TransitionSlot};
@@ -231,6 +234,12 @@ pub struct NetBuilder {
     /// The first thing wrong with a [`keys`](NetBuilder::keys) declaration,
     /// kept until [`build`](NetBuilder::build) reports it.
     keys_problem: Option<KeysProblem>,
+    /// The first thing wrong with a port: a [`port_of`](NetBuilder::port_of)
+    /// that named no port or the wrong type, or a [`port`](NetBuilder::port)
+    /// given a port of a subnet place. Kept until
+    /// [`build`](NetBuilder::build) reports it, which it does before
+    /// anything else.
+    port_problem: Option<BuildError>,
     /// The controls declared with [`control`](NetBuilder::control), in
     /// order; names are checked by [`build`](NetBuilder::build).
     controls: Vec<Control>,
@@ -259,6 +268,7 @@ impl NetBuilder {
             resettable: false,
             not_nested: None,
             keys_problem: None,
+            port_problem: None,
             controls: Vec::new(),
             #[cfg(feature = "serde")]
             templates: crate::template::Templates::new(),
@@ -370,6 +380,227 @@ impl NetBuilder {
         place
     }
 
+    /// Marks a place of this net as a *port*: a place that a net around this
+    /// one, holding it in a [subnet place](NetBuilder::subnet_place), can
+    /// reach with its own edges. Every other place stays out of its reach.
+    ///
+    /// A port is an ordinary place here, or one whose tokens carry nets;
+    /// marking one changes nothing about how this net uses it. Direction
+    /// comes from the edges that touch it, on either side, so there is one
+    /// kind of port. A second call changes nothing.
+    ///
+    /// ```
+    /// use petritype::NetBuilder;
+    ///
+    /// let mut b = NetBuilder::new();
+    /// let lobby = b.place::<String>("Lobby");
+    /// b.port(lobby);
+    /// let level = b.build()?;
+    ///
+    /// let mut world = NetBuilder::new();
+    /// let level_3 = world.subnet_place("Level 3", level);
+    /// let _lobby = world.port_of::<String>(level_3, "Lobby");
+    /// # Ok::<(), petritype::BuildError>(())
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// [`BuildError::PortIsSubnetPlace`] from [`build`](NetBuilder::build)
+    /// if `place` is a port of one of this net's own subnet places, as
+    /// [`port_of`](NetBuilder::port_of) hands them out: a port is a place of
+    /// the net that marks it, so that no edge crosses two borders. A subnet
+    /// place itself is a [`SubnetRef`], which this does not take. The call
+    /// itself is infallible, as the other per-place options are.
+    ///
+    /// # Panics
+    ///
+    /// If `place` came from a different builder.
+    pub fn port<T: 'static>(&mut self, place: PlaceRef<T>) {
+        let index = self.index_of(place, "port");
+        let meta = &self.places[index].meta;
+        if let Some(window) = meta.window {
+            let problem = BuildError::PortIsSubnetPlace {
+                place: meta.name.clone(),
+                subnet: self.places[window.subnet.0 as usize].meta.name.clone(),
+            };
+            self.port_problem.get_or_insert(problem);
+            return;
+        }
+        self.places[index].meta.port = true;
+    }
+
+    /// Declares a *subnet place*: a place of this net that holds `net`, a
+    /// separate net of its own, for as long as this net lives.
+    ///
+    /// The subnet is isolated. It never sees this net, and this net reaches
+    /// it only through its ports, the places its definition marked with
+    /// [`port`](NetBuilder::port): [`port_of`](NetBuilder::port_of) hands
+    /// out a typed handle to each, which this net's edges, guards, queries
+    /// and external input use as they use any other place. A port has one
+    /// queue and one set of token ids, the subnet's, whichever net looks at
+    /// it, and nothing else of the subnet can be named from out here.
+    ///
+    /// The subnet place holds no tokens of its own, and no edge can name
+    /// it: it is a [`SubnetRef`], not a [`PlaceRef`]. In a deep step
+    /// ([`Net::step_deep`]) the subnet is one net at this place's position,
+    /// under the place's [`stepping`](NetBuilder::stepping) rule, inner
+    /// first by default. What it logs comes out in this net's log as
+    /// [`Event::Subnet`](crate::Event::Subnet). [`Net::subnet`] reads it
+    /// and [`Net::subnet_scope`] reaches into it.
+    ///
+    /// ```
+    /// use petritype::{Event, NetBuilder, TakeEdge};
+    ///
+    /// // A level: whoever is in the lobby walks to the exit hall.
+    /// let mut b = NetBuilder::new();
+    /// let lobby = b.place::<String>("Lobby");
+    /// let exit = b.place::<String>("Exit Hall");
+    /// b.port(lobby);
+    /// b.port(exit);
+    /// b.transition("Walk", (TakeEdge(lobby),), (exit,), |hero: String| (hero,));
+    /// let level = b.build()?;
+    ///
+    /// // The world around it: heroes enter through the door.
+    /// let mut b = NetBuilder::new();
+    /// let door = b.place::<String>("Door");
+    /// let level_3 = b.subnet_place("Level 3", level);
+    /// let lobby = b.port_of::<String>(level_3, "Lobby");
+    /// let exit = b.port_of::<String>(level_3, "Exit Hall");
+    /// b.seed(door, ["Ada".to_owned()]);
+    /// b.transition("Enter", (TakeEdge(door),), (lobby,), |hero: String| (hero,));
+    /// let mut world = b.build()?;
+    ///
+    /// while world.step_deep()?.is_some() {}
+    /// assert_eq!(world.count(exit.id()), 1, "Ada walked through the level");
+    /// assert!(world.drain_events().any(|event| matches!(event, Event::Subnet { .. })));
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    ///
+    /// Whatever `net` had logged before it was handed over is setup, as for
+    /// a seeded token's inner nets, and is dropped.
+    pub fn subnet_place(&mut self, name: impl Into<String>, mut net: Net) -> SubnetRef {
+        net.events.clear();
+        let id = PlaceId(self.places.len() as u32);
+        // One window per port, in the subnet's place order: the outer net
+        // knows every port, whether or not an edge of its own uses it.
+        let windows: Vec<PlaceMeta> = net
+            .places
+            .iter()
+            .enumerate()
+            .filter(|(_, slot)| slot.meta.port)
+            .map(|(port, slot)| PlaceMeta {
+                window: Some(Window {
+                    subnet: id,
+                    port: PlaceId(port as u32),
+                }),
+                port: false,
+                ..Clone::clone(&slot.meta)
+            })
+            .collect();
+        self.places.push(PlaceSlot {
+            meta: PlaceMeta {
+                name: name.into(),
+                type_name: SUBNET_TYPE_NAME,
+                type_id: TypeId::of::<SubnetMarker>(),
+                debug: debug_of::<SubnetMarker> as DebugFn,
+                clone: None,
+                #[cfg(feature = "serde")]
+                to_json: None,
+                #[cfg(feature = "serde")]
+                from_json: None,
+                nested: None,
+                stepping: Stepping::InnerFirst,
+                keys: None,
+                style: None,
+                place_style: None,
+                subnet: true,
+                window: None,
+                port: false,
+            },
+            tokens: VecDeque::new(),
+            subnet: Some(Box::new(Subnet {
+                net,
+                through: Vec::new(),
+            })),
+        });
+        self.seeds.push(Vec::new());
+        for meta in windows {
+            self.places.push(PlaceSlot {
+                meta,
+                tokens: VecDeque::new(),
+                subnet: None,
+            });
+            self.seeds.push(Vec::new());
+        }
+        SubnetRef::new(self.net, id)
+    }
+
+    /// A typed handle to the port called `name` of a subnet place, for this
+    /// net's edges, guards, queries and external input: what the subnet's
+    /// definition marked with [`port`](NetBuilder::port).
+    ///
+    /// The handle names a place of this net that stands for the port, with
+    /// the port's name and its own [`PlaceId`] here. Its tokens are the
+    /// port's: one queue, ids minted by the subnet, whichever net reads or
+    /// changes them. An edge on it is an ordinary edge, of any kind, and any
+    /// way of choosing an output (by position, by type, by a
+    /// [`Distribution`](crate::Distribution)) can choose it. A change this
+    /// net makes to it is told once, in this net's log, under this place;
+    /// a change the subnet makes is told in the subnet's, and lifted here as
+    /// an [`Event::Subnet`](crate::Event::Subnet).
+    ///
+    /// What the port is, beyond its tokens, is the subnet's to say: its
+    /// keys, its style, its serialiser and its stepping rule come from the
+    /// subnet's definition. The per-place options here (`keys`, `style`,
+    /// `styled`, `place_style`, `serializable`) panic for such a handle,
+    /// and [`stepping`](NetBuilder::stepping) refuses it as a place that
+    /// holds no nets of this net's to step. [`seed`](NetBuilder::seed) puts
+    /// tokens into the port, as [`Net::put`] does.
+    ///
+    /// # Errors
+    ///
+    /// From [`build`](NetBuilder::build), before anything else:
+    /// [`BuildError::NoSuchPort`] if the subnet has no port of that name,
+    /// and [`BuildError::PortTypeMismatch`] if it holds another type than
+    /// `T`. The call itself is infallible, as the other per-place options
+    /// are: the handle it returns then names a stand-in place, and the
+    /// build refuses the net.
+    ///
+    /// # Panics
+    ///
+    /// If `subnet` came from a different builder.
+    pub fn port_of<T>(&mut self, subnet: SubnetRef, name: &str) -> PlaceRef<T>
+    where
+        T: fmt::Debug + Send + Sync + 'static,
+    {
+        let at = self.index_of_erased(subnet.place, subnet.net, "port_of");
+        let found = self.places.iter().position(|slot| {
+            slot.meta
+                .window
+                .is_some_and(|window| window.subnet.0 as usize == at)
+                && slot.meta.name == name
+        });
+        let problem = match found {
+            Some(index) if self.places[index].meta.type_id == TypeId::of::<T>() => {
+                return PlaceRef::new(self.net, PlaceId(index as u32));
+            }
+            Some(index) => BuildError::PortTypeMismatch {
+                subnet: self.places[at].meta.name.clone(),
+                port: name.to_owned(),
+                expected: self.places[index].meta.type_name,
+                found: type_name::<T>(),
+            },
+            None => BuildError::NoSuchPort {
+                subnet: self.places[at].meta.name.clone(),
+                port: name.to_owned(),
+            },
+        };
+        self.port_problem.get_or_insert(problem);
+        // A stand-in of the asked-for type, so that the typed options work
+        // on the handle until the build refuses the net.
+        self.insert::<T>(name.to_owned(), None)
+    }
+
     /// Sets how the nets a place holds take their turns beside the net
     /// around them: [`Stepping::InnerFirst`] (the default),
     /// [`TakeTurns`](Stepping::TakeTurns),
@@ -377,6 +608,11 @@ impl NetBuilder {
     /// [`Passive`](Stepping::Passive). [`Stepping`] says what each does in a
     /// deep step, and [`Net::set_stepping`] changes it later. A second call
     /// replaces the first.
+    ///
+    /// `place` is a place whose tokens carry nets
+    /// ([`place_nested`](NetBuilder::place_nested)), as a [`PlaceRef`], or
+    /// a [subnet place](NetBuilder::subnet_place), as a [`SubnetRef`]: a
+    /// subnet is one net at its place's position, under its place's rule.
     ///
     /// ```
     /// use petritype::{DeepStep, NetBuilder, Stepping, TakeEdge};
@@ -406,20 +642,24 @@ impl NetBuilder {
     /// # Errors
     ///
     /// [`BuildError::NotNested`] from [`build`](NetBuilder::build) if the
-    /// place holds no nets, since it was not declared with
-    /// [`place_nested`](NetBuilder::place_nested). The call itself is
-    /// infallible, as the other per-place options are.
+    /// place holds no nets for this net to step: it was declared with
+    /// neither [`place_nested`](NetBuilder::place_nested) nor
+    /// [`subnet_place`](NetBuilder::subnet_place), or it is a port of a
+    /// subnet place, whose nets are the subnet's to step under the port's
+    /// own rule. The call itself is infallible, as the other per-place
+    /// options are.
     ///
     /// # Panics
     ///
     /// If `place` came from a different builder.
-    pub fn stepping<T: 'static>(&mut self, place: PlaceRef<T>, stepping: Stepping) {
-        let index = self.index_of(place, "stepping");
+    pub fn stepping(&mut self, place: impl PlaceHandle, stepping: Stepping) {
+        let (place, net) = place.handle();
+        let index = self.index_of_erased(place, net, "stepping");
         let meta = &mut self.places[index].meta;
         if meta.holds_nets() {
             meta.stepping = stepping;
         } else {
-            self.not_nested.get_or_insert(place.id());
+            self.not_nested.get_or_insert(place);
         }
     }
 
@@ -473,7 +713,9 @@ impl NetBuilder {
     ///
     /// # Panics
     ///
-    /// If `place` came from a different builder.
+    /// If `place` came from a different builder, or is a port of one of
+    /// this net's subnet places ([`port_of`](NetBuilder::port_of)), whose
+    /// subnet's definition says what it is.
     pub fn keys<T, const N: usize>(
         &mut self,
         place: PlaceRef<T>,
@@ -483,6 +725,7 @@ impl NetBuilder {
         T: 'static,
     {
         let index = self.index_of(place, "keys");
+        self.own_place(index, "keys");
         // The first name that repeats one before it.
         if let Some((_, &name)) = names
             .iter()
@@ -532,13 +775,16 @@ impl NetBuilder {
     ///
     /// # Panics
     ///
-    /// If `place` came from a different builder.
+    /// If `place` came from a different builder, or is a port of one of
+    /// this net's subnet places ([`port_of`](NetBuilder::port_of)), whose
+    /// subnet's definition says what it is.
     pub fn style<T: 'static>(
         &mut self,
         place: PlaceRef<T>,
         f: impl Fn(&T) -> Style + Send + Sync + 'static,
     ) {
         let index = self.index_of(place, "style");
+        self.own_place(index, "style");
         self.places[index].meta.style = Some(style_fn(f));
     }
 
@@ -551,7 +797,9 @@ impl NetBuilder {
     ///
     /// # Panics
     ///
-    /// If `place` came from a different builder.
+    /// If `place` came from a different builder, or is a port of one of
+    /// this net's subnet places ([`port_of`](NetBuilder::port_of)), whose
+    /// subnet's definition says what it is.
     pub fn styled<T: TokenStyle + 'static>(&mut self, place: PlaceRef<T>) {
         self.style(place, <T as TokenStyle>::style);
     }
@@ -564,9 +812,12 @@ impl NetBuilder {
     ///
     /// # Panics
     ///
-    /// If `place` came from a different builder.
+    /// If `place` came from a different builder, or is a port of one of
+    /// this net's subnet places ([`port_of`](NetBuilder::port_of)), whose
+    /// subnet's definition says what it is.
     pub fn place_style<T: 'static>(&mut self, place: PlaceRef<T>, style: PlaceStyle) {
         let index = self.index_of(place, "place_style");
+        self.own_place(index, "place_style");
         self.places[index].meta.place_style = Some(style);
     }
 
@@ -613,13 +864,16 @@ impl NetBuilder {
     ///
     /// # Panics
     ///
-    /// If `place` came from a different builder.
+    /// If `place` came from a different builder, or is a port of one of
+    /// this net's subnet places ([`port_of`](NetBuilder::port_of)), whose
+    /// subnet's definition says what it is.
     #[cfg(feature = "serde")]
     pub fn serializable<T>(&mut self, place: PlaceRef<T>)
     where
         T: serde::Serialize + serde::de::DeserializeOwned + Send + Sync + 'static,
     {
         let index = self.index_of(place, "serializable");
+        self.own_place(index, "serializable");
         let meta = &mut self.places[index].meta;
         meta.to_json = Some(crate::place::to_json_of::<T> as crate::place::ToJsonFn);
         meta.from_json = Some(crate::place::from_json_of::<T> as crate::place::FromJsonFn);
@@ -1093,8 +1347,15 @@ impl NetBuilder {
     ///
     /// # Errors
     ///
+    /// First, the first thing wrong with a port:
+    /// [`BuildError::NoSuchPort`] or [`BuildError::PortTypeMismatch`] for a
+    /// [`port_of`](NetBuilder::port_of) that named no port or the wrong
+    /// type, and [`BuildError::PortIsSubnetPlace`] for a
+    /// [`port`](NetBuilder::port) given a port of a subnet place. Then
     /// [`BuildError::DuplicatePlaceName`] or
-    /// [`BuildError::DuplicateTransitionName`] if two of either share a name;
+    /// [`BuildError::DuplicateTransitionName`] if two of either share a name
+    /// (a port's place is named by its subnet place and its port, and does
+    /// not count);
     /// [`BuildError::NotNested`] if a place given a
     /// [`stepping`](NetBuilder::stepping) rule holds no nets;
     /// [`BuildError::DuplicateKeyName`] or
@@ -1106,6 +1367,8 @@ impl NetBuilder {
     /// [`BuildError::RestoreOfNoClonePlace`] if a transition that
     /// [restores its inputs on failure](crate::TransitionBuilder::restore_tokens_on_failure)
     /// consumes such a place;
+    /// [`BuildError::EdgeOnSubnetPlace`] if a transition has an edge on a
+    /// subnet place, which the typed API already refuses when it compiles;
     /// [`BuildError::DuplicateInputPlace`] if one transition reads one place
     /// through two input edges;
     /// [`BuildError::KeyedEdgeOnUnkeyedPlace`] if a
@@ -1133,9 +1396,16 @@ impl NetBuilder {
     /// [`assert_no_source_transitions`](NetBuilder::assert_no_source_transitions)
     /// and [`BuildError::Cycle`] from
     /// [`assert_acyclic`](NetBuilder::assert_acyclic).
-    pub fn build(self) -> Result<Net, BuildError> {
+    pub fn build(mut self) -> Result<Net, BuildError> {
+        // A port asked for wrongly first: the handle it gave out names a
+        // stand-in, which every later check would only stumble on.
+        if let Some(problem) = self.port_problem.take() {
+            return Err(problem);
+        }
         let mut seen = HashSet::with_capacity(self.places.len());
-        for slot in &self.places {
+        // A window is named by its subnet place and its port, so its name
+        // is unique among its subnet's ports, not among this net's places.
+        for slot in self.places.iter().filter(|slot| slot.meta.window.is_none()) {
             if !seen.insert(slot.meta.name.as_str()) {
                 return Err(BuildError::DuplicatePlaceName {
                     name: slot.meta.name.clone(),
@@ -1175,6 +1445,22 @@ impl NetBuilder {
             // only exact while one edge wants one place, and the `&mut`
             // borrows a mutating edge hands the body are disjoint by
             // construction rather than by a run-time check.
+            // A subnet place holds no tokens, so an edge on it would read
+            // or write nothing. The typed API cannot name one (a
+            // `SubnetRef` is no `PlaceRef`), so this is the defence behind
+            // that.
+            if let Some(place) = slot
+                .inputs
+                .iter()
+                .map(|(place, _)| place)
+                .chain(&slot.outputs)
+                .find(|place| self.places[place.0 as usize].meta.subnet)
+            {
+                return Err(BuildError::EdgeOnSubnetPlace {
+                    transition: slot.name.clone(),
+                    place: self.places[place.0 as usize].meta.name.clone(),
+                });
+            }
             let mut read = HashSet::with_capacity(slot.inputs.len());
             for (place, kind) in &slot.inputs {
                 if !read.insert(*place) {
@@ -1347,6 +1633,28 @@ impl NetBuilder {
                 })
             })
             .collect();
+
+        // Which transitions reach each subnet through its windows: while one
+        // of them is in flight, the subnet takes no turn.
+        for (index, transition) in self.transitions.iter().enumerate() {
+            let reached: Vec<Window> = transition
+                .inputs
+                .iter()
+                .map(|(place, _)| place)
+                .chain(&transition.outputs)
+                .filter_map(|place| self.places[place.0 as usize].meta.window)
+                .collect();
+            for window in reached {
+                let subnet = self.places[window.subnet.0 as usize]
+                    .subnet
+                    .as_mut()
+                    .expect("a window's place holds a subnet");
+                let id = TransitionId(index as u32);
+                if !subnet.through.contains(&id) {
+                    subnet.through.push(id);
+                }
+            }
+        }
 
         let mut net = Net {
             id: self.net,
@@ -1551,8 +1859,12 @@ impl NetBuilder {
                 keys: None,
                 style: None,
                 place_style: None,
+                subnet: false,
+                window: None,
+                port: false,
             },
             tokens: VecDeque::new(),
+            subnet: None,
         });
         self.seeds.push(Vec::new());
         PlaceRef::new(self.net, id)
@@ -1580,6 +1892,20 @@ impl NetBuilder {
             type_name::<T>()
         );
         index
+    }
+
+    /// Panics if the place at `index` is a port of one of this net's subnet
+    /// places: what a port is, beyond its tokens, is said by its subnet's
+    /// definition, and an option set out here would describe a different
+    /// place from the one the subnet keeps.
+    fn own_place(&self, index: usize, method: &str) {
+        if let Some(window) = self.places[index].meta.window {
+            panic!(
+                "{method}: place {:?} is a port of the subnet place {:?}, and what a port is, \
+                 beyond its tokens, is declared in its subnet's definition",
+                self.places[index].meta.name, self.places[window.subnet.0 as usize].meta.name,
+            );
+        }
     }
 
     /// The index of an erased output place or edge target, rejecting a
@@ -1630,6 +1956,7 @@ impl fmt::Debug for NetBuilder {
             .field("resettable", &self.resettable)
             .field("not_nested", &self.not_nested)
             .field("keys_problem", &self.keys_problem)
+            .field("port_problem", &self.port_problem)
             .field(
                 "controls",
                 &self
@@ -1693,6 +2020,30 @@ mod tests {
 
         let id = a.id();
         assert_eq!(a.build().unwrap().id(), id);
+    }
+
+    /// An edge on a subnet place cannot be written with the typed API, since
+    /// a `SubnetRef` is no `PlaceRef`, so the check behind that is asked
+    /// with a handle made in here.
+    #[test]
+    fn an_edge_on_a_subnet_place_is_refused() {
+        use crate::TakeEdge;
+        for output in [false, true] {
+            let mut b = NetBuilder::new();
+            let inbox = b.place::<u32>("Inbox");
+            let level = b.subnet_place("Level 3", NetBuilder::new().build().unwrap());
+            let forged = PlaceRef::<u32>::new(b.id(), level.id());
+            if output {
+                b.transition("Stuff", (TakeEdge(inbox),), (forged,), |n: u32| (n,));
+            } else {
+                b.transition("Rob", (TakeEdge(forged),), (inbox,), |n: u32| (n,));
+            }
+            let error = b.build().expect_err("a subnet place holds no tokens");
+            assert!(
+                matches!(&error, BuildError::EdgeOnSubnetPlace { place, .. } if place == "Level 3"),
+                "{error}"
+            );
+        }
     }
 
     #[test]

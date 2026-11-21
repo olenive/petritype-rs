@@ -161,8 +161,12 @@ pub enum BuildError {
     ///
     /// The rule says how the nets in a place take their turns beside the
     /// net around them ([`Stepping`](crate::Stepping)), and an ordinary
-    /// place has none, so the rule would say nothing. Declare the place with
-    /// [`place_nested`](crate::NetBuilder::place_nested), or drop the rule.
+    /// place has none, so the rule would say nothing. Nor does a port of a
+    /// subnet place ([`port_of`](crate::NetBuilder::port_of)): the nets its
+    /// tokens carry are the subnet's to step, under the rule the subnet's
+    /// definition gives the port. Declare the place with
+    /// [`place_nested`](crate::NetBuilder::place_nested), give the rule to a
+    /// [`subnet_place`](crate::NetBuilder::subnet_place), or drop it.
     /// Reported for the first such place given one.
     #[error("place {place:?} is given a stepping rule but holds no nets")]
     NotNested {
@@ -277,6 +281,57 @@ pub enum BuildError {
     DuplicateControlName {
         /// The name used more than once.
         name: String,
+    },
+    /// [`port_of`](crate::NetBuilder::port_of) named a port the subnet does
+    /// not have: no place of that name, or one its definition did not mark
+    /// with [`port`](crate::NetBuilder::port). Only ports can be reached
+    /// from outside. Reported, as every port problem is, before anything
+    /// else the build checks.
+    #[error("subnet place {subnet:?} has no port {port:?}")]
+    NoSuchPort {
+        /// The subnet place asked.
+        subnet: String,
+        /// The port name that matched no port.
+        port: String,
+    },
+    /// [`port_of`](crate::NetBuilder::port_of) asked for a port as one type
+    /// and the port holds another. The handle's type is what the outer
+    /// net's edges are checked against, so it has to be the port's.
+    #[error("port {port:?} of subnet place {subnet:?} holds {expected}, not {found}")]
+    PortTypeMismatch {
+        /// The subnet place asked.
+        subnet: String,
+        /// The port.
+        port: String,
+        /// The type the port holds.
+        expected: &'static str,
+        /// The type it was asked for as.
+        found: &'static str,
+    },
+    /// [`port`](crate::NetBuilder::port) was given a port of one of this
+    /// net's own subnet places. A port is a place of the net that marks it,
+    /// an ordinary place or one whose tokens carry nets, so that no edge
+    /// crosses two borders: a net around this one reaches a subnet's port
+    /// through a port of this net and a transition of this net between the
+    /// two.
+    #[error("place {place:?} is a port of subnet place {subnet:?}, so it cannot be a port here")]
+    PortIsSubnetPlace {
+        /// The port that was marked.
+        place: String,
+        /// The subnet place it belongs to.
+        subnet: String,
+    },
+    /// A transition has an edge on a subnet place, which holds no tokens of
+    /// its own. Only the subnet's ports are reached from outside. The typed
+    /// API already refuses this when it compiles, since a
+    /// [`SubnetRef`](crate::SubnetRef) is no [`PlaceRef`](crate::PlaceRef);
+    /// this is the check behind that.
+    #[error("transition {transition:?} has an edge on subnet place {place:?}")]
+    EdgeOnSubnetPlace {
+        /// The transition whose edge it is.
+        transition: String,
+        /// The subnet place.
+        place: String,
     },
 }
 
@@ -482,6 +537,27 @@ pub enum NetError {
         /// on.
         name: String,
     },
+    /// [`Net::subnet_scope`](crate::Net::subnet_scope) was given a place
+    /// that holds no subnet.
+    #[error("place {name:?} ({place:?}) holds no subnet")]
+    NotSubnet {
+        /// The place that was named.
+        place: PlaceId,
+        /// The place's name, for the message; the id is the field to match
+        /// on.
+        name: String,
+    },
+    /// A [`snapshot`](crate::Net::snapshot), an export or import of the
+    /// marking, a save or a fork, of a net with a subnet place: in this
+    /// version none of them copies a subnet, and half a state is no state.
+    #[error("place {name:?} ({place:?}) holds a subnet, which is not copied or saved")]
+    HoldsSubnet {
+        /// The first subnet place, in id order.
+        place: PlaceId,
+        /// The place's name, for the message; the id is the field to match
+        /// on.
+        name: String,
+    },
     /// [`Net::export_marking`](crate::Net::export_marking), a save or a
     /// [`fork`](crate::Net::fork) met a place that was not marked
     /// [`serializable`](crate::NetBuilder::serializable).
@@ -522,11 +598,14 @@ pub enum NetError {
     #[cfg(feature = "serde")]
     #[error("the net was not built from a template, so it cannot be rebuilt")]
     NoTemplate,
-    /// A [`fork`](crate::Net::fork) or a save of a net with a transition in
-    /// flight: the tokens that firing took are in no place, so a copy would
-    /// silently lose them. Distribute the firing first; a driver never
-    /// returns with one airborne.
-    #[cfg(feature = "serde")]
+    /// A transition is in flight where none may be. A fork or a save of a
+    /// net with one (`Net::fork` and `Serialize`, with the `serde`
+    /// feature): the tokens that firing took are in no place, so a copy
+    /// would silently lose them.
+    /// A [`subnet_scope`](crate::Net::subnet_scope) while one that has an
+    /// edge on the subnet's ports is airborne: the subnet is held still
+    /// until it lands. Distribute the firing first; a driver never returns
+    /// with one airborne.
     #[error("transition {name:?} ({transition:?}) is in flight")]
     InFlight {
         /// The first transition in flight, in declaration order.
@@ -800,7 +879,9 @@ pub struct FiringFailed {
     ///
     /// Filled in by [`step_deep`](crate::Net::step_deep) as the failure comes
     /// up through each level, and printed in the message as
-    /// `inside PlaceId(0) #5 "cabin"`.
+    /// `inside PlaceId(0) #5 "cabin"`. A level inside the subnet of a
+    /// [subnet place](crate::NetBuilder::subnet_place) names no token, and
+    /// adds no element here: the path is the one the failure had in there.
     pub path: Vec<(PlaceId, TokenId, String)>,
 }
 

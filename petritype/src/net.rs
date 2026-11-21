@@ -16,7 +16,7 @@ use crate::ids::{NetId, PlaceId, PlaceRef, TokenId, TransitionId, foreign_place}
 use crate::index::KeyIndex;
 use crate::nested::{Stepping, lift_from};
 use crate::param::{ParamSlot, param_of, param_slot_index};
-use crate::place::{ErasedToken, PlaceSlot, erase_all};
+use crate::place::{ErasedToken, PlaceSlot, Window, erase_all};
 use crate::style::{PlaceStyle, Style};
 use crate::topology::Topology;
 use crate::transition::{TransitionInfo, TransitionSlot};
@@ -139,8 +139,11 @@ pub struct PlaceInfo<'a> {
     pub nested: bool,
     /// How the nets the place holds take their turns beside this net
     /// ([`Stepping`]), as [`Net::stepping`] reads it: inner first, take
-    /// turns, outer first or passive. `Some` exactly when `nested` is true;
-    /// a place that holds no nets has no rule.
+    /// turns, outer first or passive. `Some` exactly for a place that holds
+    /// nets this net steps: a `nested` place, or a subnet place
+    /// ([`NetBuilder::subnet_place`](crate::NetBuilder::subnet_place)). A
+    /// place that holds no nets has no rule, and nor does a port of a
+    /// subnet place, whose rule is its subnet's.
     pub stepping: Option<Stepping>,
     /// The keys the place derives from each of its tokens, in the order
     /// [`NetBuilder::keys`](crate::NetBuilder::keys) declared them; empty for
@@ -390,7 +393,7 @@ impl Net {
     /// `None` when the place has no style function, or the place or the
     /// token does not exist. See the [`style`](crate::style) module.
     pub fn style(&self, place: PlaceId, token: TokenId) -> Option<Style> {
-        let slot = self.places.get(place.0 as usize)?;
+        let slot = slot_of(&self.places, place)?;
         let style = slot.meta.style.as_ref()?;
         let index = slot.position(token)?;
         Some(style(&*slot.tokens[index].1))
@@ -625,11 +628,12 @@ impl Net {
     /// [`NetError::NoSuchPlace`] or [`NetError::NoSuchToken`]; the net is
     /// unchanged in both cases.
     pub fn remove(&mut self, place: PlaceId, token: TokenId) -> Result<(), NetError> {
+        if place.0 as usize >= self.places.len() {
+            return Err(NetError::NoSuchPlace { place });
+        }
         let lifted = {
-            let slot = self
-                .places
-                .get_mut(place.0 as usize)
-                .ok_or(NetError::NoSuchPlace { place })?;
+            let (holder, at) = self.holder_mut(place);
+            let slot = &mut holder.places[at.0 as usize];
             let index = slot.position(token).ok_or_else(|| NetError::NoSuchToken {
                 place,
                 name: slot.meta.name.clone(),
@@ -639,9 +643,9 @@ impl Net {
                 .tokens
                 .remove(index)
                 .expect("the position was just found");
-            self.index.leave(&slot.meta, place, token, &*value);
+            holder.index.leave(&slot.meta, at, token, &*value);
             if slot.tokens.is_empty() {
-                self.index.emptied(place);
+                holder.index.emptied(at);
             }
             // A nested token's last words, before it is reported gone
             // (DESIGN §6.6, rule 5).
@@ -757,6 +761,20 @@ impl Net {
         self.state_counter += 1;
     }
 
+    /// [`NetError::HoldsSubnet`] for the first subnet place, in id order:
+    /// what a copy or a save of the whole net (a snapshot, an export or an
+    /// import of the marking, and so a save and a fork) is refused with,
+    /// since none of them copies a subnet.
+    pub(crate) fn no_subnets(&self) -> Result<(), NetError> {
+        match self.places.iter().position(|slot| slot.meta.subnet) {
+            Some(index) => Err(NetError::HoldsSubnet {
+                place: PlaceId(index as u32),
+                name: self.places[index].meta.name.clone(),
+            }),
+            None => Ok(()),
+        }
+    }
+
     /// The name of one of this net's places, for the message of an error
     /// that also carries its id.
     ///
@@ -814,11 +832,47 @@ impl Net {
                 found,
             });
         }
+        // A window's token goes into its port, under an id its subnet
+        // mints: one queue and one set of ids, whichever net put it there.
+        if slot.meta.window.is_some() {
+            let (holder, at) = self.holder_mut(place);
+            return holder.insert_erased(at, value, found);
+        }
         let token = self.mint_token_id();
         let slot = &mut self.places[index];
         self.index.enter(&slot.meta, place, token, &*value);
         slot.tokens.push_back((token, value));
         Ok(token)
+    }
+
+    /// The net that holds a place's tokens, and the place there: this net
+    /// and the place itself, or, for a window, the subnet and its port.
+    ///
+    /// What every writer of a place's tokens goes through, with the place's
+    /// id here kept for what it reports: the queue, the key index and the
+    /// token counter it then works on are the holder's. A place that is not
+    /// there is its own holder, and the caller's own checks find that out.
+    #[inline]
+    pub(crate) fn holder_mut(&mut self, place: PlaceId) -> (&mut Net, PlaceId) {
+        match self
+            .places
+            .get(place.0 as usize)
+            .and_then(|slot| slot.meta.window)
+        {
+            None => (self, place),
+            Some(window) => (self.subnet_behind(window), window.port),
+        }
+    }
+
+    /// The subnet behind a window, mutably: [`holder_mut`](Net::holder_mut)'s
+    /// other branch, kept out of line.
+    #[cold]
+    fn subnet_behind(&mut self, window: Window) -> &mut Net {
+        &mut self.places[window.subnet.0 as usize]
+            .subnet
+            .as_deref_mut()
+            .expect("a window's subnet place holds its subnet")
+            .net
     }
 
     /// [`insert_erased`](Net::insert_erased) plus the [`Added`](Event::Added)
@@ -933,11 +987,12 @@ impl Net {
         value: ErasedToken,
         found: &'static str,
     ) -> Result<(), NetError> {
+        if place.0 as usize >= self.places.len() {
+            return Err(NetError::NoSuchPlace { place });
+        }
         let outgoing = {
-            let slot = self
-                .places
-                .get_mut(place.0 as usize)
-                .ok_or(NetError::NoSuchPlace { place })?;
+            let (holder, at) = self.holder_mut(place);
+            let slot = &mut holder.places[at.0 as usize];
             if (*value).type_id() != slot.meta.type_id {
                 return Err(NetError::TypeMismatch {
                     place,
@@ -959,9 +1014,10 @@ impl Net {
             };
             // Same token, same id, same place in the queue: only its keys
             // may have changed.
-            self.index
-                .leave(&slot.meta, place, token, &*slot.tokens[index].1);
-            self.index.enter(&slot.meta, place, token, &*value);
+            holder
+                .index
+                .leave(&slot.meta, at, token, &*slot.tokens[index].1);
+            holder.index.enter(&slot.meta, at, token, &*value);
             slot.tokens[index].1 = value;
             outgoing
         };
@@ -1028,16 +1084,18 @@ impl Net {
     /// token's inner nets had logged (DESIGN §6.6, rule 5). An unknown place
     /// is a no-op.
     fn clear(&mut self, place: PlaceId) {
-        let Some(slot) = self.places.get_mut(place.0 as usize) else {
+        if place.0 as usize >= self.places.len() {
             return;
-        };
+        }
+        let (holder, at) = self.holder_mut(place);
+        let slot = &mut holder.places[at.0 as usize];
         let nested = slot.meta.nested;
-        let (meta, index) = (&slot.meta, &mut self.index);
+        let (meta, index) = (&slot.meta, &mut holder.index);
         let removed: Vec<(TokenId, Vec<Event>)> = slot
             .tokens
             .drain(..)
             .map(|(token, mut value)| {
-                index.leave(meta, place, token, &*value);
+                index.leave(meta, at, token, &*value);
                 let lifted = match nested {
                     Some(nested) => lift_from(nested, &mut value, place, token),
                     None => Vec::new(),
@@ -1045,7 +1103,7 @@ impl Net {
                 (token, lifted)
             })
             .collect();
-        self.index.emptied(place);
+        holder.index.emptied(at);
         for (token, lifted) in removed {
             self.emit_all(lifted);
             self.emit(Event::Removed { place, token });
@@ -1098,6 +1156,34 @@ impl fmt::Debug for Net {
 // is also why a snapshot's labels and JSON come out exactly as the net's do:
 // it carries the same [`PlaceMeta`](crate::place::PlaceMeta) vtables.
 
+/// The slot that holds a place's tokens: the place's own, or, for a window,
+/// its port's slot in the subnet, read by reference. `None` for a place that
+/// is not there.
+///
+/// Every reader of a place's tokens asks this rather than indexing the
+/// places itself, so that a port reads the same from either net.
+#[inline]
+pub(crate) fn slot_of(places: &[impl Borrow<PlaceSlot>], place: PlaceId) -> Option<&PlaceSlot> {
+    let slot = places.get(place.0 as usize)?.borrow();
+    match slot.meta.window {
+        None => Some(slot),
+        Some(window) => port_slot(places, window),
+    }
+}
+
+/// The port's slot in the subnet behind a window: [`slot_of`]'s other
+/// branch, kept out of line so that a net without subnet places reads its
+/// places as it always has.
+#[cold]
+fn port_slot(places: &[impl Borrow<PlaceSlot>], window: Window) -> Option<&PlaceSlot> {
+    let subnet = places
+        .get(window.subnet.0 as usize)?
+        .borrow()
+        .subnet
+        .as_deref()?;
+    subnet.net.places.get(window.port.0 as usize)
+}
+
 /// Every place, in id order, with its name, token type and live count.
 pub(crate) fn places_of(
     places: &[impl Borrow<PlaceSlot>],
@@ -1109,7 +1195,7 @@ pub(crate) fn places_of(
         let info = PlaceInfo {
             name: &slot.meta.name,
             type_name: slot.meta.type_name,
-            count: slot.tokens.len(),
+            count: count_in(places, id),
             #[cfg(feature = "serde")]
             serializable: slot.meta.to_json.is_some(),
             #[cfg(not(feature = "serde"))]
@@ -1157,18 +1243,22 @@ pub(crate) fn edges_of<'a>(
 }
 
 /// The id of the place with this name, if there is one.
+///
+/// A window is not found by name: it is named by its subnet place and its
+/// port, and its name is its port's, unique only among that subnet's ports.
 pub(crate) fn place_named_in(places: &[impl Borrow<PlaceSlot>], name: &str) -> Option<PlaceId> {
     places
         .iter()
-        .position(|slot| slot.borrow().meta.name == name)
+        .position(|slot| {
+            let meta = &slot.borrow().meta;
+            meta.name == name && meta.window.is_none()
+        })
         .map(|index| PlaceId(index as u32))
 }
 
 /// How many tokens a place holds; an unknown place counts zero.
 pub(crate) fn count_in(places: &[impl Borrow<PlaceSlot>], place: PlaceId) -> usize {
-    places
-        .get(place.0 as usize)
-        .map_or(0, |slot| slot.borrow().tokens.len())
+    slot_of(places, place).map_or(0, |slot| slot.tokens.len())
 }
 
 /// The tokens of a place, oldest first and erased.
@@ -1176,8 +1266,8 @@ pub(crate) fn tokens_in(
     places: &[impl Borrow<PlaceSlot>],
     place: PlaceId,
 ) -> impl Iterator<Item = (TokenId, &dyn Any)> {
-    places.get(place.0 as usize).into_iter().flat_map(|slot| {
-        slot.borrow().tokens.iter().map(|(id, value)| {
+    slot_of(places, place).into_iter().flat_map(|slot| {
+        slot.tokens.iter().map(|(id, value)| {
             // `dyn Any + Send + Sync` unsizes to plain `dyn Any`; the
             // auto traits matter to the net, not to a reader.
             let value: &dyn Any = &**value;
@@ -1192,7 +1282,7 @@ pub(crate) fn token_in<T: 'static>(
     place: PlaceId,
     token: TokenId,
 ) -> Option<&T> {
-    let slot = places.get(place.0 as usize)?.borrow();
+    let slot = slot_of(places, place)?;
     let index = slot.position(token)?;
     slot.tokens[index].1.downcast_ref::<T>()
 }
@@ -1213,7 +1303,7 @@ pub(crate) fn debug_in(
     place: PlaceId,
     token: TokenId,
 ) -> Option<String> {
-    let slot = places.get(place.0 as usize)?.borrow();
+    let slot = slot_of(places, place)?;
     let index = slot.position(token)?;
     Some((slot.meta.debug)(&*slot.tokens[index].1))
 }
@@ -1225,7 +1315,7 @@ pub(crate) fn json_in(
     place: PlaceId,
     token: TokenId,
 ) -> Option<serde_json::Value> {
-    let slot = places.get(place.0 as usize)?.borrow();
+    let slot = slot_of(places, place)?;
     let to_json = slot.meta.to_json?;
     let index = slot.position(token)?;
     Some(crate::place::json_or_message(

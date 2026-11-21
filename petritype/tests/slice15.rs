@@ -411,6 +411,7 @@ fn step_deep_under_outer_first_goes_outer_first_then_place_order_then_token_orde
                 nested_id,
                 ..
             } => (format!("{place:?}/{name}"), Some(nested_id)),
+            other => unreachable!("this net has no subnet places: {other:?}"),
         });
         // Once, after the first inner firing: the outer net goes first again
         // as soon as it has something.

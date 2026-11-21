@@ -29,7 +29,18 @@
 //!
 //! The coupling goes one way. An inner net never sees the outer one: its
 //! guards and bodies are its own, and the outer net reaches in only through
-//! the token it holds. There are no shared places.
+//! the token it holds. A net carried by a token shares no places with the
+//! net around it.
+//!
+//! A *subnet place*
+//! ([`NetBuilder::subnet_place`](crate::NetBuilder::subnet_place)) is the
+//! other way to nest: a place that holds one net, a subnet, for its net's
+//! whole life. The subnet is just as isolated, except at its *ports*, the
+//! places its definition marks with [`NetBuilder::port`](crate::NetBuilder::port),
+//! which the net around it uses as its own places. In a deep step a subnet
+//! is one net at its place's position, under its place's [`Stepping`] rule,
+//! and what it logs is lifted as [`Event::Subnet`]. [`Net::subnet`] reads
+//! one and [`Net::subnet_scope`] reaches into it.
 
 use std::any::Any;
 use std::fmt;
@@ -234,7 +245,7 @@ pub(crate) fn nested_in(
     place: PlaceId,
     token: TokenId,
 ) -> Option<Vec<(&str, &Net)>> {
-    let slot = places.get(place.0 as usize)?.borrow();
+    let slot = crate::net::slot_of(places, place)?;
     let nested = slot.meta.nested?;
     let index = slot.position(token)?;
     Some((nested.nets)(&*slot.tokens[index].1))
@@ -281,10 +292,15 @@ pub(crate) fn forget_inner_events(nested: NestedVtable, value: &mut ErasedToken)
 ///
 /// [`Here`](DeepStep::Here) is a transition of the net that was stepped;
 /// [`Inside`](DeepStep::Inside) is a firing inside one of its tokens, with
-/// the place and token it happened in and, recursively, what fired in there.
-/// The outer net's log says the same thing as an [`Event::Nested`], with the
-/// same place, token, name and id.
+/// the place and token it happened in and, recursively, what fired in there,
+/// and [`Subnet`](DeepStep::Subnet) one inside the subnet of a subnet place.
+/// The outer net's log says the same thing as an [`Event::Nested`] or an
+/// [`Event::Subnet`], with the same place, token, name and id.
+///
+/// The enum is `#[non_exhaustive]`: match with a `_` arm, or ask
+/// [`transition`](DeepStep::transition) for the innermost transition.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum DeepStep {
     /// A transition of this net fired.
     Here {
@@ -305,6 +321,16 @@ pub enum DeepStep {
         /// What fired in there.
         step: Box<DeepStep>,
     },
+    /// Something fired inside the subnet of one of this net's subnet
+    /// places ([`NetBuilder::subnet_place`](crate::NetBuilder::subnet_place)).
+    Subnet {
+        /// The subnet place.
+        place: PlaceId,
+        /// The subnet's own [`NetId`].
+        nested_id: NetId,
+        /// What fired in there.
+        step: Box<DeepStep>,
+    },
 }
 
 impl DeepStep {
@@ -313,7 +339,7 @@ impl DeepStep {
     pub fn transition(&self) -> TransitionId {
         match self {
             DeepStep::Here { transition } => *transition,
-            DeepStep::Inside { step, .. } => step.transition(),
+            DeepStep::Inside { step, .. } | DeepStep::Subnet { step, .. } => step.transition(),
         }
     }
 }
@@ -339,7 +365,9 @@ impl DeepStep {
 ///
 /// A [`Passive`](Stepping::Passive) place is in no band. *Walk order* is
 /// places in declaration order, a place's tokens oldest first, a token's
-/// nets in [`Nested::nets`] order. A member's turn is a deep step of its
+/// nets in [`Nested::nets`] order; a
+/// [subnet place](crate::NetBuilder::subnet_place) counts as one net at its
+/// place's position. A member's turn is a deep step of its
 /// own, so every level follows the rules of its own places, all the way
 /// down, and one deep step still fires at most one transition in the whole
 /// tree, whatever the rules.
@@ -433,8 +461,9 @@ pub enum StagedStep {
     /// [distributes](Net::distribute) what comes back. The choice counted,
     /// as [`Net::choose`]'s does.
     Chosen(TransitionId),
-    /// An inner net fired, inline, as in [`Net::step_deep`]: always a
-    /// [`DeepStep::Inside`], its events already in this net's log.
+    /// An inner net fired, inline, as in [`Net::step_deep`]: a
+    /// [`DeepStep::Inside`] or a [`DeepStep::Subnet`], never a
+    /// [`DeepStep::Here`], its events already in this net's log.
     Inside(DeepStep),
 }
 
@@ -460,14 +489,26 @@ pub(crate) enum Part {
 struct Member {
     /// Its place's index.
     place: usize,
-    /// Where its token stands in the place, oldest first.
-    position: usize,
-    /// Which of the token's nets it is, in [`Nested::nets`] order.
-    net: usize,
+    /// Where in the place it is.
+    at: At,
     /// Its own id, the nested id: what the ring's cursor records.
     id: NetId,
     /// Its place's rule.
     stepping: Stepping,
+}
+
+/// Where a [`Member`] is in its place.
+#[derive(Debug, Clone, Copy)]
+enum At {
+    /// One of the nets of a token.
+    Token {
+        /// Where the token stands in the place, oldest first.
+        position: usize,
+        /// Which of the token's nets it is, in [`Nested::nets`] order.
+        net: usize,
+    },
+    /// The place's subnet.
+    Subnet,
 }
 
 impl Net {
@@ -559,8 +600,10 @@ impl Net {
         token: TokenId,
         f: impl FnOnce(&mut [(&str, &mut Net)]) -> R,
     ) -> Option<R> {
+        self.places.get(place.0 as usize)?;
         let (result, lifted) = {
-            let slot = self.places.get_mut(place.0 as usize)?;
+            let (holder, at) = self.holder_mut(place);
+            let slot = &mut holder.places[at.0 as usize];
             let nested = slot.meta.nested?;
             let index = slot.position(token)?;
             let value = &mut slot.tokens[index].1;
@@ -568,14 +611,143 @@ impl Net {
             // A key may read the inner nets: the token is indexed again as
             // it is now (DESIGN §8.3).
             if slot.meta.keys.is_some() {
-                self.index
-                    .forget(&slot.meta, place, token, &*slot.tokens[index].1);
+                holder
+                    .index
+                    .forget(&slot.meta, at, token, &*slot.tokens[index].1);
             }
             let value = &mut slot.tokens[index].1;
             (result, lift_from(nested, value, place, token))
         };
         self.emit_all(lifted);
         Some(result)
+    }
+
+    /// The subnet of a subnet place
+    /// ([`subnet_place`](crate::NetBuilder::subnet_place)), to read: its
+    /// places, its marking, and its ports as the subnet sees them, which is
+    /// as this net sees them through
+    /// [`port_of`](crate::NetBuilder::port_of)'s handles.
+    ///
+    /// `None` for a place that holds no subnet, or that this net does not
+    /// have.
+    ///
+    /// ```
+    /// use petritype::NetBuilder;
+    ///
+    /// let mut b = NetBuilder::new();
+    /// let lobby = b.place::<String>("Lobby");
+    /// b.port(lobby);
+    /// let level = b.build()?;
+    ///
+    /// let mut b = NetBuilder::new();
+    /// let level_3 = b.subnet_place("Level 3", level);
+    /// let door = b.port_of::<String>(level_3, "Lobby");
+    /// let mut world = b.build()?;
+    ///
+    /// let ada = world.put(door, "Ada".to_owned());
+    /// let inside = world.subnet(level_3.id()).expect("a subnet place");
+    /// assert_eq!(inside.tokens(lobby.id()).next().map(|(id, _)| id), Some(ada), "one queue, one id");
+    /// # Ok::<(), petritype::BuildError>(())
+    /// ```
+    pub fn subnet(&self, place: PlaceId) -> Option<&Net> {
+        self.places
+            .get(place.0 as usize)?
+            .subnet
+            .as_deref()
+            .map(|subnet| &subnet.net)
+    }
+
+    /// Calls `f` with the subnet of a subnet place, mutably, and lifts
+    /// whatever it logged into this net's log when it returns, each event
+    /// wrapped in an [`Event::Subnet`].
+    ///
+    /// The reach for the program into a subnet, to step it or change it, as
+    /// [`nested_scope`](Net::nested_scope) is into a token's nets. The
+    /// subnet's own handles work inside `f`, its ports included, and deeper
+    /// levels are reached by calling `subnet_scope` or `nested_scope` on the
+    /// subnet; each level lifts into the one above it as its call returns.
+    ///
+    /// ```
+    /// use petritype::{Event, NetBuilder};
+    ///
+    /// let mut b = NetBuilder::new();
+    /// let lobby = b.place::<String>("Lobby");
+    /// b.port(lobby);
+    /// let level = b.build()?;
+    ///
+    /// let mut b = NetBuilder::new();
+    /// let level_3 = b.subnet_place("Level 3", level);
+    /// let door = b.port_of::<String>(level_3, "Lobby");
+    /// let mut world = b.build()?;
+    ///
+    /// let ada = world.subnet_scope(level_3.id(), |level| level.put(lobby, "Ada".to_owned()))?;
+    /// assert_eq!(world.count(door.id()), 1, "the same queue, seen from out here");
+    /// assert!(matches!(
+    ///     &world.drain_events().collect::<Vec<_>>()[..],
+    ///     [Event::Subnet { place, event, .. }]
+    ///         if *place == level_3.id() && **event == Event::Added { place: lobby.id(), token: ada }
+    /// ));
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// With `f` not called: [`NetError::NoSuchPlace`] for a place this net
+    /// does not have; [`NetError::NotSubnet`] for one that holds no subnet;
+    /// and [`NetError::InFlight`] while a transition of this net with an
+    /// edge on one of the subnet's ports is in flight, naming the first:
+    /// the subnet is held still until that firing lands, as it is in a deep
+    /// step, so that one firing happens at a time across the levels.
+    ///
+    /// # Panics
+    ///
+    /// If `f` puts another net in the subnet's place: a subnet place holds
+    /// the one subnet it was built with for its net's whole life, and this
+    /// net's handles to its ports name that subnet's places.
+    pub fn subnet_scope<R>(
+        &mut self,
+        place: PlaceId,
+        f: impl FnOnce(&mut Net) -> R,
+    ) -> Result<R, NetError> {
+        let slot = self
+            .places
+            .get(place.0 as usize)
+            .ok_or(NetError::NoSuchPlace { place })?;
+        let Some(subnet) = slot.subnet.as_deref() else {
+            return Err(NetError::NotSubnet {
+                place,
+                name: slot.meta.name.clone(),
+            });
+        };
+        if let Some(transition) = self.reached_in_flight(subnet) {
+            return Err(NetError::InFlight {
+                transition,
+                name: self.transition_name(transition),
+            });
+        }
+        let subnet = &mut self.places[place.0 as usize]
+            .subnet
+            .as_deref_mut()
+            .expect("the place was just found to hold a subnet")
+            .net;
+        let nested_id = subnet.id();
+        let result = f(subnet);
+        assert_eq!(
+            subnet.id(),
+            nested_id,
+            "subnet_scope: the closure put another net in the place of the subnet of {place:?}, \
+             which holds its subnet for its net's whole life",
+        );
+        let lifted: Vec<Event> = subnet
+            .drain_events()
+            .map(|event| Event::Subnet {
+                place,
+                nested_id,
+                event: Box::new(event),
+            })
+            .collect();
+        self.emit_all(lifted);
+        Ok(result)
     }
 
     /// Fires one transition, here or in an inner net, in the order the
@@ -744,8 +916,9 @@ impl Net {
 
     /// Whether nothing can happen here or below: nothing fireable and nothing
     /// in flight in this net (DESIGN §3), and every inner net of every
-    /// token in a nested place that is not [passive](Stepping::Passive)
-    /// quiescent in the same deep sense.
+    /// token in a nested place, and the subnet of every subnet place, that
+    /// is not [passive](Stepping::Passive) quiescent in the same deep
+    /// sense.
     ///
     /// [`fireable`](Net::fireable) stays about this net alone. A passive
     /// place's inner nets are left out because nothing but an outer body
@@ -877,9 +1050,13 @@ impl Net {
                 .map_or(ring.len(), |at| at + 1),
             None => ring.len(),
         };
+        // A subnet held still by a firing in flight keeps its place in the
+        // ring, so the cursor finds it, but takes no turn.
+        let free = |member: &Member| !self.held(member);
         match part {
             Part::Ahead => band(Stepping::InnerFirst)
                 .chain(ring[start..].iter().copied())
+                .filter(free)
                 .collect(),
             Part::Behind => {
                 let settled = self.in_flight().is_empty();
@@ -887,6 +1064,7 @@ impl Net {
                     .iter()
                     .copied()
                     .chain(band(Stepping::OuterFirst).filter(|_| settled))
+                    .filter(free)
                     .collect()
             }
         }
@@ -894,26 +1072,41 @@ impl Net {
 
     /// Every net in a place of this net that holds nets and is not passive,
     /// in walk order (places in declaration order, a place's tokens oldest
-    /// first, a token's nets in [`Nested::nets`] order), each with where it
-    /// is and its place's rule. The one walk every part of deep stepping
-    /// goes through.
+    /// first, a token's nets in [`Nested::nets`] order, a subnet place's
+    /// subnet at its place), each with where it is and its place's rule. The
+    /// one walk every part of deep stepping goes through.
     fn members(&self) -> Vec<Member> {
         let mut members = Vec::new();
         for (place, slot) in self.places.iter().enumerate() {
+            let meta = &slot.meta;
+            if meta.nested.is_none() && !meta.subnet {
+                continue;
+            }
+            // A window's tokens are its subnet's to step, so only a place
+            // that holds nets of this net's own counts.
+            let stepping = meta.stepping;
+            if meta.window.is_some() || stepping == Stepping::Passive {
+                continue;
+            }
+            // A subnet place: one net, at its place's position.
+            if let Some(subnet) = &slot.subnet {
+                members.push(Member {
+                    place,
+                    at: At::Subnet,
+                    id: subnet.net.id,
+                    stepping,
+                });
+                continue;
+            }
             let Some(nested) = slot.meta.nested else {
                 continue;
             };
-            let stepping = slot.meta.stepping;
-            if stepping == Stepping::Passive {
-                continue;
-            }
             for (position, (_, value)) in slot.tokens.iter().enumerate() {
                 let value: &dyn Any = &**value;
                 for (net, (_, inner)) in (nested.nets)(value).into_iter().enumerate() {
                     members.push(Member {
                         place,
-                        position,
-                        net,
+                        at: At::Token { position, net },
                         id: inner.id,
                         stepping,
                     });
@@ -923,15 +1116,42 @@ impl Net {
         members
     }
 
+    /// Whether a member is held still: a subnet that one of this net's
+    /// transitions in flight reaches through a port. It takes no turn until
+    /// that firing lands, so that one firing happens at a time across the
+    /// levels.
+    fn held(&self, member: &Member) -> bool {
+        let At::Subnet = member.at else {
+            return false;
+        };
+        self.places[member.place]
+            .subnet
+            .as_deref()
+            .is_some_and(|subnet| self.reached_in_flight(subnet).is_some())
+    }
+
+    /// The first transition in flight that has an edge on one of this
+    /// subnet's ports, if any.
+    fn reached_in_flight(&self, subnet: &crate::place::Subnet) -> Option<TransitionId> {
+        subnet
+            .through
+            .iter()
+            .copied()
+            .find(|transition| self.transitions[transition.0 as usize].body.is_none())
+    }
+
     /// The net a member names, to read.
     fn member(&self, member: Member) -> Option<&Net> {
         let slot = &self.places[member.place];
+        let At::Token { position, net } = member.at else {
+            return slot.subnet.as_deref().map(|subnet| &subnet.net);
+        };
         let nested = slot.meta.nested?;
-        let (_, value) = slot.tokens.get(member.position)?;
+        let (_, value) = slot.tokens.get(position)?;
         let value: &dyn Any = &**value;
         (nested.nets)(value)
             .into_iter()
-            .nth(member.net)
+            .nth(net)
             .map(|(_, inner)| inner)
     }
 
@@ -942,17 +1162,18 @@ impl Net {
     /// nothing.
     fn member_turn(&mut self, member: Member) -> Option<Result<DeepStep, FiringFailed>> {
         let place = PlaceId(member.place as u32);
+        let At::Token { position, net } = member.at else {
+            return self.subnet_turn(place);
+        };
         let slot = &mut self.places[member.place];
         let nested = slot.meta.nested?;
-        let (token, value) = slot.tokens.get_mut(member.position)?;
+        let (token, value) = slot.tokens.get_mut(position)?;
         let token = *token;
         // The member's deep step, with what it logged; the borrow of the
         // token ends with this block, so that the events can then be written
         // to this net's own log.
         let (name, nested_id, events, result) = {
-            let (name, inner) = (nested.nets_mut)(&mut **value)
-                .into_iter()
-                .nth(member.net)?;
+            let (name, inner) = (nested.nets_mut)(&mut **value).into_iter().nth(net)?;
             debug_assert_eq!(
                 inner.id(),
                 member.id,
@@ -971,7 +1192,7 @@ impl Net {
         let slot = &self.places[member.place];
         if slot.meta.keys.is_some() {
             self.index
-                .forget(&slot.meta, place, token, &*slot.tokens[member.position].1);
+                .forget(&slot.meta, place, token, &*slot.tokens[position].1);
         }
         // Rule 1: lifted right after the inner firing, under the place and
         // token the token sits in.
@@ -997,6 +1218,38 @@ impl Net {
                 Err(failed)
             }
         })
+    }
+
+    /// A subnet's turn: a deep step of the subnet of the subnet place at
+    /// `place`, what it logged lifted into this log as [`Event::Subnet`]
+    /// right after, and the step wrapped one level. `None` if it fired
+    /// nothing.
+    ///
+    /// The subnet's ports are indexed by the subnet itself, so nothing of
+    /// this net's index follows what fired in there.
+    fn subnet_turn(&mut self, place: PlaceId) -> Option<Result<DeepStep, FiringFailed>> {
+        let subnet = &mut self.places[place.0 as usize].subnet.as_deref_mut()?.net;
+        let result = match subnet.step_deep() {
+            Ok(None) => return None,
+            Ok(Some(step)) => Ok(step),
+            Err(failed) => Err(failed),
+        };
+        let nested_id = subnet.id();
+        let events: Vec<Event> = subnet.drain_events().collect();
+        for event in events {
+            self.emit(Event::Subnet {
+                place,
+                nested_id,
+                event: Box::new(event),
+            });
+        }
+        // A failure in there keeps the path it came up with: a level that
+        // names no token has no element of `FiringFailed::path` to say it.
+        Some(result.map(|step| DeepStep::Subnet {
+            place,
+            nested_id,
+            step: Box::new(step),
+        }))
     }
 
     /// The first transition anywhere in the nesting that is fireable, with
@@ -1027,12 +1280,17 @@ impl Net {
     /// nested, or a token that is not there, lifts nothing.
     pub(crate) fn lift(&mut self, place: PlaceId, token: TokenId) {
         let lifted = {
-            let Some(slot) = self.places.get_mut(place.0 as usize) else {
+            // A window carries its port's vtable, so this is asked here
+            // before the token is looked for where it is.
+            let Some(nested) = self
+                .places
+                .get(place.0 as usize)
+                .and_then(|slot| slot.meta.nested)
+            else {
                 return;
             };
-            let Some(nested) = slot.meta.nested else {
-                return;
-            };
+            let (holder, at) = self.holder_mut(place);
+            let slot = &mut holder.places[at.0 as usize];
             let Some(index) = slot.position(token) else {
                 return;
             };

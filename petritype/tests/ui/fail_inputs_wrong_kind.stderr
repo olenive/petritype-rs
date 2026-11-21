@@ -16,7 +16,6 @@ note: required by a bound in `PricingEdges`
   --> tests/ui/fail_inputs_wrong_kind.rs:18:5
    |
 16 | struct Pricing {
-   |        ------- required by a bound in this struct
 17 |     order: Order,
 18 |     promos: Vec<Promo>,
    |     ^^^^^^ required by this bound in `PricingEdges`
@@ -44,7 +43,6 @@ note: required by a bound in `PricingEdges`
   --> tests/ui/fail_inputs_wrong_kind.rs:18:5
    |
 16 | struct Pricing {
-   |        ------- required by a bound in this struct
 17 |     order: Order,
 18 |     promos: Vec<Promo>,
    |     ^^^^^^ required by this bound in `PricingEdges`
@@ -78,8 +76,9 @@ note: required for `PricingEdges<TakeEdge<Order>, TakeEdge<Promo>, Param<Prices>
 note: required by a bound in `NetBuilder::transition`
   --> src/builder.rs
    |
+   | impl NetBuilder {
+...
    |     pub fn transition<Edges, Outputs, Body, Marker>(
-   |            ---------- required by a bound in this associated function
 ...
    |         Edges: InputEdges,
    |                ^^^^^^^^^^ required by this bound in `NetBuilder::transition`
@@ -113,8 +112,9 @@ note: required for `PricingEdges<TakeEdge<Order>, TakeEdge<Promo>, Param<Prices>
 note: required by a bound in `NetBuilder::transition`
   --> src/builder.rs
    |
+   | impl NetBuilder {
+...
    |     pub fn transition<Edges, Outputs, Body, Marker>(
-   |            ---------- required by a bound in this associated function
 ...
    |         Body: TransitionBody<Edges, Outputs, Marker>,
    |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `NetBuilder::transition`

@@ -10,7 +10,6 @@ note: required by a bound in `PricedEdges`
   --> tests/ui/fail_outputs_wrong_place.rs:15:5
    |
 13 | struct Priced {
-   |        ------ required by a bound in this struct
 14 |     order: Order,
 15 |     note: Option<Note>,
    |     ^^^^ required by this bound in `PricedEdges`
@@ -51,8 +50,9 @@ help: the following other types implement trait `IntoOutcome<Outputs, Marker>`
 note: required by a bound in `NetBuilder::transition`
   --> src/builder.rs
    |
+   | impl NetBuilder {
+...
    |     pub fn transition<Edges, Outputs, Body, Marker>(
-   |            ---------- required by a bound in this associated function
 ...
    |         Body: TransitionBody<Edges, Outputs, Marker>,
    |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `NetBuilder::transition`

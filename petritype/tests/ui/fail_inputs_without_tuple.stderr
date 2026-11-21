@@ -19,8 +19,9 @@ help: the trait `InputEdges` is not implemented for `PricingEdges<TakeEdge<Order
 note: required by a bound in `NetBuilder::transition`
   --> src/builder.rs
    |
+   | impl NetBuilder {
+...
    |     pub fn transition<Edges, Outputs, Body, Marker>(
-   |            ---------- required by a bound in this associated function
 ...
    |         Edges: InputEdges,
    |                ^^^^^^^^^^ required by this bound in `NetBuilder::transition`
@@ -45,8 +46,9 @@ error[E0277]: transition body parameters do not match its input edges
 note: required by a bound in `NetBuilder::transition`
   --> src/builder.rs
    |
+   | impl NetBuilder {
+...
    |     pub fn transition<Edges, Outputs, Body, Marker>(
-   |            ---------- required by a bound in this associated function
 ...
    |         Body: TransitionBody<Edges, Outputs, Marker>,
    |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `NetBuilder::transition`

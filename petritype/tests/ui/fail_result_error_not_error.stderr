@@ -27,8 +27,9 @@ help: the trait `IntoOutcome<Outputs, Failing<M>>` is conditionally implemented 
 note: required by a bound in `NetBuilder::transition`
   --> src/builder.rs
    |
+   | impl NetBuilder {
+...
    |     pub fn transition<Edges, Outputs, Body, Marker>(
-   |            ---------- required by a bound in this associated function
 ...
    |         Body: TransitionBody<Edges, Outputs, Marker>,
    |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `NetBuilder::transition`

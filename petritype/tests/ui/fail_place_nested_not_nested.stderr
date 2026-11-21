@@ -21,8 +21,9 @@ help: the trait `petritype::Nested` is implemented for `petritype::Net`
 note: required by a bound in `NetBuilder::place_nested`
   --> src/builder.rs
    |
+   | impl NetBuilder {
+...
    |     pub fn place_nested<T>(&mut self, name: impl Into<String>) -> PlaceRef<T>
-   |            ------------ required by a bound in this associated function
    |     where
    |         T: Nested + fmt::Debug + Send + Sync + 'static,
    |            ^^^^^^ required by this bound in `NetBuilder::place_nested`

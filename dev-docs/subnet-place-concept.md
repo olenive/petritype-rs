@@ -1,8 +1,8 @@
 # A subnet place: the concept
 
 Written 2026-11-21, and revised the same day after its open questions were
-gone through one at a time. This replaces `net-place-concept.md`, whose
-working name "net place" read as "a place in a net". The concept is agreed.
+gone through one at a time. The first write-up used the working name "net
+place", which read as "a place in a net". The concept is agreed.
 It is not a spec: nothing here is built, and the builder's method names are
 not chosen.
 

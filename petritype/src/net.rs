@@ -80,6 +80,10 @@ pub struct Net {
     /// [`control`](crate::control) module). Never saved: a net rebuilt from
     /// its template declares them again.
     pub(crate) controls: Vec<crate::control::Control>,
+    /// The names of the groups the builder declared, in declared order (see
+    /// [`groups`](Net::groups)). Part of the definition, never saved: a net
+    /// rebuilt from its template declares them again.
+    pub(crate) groups: Vec<String>,
     /// Per key name, per value, the tokens that hold it: what
     /// [`query`](Net::query) starts from (DESIGN §8.3). Kept in step by every
     /// method that moves or changes a token, never saved.
@@ -187,6 +191,13 @@ pub struct PlaceInfo<'a> {
     /// other place. Its tokens are the port's, and what it is beyond them
     /// is said by the subnet's definition.
     pub port_of: Option<PlaceId>,
+    /// The name of the group the place is in, as
+    /// [`NetBuilder::in_group`](crate::NetBuilder::in_group) put it there,
+    /// or `None` for a place in no group (DESIGN §6.8). A subnet place may
+    /// be in one; the place this net has for a port is in none, since it is
+    /// drawn in its subnet place's box. Only drawings read it: being in a
+    /// group changes nothing about how the net runs.
+    pub group: Option<&'a str>,
 }
 
 impl Net {
@@ -212,7 +223,33 @@ impl Net {
     /// assert_eq!(names, ["Inbox"]);
     /// ```
     pub fn places(&self) -> impl Iterator<Item = (PlaceId, PlaceInfo<'_>)> {
-        places_of(&self.places)
+        places_of(&self.places, &self.groups)
+    }
+
+    /// The names of the net's groups, in the order they were declared,
+    /// which is the order drawings place them in (DESIGN §6.8).
+    ///
+    /// A group is a named set of places and transitions, declared with
+    /// [`NetBuilder::group`](crate::NetBuilder::group), that only drawings
+    /// read. Which nodes are in it is on each node:
+    /// [`PlaceInfo::group`] and [`TransitionInfo::group`]. A subnet's
+    /// groups are its own, read from
+    /// [`subnet`](Net::subnet)`(place)?.groups()`.
+    ///
+    /// ```
+    /// # use petritype::NetBuilder;
+    /// let mut b = NetBuilder::new();
+    /// let walk = b.group("Walk");
+    /// let _eat = b.group("Eat");
+    /// let trail = b.place::<u32>("Trail");
+    /// b.in_group(walk, trail);
+    /// let net = b.build()?;
+    ///
+    /// assert_eq!(net.groups().collect::<Vec<_>>(), ["Walk", "Eat"]);
+    /// # Ok::<(), petritype::BuildError>(())
+    /// ```
+    pub fn groups(&self) -> impl Iterator<Item = &str> {
+        self.groups.iter().map(String::as_str)
     }
 
     /// Every transition, in declaration order, with its name, its input
@@ -251,6 +288,7 @@ impl Net {
                 // register of airborne firings to consult.
                 in_flight: slot.body.is_none(),
                 detachable: slot.detachable,
+                group: group_name(&self.groups, slot.group),
             };
             (id, info)
         })
@@ -325,6 +363,7 @@ impl Net {
             self.places(),
             self.transitions(),
             self.edges(),
+            self.groups(),
             self.topology_counter,
         )
     }
@@ -1199,6 +1238,7 @@ impl fmt::Debug for Net {
                     .map(|control| control.name.as_str())
                     .collect::<Vec<_>>(),
             )
+            .field("groups", &self.groups)
             .field("index", &self.index);
         #[cfg(feature = "serde")]
         out.field("template", &self.template())
@@ -1248,10 +1288,12 @@ fn port_slot(places: &[impl Borrow<PlaceSlot>], window: Window) -> Option<&Place
     subnet.net.places.get(window.port.0 as usize)
 }
 
-/// Every place, in id order, with its name, token type and live count.
-pub(crate) fn places_of(
-    places: &[impl Borrow<PlaceSlot>],
-) -> impl Iterator<Item = (PlaceId, PlaceInfo<'_>)> {
+/// Every place, in id order, with its name, token type and live count, and
+/// the name of its group among `groups`, the net's in declared order.
+pub(crate) fn places_of<'a>(
+    places: &'a [impl Borrow<PlaceSlot>],
+    groups: &'a [String],
+) -> impl Iterator<Item = (PlaceId, PlaceInfo<'a>)> {
     places.iter().enumerate().map(|(index, slot)| {
         let slot = slot.borrow();
         // The index is where the id came from in the first place.
@@ -1271,9 +1313,16 @@ pub(crate) fn places_of(
             subnet: slot.meta.subnet,
             port: slot.meta.port,
             port_of: slot.meta.window.map(|window| window.subnet),
+            group: group_name(groups, slot.meta.group),
         };
         (id, info)
     })
+}
+
+/// The name of the group at `group` in a net's declared order, for the
+/// read API.
+pub(crate) fn group_name(groups: &[String], group: Option<u32>) -> Option<&str> {
+    group.map(|index| groups[index as usize].as_str())
 }
 
 /// Every edge of a net, given its transitions in id order: inputs then

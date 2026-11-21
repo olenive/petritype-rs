@@ -125,6 +125,10 @@ pub(crate) struct TransitionSlot {
     /// firing cannot leave the net and cannot be handed to a worker. Derived
     /// from the edge kinds, never asked of the author.
     pub(crate) detachable: bool,
+    /// The position, in the net's declared order of groups, of the group
+    /// [`TransitionBuilder::group`] put the transition in, or `None` for a
+    /// transition in no group. Only drawings read it.
+    pub(crate) group: Option<u32>,
 }
 
 impl fmt::Debug for TransitionSlot {
@@ -146,6 +150,7 @@ impl fmt::Debug for TransitionSlot {
             .field("enabled", &self.enabled)
             .field("restore_tokens_on_failure", &self.restore_tokens_on_failure)
             .field("detachable", &self.detachable)
+            .field("group", &self.group)
             .finish()
     }
 }
@@ -238,6 +243,11 @@ pub struct TransitionInfo<'a> {
     /// reads, [`SnapshotEdge`](crate::SnapshotEdge) and
     /// [`SurveyEdge`](crate::SurveyEdge), hand over clones and leave it true.
     pub detachable: bool,
+    /// The name of the group the transition is in, as
+    /// [`TransitionBuilder::group`] put it there, or `None` for a
+    /// transition in no group (DESIGN §6.8). Only drawings read it: being in
+    /// a group changes nothing about how the transition fires.
+    pub group: Option<&'a str>,
 }
 
 /// The handle [`NetBuilder::transition`](crate::NetBuilder::transition)
@@ -408,6 +418,43 @@ impl TransitionBuilder<'_> {
         self.builder
             .transition_slot(self.id)
             .restore_tokens_on_failure = true;
+        self
+    }
+
+    /// Puts this transition in a group, one that
+    /// [`NetBuilder::group`](crate::NetBuilder::group) declared: a label
+    /// that drawings read and the engine never does (DESIGN §6.8).
+    ///
+    /// ```
+    /// # use petritype::{NetBuilder, TakeEdge};
+    /// let mut b = NetBuilder::new();
+    /// let walk = b.group("Walk");
+    /// let trail = b.place::<u32>("Trail");
+    /// let walked = b.place::<u32>("Walked");
+    /// b.transition("Walk", (TakeEdge(trail),), (walked,), |leg: u32| (leg,))
+    ///     .group(walk);
+    /// let net = b.build()?;
+    ///
+    /// let (_, info) = net.transitions().next().unwrap();
+    /// assert_eq!(info.group, Some("Walk"));
+    /// # Ok::<(), petritype::BuildError>(())
+    /// ```
+    ///
+    /// A transition is in one group or in none. The same group again
+    /// changes nothing.
+    ///
+    /// # Errors
+    ///
+    /// [`BuildError::TransitionInTwoGroups`](crate::BuildError::TransitionInTwoGroups)
+    /// from [`build`](crate::NetBuilder::build) if the transition is put in
+    /// a second group; it stays in the first until then. The call itself is
+    /// infallible, as the other options are.
+    ///
+    /// # Panics
+    ///
+    /// If `group` came from a different builder.
+    pub fn group(&mut self, group: crate::GroupRef) -> &mut Self {
+        self.builder.transition_in_group(self.id, group);
         self
     }
 }

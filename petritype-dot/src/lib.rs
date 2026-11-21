@@ -47,6 +47,11 @@
 //! | highlighted subnet place | when the firing touched one of its ports, `color=magenta` (`red` for a failure) and `penwidth=2`, as a place |
 //! | edge on a port, from outside | as its kind draws it, ending at the port's cell: `tailport=port<k>` for an input edge, `headport=port<k>` for an output edge |
 //! | port place, in its subnet's own drawing | as a place, plus `peripheries=2`: a second ring, so the border shows from inside |
+//! | [group](petritype::NetBuilder::group) | a Graphviz cluster, `subgraph cluster_<n>` with `n` its position in declared order, `label` the group's name and `style=dashed`: a dashed frame round the group's places, a subnet place with its box, and then its transitions. The clusters follow the nodes in no group, in declared order |
+//!
+//! The nodes in no group come first, at the top level, so a net with no
+//! groups draws to the text it drew before groups existed. The node ids
+//! stay `p<i>` and `t<i>` by position, whichever frame a node is drawn in.
 //!
 //! The Python renderer titles a subnet place's box with the template that
 //! built its subnet as well, as it labels a place with its type. This one
@@ -148,6 +153,11 @@ pub trait DotSource {
     /// id order, its input edges and then its output edges.
     fn edges(&self) -> impl Iterator<Item = EdgeInfo>;
 
+    /// The names of the net's groups, in declared order: [`Net::groups`].
+    /// Each is drawn as a cluster of the places and transitions whose
+    /// `group` it names.
+    fn groups(&self) -> impl Iterator<Item = &str>;
+
     /// The ids of a place's tokens, oldest first: [`Net::tokens`] without the
     /// values.
     fn token_ids(&self, place: PlaceId) -> impl Iterator<Item = TokenId>;
@@ -170,6 +180,10 @@ impl DotSource for Net {
         Net::edges(self)
     }
 
+    fn groups(&self) -> impl Iterator<Item = &str> {
+        Net::groups(self)
+    }
+
     fn token_ids(&self, place: PlaceId) -> impl Iterator<Item = TokenId> {
         Net::tokens(self, place).map(|(id, _)| id)
     }
@@ -190,6 +204,10 @@ impl DotSource for Snapshot {
 
     fn edges(&self) -> impl Iterator<Item = EdgeInfo> {
         Snapshot::edges(self)
+    }
+
+    fn groups(&self) -> impl Iterator<Item = &str> {
+        Snapshot::groups(self)
     }
 
     fn token_ids(&self, place: PlaceId) -> impl Iterator<Item = TokenId> {
@@ -470,72 +488,38 @@ fn render(source: &impl DotSource, style: &Style, out: &mut String) -> fmt::Resu
     writeln!(out, "  rankdir={};", style.rankdir.as_str())?;
     writeln!(out, "  node [fontname=\"Helvetica\"];")?;
 
+    // The nodes in no group, at the top level: every node of a net with no
+    // groups, in the order it always had.
     for (index, (id, info)) in source.places().enumerate() {
         // A port of a subnet place is drawn as a cell of that place's box.
-        if info.port_of.is_some() {
-            continue;
+        if info.port_of.is_none() && info.group.is_none() {
+            writeln!(out, "  {}", place_node(source, style, index, id, info))?;
         }
-        if info.subnet {
-            let ports: Vec<(PlaceId, PlaceInfo<'_>)> = source
-                .places()
-                .filter(|(_, port)| port.port_of == Some(id))
-                .collect();
-            // Outlined when the firing touched one of its ports.
-            let (colour, penwidth) = if ports.iter().any(|(port, _)| style.highlights_place(*port))
-            {
-                (style.colour(), 2)
-            } else {
-                ("black", 1)
-            };
-            writeln!(
-                out,
-                "  p{index} [shape=Mrecord, style=filled, fillcolor=lightskyblue, \
-                 color={colour}, penwidth={penwidth}, label=\"{}\"];",
-                subnet_label(style, info.name, &ports),
-            )?;
-            continue;
-        }
-        let (colour, penwidth) = if style.highlights_place(id) {
-            (style.colour(), 2)
-        } else {
-            ("black", 1)
-        };
-        // A port seen from inside its subnet: a second ring, the border.
-        let peripheries = if info.port { ", peripheries=2" } else { "" };
-        writeln!(
-            out,
-            "  p{index} [shape=oval, style=filled, fillcolor=deepskyblue, \
-             color={colour}, penwidth={penwidth}{peripheries}, label=\"{}\"];",
-            escape(&place_label(source, style, id, info.name)),
-        )?;
     }
-
     for (index, (id, info)) in source.transitions().enumerate() {
-        let mut fillcolor = "lightgreen";
-        let mut node_style = "filled";
-        let mut colour = "black";
-        let mut penwidth = 1;
-        if !info.enabled {
-            fillcolor = "lightgray";
-            node_style = "\"filled,dashed\"";
+        if info.group.is_none() {
+            writeln!(out, "  {}", transition_node(style, index, id, info))?;
         }
-        if style.highlights_transition(id) {
-            colour = style.colour();
-            penwidth = 3;
+    }
+    // Each group, in declared order, as a cluster holding its places and
+    // then its transitions, so that Graphviz draws a dashed frame round
+    // them with the group's name as its title. A subnet place in a group is
+    // drawn inside it, its ports in its box.
+    for (position, name) in source.groups().enumerate() {
+        writeln!(out, "  subgraph cluster_{position} {{")?;
+        writeln!(out, "    label=\"{}\";", escape(name))?;
+        writeln!(out, "    style=dashed;")?;
+        for (index, (id, info)) in source.places().enumerate() {
+            if info.port_of.is_none() && info.group == Some(name) {
+                writeln!(out, "    {}", place_node(source, style, index, id, info))?;
+            }
         }
-        // In flight wins over the outline, as in the Python renderer: what a
-        // transition is doing right now beats what it did a moment ago.
-        if info.in_flight {
-            fillcolor = "gold";
-            colour = "darkorange";
-            penwidth = 2;
+        for (index, (id, info)) in source.transitions().enumerate() {
+            if info.group == Some(name) {
+                writeln!(out, "    {}", transition_node(style, index, id, info))?;
+            }
         }
-        writeln!(
-            out,
-            "  t{index} [shape=box, style={node_style}, fillcolor={fillcolor}, \
-             color={colour}, penwidth={penwidth}, label=\"{}\"];",
-            escape(&transition_label(info.name, info.params)),
-        )?;
+        writeln!(out, "  }}")?;
     }
 
     for edge in source.edges() {
@@ -588,6 +572,80 @@ fn render(source: &impl DotSource, style: &Style, out: &mut String) -> fmt::Resu
     }
 
     writeln!(out, "}}")
+}
+
+/// One place's node statement, `p<index> [...];`: an oval with its name and
+/// tokens, or a subnet place's box with a cell per port.
+fn place_node(
+    source: &impl DotSource,
+    style: &Style,
+    index: usize,
+    id: PlaceId,
+    info: PlaceInfo<'_>,
+) -> String {
+    if info.subnet {
+        let ports: Vec<(PlaceId, PlaceInfo<'_>)> = source
+            .places()
+            .filter(|(_, port)| port.port_of == Some(id))
+            .collect();
+        // Outlined when the firing touched one of its ports.
+        let (colour, penwidth) = if ports.iter().any(|(port, _)| style.highlights_place(*port)) {
+            (style.colour(), 2)
+        } else {
+            ("black", 1)
+        };
+        return format!(
+            "p{index} [shape=Mrecord, style=filled, fillcolor=lightskyblue, \
+             color={colour}, penwidth={penwidth}, label=\"{}\"];",
+            subnet_label(style, info.name, &ports),
+        );
+    }
+    let (colour, penwidth) = if style.highlights_place(id) {
+        (style.colour(), 2)
+    } else {
+        ("black", 1)
+    };
+    // A port seen from inside its subnet: a second ring, the border.
+    let peripheries = if info.port { ", peripheries=2" } else { "" };
+    format!(
+        "p{index} [shape=oval, style=filled, fillcolor=deepskyblue, \
+         color={colour}, penwidth={penwidth}{peripheries}, label=\"{}\"];",
+        escape(&place_label(source, style, id, info.name)),
+    )
+}
+
+/// One transition's node statement, `t<index> [...];`: a box, coloured by
+/// its switch, the highlight and whether it is in flight.
+fn transition_node(
+    style: &Style,
+    index: usize,
+    id: TransitionId,
+    info: TransitionInfo<'_>,
+) -> String {
+    let mut fillcolor = "lightgreen";
+    let mut node_style = "filled";
+    let mut colour = "black";
+    let mut penwidth = 1;
+    if !info.enabled {
+        fillcolor = "lightgray";
+        node_style = "\"filled,dashed\"";
+    }
+    if style.highlights_transition(id) {
+        colour = style.colour();
+        penwidth = 3;
+    }
+    // In flight wins over the outline, as in the Python renderer: what a
+    // transition is doing right now beats what it did a moment ago.
+    if info.in_flight {
+        fillcolor = "gold";
+        colour = "darkorange";
+        penwidth = 2;
+    }
+    format!(
+        "t{index} [shape=box, style={node_style}, fillcolor={fillcolor}, \
+         color={colour}, penwidth={penwidth}, label=\"{}\"];",
+        escape(&transition_label(info.name, info.params)),
+    )
 }
 
 /// A place's label: its name, then one line per token while there is room.

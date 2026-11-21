@@ -127,6 +127,11 @@ pub(crate) struct PlaceMeta {
     /// [`NetBuilder::port`](crate::NetBuilder::port), for a net around it to
     /// reach it through.
     pub(crate) port: bool,
+    /// The position, in the net's declared order of groups, of the group
+    /// [`NetBuilder::in_group`](crate::NetBuilder::in_group) put the place
+    /// in, or `None` for a place in no group. Only drawings read it. A
+    /// window is in none, whatever group its port is in inside the subnet.
+    pub(crate) group: Option<u32>,
 }
 
 impl PlaceMeta {
@@ -188,6 +193,7 @@ impl fmt::Debug for PlaceMeta {
             .field("subnet", &self.subnet)
             .field("window", &self.window)
             .field("port", &self.port)
+            .field("group", &self.group)
             .finish_non_exhaustive()
     }
 }

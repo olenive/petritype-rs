@@ -282,6 +282,62 @@ pub enum BuildError {
         /// The name used more than once.
         name: String,
     },
+    /// Two [groups](crate::NetBuilder::group) were given the same name. A
+    /// group is known to a reader, and to
+    /// [`PlaceInfo::group`](crate::PlaceInfo::group), by its name alone, so
+    /// names are unique among a net's groups.
+    #[error("duplicate group name: {name:?}")]
+    DuplicateGroupName {
+        /// The name used more than once.
+        name: String,
+    },
+    /// A place was put in a second group with
+    /// [`in_group`](crate::NetBuilder::in_group). A node is in one group or
+    /// in none, so that a drawing has one frame to draw it in. Reported for
+    /// the first such node, places and transitions alike, in the order
+    /// they were put in groups.
+    #[error("place {place:?} is put in group {second:?}, but it is in group {first:?} already")]
+    PlaceInTwoGroups {
+        /// The place.
+        place: String,
+        /// The group it was put in first, which it stays in until then.
+        first: String,
+        /// The group it was put in after that.
+        second: String,
+    },
+    /// A transition was put in a second group with
+    /// [`TransitionBuilder::group`](crate::TransitionBuilder::group), as
+    /// [`PlaceInTwoGroups`](BuildError::PlaceInTwoGroups) for a place.
+    #[error(
+        "transition {transition:?} is put in group {second:?}, but it is in group {first:?} \
+         already"
+    )]
+    TransitionInTwoGroups {
+        /// The transition.
+        transition: String,
+        /// The group it was put in first, which it stays in until then.
+        first: String,
+        /// The group it was put in after that.
+        second: String,
+    },
+    /// A port of one of the net's subnet places, the handle
+    /// [`port_of`](crate::NetBuilder::port_of) gave out, was put in a group
+    /// with [`in_group`](crate::NetBuilder::in_group). A port is drawn in
+    /// its subnet place's box and goes where the box goes: put the subnet
+    /// place in the group instead. Inside the subnet, the port is an
+    /// ordinary place of the subnet's, and may be in one of its groups.
+    #[error(
+        "place {place:?} is a port of subnet place {subnet:?}, so it cannot be put in group \
+         {group:?}: it is drawn in its subnet place's box"
+    )]
+    PortInGroup {
+        /// The port.
+        place: String,
+        /// The subnet place it belongs to.
+        subnet: String,
+        /// The group it was put in.
+        group: String,
+    },
     /// [`port_of`](crate::NetBuilder::port_of) named a port the subnet does
     /// not have: no place of that name, or one its definition did not mark
     /// with [`port`](crate::NetBuilder::port). Only ports can be reached

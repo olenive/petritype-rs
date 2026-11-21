@@ -180,6 +180,29 @@ Served by `petritype-runner`, a subnet is addressed by the step `{"place": "Leve
 port by the pair (`{"place": "Level 1", "port": "Lobby"}`), and a change of a port moves the versions of both nets
 that see it (PROTOCOL.md §12.7, `DESIGN.md` §19.3.17).
 
+## Groups
+
+A net whose parts all read and change one shared place cannot be split into subnets, so it stays flat and is read
+by its parts: a *group* is a named set of a net's places and transitions that only drawings read.
+
+```rust
+let energy = b.place::<Energy>("Energy");                   // shared by both concerns, in no group
+let walk = b.group("Walk");                                 // a GroupRef
+let paid = b.place::<Leg>("Walk Paid");
+b.in_group(walk, paid);                                     // a place or a subnet place
+b.transition("Fund Walk", (TakeEdge(trail), MutateEdge(energy)), (paid,), |leg: Leg, energy: &mut Energy| {
+    energy.0 -= LEG;
+    (leg,)
+})
+.group(walk);                                               // a transition, where it is declared
+```
+
+A node is in one group or in none, and the net fires, steps, saves and logs exactly as it would with no groups.
+`net.groups()` lists the names in declared order, `PlaceInfo::group` and `TransitionInfo::group` say which group
+a node is in, and a subnet has groups of its own. `petritype-dot` draws each group as a dashed frame.
+`petritype/examples/hike.rs` is a walker whose walking and eating both change its `Energy`, each concern a group
+and the energy in none (`cargo run -p petritype --example hike`); `DESIGN.md` §6.8 has the rules.
+
 ## Keys and queries
 
 A place can declare *keys*: named values, each a string, an integer or a boolean, that it derives from every

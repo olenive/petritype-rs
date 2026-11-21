@@ -116,5 +116,12 @@ name = "levels"
 test = true
 required-features = ["serde"]
 
+# Groups (DESIGN §6.8): a hike whose two concerns, walking and eating, both
+# change one shared place, the walker's energy, so the net stays flat and is
+# read by its parts: each concern is a group, and the energy is in none.
+[[example]]
+name = "hike"
+test = true
+
 [package.metadata.docs.rs]
 all-features = true

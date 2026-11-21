@@ -109,6 +109,11 @@ Dropped, and why:
   place or a subnet place, take their turns beside the outer net, one of
   inner first (the default), take turns, outer first or passive (§6.6, since
   2026-11-21).
+- **Group**: a named set of places and transitions of one net, stated in
+  its definition, that only drawings read; a node is in one group or in
+  none, and a net runs the same with or without them (§6.8, since
+  2026-11-21). A group is a label on parts of one net, where a subnet place
+  holds a separate net.
 - **Key**: a named attribute of a token (a string, an integer or a
   boolean) that its place derives from the token's value with an extractor
   the author declared (§8.3, slice 18). A **filter** keeps the tokens whose
@@ -1319,6 +1324,73 @@ snapshot.subnet(place) -> Option<&Snapshot>
   firing is in flight, ids collide, and two firings in flight on one port
   lose a token. The window that resolves to the port was built instead.
 
+### 6.8 Groups
+
+**Built 2026-11-21** (`dev-docs/group-spec.md`, the one definition for both
+runtimes). A *group* is a named set of places and transitions of one net,
+stated in the net's definition, that only drawings read. The engine never
+does: firing, stepping, ids, saving and the events are those of the same net
+with no groups. A net whose rules all read and change one shared place
+cannot be split into subnets without moving those rules to the outer net,
+which leaves the first view no simpler, so such a net stays flat and is read
+by gathering its parts under names. `petritype/examples/hike.rs` is one:
+walking and eating both change the walker's `Energy`, each concern is a
+group, and the energy is in none.
+
+```rust
+let walk = b.group("Walk") -> GroupRef                  // DuplicateGroupName
+b.in_group(walk, paid);                                 // a PlaceRef or a SubnetRef (PlaceHandle); PlaceInTwoGroups, PortInGroup
+b.transition("Fund Walk", ..).group(walk);              // TransitionInTwoGroups
+net.groups() -> impl Iterator<Item = &str>              // declared order; snapshot.groups() too
+PlaceInfo { .., group: Option<&str> };  TransitionInfo { .., group: Option<&str> }
+Topology { .., groups: Vec<String> };  TopologyPlace, TopologyTransition { .., group: Option<String> }
+```
+
+| | Group | Subnet place |
+|---|---|---|
+| What it is | a label on parts of one net | a separate net held by a place |
+| Token logic | the flat net's, unchanged | its own net, its own ids and turns |
+| Shared places | yes, freely | no, only ports |
+| What it is for | reading a large flat net | a part that is really separate |
+
+- **The rules.** A place or a transition is in one group or in none, and
+  groups are flat. A group has a name, unique among its net's groups, and
+  nothing else; names may hold any characters, and none of them means
+  anything. Groups are in declared order, which drawings follow, and
+  declaring one or putting a node in one changes no node's id and not the
+  order the nodes are declared in. A subnet place may be in a group. A
+  subnet, or a net carried by a token, has groups of its own, from its own
+  definition, and the place a net has for a port is in none: a port is
+  drawn in its subnet place's box and goes where the box goes.
+- **Storage.** The net keeps the names in declared order, and a place's
+  metadata and a transition's slot keep the position of its group, which
+  the read API turns into the name. A window is in none, whatever group its
+  port is in inside the subnet. A snapshot carries the names, so it reads
+  and draws as its net does.
+- **Misuse.** Two groups of one name, a node put in a second group and a
+  port's handle put in a group are build errors (`DuplicateGroupName`,
+  `PlaceInTwoGroups`, `TransitionInTwoGroups`, `PortInGroup`), reported
+  after the controls' names, because `in_group` and `TransitionBuilder::group`
+  are infallible, as the other per-node options are. The same group again
+  changes nothing. A group handle from another builder panics, naming the
+  node, as a place handle from another net does.
+- **Saving.** Groups are part of the definition. A marking and a saved net
+  never mention them, and a template's net has them each time it is built,
+  so a restore and a fork have them too. A net saves to the same bytes with
+  and without groups, and a net with no groups writes its topology to the
+  bytes it always did: `tests/groups.rs` runs one net with and without
+  groups under each tie-break and compares the deep steps, the events, the
+  markings and the saved form, and pins the plain net's topology and saved
+  form to what the commit before wrote.
+- **Drawing.** `petritype-dot` draws a group as a Graphviz cluster,
+  `subgraph cluster_<n>` with `n` its position in declared order, the
+  group's name as its label and a dashed outline, holding its places, a
+  subnet place with its box, and then its transitions. The nodes in no
+  group come first, at the top level, so a net with no groups draws to the
+  text it drew before, and every node keeps its `p<i>` or `t<i>` id.
+  Closing a group is the viewer's, and is not drawn here. The layout crate
+  and the wire take groups up in later steps of the spec.
+
 ## 7. Failure semantics
 
 - **Expected outcomes are data.** Route a token to an error place via a
@@ -1466,6 +1538,7 @@ net.places()      -> impl Iterator<Item = (PlaceId, PlaceInfo<'_>)>    // by val
 net.transitions() -> impl Iterator<Item = (TransitionId, TransitionInfo<'_>)>  // by value: name, inputs, filters (slice 19), outputs, positional (slice 17), enabled, in_flight, detachable
 net.edges()       -> impl Iterator<Item = EdgeInfo>   // Input { place, transition, kind, filter (slice 19) } | Output { transition, place, slot }; transition order, inputs then outputs
 net.topology()    -> Topology   // places, transitions, edges and topology_counter as owned values; shape only, no counts or switches (slice 14)
+net.groups()      -> impl Iterator<Item = &str>   // §6.8: the groups' names in declared order; PlaceInfo::group and TransitionInfo::group say a node's
 net.place_named(&str) -> Option<PlaceId>;  net.transition_named(&str) -> Option<TransitionId>
 net.place_ref::<T>(&str) -> Option<PlaceRef<T>>   // slice 15: a typed handle by name, checked by TypeId
 net.nested(place, token) -> Option<Vec<(&str, &Net)>>   // slice 15: a nested token's inner nets (§6.6)
@@ -1506,7 +1579,7 @@ parameters and the counters, cloned through the `PlaceMeta` vtables into an
 owned `Send + Sync + Clone` value with the same read API names as `Net`
 (`places`, `transitions`, `edges`, `topology`, `count`, `tokens`, `token`,
 `label`, `debug`, `json`, `is_enabled`, `in_flight`, `param`, `nested` since slice 16, `keys`, `query`,
-`distinct_values` and `matches` since slice 18, by scanning, the counters). It is *not* a `Net`, and
+`distinct_values` and `matches` since slice 18, by scanning, `groups` since 2026-11-21, the counters). It is *not* a `Net`, and
 cannot be: bodies are `Box<dyn FnMut>` and cannot be cloned, and an in-flight
 transition has no body in the net at all; a what-if copy is a rebuild from
 the builder. What it is for: a renderer or inspector on another thread owns
@@ -2003,6 +2076,10 @@ Always:
   no keys (`KeyedEdgeOnUnkeyedPlace { transition, place }`, slice 19,
   §8.3): it could never fire. Checked edge by edge with the three above, the
   first offender in transition order.
+- Groups (§6.8): two of one name (`DuplicateGroupName`), then the first
+  node put in a second group (`PlaceInTwoGroups`, `TransitionInTwoGroups`)
+  or a port's handle put in one (`PortInGroup`). `in_group` and
+  `TransitionBuilder::group` stay infallible.
 - A declared `Param::<T>` with no `param(value)` of that type
   (`MissingParam`); with `serde`, two parameter types sharing a wire name
   (`DuplicateParamName`). Both before routing.

@@ -55,7 +55,10 @@ use crate::edge::{EdgeKind, InputEdges, InputSpec};
 use crate::erased::RoutingProblem;
 use crate::error::BuildError;
 use crate::firing::TieBreak;
-use crate::ids::{NetId, PlaceHandle, PlaceId, PlaceRef, SubnetRef, TransitionId, foreign_place};
+use crate::ids::{
+    GroupRef, NetId, PlaceHandle, PlaceId, PlaceRef, SubnetRef, TransitionId, foreign_group,
+    foreign_place,
+};
 use crate::index::KeyIndex;
 use crate::keys::{KeyValue, KeysVtable};
 use crate::nested::{Nested, NestedVtable, Stepping, forget_inner_events};
@@ -140,6 +143,19 @@ enum KeysProblem {
     /// A second declaration for one place:
     /// [`BuildError::KeysAlreadyDeclared`].
     Again { place: PlaceId },
+}
+
+/// What was wrong with putting a node in a group, kept until
+/// [`build`](NetBuilder::build) reports it: [`in_group`](NetBuilder::in_group)
+/// and [`TransitionBuilder::group`] are infallible.
+#[derive(Debug, Clone, Copy)]
+enum GroupProblem {
+    /// A node put in a second group: [`BuildError::PlaceInTwoGroups`] or
+    /// [`BuildError::TransitionInTwoGroups`]. The groups are positions in
+    /// the declared order.
+    Twice { node: Node, first: u32, second: u32 },
+    /// A port's place put in a group: [`BuildError::PortInGroup`].
+    Port { place: PlaceId, group: u32 },
 }
 
 /// The colour of a node, from the two vectors the walk keeps.
@@ -243,6 +259,14 @@ pub struct NetBuilder {
     /// The controls declared with [`control`](NetBuilder::control), in
     /// order; names are checked by [`build`](NetBuilder::build).
     controls: Vec<Control>,
+    /// The names of the groups declared with [`group`](NetBuilder::group),
+    /// in declared order; the index is the group's position, which a
+    /// [`GroupRef`] carries. Names are checked by
+    /// [`build`](NetBuilder::build).
+    groups: Vec<String>,
+    /// The first node put in a group wrongly, kept until
+    /// [`build`](NetBuilder::build) reports it.
+    group_problem: Option<GroupProblem>,
     /// The registry the net will restore its nested tokens from, as given
     /// to [`template`](NetBuilder::template) and
     /// [`templates`](NetBuilder::templates).
@@ -270,6 +294,8 @@ impl NetBuilder {
             keys_problem: None,
             port_problem: None,
             controls: Vec::new(),
+            groups: Vec::new(),
+            group_problem: None,
             #[cfg(feature = "serde")]
             templates: crate::template::Templates::new(),
         }
@@ -482,7 +508,9 @@ impl NetBuilder {
         net.events.clear();
         let id = PlaceId(self.places.len() as u32);
         // One window per port, in the subnet's place order: the outer net
-        // knows every port, whether or not an edge of its own uses it.
+        // knows every port, whether or not an edge of its own uses it. A
+        // port's group is one of the subnet's, so its window is in none
+        // here: it is drawn in its subnet place's box.
         let windows: Vec<PlaceMeta> = net
             .places
             .iter()
@@ -494,6 +522,7 @@ impl NetBuilder {
                     port: PlaceId(port as u32),
                 }),
                 port: false,
+                group: None,
                 ..Clone::clone(&slot.meta)
             })
             .collect();
@@ -516,6 +545,7 @@ impl NetBuilder {
                 subnet: true,
                 window: None,
                 port: false,
+                group: None,
             },
             tokens: VecDeque::new(),
             subnet: Some(Box::new(Subnet {
@@ -819,6 +849,93 @@ impl NetBuilder {
         let index = self.index_of(place, "place_style");
         self.own_place(index, "place_style");
         self.places[index].meta.place_style = Some(style);
+    }
+
+    /// Declares a *group*: a named set of this net's places and
+    /// transitions, which drawings read and the engine never does (DESIGN
+    /// §6.8). A large flat net whose parts all read and change one shared
+    /// place cannot be split into subnets, and is read by gathering its
+    /// parts under names instead.
+    ///
+    /// A group has a name and its place in the order the groups are
+    /// declared in, which is the order drawings place them in, and nothing
+    /// else. [`in_group`](NetBuilder::in_group) puts a place in it and
+    /// [`TransitionBuilder::group`] a transition. Declaring one changes no
+    /// node's id and not the order the nodes are declared in, so firing,
+    /// stepping, ids, saving and the events are those of the same net with
+    /// no groups. A [subnet](NetBuilder::subnet_place) has groups of its
+    /// own, from its own definition, and so does a net carried by a token.
+    ///
+    /// ```
+    /// use petritype::{MutateEdge, NetBuilder, TakeEdge};
+    ///
+    /// let mut b = NetBuilder::new();
+    /// let energy = b.place::<u32>("Energy");             // shared, in no group
+    /// let walk = b.group("Walk");                         // GroupRef
+    /// let trail = b.place::<u32>("Trail");
+    /// let paid = b.place::<u32>("Walk Paid");
+    /// b.in_group(walk, trail);
+    /// b.in_group(walk, paid);
+    /// b.transition("Fund Walk", (TakeEdge(trail), MutateEdge(energy)), (paid,), |leg: u32, e: &mut u32| {
+    ///     *e -= 1;
+    ///     (leg,)
+    /// })
+    /// .group(walk);
+    /// let net = b.build()?;
+    ///
+    /// assert_eq!(net.groups().collect::<Vec<_>>(), ["Walk"]);
+    /// let groups: Vec<_> = net.places().map(|(_, info)| info.group).collect();
+    /// assert_eq!(groups, [None, Some("Walk"), Some("Walk")]);
+    /// # Ok::<(), petritype::BuildError>(())
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// [`BuildError::DuplicateGroupName`] from [`build`](NetBuilder::build)
+    /// if two groups share a name. Names may hold any characters, and none
+    /// of them means anything. The call itself is infallible, as the other
+    /// options are.
+    pub fn group(&mut self, name: impl Into<String>) -> GroupRef {
+        let group = GroupRef::new(self.net, self.groups.len() as u32);
+        self.groups.push(name.into());
+        group
+    }
+
+    /// Puts a place in a group, one that [`group`](NetBuilder::group)
+    /// declared. Only drawings read it.
+    ///
+    /// `place` is a place of any kind, as a [`PlaceRef`], or a
+    /// [subnet place](NetBuilder::subnet_place), as a [`SubnetRef`], which a
+    /// drawing then draws inside the group's frame. A transition is put in a
+    /// group where it is declared, with [`TransitionBuilder::group`]. A
+    /// place is in one group or in none, and the same group again changes
+    /// nothing. Being in a group changes nothing about the place's name,
+    /// which stays unique among the net's places.
+    ///
+    /// # Errors
+    ///
+    /// From [`build`](NetBuilder::build):
+    /// [`BuildError::PlaceInTwoGroups`] if the place is put in a second
+    /// group, where it stays in the first until then, and
+    /// [`BuildError::PortInGroup`] if it is a port of one of this net's
+    /// subnet places ([`port_of`](NetBuilder::port_of)), which is drawn in
+    /// its subnet place's box and goes where the box goes. The call itself
+    /// is infallible, as the other per-place options are.
+    ///
+    /// # Panics
+    ///
+    /// If `place` or `group` came from a different builder.
+    pub fn in_group(&mut self, group: GroupRef, place: impl PlaceHandle) {
+        let (place, net) = place.handle();
+        let index = self.index_of_erased(place, net, "in_group");
+        let node = Node::Place(place.0);
+        let group = self.group_index(group, "in_group", node);
+        if self.places[index].meta.window.is_some() {
+            self.group_problem
+                .get_or_insert(GroupProblem::Port { place, group });
+            return;
+        }
+        self.put_in_group(node, group);
     }
 
     /// Gives a place its initial tokens. Repeated calls append.
@@ -1151,6 +1268,7 @@ impl NetBuilder {
             enabled: true,
             restore_tokens_on_failure: false,
             detachable,
+            group: None,
         });
         TransitionBuilder { builder: self, id }
     }
@@ -1381,7 +1499,12 @@ impl NetBuilder {
     ///
     /// After the transitions' own checks and before the parameters,
     /// [`BuildError::DuplicateControlName`] if two
-    /// [controls](NetBuilder::control) share a name.
+    /// [controls](NetBuilder::control) share a name, and then the
+    /// [groups](NetBuilder::group): [`BuildError::DuplicateGroupName`] if
+    /// two share a name, and then, for the first node put in a group
+    /// wrongly, [`BuildError::PlaceInTwoGroups`] or
+    /// [`BuildError::TransitionInTwoGroups`] for one put in a second group
+    /// and [`BuildError::PortInGroup`] for a port of a subnet place.
     ///
     /// Between the two, the parameters: with the `serde` feature,
     /// `BuildError::DuplicateParamName` if two parameter types were marked
@@ -1518,6 +1641,18 @@ impl NetBuilder {
                     name: control.name.clone(),
                 });
             }
+        }
+
+        // The groups, a naming matter like the controls: a name two groups
+        // share, then the first node put in a group wrongly.
+        let mut seen = HashSet::with_capacity(self.groups.len());
+        for name in &self.groups {
+            if !seen.insert(name.as_str()) {
+                return Err(BuildError::DuplicateGroupName { name: name.clone() });
+            }
+        }
+        if let Some(problem) = self.group_problem {
+            return Err(self.group_error(problem));
         }
 
         // The parameters, in the same spirit: a wire name two types share is
@@ -1673,6 +1808,7 @@ impl NetBuilder {
             label_limit: self.label_limit,
             events: Vec::new(),
             controls: self.controls,
+            groups: self.groups,
             // Filled by the seeds below, which go in through the one
             // insertion path like every other token.
             index: KeyIndex::new(),
@@ -1708,6 +1844,100 @@ impl NetBuilder {
     /// read as it does; this is how it reaches back in.
     pub(crate) fn transition_slot(&mut self, id: TransitionId) -> &mut TransitionSlot {
         &mut self.transitions[id.0 as usize]
+    }
+
+    /// What [`TransitionBuilder::group`] does: puts the transition in the
+    /// group, or records why it cannot be.
+    pub(crate) fn transition_in_group(&mut self, transition: TransitionId, group: GroupRef) {
+        let node = Node::Transition(transition.0);
+        let group = self.group_index(group, "group", node);
+        self.put_in_group(node, group);
+    }
+
+    /// The position of a group handle in this builder, rejecting a handle
+    /// from another builder with a panic that names the node being put in
+    /// it, as a foreign place handle is rejected.
+    fn group_index(&self, group: GroupRef, method: &str, node: Node) -> u32 {
+        assert!(
+            group.net == self.net,
+            "{}",
+            foreign_group(method, &self.node_label(node), group, self.net)
+        );
+        debug_assert!(
+            (group.group as usize) < self.groups.len(),
+            "{method}: no group #{}",
+            group.group
+        );
+        group.group
+    }
+
+    /// Puts a node in a group: the first group it is given, again the same
+    /// one, or a second, which is recorded for [`build`](NetBuilder::build)
+    /// to refuse while the node stays in the first.
+    fn put_in_group(&mut self, node: Node, group: u32) {
+        let current = match node {
+            Node::Place(id) => &mut self.places[id as usize].meta.group,
+            Node::Transition(id) => &mut self.transitions[id as usize].group,
+        };
+        match *current {
+            None => *current = Some(group),
+            Some(first) if first == group => {}
+            Some(first) => {
+                self.group_problem.get_or_insert(GroupProblem::Twice {
+                    node,
+                    first,
+                    second: group,
+                });
+            }
+        }
+    }
+
+    /// The build error a recorded group problem is, with every name filled
+    /// in.
+    fn group_error(&self, problem: GroupProblem) -> BuildError {
+        let group = |index: u32| self.groups[index as usize].clone();
+        match problem {
+            GroupProblem::Twice {
+                node: Node::Place(place),
+                first,
+                second,
+            } => BuildError::PlaceInTwoGroups {
+                place: self.places[place as usize].meta.name.clone(),
+                first: group(first),
+                second: group(second),
+            },
+            GroupProblem::Twice {
+                node: Node::Transition(transition),
+                first,
+                second,
+            } => BuildError::TransitionInTwoGroups {
+                transition: self.transitions[transition as usize].name.clone(),
+                first: group(first),
+                second: group(second),
+            },
+            GroupProblem::Port { place, group: at } => {
+                let meta = &self.places[place.0 as usize].meta;
+                let subnet = meta
+                    .window
+                    .map(|window| self.places[window.subnet.0 as usize].meta.name.clone())
+                    .unwrap_or_default();
+                BuildError::PortInGroup {
+                    place: meta.name.clone(),
+                    subnet,
+                    group: group(at),
+                }
+            }
+        }
+    }
+
+    /// A node as a message names it: `place "Walk Paid"` or
+    /// `transition "Fund Walk"`, since a place and a transition may share a
+    /// name.
+    fn node_label(&self, node: Node) -> String {
+        match node {
+            Node::Place(_) => format!("place {:?}", self.node_name(node)),
+            Node::Transition(_) => format!("transition {:?}", self.node_name(node)),
+        }
     }
 
     /// The first cycle in the net's token flow, as the names of its nodes
@@ -1862,6 +2092,7 @@ impl NetBuilder {
                 subnet: false,
                 window: None,
                 port: false,
+                group: None,
             },
             tokens: VecDeque::new(),
             subnet: None,
@@ -1957,6 +2188,8 @@ impl fmt::Debug for NetBuilder {
             .field("not_nested", &self.not_nested)
             .field("keys_problem", &self.keys_problem)
             .field("port_problem", &self.port_problem)
+            .field("groups", &self.groups)
+            .field("group_problem", &self.group_problem)
             .field(
                 "controls",
                 &self

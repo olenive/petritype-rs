@@ -8,8 +8,9 @@ use crate::net::PlaceInfo;
 use crate::style::PlaceStyle;
 use crate::transition::TransitionInfo;
 
-/// The shape of a net at one moment, owned: its places, its transitions and
-/// the edges between them, from [`Net::topology`](crate::Net::topology) or
+/// The shape of a net at one moment, owned: its places, its transitions,
+/// the edges between them and its groups, from
+/// [`Net::topology`](crate::Net::topology) or
 /// [`Snapshot::topology`](crate::Snapshot::topology).
 ///
 /// # What it is for
@@ -64,6 +65,12 @@ pub struct Topology {
     /// Every edge, in the order [`Net::edges`](crate::Net::edges) gives
     /// them.
     pub edges: Vec<EdgeInfo>,
+    /// The names of the net's groups, in declared order:
+    /// [`Net::groups`](crate::Net::groups) (DESIGN §6.8). With `serde`,
+    /// written only when there are some, so that the shape of a net with no
+    /// groups is what it always was.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Vec::is_empty"))]
+    pub groups: Vec<String>,
     /// [`Net::topology_counter`](crate::Net::topology_counter) when this was
     /// taken.
     pub topology_counter: u64,
@@ -133,6 +140,11 @@ pub struct TopologyPlace {
     /// such a place.
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub port_of: Option<PlaceId>,
+    /// [`PlaceInfo::group`]: the name of the place's group, one of
+    /// [`Topology::groups`]. With `serde`, written only for a place in a
+    /// group.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub group: Option<String>,
 }
 
 /// One transition of a [`Topology`]: what [`TransitionInfo`] reports, owned,
@@ -170,6 +182,11 @@ pub struct TopologyTransition {
     /// Whether a firing can leave the net: [`TransitionInfo::detachable`].
     /// Derived from the edge kinds, so it is shape, not state.
     pub detachable: bool,
+    /// [`TransitionInfo::group`]: the name of the transition's group, one
+    /// of [`Topology::groups`]. With `serde`, written only for a transition
+    /// in a group.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub group: Option<String>,
 }
 
 impl Topology {
@@ -181,6 +198,7 @@ impl Topology {
         places: impl Iterator<Item = (PlaceId, PlaceInfo<'a>)>,
         transitions: impl Iterator<Item = (TransitionId, TransitionInfo<'a>)>,
         edges: impl Iterator<Item = EdgeInfo>,
+        groups: impl Iterator<Item = &'a str>,
         topology_counter: u64,
     ) -> Topology {
         Topology {
@@ -197,6 +215,7 @@ impl Topology {
                     subnet: info.subnet,
                     port: info.port,
                     port_of: info.port_of,
+                    group: info.group.map(str::to_owned),
                 })
                 .collect(),
             transitions: transitions
@@ -209,9 +228,11 @@ impl Topology {
                     outputs: info.outputs.to_vec(),
                     positional: info.positional,
                     detachable: info.detachable,
+                    group: info.group.map(str::to_owned),
                 })
                 .collect(),
             edges: edges.collect(),
+            groups: groups.map(str::to_owned).collect(),
             topology_counter,
         }
     }

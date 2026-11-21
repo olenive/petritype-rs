@@ -15,8 +15,8 @@ use crate::nested::nested_in;
 #[cfg(feature = "serde")]
 use crate::net::json_in;
 use crate::net::{
-    Net, PlaceInfo, count_in, debug_in, edges_of, label_in, place_named_in, places_of, slot_of,
-    token_in, tokens_in,
+    Net, PlaceInfo, count_in, debug_in, edges_of, group_name, label_in, place_named_in, places_of,
+    slot_of, token_in, tokens_in,
 };
 use crate::param::{ParamSlot, param_of};
 use crate::place::{ErasedToken, PlaceSlot};
@@ -122,6 +122,7 @@ impl Net {
                 // itself is exactly what cannot be copied.
                 in_flight: slot.body.is_none(),
                 detachable: slot.detachable,
+                group: slot.group,
             })
             .collect();
 
@@ -130,6 +131,7 @@ impl Net {
             places,
             subnets,
             transitions,
+            groups: self.groups.clone(),
             params: self.params.clone(),
             label_limit: self.label_limit,
             topology_counter: self.topology_counter,
@@ -258,6 +260,8 @@ struct SnapshotTransition {
     enabled: bool,
     in_flight: bool,
     detachable: bool,
+    /// The group's position among [`Snapshot::groups`], as on the net.
+    group: Option<u32>,
 }
 
 /// The state of a net at one moment, owned and independent of it.
@@ -290,7 +294,8 @@ struct SnapshotTransition {
 /// The marking with the tokens' ids and their places' metadata, so labels and
 /// JSON read exactly as they do on the net; each transition's name, wiring,
 /// switch, in-flight mark, detachability and declared parameter types; the
-/// parameter *values*, cloned; the label limit; and the three counters.
+/// net's groups and which group each node is in; the parameter *values*,
+/// cloned; the label limit; and the three counters.
 ///
 /// What is **not** here is the fireable set. Fireability depends on guards,
 /// which are closures over the live net (`Fn(&Net) -> bool`): they cannot be
@@ -313,6 +318,9 @@ pub struct Snapshot {
     /// A snapshot of each subnet, by its subnet place, in place order.
     subnets: Vec<(PlaceId, Snapshot)>,
     transitions: Vec<SnapshotTransition>,
+    /// The net's group names, in declared order: part of the definition,
+    /// carried so that the snapshot reads and draws as the net does.
+    groups: Vec<String>,
     params: Vec<ParamSlot>,
     label_limit: usize,
     topology_counter: u64,
@@ -333,7 +341,12 @@ impl Snapshot {
     /// Every place, in id order, with its name, token type and token count as
     /// they were: [`Net::places`].
     pub fn places(&self) -> impl Iterator<Item = (PlaceId, PlaceInfo<'_>)> {
-        places_of(&self.places)
+        places_of(&self.places, &self.groups)
+    }
+
+    /// The names of the net's groups, in declared order: [`Net::groups`].
+    pub fn groups(&self) -> impl Iterator<Item = &str> {
+        self.groups.iter().map(String::as_str)
     }
 
     /// Every transition, in declaration order: [`Net::transitions`].
@@ -355,6 +368,7 @@ impl Snapshot {
                 enabled: slot.enabled,
                 in_flight: slot.in_flight,
                 detachable: slot.detachable,
+                group: group_name(&self.groups, slot.group),
             };
             (id, info)
         })
@@ -373,6 +387,7 @@ impl Snapshot {
             self.places(),
             self.transitions(),
             self.edges(),
+            self.groups(),
             self.topology_counter,
         )
     }
@@ -607,8 +622,10 @@ impl Clone for Snapshot {
                     enabled: slot.enabled,
                     in_flight: slot.in_flight,
                     detachable: slot.detachable,
+                    group: slot.group,
                 })
                 .collect(),
+            groups: self.groups.clone(),
             params: self.params.clone(),
             label_limit: self.label_limit,
             topology_counter: self.topology_counter,
@@ -642,6 +659,7 @@ impl fmt::Debug for Snapshot {
                     .map(|slot| slot.name.as_str())
                     .collect::<Vec<_>>(),
             )
+            .field("groups", &self.groups)
             .field("params", &self.params)
             .field("state_counter", &self.state_counter)
             .field("topology_counter", &self.topology_counter)
@@ -661,6 +679,7 @@ impl fmt::Debug for SnapshotTransition {
             .field("enabled", &self.enabled)
             .field("in_flight", &self.in_flight)
             .field("detachable", &self.detachable)
+            .field("group", &self.group)
             .finish()
     }
 }

@@ -292,6 +292,13 @@
 //!   viewer draws: [`NetBuilder::styled`] gives a place's tokens their
 //!   [`TokenStyle`](style::TokenStyle), [`Net::style`] reads one token's
 //!   colour, and [`NetBuilder::place_style`] fills a place with it.
+//! - A *group* is a named set of a net's places and transitions that only
+//!   drawings read, for a large flat net that is read by its parts:
+//!   [`NetBuilder::group`] declares one, [`NetBuilder::in_group`] and
+//!   [`TransitionBuilder::group`] put a node in it, and [`Net::groups`],
+//!   [`PlaceInfo::group`] and [`TransitionInfo::group`] read them back
+//!   (DESIGN §6.8). Firing, stepping, ids, saving and the events are those
+//!   of the same net with no groups.
 //! - The [`control`] module is the buttons a net declares:
 //!   [`NetBuilder::control`] adds a [`Control`](control::Control),
 //!   [`Net::controls`] lists them for a viewer's legend, and [`Net::press`]
@@ -410,7 +417,7 @@ pub use error::{
 };
 pub use event::Event;
 pub use firing::{Completed, Firing, Selector, TieBreak};
-pub use ids::{NetId, PlaceHandle, PlaceId, PlaceRef, SubnetRef, TokenId, TransitionId};
+pub use ids::{GroupRef, NetId, PlaceHandle, PlaceId, PlaceRef, SubnetRef, TokenId, TransitionId};
 pub use keys::{Clause, Filter, KeyValue, Keys, Match};
 #[cfg(feature = "serde")]
 pub use marking::Marking;

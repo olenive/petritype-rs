@@ -745,3 +745,204 @@ fn in_a_subnet_s_own_drawing_a_port_has_a_second_ring() {
     // The subnet's own edges are plain: there are no cells inside it.
     assert!(text.contains("  p0 -> t0 [color=black, penwidth=1];"));
 }
+
+// ----- groups ---------------------------------------------------------------------
+
+/// A hike: `Energy`, in no group, which `Fund Walk` (in `Walk`) and `Eat`
+/// (in `Eat`) both change; `Trail` and `Walked` in `Walk`, `Pack` in `Eat`,
+/// `Rest` in no group, and an empty group, `Later`, declared between the
+/// two others.
+fn hike() -> Net {
+    let mut b = NetBuilder::new();
+    let walk = b.group("Walk");
+    let _later = b.group("Later");
+    let eat = b.group("Eat");
+    let energy = b.place::<u32>("Energy");
+    let trail = b.place::<u32>("Trail");
+    let pack = b.place::<u32>("Pack");
+    let walked = b.place::<u32>("Walked");
+    b.in_group(walk, trail);
+    b.in_group(eat, pack);
+    b.in_group(walk, walked);
+    b.seed(energy, [3]);
+    b.seed(trail, [1]);
+    b.seed(pack, [2]);
+    b.transition(
+        "Fund Walk",
+        (TakeEdge(trail), MutateEdge(energy)),
+        (walked,),
+        |leg: u32, energy: &mut u32| {
+            *energy -= 1;
+            (leg,)
+        },
+    )
+    .group(walk);
+    b.transition(
+        "Eat",
+        (TakeEdge(pack), MutateEdge(energy)),
+        (),
+        |meal: u32, energy: &mut u32| *energy += meal,
+    )
+    .group(eat);
+    b.transition("Rest", (TakeEdge(walked),), (), |_: u32| {});
+    b.build().expect("the hike builds")
+}
+
+#[test]
+fn each_group_is_a_dashed_cluster_in_declared_order() {
+    // The nodes in no group first, at the top level, then each group's
+    // places and transitions in its cluster; the empty group's cluster
+    // holds nothing, which Graphviz does not draw. Every node keeps its id.
+    assert_eq!(
+        dot(&hike()),
+        concat!(
+            "digraph \"petritype\" {\n",
+            "  rankdir=TB;\n",
+            "  node [fontname=\"Helvetica\"];\n",
+            "  p0 [shape=oval, style=filled, fillcolor=deepskyblue, color=black, penwidth=1, label=\"Energy\\n3\"];\n",
+            "  t2 [shape=box, style=filled, fillcolor=lightgreen, color=black, penwidth=1, label=\"Rest\"];\n",
+            "  subgraph cluster_0 {\n",
+            "    label=\"Walk\";\n",
+            "    style=dashed;\n",
+            "    p1 [shape=oval, style=filled, fillcolor=deepskyblue, color=black, penwidth=1, label=\"Trail\\n1\"];\n",
+            "    p3 [shape=oval, style=filled, fillcolor=deepskyblue, color=black, penwidth=1, label=\"Walked\"];\n",
+            "    t0 [shape=box, style=filled, fillcolor=lightgreen, color=black, penwidth=1, label=\"Fund Walk\"];\n",
+            "  }\n",
+            "  subgraph cluster_1 {\n",
+            "    label=\"Later\";\n",
+            "    style=dashed;\n",
+            "  }\n",
+            "  subgraph cluster_2 {\n",
+            "    label=\"Eat\";\n",
+            "    style=dashed;\n",
+            "    p2 [shape=oval, style=filled, fillcolor=deepskyblue, color=black, penwidth=1, label=\"Pack\\n2\"];\n",
+            "    t1 [shape=box, style=filled, fillcolor=lightgreen, color=black, penwidth=1, label=\"Eat\"];\n",
+            "  }\n",
+            "  p1 -> t0 [color=black, penwidth=1];\n",
+            "  p0 -> t0 [dir=both, arrowhead=dot, arrowtail=dot, color=dimgray, penwidth=2];\n",
+            "  t0 -> p3 [color=black, penwidth=1];\n",
+            "  p2 -> t1 [color=black, penwidth=1];\n",
+            "  p0 -> t1 [dir=both, arrowhead=dot, arrowtail=dot, color=dimgray, penwidth=2];\n",
+            "  p3 -> t2 [color=black, penwidth=1];\n",
+            "}\n",
+        ),
+    );
+}
+
+#[test]
+fn a_snapshot_draws_the_groups_as_its_net_does() {
+    let net = hike();
+    assert_eq!(dot(&net), dot(&net.snapshot().expect("the hike snapshots")));
+}
+
+#[test]
+fn a_node_in_a_frame_is_drawn_as_it_is_outside_one() {
+    // A firing outlined, a switch off, tokens hidden: each node line inside
+    // a cluster is the line the same node has in the same net with no
+    // groups, indented once more.
+    let mut grouped = hike();
+    grouped.step().expect("Fund Walk fires");
+    let last = grouped.drain_events().next_back().expect("one firing");
+    let eat = grouped.transition_named("Eat").unwrap();
+    grouped.disable(eat).unwrap();
+    let style = Style {
+        show_tokens: false,
+        highlight: Highlight::from_event(&last),
+        ..Style::default()
+    };
+    let text = dot_with(&grouped, &style);
+    assert!(text.contains(
+        "    p1 [shape=oval, style=filled, fillcolor=deepskyblue, color=magenta, penwidth=2, label=\"Trail\"];\n"
+    ));
+    assert!(text.contains(
+        "    t0 [shape=box, style=filled, fillcolor=lightgreen, color=magenta, penwidth=3, label=\"Fund Walk\"];\n"
+    ));
+    assert!(text.contains(
+        "    t1 [shape=box, style=\"filled,dashed\", fillcolor=lightgray, color=black, penwidth=1, label=\"Eat\"];\n"
+    ));
+    assert!(text.contains("  p1 -> t0 [color=magenta, penwidth=2];\n"));
+}
+
+#[test]
+fn a_group_s_name_is_escaped_for_dot() {
+    let mut b = NetBuilder::new();
+    let odd = b.group("Walk \"fast\"\\slow\nnow");
+    let trail = b.place::<u32>("Trail");
+    b.in_group(odd, trail);
+    let net = b.build().expect("no character means anything");
+    assert!(
+        dot(&net).contains("    label=\"Walk \\\"fast\\\"\\\\slow\\nnow\";\n"),
+        "{}",
+        dot(&net)
+    );
+}
+
+#[test]
+fn a_subnet_place_in_a_group_is_drawn_inside_its_frame() {
+    // The world of the subnet tests with its door, its level and its
+    // `Enter` in `Walk`: the box is drawn in the frame, its ports are
+    // still cells of the box, and an edge on a port still ends at its cell.
+    let mut b = NetBuilder::new();
+    let walk = b.group("Walk");
+    let door = b.place::<u32>("Door");
+    let level_3 = b.subnet_place("Level 3", level());
+    let lobby = b.port_of::<u32>(level_3, "Lobby");
+    let exit = b.port_of::<u32>(level_3, "Exit Hall");
+    let out = b.place::<u32>("Out");
+    b.in_group(walk, door);
+    b.in_group(walk, level_3);
+    b.seed(door, [1]);
+    b.transition("Enter", (TakeEdge(door),), (lobby,), |n: u32| (n,))
+        .group(walk);
+    b.transition("Leave", (TakeEdge(exit),), (out,), |n: u32| (n,));
+    let net = b.build().expect("the world builds");
+
+    assert_eq!(
+        dot(&net),
+        concat!(
+            "digraph \"petritype\" {\n",
+            "  rankdir=TB;\n",
+            "  node [fontname=\"Helvetica\"];\n",
+            "  p4 [shape=oval, style=filled, fillcolor=deepskyblue, color=black, penwidth=1, label=\"Out\"];\n",
+            "  t1 [shape=box, style=filled, fillcolor=lightgreen, color=black, penwidth=1, label=\"Leave\"];\n",
+            "  subgraph cluster_0 {\n",
+            "    label=\"Walk\";\n",
+            "    style=dashed;\n",
+            "    p0 [shape=oval, style=filled, fillcolor=deepskyblue, color=black, penwidth=1, label=\"Door\\n1\"];\n",
+            "    p1 [shape=Mrecord, style=filled, fillcolor=lightskyblue, color=black, penwidth=1, label=\"{Level 3|{<port0> Lobby\\n0|<port1> Exit Hall\\n0}}\"];\n",
+            "    t0 [shape=box, style=filled, fillcolor=lightgreen, color=black, penwidth=1, label=\"Enter\"];\n",
+            "  }\n",
+            "  p0 -> t0 [color=black, penwidth=1];\n",
+            "  t0 -> p1 [color=black, penwidth=1, headport=port0];\n",
+            "  p1 -> t1 [color=black, penwidth=1, tailport=port1];\n",
+            "  t1 -> p4 [color=black, penwidth=1];\n",
+            "}\n",
+        ),
+    );
+}
+
+#[test]
+fn a_subnet_s_own_drawing_has_its_own_groups() {
+    let mut b = NetBuilder::new();
+    let inside = b.group("Inside");
+    let lobby = b.place::<u32>("Lobby");
+    let arena = b.place::<u32>("Arena");
+    b.port(lobby);
+    b.in_group(inside, lobby);
+    b.in_group(inside, arena);
+    let level = b.build().expect("the level builds");
+    let mut b = NetBuilder::new();
+    let level_3 = b.subnet_place("Level 3", level);
+    let net = b.build().expect("the world builds");
+
+    let outside = dot(&net);
+    assert!(!outside.contains("subgraph"), "{outside}");
+    let text = dot(net.subnet(level_3.id()).expect("a subnet place"));
+    assert!(text.contains(concat!(
+        "  subgraph cluster_0 {\n",
+        "    label=\"Inside\";\n",
+        "    style=dashed;\n",
+        "    p0 [shape=oval, style=filled, fillcolor=deepskyblue, color=black, penwidth=1, peripheries=2, label=\"Lobby\"];\n",
+        "    p1 [shape=oval",
+    )));
+}

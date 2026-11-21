@@ -297,10 +297,58 @@ impl fmt::Debug for SubnetRef {
     }
 }
 
+/// A handle to a group of a net being built, returned by
+/// [`NetBuilder::group`](crate::NetBuilder::group).
+///
+/// A group is a named set of places and transitions of one net that only
+/// drawings read (DESIGN §6.8). The handle is what puts a node in it:
+/// [`NetBuilder::in_group`](crate::NetBuilder::in_group) for a place or a
+/// subnet place, and
+/// [`TransitionBuilder::group`](crate::TransitionBuilder::group) for a
+/// transition. Like a [`PlaceRef`] it is `Copy` and carries the [`NetId`] of
+/// the net whose builder handed it out, so a handle from another builder is
+/// caught rather than misread.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct GroupRef {
+    /// The group's position in the order the groups were declared in.
+    pub(crate) group: u32,
+    pub(crate) net: NetId,
+}
+
+impl GroupRef {
+    /// Wraps a position. Only the builder knows that `group` really is a
+    /// group of the net `net`.
+    pub(crate) fn new(net: NetId, group: u32) -> Self {
+        GroupRef { group, net }
+    }
+
+    /// The group's position in the order the groups were declared in: the
+    /// position of its name in [`Net::groups`](crate::Net::groups).
+    pub fn index(self) -> u32 {
+        self.group
+    }
+
+    /// The net this handle belongs to, as in [`Net::id`](crate::Net::id).
+    pub fn net(self) -> NetId {
+        self.net
+    }
+}
+
+impl fmt::Debug for GroupRef {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("GroupRef")
+            .field(&self.group)
+            .field(&self.net)
+            .finish()
+    }
+}
+
 /// A handle to a place of a net being built, whatever it holds: a
 /// [`PlaceRef`] or a [`SubnetRef`]. It is what
-/// [`NetBuilder::stepping`](crate::NetBuilder::stepping) takes, since both a
-/// place whose tokens carry nets and a subnet place have a rule.
+/// [`NetBuilder::stepping`](crate::NetBuilder::stepping) and
+/// [`NetBuilder::in_group`](crate::NetBuilder::in_group) take, since both a
+/// place whose tokens carry nets and a subnet place have a rule, and any
+/// place may be in a group.
 ///
 /// Sealed: the two handles are the only implementations.
 pub trait PlaceHandle: crate::sealed::PlaceHandleSealed {}
@@ -331,6 +379,18 @@ pub(crate) fn foreign_place(method: &str, place: PlaceId, from: NetId, here: Net
         "{method}: this handle points at place #{} of net #{}, but this is net #{} \
          (a PlaceRef only works with the net whose builder handed it out)",
         place.0, from.0, here.0
+    )
+}
+
+/// What the builder says when a place or a transition is put in a group
+/// from another builder. `node` names it, as `place "Walk Paid"` or
+/// `transition "Fund Walk"`: the group's own name is the other builder's to
+/// know.
+pub(crate) fn foreign_group(method: &str, node: &str, group: GroupRef, here: NetId) -> String {
+    format!(
+        "{method}: {node} is put in group #{} of net #{}, but this is net #{} \
+         (a GroupRef only works with the builder that handed it out)",
+        group.group, group.net.0, here.0
     )
 }
 

@@ -145,8 +145,9 @@ net with two groups, one place in none, and a subnet with a group of its own:
   or a double-click toggles the selected group, and there is a command to
   close all and one to open all. The state is kept per view, by the viewer
   alone: it is not in the definition, not on the wire, and not saved.
-- **At the start** every group is open. The viewer's configuration can ask
-  for all closed, and the `remote` example takes a flag for it.
+- **At the start** every group is closed, so that a large net first shows
+  as a few named boxes and the nodes in no group. The viewer's configuration
+  can ask for all open, and the `remote` example takes a flag for it.
 - **The inspector**, for a selected group: its name, how many places and
   transitions it has, and the count of tokens inside.
 - **The view filter** names groups where it named clusters.
@@ -217,6 +218,6 @@ by sibling subnets. Unfolding a subnet place inside the outer drawing.
 | How it is declared | A handle in Rust, a name in Python, set on the node; declaration order of nodes is never touched. |
 | Nodes in no group | Drawn together with no frame. |
 | What a closed group is in the layout | One node that takes part in ranking, with merged arrows. |
-| Where the closed state lives | In the viewer, per view. All open at the start, with a setting and a flag for all closed. |
+| Where the closed state lives | In the viewer, per view. All closed at the start, with a setting and a flag for all open. |
 | Graphviz | Frames only. |
 | The protocol version | Stays 2: optional fields only. |

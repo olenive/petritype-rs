@@ -8,7 +8,9 @@
 # transcripts the two runtimes share (`../petritype/tests/protocol`).
 #
 # A second job checks the workspace on the minimum supported Rust version,
-# the `rust-version` in Cargo.toml.
+# the `rust-version` in Cargo.toml. The version is given as the action's
+# `toolchain` input, so that Dependabot reads it as a setting and leaves it
+# alone: after the `@` it took it for a version of the action to update.
 name: CI
 
 on:
@@ -49,6 +51,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@1.96
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.96"
       - uses: Swatinem/rust-cache@v2
       - run: cargo check --workspace --all-features

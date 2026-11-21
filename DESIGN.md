@@ -114,6 +114,14 @@ Dropped, and why:
   built through one is **stamped** with it, and can then be saved, restored
   and **forked** (copied by building it again), §6.6, slice 16.
 
+In the literature's terms this is a *coloured Petri net*: a token's value is
+its colour and a place's type its colour set, with a body where the textbook
+has arc expressions. A place here is a FIFO queue where the textbook has a
+multiset. An inner net is the literature's
+*nets within nets* (object nets). The hierarchical coloured nets, modules
+joined to a net through port places, have no counterpart yet. This document
+uses "colour" only for a token's display colour (`style`).
+
 ## 4. Representation
 
 ### 4.1 Identifiers and counters

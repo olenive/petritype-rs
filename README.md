@@ -286,6 +286,23 @@ survey edge, whatever it holds, nothing included). Firing consumes the inputs,
 runs the body, and distributes the outputs. The tokens across all places are
 the live state of the system.
 
+### Where this sits among Petri nets
+
+In the literature a net whose tokens carry data is a *coloured Petri net*: a
+token's value is its colour, and the type a place holds is its colour set. That
+is what petritype builds, with Rust types as the colour sets, guards as guards
+and a transition's body in place of arc expressions. Two things differ from
+the textbook form: a place is a first-in, first-out queue where the textbook
+has an unordered bag, and the net is run as the program itself, with no
+state-space analysis. A token that carries a net of its own
+([Nets as tokens](#nets-as-tokens)) is what the literature calls *nets within
+nets*, or object nets. Modules with ports, the hierarchical coloured nets, are
+not here.
+
+Colour in that sense has nothing to do with the display colour a token may be
+given ([Controls and token styles](#controls-and-token-styles)); outside this
+section, colour means the second.
+
 ## Anatomy of a transition
 
 | term | what it is | who writes it |

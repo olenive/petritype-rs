@@ -1300,7 +1300,19 @@ snapshot.subnet(place) -> Option<&Snapshot>
   count, and each circle; `position_of_place` answers for a port with its
   circle's centre, and `radius_of_place` with its radius. A net with no
   subnet places lays out to the same numbers as before (the crate's tests
-  pin seven layouts to what the commit before computed).
+  pin seven layouts to what the commit before computed). `petritype-dot`
+  draws a subnet place as the Python renderer does: one `Mrecord` box,
+  lightskyblue, titled with the place's name, with a cell per port in the
+  subnet's order showing the port's name and count. The cells are named
+  `port0`, `port1`, ... by position, so no character of a name reaches the
+  syntax, and an edge on a port ends at its cell (`tailport` from it,
+  `headport` into it). The windows are not drawn as nodes, so the other
+  places keep their `p<i>` ids, and the box is outlined when a firing
+  touched one of its ports. In a subnet's own drawing a port has a second
+  ring (`peripheries=2`). The title is the place's name alone, as a
+  place's label here is its name and tokens, so a net and its snapshot
+  draw the same text; the Python renderer adds the template under it. A
+  net with no subnet places draws to the same text as before.
 - **Considered and set aside: moving the queue.** The spec first had a
   firing borrow a port's queue into the window for the length of the firing.
   A spike showed it does not hold: the two nets' counts differ while a
@@ -2192,7 +2204,8 @@ restores it, so it needs `serde`.
   dotted-both-ends for `MutateEdge`) with four additions: disabled
   transitions grey and dashed, `*` on a `TakeAllEdge`, return positions numbered on a
   transition with more than one output, red for a `Failed` event. A
-  highlighted read edge keeps its shape and only changes colour.
+  highlighted read edge keeps its shape and only changes colour. A subnet
+  place is one `Mrecord` box, its ports cells of it (§6.7).
 - The examples live in `petritype/examples/` as cargo examples with
   `test = true`, so `cargo test` runs their assertions and `cargo run
   --example` shows them; they draw their nets with `petritype-dot`, which

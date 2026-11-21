@@ -43,6 +43,17 @@
 //! | an input edge of a kind this version does not know | as a `TakeEdge` |
 //! | output edge | `color=black, penwidth=1`, plus `label="<slot>"` when the transition has more than one output (*new*: positional order is what a positional body returns into) |
 //! | highlighted edge | both its ends highlighted: the kind's shape is kept and its `color` and `penwidth` become `magenta`/`red` and `2` |
+//! | [subnet place](petritype::NetBuilder::subnet_place) | `shape=Mrecord, style=filled, fillcolor=lightskyblue, color=black, penwidth=1`: one box with rounded corners, its label a record with the place's name as the title and a cell per port, in the subnet's order, showing the port's name and count; the cells are named `port0`, `port1`, ... by position, and the ports are not drawn as nodes of their own |
+//! | highlighted subnet place | when the firing touched one of its ports, `color=magenta` (`red` for a failure) and `penwidth=2`, as a place |
+//! | edge on a port, from outside | as its kind draws it, ending at the port's cell: `tailport=port<k>` for an input edge, `headport=port<k>` for an output edge |
+//! | port place, in its subnet's own drawing | as a place, plus `peripheries=2`: a second ring, so the border shows from inside |
+//!
+//! The Python renderer titles a subnet place's box with the template that
+//! built its subnet as well, as it labels a place with its type. This one
+//! labels a place with its name and its tokens, and titles the box with the
+//! place's name, which a [`Snapshot`] gives as well as a [`Net`], so the two
+//! still draw the same text. With [`Style::show_tokens`] off, a port's cell
+//! shows its name alone.
 //!
 //! A token is drawn as its [`label`](petritype::Net::label), its `Debug`
 //! truncated by the net's own limit, and never as its
@@ -334,7 +345,8 @@ pub struct Style {
     /// Which way Graphviz lays the graph out. Default [`RankDir::TB`].
     pub rankdir: RankDir,
     /// Whether a place's label lists its tokens, one per line under the
-    /// place's name. Default true; false draws the topology alone.
+    /// place's name, and a subnet place's cells count their ports' tokens.
+    /// Default true; false draws the topology alone.
     pub show_tokens: bool,
     /// How many token lines a place shows before it gives up and writes
     /// `… and N more`. Default 10.
@@ -424,6 +436,24 @@ fn render(source: &impl DotSource, style: &Style, out: &mut String) -> fmt::Resu
         .enumerate()
         .map(|(index, (id, _))| (id, index))
         .collect();
+    // The cell of each port of a subnet place, by the place the outer net has
+    // for the port: the subnet place, and the port's position among its
+    // ports, which names the cell (`port0`, `port1`, ...), so no character of
+    // a port's name reaches the drawing's syntax.
+    let mut cells: HashMap<PlaceId, (PlaceId, usize)> = HashMap::new();
+    let mut ports_of: HashMap<PlaceId, usize> = HashMap::new();
+    for (id, info) in source.places() {
+        if let Some(subnet) = info.port_of {
+            let position = ports_of.entry(subnet).or_default();
+            cells.insert(id, (subnet, *position));
+            *position += 1;
+        }
+    }
+    // Where an edge on a place ends: its node, and the cell for a port.
+    let end = |place: PlaceId| match cells.get(&place) {
+        Some(&(subnet, position)) => (places[&subnet], Some(position)),
+        None => (places[&place], None),
+    };
     let transitions: HashMap<TransitionId, usize> = source
         .transitions()
         .enumerate()
@@ -441,15 +471,41 @@ fn render(source: &impl DotSource, style: &Style, out: &mut String) -> fmt::Resu
     writeln!(out, "  node [fontname=\"Helvetica\"];")?;
 
     for (index, (id, info)) in source.places().enumerate() {
+        // A port of a subnet place is drawn as a cell of that place's box.
+        if info.port_of.is_some() {
+            continue;
+        }
+        if info.subnet {
+            let ports: Vec<(PlaceId, PlaceInfo<'_>)> = source
+                .places()
+                .filter(|(_, port)| port.port_of == Some(id))
+                .collect();
+            // Outlined when the firing touched one of its ports.
+            let (colour, penwidth) = if ports.iter().any(|(port, _)| style.highlights_place(*port))
+            {
+                (style.colour(), 2)
+            } else {
+                ("black", 1)
+            };
+            writeln!(
+                out,
+                "  p{index} [shape=Mrecord, style=filled, fillcolor=lightskyblue, \
+                 color={colour}, penwidth={penwidth}, label=\"{}\"];",
+                subnet_label(style, info.name, &ports),
+            )?;
+            continue;
+        }
         let (colour, penwidth) = if style.highlights_place(id) {
             (style.colour(), 2)
         } else {
             ("black", 1)
         };
+        // A port seen from inside its subnet: a second ring, the border.
+        let peripheries = if info.port { ", peripheries=2" } else { "" };
         writeln!(
             out,
             "  p{index} [shape=oval, style=filled, fillcolor=deepskyblue, \
-             color={colour}, penwidth={penwidth}, label=\"{}\"];",
+             color={colour}, penwidth={penwidth}{peripheries}, label=\"{}\"];",
             escape(&place_label(source, style, id, info.name)),
         )?;
     }
@@ -492,10 +548,15 @@ fn render(source: &impl DotSource, style: &Style, out: &mut String) -> fmt::Resu
                 ..
             } => {
                 let lit = style.highlights_place(place) && style.highlights_transition(transition);
+                let (node, cell) = end(place);
+                let mut attrs = input_attrs(kind, filter.as_ref(), lit.then(|| style.colour()));
+                if let Some(cell) = cell {
+                    attrs.push_str(&format!(", tailport=port{cell}"));
+                }
                 Some((
-                    format!("p{}", places[&place]),
+                    format!("p{node}"),
                     format!("t{}", transitions[&transition]),
-                    input_attrs(kind, filter.as_ref(), lit.then(|| style.colour())),
+                    attrs,
                 ))
             }
             EdgeInfo::Output {
@@ -505,10 +566,15 @@ fn render(source: &impl DotSource, style: &Style, out: &mut String) -> fmt::Resu
             } => {
                 let lit = style.highlights_place(place) && style.highlights_transition(transition);
                 let slot = (outputs[&transition] > 1).then_some(slot);
+                let (node, cell) = end(place);
+                let mut attrs = output_attrs(slot, lit.then(|| style.colour()));
+                if let Some(cell) = cell {
+                    attrs.push_str(&format!(", headport=port{cell}"));
+                }
                 Some((
                     format!("t{}", transitions[&transition]),
-                    format!("p{}", places[&place]),
-                    output_attrs(slot, lit.then(|| style.colour())),
+                    format!("p{node}"),
+                    attrs,
                 ))
             }
             // `EdgeInfo` is `#[non_exhaustive]`: a kind of edge this renderer
@@ -544,6 +610,53 @@ fn place_label(source: &impl DotSource, style: &Style, place: PlaceId, name: &st
         label.push_str(&format!("… and {more} more"));
     }
     label
+}
+
+/// A closed subnet place's label, for `shape=Mrecord` (a box with rounded
+/// corners): the place's name as the title, then one cell per port, in the
+/// subnet's order, with the port's name and, unless the style hides tokens,
+/// its count. The cells are named `port0`, `port1`, ... by position, and an
+/// edge on a port ends at its cell through that name. Every field is escaped
+/// for a record ([`record_text`]), so the result goes between the quotes as
+/// it is.
+fn subnet_label(style: &Style, name: &str, ports: &[(PlaceId, PlaceInfo<'_>)]) -> String {
+    let cells: Vec<String> = ports
+        .iter()
+        .enumerate()
+        .map(|(position, (_, port))| {
+            let text = if style.show_tokens {
+                format!("{}\n{}", port.name, port.count)
+            } else {
+                port.name.to_owned()
+            };
+            format!("<port{position}> {}", record_text(&text))
+        })
+        .collect();
+    if cells.is_empty() {
+        format!("{{{}}}", record_text(name))
+    } else {
+        format!("{{{}|{{{}}}}}", record_text(name), cells.join("|"))
+    }
+}
+
+/// Text for one field of a Graphviz record label, inside a DOT double-quoted
+/// string: each character a record or the quotes give a meaning
+/// (`\ { } | < > "`) escaped with a backslash, and each line break written
+/// as `\n`, so a name is drawn as it is, whatever characters it holds. The
+/// Python renderer escapes a record the same way.
+fn record_text(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for ch in text.chars() {
+        match ch {
+            '\\' | '{' | '}' | '|' | '<' | '>' | '"' => {
+                out.push('\\');
+                out.push(ch);
+            }
+            '\n' => out.push_str("\\n"),
+            _ => out.push(ch),
+        }
+    }
+    out
 }
 
 /// A transition's label: its name, and its parameter types in brackets.
@@ -725,7 +838,17 @@ fn escape(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{escape, join_attrs, last_segment, short_type_name, transition_label};
+    use super::{escape, join_attrs, last_segment, record_text, short_type_name, transition_label};
+
+    #[test]
+    fn record_text_escapes_what_a_record_or_the_quotes_give_a_meaning() {
+        assert_eq!(record_text("Level 3"), "Level 3");
+        assert_eq!(
+            record_text(r#"a{b}c|d<e>f"g\h"#),
+            r#"a\{b\}c\|d\<e\>f\"g\\h"#
+        );
+        assert_eq!(record_text("Lobby\n3"), "Lobby\\n3");
+    }
 
     #[test]
     fn short_type_name_keeps_a_plain_name() {

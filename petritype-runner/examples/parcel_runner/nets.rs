@@ -10,8 +10,8 @@
 //! `petritype/examples/traffic_light/net.rs` as they are, not copied; and
 //! `stepping-rules` (§11, §12.3), which has no example of its own and is
 //! written here. The conformance net `levels` (§11, §12.7) is written here
-//! too, and carried by [`levels_registry`] for the transcripts over it; the
-//! example binary does not carry it yet.
+//! too, carried alone by [`levels_registry`] for the transcripts over it and
+//! by the example binary with the rest.
 
 use std::fmt;
 
@@ -628,5 +628,6 @@ pub fn registry() -> Vec<NetEntry> {
         shop_entry(),
         traffic_light_entry(),
         stepping_rules_entry(),
+        levels_entry(),
     ]
 }

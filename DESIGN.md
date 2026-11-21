@@ -3699,7 +3699,7 @@ to the core.
   `nets.rs`, as `stepping-rules` is, since the core's `levels` example is
   another story, and `nets::levels_registry` carries it alone for the
   transcript over it. `nets::registry()`, what the example binary carries,
-  does not list it yet.
+  lists it too, and a process test loads it over real pipes.
 - **Transcripts.** `09_subnet_places.json` is copied verbatim from the
   Python track's recording and replays with nothing but the harness's fold
   of the two version fields; `05` to `08` and `10` did not change, and our

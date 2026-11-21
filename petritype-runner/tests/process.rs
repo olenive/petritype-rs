@@ -176,6 +176,49 @@ fn a_session_over_real_pipes() {
     );
 }
 
+/// The binary serves the `levels` net: a hero goes in through a port of a
+/// subnet place, and the subnet answers for itself by its path.
+#[test]
+fn a_net_with_subnet_places_over_real_pipes() {
+    let mut s = Session::spawn();
+
+    let describe = s.call("1", "describe", json!({}));
+    let nets = describe["result"]["nets"].as_array().unwrap();
+    assert!(nets.iter().any(|net| net["name"] == "levels"));
+
+    let load = s.call("2", "load", json!({"net": "levels"}));
+    assert_eq!(load["result"]["status"], "loaded");
+
+    let state = s.call("3", "get_state", json!({}));
+    let places = &state["result"]["marking"]["places"];
+    assert_eq!(places["Door"]["count"], 1);
+    assert_eq!(places["Level 1"]["ports"]["Lobby"]["count"], 0);
+    assert_eq!(
+        places["Level 1"]["subnet"]["path"],
+        json!([{"place": "Level 1"}])
+    );
+
+    // The world's Enter puts the hero into Level 1's Lobby port.
+    let step = s.call("4", "step", json!({}));
+    assert_eq!(step["result"]["transition"], "Enter");
+    let state = s.call("5", "get_state", json!({}));
+    let places = &state["result"]["marking"]["places"];
+    assert_eq!(places["Door"]["count"], 0);
+    assert_eq!(places["Level 1"]["ports"]["Lobby"]["count"], 1);
+
+    // The level's own Walk In takes the hero from the port, inside.
+    let step = s.call("6", "step", json!({}));
+    assert_eq!(step["result"]["transition"], "Walk In");
+    assert_eq!(step["result"]["path"], json!([{"place": "Level 1"}]));
+    let inside = s.call("7", "get_state", json!({"path": [{"place": "Level 1"}]}));
+    let places = &inside["result"]["marking"]["places"];
+    assert_eq!(places["Lobby"]["count"], 0);
+    assert_eq!(places["Arena"]["count"], 1);
+
+    let shutdown = s.call("8", "shutdown", json!({}));
+    assert_eq!(shutdown["result"]["status"], "ok");
+}
+
 #[test]
 fn a_malformed_line_gets_an_invalid_params_answer() {
     let mut s = Session::spawn();

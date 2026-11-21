@@ -10,7 +10,7 @@
     {
      "id": "1",
      "result": {
-      "protocol_version": 1,
+      "protocol_version": 2,
       "runtime": "<label>",
       "runtime_version": "<label>",
       "nets": [
@@ -76,7 +76,7 @@
     {
      "id": "3",
      "result": {
-      "protocol_version": 1,
+      "protocol_version": 2,
       "runtime": "<label>",
       "net": "transit",
       "generation": 1,
@@ -453,7 +453,13 @@
             {
              "name": "cabin",
              "nested_id": "<id:bus_cabin>",
-             "path": "<path>",
+             "path": [
+              {
+               "place": "Depot",
+               "token": "<id:bus>",
+               "net": "cabin"
+              }
+             ],
              "template": "Cabin",
              "count": 1
             }
@@ -475,7 +481,13 @@
             {
              "name": "cabin",
              "nested_id": "<id:ferry_cabin>",
-             "path": "<path>",
+             "path": [
+              {
+               "place": "Harbour",
+               "token": "<id:ferry>",
+               "net": "cabin"
+              }
+             ],
              "template": "Deck",
              "count": 2
             }
@@ -604,7 +616,13 @@
        {
         "name": "cabin",
         "nested_id": "<id:bus_cabin>",
-        "path": "<path>",
+        "path": [
+         {
+          "place": "Depot",
+          "token": "<id:bus>",
+          "net": "cabin"
+         }
+        ],
         "template": "Cabin",
         "count": 1
        }
@@ -624,7 +642,7 @@
     {
      "id": "5",
      "result": {
-      "protocol_version": 1,
+      "protocol_version": 2,
       "runtime": "<label>",
       "net": "cabin",
       "generation": 1,
@@ -832,7 +850,13 @@
        "fired_counts": {},
        "last_progress_at": null
       },
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Depot",
+        "token": "<id:bus>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:bus_cabin>",
       "template": "Cabin"
      }
@@ -843,7 +867,13 @@
    "send": {
     "method": "get_state",
     "params": {
-     "path": "transit/Depot/#<id:bus>/cabin",
+     "path": [
+      {
+       "place": "Depot",
+       "token": "<id:bus>",
+       "net": "cabin"
+      }
+     ],
      "token_limit": 1
     }
    },
@@ -851,7 +881,7 @@
     {
      "id": "6",
      "result": {
-      "protocol_version": 1,
+      "protocol_version": 2,
       "runtime": "<label>",
       "net": "cabin",
       "generation": 1,
@@ -1059,7 +1089,13 @@
        "fired_counts": {},
        "last_progress_at": null
       },
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Depot",
+        "token": "<id:bus>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:bus_cabin>",
       "template": "Cabin"
      }
@@ -1078,7 +1114,7 @@
     {
      "id": "7",
      "result": {
-      "protocol_version": 1,
+      "protocol_version": 2,
       "runtime": "<label>",
       "net": "cabin",
       "generation": 1,
@@ -1286,7 +1322,13 @@
        "fired_counts": {},
        "last_progress_at": null
       },
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Harbour",
+        "token": "<id:ferry>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:ferry_cabin>",
       "template": "Deck"
      }
@@ -1301,7 +1343,13 @@
     {
      "method": "nested",
      "params": {
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Depot",
+        "token": "<id:bus>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:bus_cabin>",
       "event": {
        "method": "added",
@@ -1346,7 +1394,13 @@
     {
      "method": "nested",
      "params": {
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Depot",
+        "token": "<id:bus>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:bus_cabin>",
       "event": {
        "method": "fireable",
@@ -1381,7 +1435,13 @@
     {
      "method": "nested",
      "params": {
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Depot",
+        "token": "<id:bus>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:bus_cabin>",
       "event": {
        "method": "added",
@@ -1442,7 +1502,13 @@
     {
      "method": "nested",
      "params": {
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Depot",
+        "token": "<id:bus>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:bus_cabin>",
       "event": {
        "method": "added",
@@ -1513,7 +1579,13 @@
     {
      "method": "nested",
      "params": {
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Harbour",
+        "token": "<id:ferry>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:ferry_cabin>",
       "event": {
        "method": "added",
@@ -1558,7 +1630,13 @@
     {
      "method": "nested",
      "params": {
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Harbour",
+        "token": "<id:ferry>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:ferry_cabin>",
       "event": {
        "method": "fireable",
@@ -1593,7 +1671,13 @@
     {
      "method": "nested",
      "params": {
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Harbour",
+        "token": "<id:ferry>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:ferry_cabin>",
       "event": {
        "method": "added",
@@ -1662,7 +1746,13 @@
     {
      "method": "nested",
      "params": {
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Depot",
+        "token": "<id:bus>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:bus_cabin>",
       "event": {
        "method": "fired",
@@ -1695,7 +1785,13 @@
      "result": {
       "fired": true,
       "transition": "Sit",
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Depot",
+        "token": "<id:bus>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:bus_cabin>",
       "marking_version": "<version>",
       "running": false
@@ -1711,7 +1807,13 @@
     {
      "method": "nested",
      "params": {
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Depot",
+        "token": "<id:bus>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:bus_cabin>",
       "event": {
        "method": "fired",
@@ -1742,7 +1844,13 @@
     {
      "method": "nested",
      "params": {
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Depot",
+        "token": "<id:bus>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:bus_cabin>",
       "event": {
        "method": "fireable",
@@ -1763,7 +1871,13 @@
      "result": {
       "fired": true,
       "transition": "Sit",
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Depot",
+        "token": "<id:bus>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:bus_cabin>",
       "marking_version": "<version>",
       "running": false
@@ -1779,7 +1893,13 @@
     {
      "method": "nested",
      "params": {
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Depot",
+        "token": "<id:bus>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:bus_cabin>",
       "event": {
        "method": "fired",
@@ -1810,7 +1930,13 @@
     {
      "method": "nested",
      "params": {
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Depot",
+        "token": "<id:bus>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:bus_cabin>",
       "event": {
        "method": "fireable",
@@ -1831,7 +1957,13 @@
      "result": {
       "fired": true,
       "transition": "Stand",
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Depot",
+        "token": "<id:bus>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:bus_cabin>",
       "marking_version": "<version>",
       "running": false
@@ -1847,7 +1979,13 @@
     {
      "method": "nested",
      "params": {
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Depot",
+        "token": "<id:bus>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:bus_cabin>",
       "event": {
        "method": "fired",
@@ -1888,7 +2026,13 @@
     {
      "method": "nested",
      "params": {
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Depot",
+        "token": "<id:bus>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:bus_cabin>",
       "event": {
        "method": "fireable",
@@ -1907,7 +2051,13 @@
      "result": {
       "fired": true,
       "transition": "Close Doors",
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Depot",
+        "token": "<id:bus>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:bus_cabin>",
       "marking_version": "<version>",
       "running": false
@@ -1943,7 +2093,13 @@
        }
       ],
       "has_more": false,
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Depot",
+        "token": "<id:bus>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:bus_cabin>"
      }
     }
@@ -1966,7 +2122,13 @@
       "type_name": "<label>",
       "kind": "json",
       "value": "Ada",
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Depot",
+        "token": "<id:bus>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:bus_cabin>"
      }
     }
@@ -1980,7 +2142,13 @@
     {
      "method": "nested",
      "params": {
-      "path": "<path>",
+      "path": [
+       {
+        "place": "In Transit",
+        "token": "<id>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:bus_cabin>",
       "event": {
        "method": "param_changed",
@@ -2049,7 +2217,7 @@
     {
      "id": "20",
      "result": {
-      "protocol_version": 1,
+      "protocol_version": 2,
       "runtime": "<label>",
       "net": "cabin",
       "generation": 1,
@@ -2271,7 +2439,13 @@
        },
        "last_progress_at": "<time>"
       },
-      "path": "<path>",
+      "path": [
+       {
+        "place": "In Transit",
+        "token": "<id:bus_in_transit>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:bus_cabin>",
       "template": "Cabin"
      }
@@ -2333,7 +2507,13 @@
        {
         "name": "cabin",
         "nested_id": "<id:bus_cabin>",
-        "path": "<path>",
+        "path": [
+         {
+          "place": "In Transit",
+          "token": "<id:bus_in_transit>",
+          "net": "cabin"
+         }
+        ],
         "template": "Cabin",
         "count": 4
        }
@@ -2350,7 +2530,13 @@
     {
      "method": "nested",
      "params": {
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Central",
+        "token": "<id>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:bus_cabin>",
       "event": {
        "method": "param_changed",
@@ -2367,7 +2553,13 @@
     {
      "method": "nested",
      "params": {
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Central",
+        "token": "<id>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:bus_cabin>",
       "event": {
        "method": "removed",
@@ -2385,7 +2577,13 @@
     {
      "method": "nested",
      "params": {
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Central",
+        "token": "<id>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:bus_cabin>",
       "event": {
        "method": "added",
@@ -2404,7 +2602,13 @@
     {
      "method": "nested",
      "params": {
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Central",
+        "token": "<id>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:bus_cabin>",
       "event": {
        "method": "added",
@@ -2453,7 +2657,13 @@
     {
      "method": "nested",
      "params": {
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Central",
+        "token": "<id:bus_central>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:bus_cabin>",
       "event": {
        "method": "fireable",
@@ -2538,7 +2748,13 @@
        {
         "name": "cabin",
         "nested_id": "<id:bus_cabin>",
-        "path": "<path>",
+        "path": [
+         {
+          "place": "Central",
+          "token": "<id:bus_central>",
+          "net": "cabin"
+         }
+        ],
         "template": "Cabin",
         "count": 5
        }
@@ -2555,7 +2771,13 @@
     {
      "method": "nested",
      "params": {
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Central",
+        "token": "<id:bus_central>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:bus_cabin>",
       "event": {
        "method": "fired",
@@ -2598,7 +2820,13 @@
      "result": {
       "fired": true,
       "transition": "Go To Door",
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Central",
+        "token": "<id:bus_central>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:bus_cabin>",
       "marking_version": "<version>",
       "running": false
@@ -2611,7 +2839,13 @@
     "method": "get_place_tokens",
     "params": {
      "place": "Door",
-     "path": "transit/Central/#<id:bus_central>/cabin"
+     "path": [
+      {
+       "place": "Central",
+       "token": "<id:bus_central>",
+       "net": "cabin"
+      }
+     ]
     }
    },
    "expect": [
@@ -2630,7 +2864,13 @@
        }
       ],
       "has_more": false,
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Central",
+        "token": "<id:bus_central>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:bus_cabin>"
      }
     }
@@ -2644,7 +2884,13 @@
     {
      "method": "nested",
      "params": {
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Central",
+        "token": "<id:bus_central>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:bus_cabin>",
       "event": {
        "method": "removed",
@@ -2713,7 +2959,13 @@
     {
      "method": "nested",
      "params": {
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Central",
+        "token": "<id:bus_central>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:bus_cabin>",
       "event": {
        "method": "fired",
@@ -2754,7 +3006,13 @@
     {
      "method": "nested",
      "params": {
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Central",
+        "token": "<id:bus_central>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:bus_cabin>",
       "event": {
        "method": "fireable",
@@ -2775,7 +3033,13 @@
      "result": {
       "fired": true,
       "transition": "Go To Door",
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Central",
+        "token": "<id:bus_central>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:bus_cabin>",
       "marking_version": "<version>",
       "running": false
@@ -2791,7 +3055,13 @@
     {
      "method": "nested",
      "params": {
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Central",
+        "token": "<id:bus_central>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:bus_cabin>",
       "event": {
        "method": "removed",
@@ -2860,7 +3130,13 @@
     {
      "method": "nested",
      "params": {
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Central",
+        "token": "<id:bus_central>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:bus_cabin>",
       "event": {
        "method": "fired",
@@ -2901,7 +3177,13 @@
     {
      "method": "nested",
      "params": {
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Central",
+        "token": "<id:bus_central>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:bus_cabin>",
       "event": {
        "method": "fireable",
@@ -2920,7 +3202,13 @@
      "result": {
       "fired": true,
       "transition": "Go To Door From Standing",
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Central",
+        "token": "<id:bus_central>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:bus_cabin>",
       "marking_version": "<version>",
       "running": false
@@ -2936,7 +3224,13 @@
     {
      "method": "nested",
      "params": {
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Central",
+        "token": "<id:bus_central>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:bus_cabin>",
       "event": {
        "method": "removed",
@@ -2989,7 +3283,13 @@
     {
      "method": "nested",
      "params": {
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Central",
+        "token": "<id:bus_central>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:bus_cabin>",
       "event": {
        "method": "fireable",
@@ -3024,7 +3324,13 @@
     {
      "method": "nested",
      "params": {
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Central",
+        "token": "<id:bus_central>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:bus_cabin>",
       "event": {
        "method": "fired",
@@ -3059,7 +3365,13 @@
     {
      "method": "nested",
      "params": {
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Central",
+        "token": "<id:bus_central>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:bus_cabin>",
       "event": {
        "method": "fireable",
@@ -3080,7 +3392,13 @@
      "result": {
       "fired": true,
       "transition": "Clear Announcement",
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Central",
+        "token": "<id:bus_central>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:bus_cabin>",
       "marking_version": "<version>",
       "running": false
@@ -3096,7 +3414,13 @@
     {
      "method": "nested",
      "params": {
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Central",
+        "token": "<id:bus_central>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:bus_cabin>",
       "event": {
        "method": "added",
@@ -3141,7 +3465,13 @@
     {
      "method": "nested",
      "params": {
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Central",
+        "token": "<id:bus_central>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:bus_cabin>",
       "event": {
        "method": "fireable",
@@ -3176,7 +3506,13 @@
     {
      "method": "nested",
      "params": {
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Central",
+        "token": "<id:bus_central>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:bus_cabin>",
       "event": {
        "method": "added",
@@ -3245,7 +3581,13 @@
     {
      "method": "nested",
      "params": {
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Central",
+        "token": "<id:bus_central>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:bus_cabin>",
       "event": {
        "method": "fired",
@@ -3278,7 +3620,13 @@
      "result": {
       "fired": true,
       "transition": "Sit",
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Central",
+        "token": "<id:bus_central>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:bus_cabin>",
       "marking_version": "<version>",
       "running": false
@@ -3294,7 +3642,13 @@
     {
      "method": "nested",
      "params": {
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Central",
+        "token": "<id:bus_central>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:bus_cabin>",
       "event": {
        "method": "fired",
@@ -3325,7 +3679,13 @@
     {
      "method": "nested",
      "params": {
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Central",
+        "token": "<id:bus_central>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:bus_cabin>",
       "event": {
        "method": "fireable",
@@ -3346,7 +3706,13 @@
      "result": {
       "fired": true,
       "transition": "Sit",
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Central",
+        "token": "<id:bus_central>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:bus_cabin>",
       "marking_version": "<version>",
       "running": false
@@ -3362,7 +3728,13 @@
     {
      "method": "nested",
      "params": {
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Central",
+        "token": "<id:bus_central>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:bus_cabin>",
       "event": {
        "method": "fired",
@@ -3403,7 +3775,13 @@
     {
      "method": "nested",
      "params": {
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Central",
+        "token": "<id:bus_central>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:bus_cabin>",
       "event": {
        "method": "fireable",
@@ -3422,7 +3800,13 @@
      "result": {
       "fired": true,
       "transition": "Close Doors",
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Central",
+        "token": "<id:bus_central>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:bus_cabin>",
       "marking_version": "<version>",
       "running": false
@@ -3460,7 +3844,13 @@
           "<id:bus_ada_seats>"
          ]
         ],
-        "path": "<path>",
+        "path": [
+         {
+          "place": "Depot",
+          "token": "<id:bus>",
+          "net": "cabin"
+         }
+        ],
         "nested_id": "<id:bus_cabin>"
        },
        {
@@ -3481,7 +3871,13 @@
           "<id:bus_bram_seats>"
          ]
         ],
-        "path": "<path>",
+        "path": [
+         {
+          "place": "Depot",
+          "token": "<id:bus>",
+          "net": "cabin"
+         }
+        ],
         "nested_id": "<id:bus_cabin>"
        },
        {
@@ -3502,7 +3898,13 @@
           "<id:bus_cato_standing>"
          ]
         ],
-        "path": "<path>",
+        "path": [
+         {
+          "place": "Depot",
+          "token": "<id:bus>",
+          "net": "cabin"
+         }
+        ],
         "nested_id": "<id:bus_cabin>"
        },
        {
@@ -3523,7 +3925,13 @@
           "<id:bus_front_doors_closed>"
          ]
         ],
-        "path": "<path>",
+        "path": [
+         {
+          "place": "Depot",
+          "token": "<id:bus>",
+          "net": "cabin"
+         }
+        ],
         "nested_id": "<id:bus_cabin>"
        },
        {
@@ -3544,7 +3952,13 @@
           "<id:bus_ada_door>"
          ]
         ],
-        "path": "<path>",
+        "path": [
+         {
+          "place": "Central",
+          "token": "<id:bus_central>",
+          "net": "cabin"
+         }
+        ],
         "nested_id": "<id:bus_cabin>"
        },
        {
@@ -3565,7 +3979,13 @@
           "<id:bus_bram_door>"
          ]
         ],
-        "path": "<path>",
+        "path": [
+         {
+          "place": "Central",
+          "token": "<id:bus_central>",
+          "net": "cabin"
+         }
+        ],
         "nested_id": "<id:bus_cabin>"
        },
        {
@@ -3586,7 +4006,13 @@
           "<id:bus_cato_door>"
          ]
         ],
-        "path": "<path>",
+        "path": [
+         {
+          "place": "Central",
+          "token": "<id:bus_central>",
+          "net": "cabin"
+         }
+        ],
         "nested_id": "<id:bus_cabin>"
        },
        {
@@ -3602,7 +4028,13 @@
          ]
         ],
         "produced": [],
-        "path": "<path>",
+        "path": [
+         {
+          "place": "Central",
+          "token": "<id:bus_central>",
+          "net": "cabin"
+         }
+        ],
         "nested_id": "<id:bus_cabin>"
        },
        {
@@ -3623,7 +4055,13 @@
           "<id:bus_dara_seats>"
          ]
         ],
-        "path": "<path>",
+        "path": [
+         {
+          "place": "Central",
+          "token": "<id:bus_central>",
+          "net": "cabin"
+         }
+        ],
         "nested_id": "<id:bus_cabin>"
        },
        {
@@ -3644,7 +4082,13 @@
           "<id:bus_eve_seats>"
          ]
         ],
-        "path": "<path>",
+        "path": [
+         {
+          "place": "Central",
+          "token": "<id:bus_central>",
+          "net": "cabin"
+         }
+        ],
         "nested_id": "<id:bus_cabin>"
        },
        {
@@ -3665,7 +4109,13 @@
           "<id:bus_front_doors_closed_2>"
          ]
         ],
-        "path": "<path>",
+        "path": [
+         {
+          "place": "Central",
+          "token": "<id:bus_central>",
+          "net": "cabin"
+         }
+        ],
         "nested_id": "<id:bus_cabin>"
        }
       ]
@@ -3722,7 +4172,13 @@
           "<id:bus_ada_door>"
          ]
         ],
-        "path": "<path>",
+        "path": [
+         {
+          "place": "Central",
+          "token": "<id:bus_central>",
+          "net": "cabin"
+         }
+        ],
         "nested_id": "<id:bus_cabin>"
        },
        {
@@ -3757,7 +4213,13 @@
           "<id:bus_bram_door>"
          ]
         ],
-        "path": "<path>",
+        "path": [
+         {
+          "place": "Central",
+          "token": "<id:bus_central>",
+          "net": "cabin"
+         }
+        ],
         "nested_id": "<id:bus_cabin>"
        },
        {
@@ -3792,7 +4254,13 @@
           "<id:bus_cato_door>"
          ]
         ],
-        "path": "<path>",
+        "path": [
+         {
+          "place": "Central",
+          "token": "<id:bus_central>",
+          "net": "cabin"
+         }
+        ],
         "nested_id": "<id:bus_cabin>"
        },
        {
@@ -3822,7 +4290,13 @@
          ]
         ],
         "produced": [],
-        "path": "<path>",
+        "path": [
+         {
+          "place": "Central",
+          "token": "<id:bus_central>",
+          "net": "cabin"
+         }
+        ],
         "nested_id": "<id:bus_cabin>"
        },
        {
@@ -3871,7 +4345,13 @@
           "<id:bus_dara_seats>"
          ]
         ],
-        "path": "<path>",
+        "path": [
+         {
+          "place": "Central",
+          "token": "<id:bus_central>",
+          "net": "cabin"
+         }
+        ],
         "nested_id": "<id:bus_cabin>"
        },
        {
@@ -3892,7 +4372,13 @@
           "<id:bus_eve_seats>"
          ]
         ],
-        "path": "<path>",
+        "path": [
+         {
+          "place": "Central",
+          "token": "<id:bus_central>",
+          "net": "cabin"
+         }
+        ],
         "nested_id": "<id:bus_cabin>"
        },
        {
@@ -3913,7 +4399,13 @@
           "<id:bus_front_doors_closed_2>"
          ]
         ],
-        "path": "<path>",
+        "path": [
+         {
+          "place": "Central",
+          "token": "<id:bus_central>",
+          "net": "cabin"
+         }
+        ],
         "nested_id": "<id:bus_cabin>"
        }
       ]
@@ -3929,7 +4421,13 @@
     {
      "method": "nested",
      "params": {
-      "path": "<path>",
+      "path": [
+       {
+        "place": "In Transit",
+        "token": "<id>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:bus_cabin>",
       "event": {
        "method": "param_changed",
@@ -3994,7 +4492,13 @@
     {
      "method": "nested",
      "params": {
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Harbour",
+        "token": "<id>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:bus_cabin>",
       "event": {
        "method": "param_changed",
@@ -4011,7 +4515,13 @@
     {
      "method": "nested",
      "params": {
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Harbour",
+        "token": "<id>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:bus_cabin>",
       "event": {
        "method": "removed",
@@ -4029,7 +4539,13 @@
     {
      "method": "nested",
      "params": {
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Harbour",
+        "token": "<id>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:bus_cabin>",
       "event": {
        "method": "added",
@@ -4048,7 +4564,13 @@
     {
      "method": "nested",
      "params": {
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Harbour",
+        "token": "<id>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:bus_cabin>",
       "event": {
        "method": "added",
@@ -4097,7 +4619,13 @@
     {
      "method": "nested",
      "params": {
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Harbour",
+        "token": "<id:bus_harbour>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:bus_cabin>",
       "event": {
        "method": "fireable",
@@ -4132,7 +4660,13 @@
     {
      "method": "nested",
      "params": {
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Harbour",
+        "token": "<id:ferry>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:ferry_cabin>",
       "event": {
        "method": "fired",
@@ -4163,7 +4697,13 @@
     {
      "method": "nested",
      "params": {
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Harbour",
+        "token": "<id:ferry>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:ferry_cabin>",
       "event": {
        "method": "fireable",
@@ -4185,7 +4725,13 @@
      "result": {
       "fired": true,
       "transition": "Go Below",
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Harbour",
+        "token": "<id:ferry>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:ferry_cabin>",
       "marking_version": "<version>",
       "running": false
@@ -4201,7 +4747,13 @@
     {
      "method": "nested",
      "params": {
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Harbour",
+        "token": "<id:ferry>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:ferry_cabin>",
       "event": {
        "method": "fired",
@@ -4232,7 +4784,13 @@
     {
      "method": "nested",
      "params": {
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Harbour",
+        "token": "<id:ferry>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:ferry_cabin>",
       "event": {
        "method": "fireable",
@@ -4254,7 +4812,13 @@
      "result": {
       "fired": true,
       "transition": "Go Below",
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Harbour",
+        "token": "<id:ferry>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:ferry_cabin>",
       "marking_version": "<version>",
       "running": false
@@ -4270,7 +4834,13 @@
     {
      "method": "nested",
      "params": {
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Harbour",
+        "token": "<id:ferry>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:ferry_cabin>",
       "event": {
        "method": "fired",
@@ -4303,7 +4873,13 @@
      "result": {
       "fired": true,
       "transition": "Go Up",
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Harbour",
+        "token": "<id:ferry>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:ferry_cabin>",
       "marking_version": "<version>",
       "running": false
@@ -4319,7 +4895,13 @@
     {
      "method": "nested",
      "params": {
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Harbour",
+        "token": "<id:ferry>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:ferry_cabin>",
       "event": {
        "method": "fired",
@@ -4350,7 +4932,13 @@
     {
      "method": "nested",
      "params": {
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Harbour",
+        "token": "<id:ferry>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:ferry_cabin>",
       "event": {
        "method": "fireable",
@@ -4371,7 +4959,13 @@
      "result": {
       "fired": true,
       "transition": "Go Up",
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Harbour",
+        "token": "<id:ferry>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:ferry_cabin>",
       "marking_version": "<version>",
       "running": false
@@ -4387,7 +4981,13 @@
     {
      "method": "nested",
      "params": {
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Harbour",
+        "token": "<id:ferry>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:ferry_cabin>",
       "event": {
        "method": "fired",
@@ -4420,7 +5020,13 @@
      "result": {
       "fired": true,
       "transition": "Close Doors",
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Harbour",
+        "token": "<id:ferry>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:ferry_cabin>",
       "marking_version": "<version>",
       "running": false
@@ -4436,7 +5042,13 @@
     {
      "method": "nested",
      "params": {
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Harbour",
+        "token": "<id:ferry>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:ferry_cabin>",
       "event": {
        "method": "fired",
@@ -4477,7 +5089,13 @@
     {
      "method": "nested",
      "params": {
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Harbour",
+        "token": "<id:ferry>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:ferry_cabin>",
       "event": {
        "method": "fireable",
@@ -4496,7 +5114,13 @@
      "result": {
       "fired": true,
       "transition": "Close Doors",
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Harbour",
+        "token": "<id:ferry>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:ferry_cabin>",
       "marking_version": "<version>",
       "running": false
@@ -4532,7 +5156,13 @@
        }
       ],
       "has_more": false,
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Harbour",
+        "token": "<id:ferry>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:ferry_cabin>"
      }
     }
@@ -4546,7 +5176,13 @@
     {
      "method": "nested",
      "params": {
-      "path": "<path>",
+      "path": [
+       {
+        "place": "In Transit",
+        "token": "<id>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:ferry_cabin>",
       "event": {
        "method": "param_changed",
@@ -4611,7 +5247,13 @@
     {
      "method": "nested",
      "params": {
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Airport",
+        "token": "<id>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:ferry_cabin>",
       "event": {
        "method": "param_changed",
@@ -4628,7 +5270,13 @@
     {
      "method": "nested",
      "params": {
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Airport",
+        "token": "<id>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:ferry_cabin>",
       "event": {
        "method": "removed",
@@ -4646,7 +5294,13 @@
     {
      "method": "nested",
      "params": {
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Airport",
+        "token": "<id>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:ferry_cabin>",
       "event": {
        "method": "removed",
@@ -4664,7 +5318,13 @@
     {
      "method": "nested",
      "params": {
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Airport",
+        "token": "<id>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:ferry_cabin>",
       "event": {
        "method": "added",
@@ -4683,7 +5343,13 @@
     {
      "method": "nested",
      "params": {
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Airport",
+        "token": "<id>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:ferry_cabin>",
       "event": {
        "method": "added",
@@ -4702,7 +5368,13 @@
     {
      "method": "nested",
      "params": {
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Airport",
+        "token": "<id>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:ferry_cabin>",
       "event": {
        "method": "added",
@@ -4751,7 +5423,13 @@
     {
      "method": "nested",
      "params": {
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Airport",
+        "token": "<id:ferry_airport>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:ferry_cabin>",
       "event": {
        "method": "fireable",
@@ -4786,7 +5464,13 @@
     {
      "method": "nested",
      "params": {
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Harbour",
+        "token": "<id:bus_harbour>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:bus_cabin>",
       "event": {
        "method": "fired",
@@ -4829,7 +5513,13 @@
      "result": {
       "fired": true,
       "transition": "Go To Door",
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Harbour",
+        "token": "<id:bus_harbour>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:bus_cabin>",
       "marking_version": "<version>",
       "running": false
@@ -4845,7 +5535,13 @@
     {
      "method": "nested",
      "params": {
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Harbour",
+        "token": "<id:bus_harbour>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:bus_cabin>",
       "event": {
        "method": "removed",
@@ -4914,7 +5610,13 @@
     {
      "method": "nested",
      "params": {
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Harbour",
+        "token": "<id:bus_harbour>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:bus_cabin>",
       "event": {
        "method": "fired",
@@ -4955,7 +5657,13 @@
     {
      "method": "nested",
      "params": {
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Harbour",
+        "token": "<id:bus_harbour>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:bus_cabin>",
       "event": {
        "method": "fireable",
@@ -4974,7 +5682,13 @@
      "result": {
       "fired": true,
       "transition": "Go To Door",
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Harbour",
+        "token": "<id:bus_harbour>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:bus_cabin>",
       "marking_version": "<version>",
       "running": false
@@ -4990,7 +5704,13 @@
     {
      "method": "nested",
      "params": {
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Harbour",
+        "token": "<id:bus_harbour>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:bus_cabin>",
       "event": {
        "method": "removed",
@@ -5043,7 +5763,13 @@
     {
      "method": "nested",
      "params": {
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Harbour",
+        "token": "<id:bus_harbour>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:bus_cabin>",
       "event": {
        "method": "fireable",
@@ -5078,7 +5804,13 @@
     {
      "method": "nested",
      "params": {
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Harbour",
+        "token": "<id:bus_harbour>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:bus_cabin>",
       "event": {
        "method": "fired",
@@ -5103,7 +5835,13 @@
     {
      "method": "nested",
      "params": {
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Harbour",
+        "token": "<id:bus_harbour>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:bus_cabin>",
       "event": {
        "method": "fireable",
@@ -5124,7 +5862,13 @@
      "result": {
       "fired": true,
       "transition": "Clear Announcement",
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Harbour",
+        "token": "<id:bus_harbour>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:bus_cabin>",
       "marking_version": "<version>",
       "running": false
@@ -5140,7 +5884,13 @@
     {
      "method": "nested",
      "params": {
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Harbour",
+        "token": "<id:bus_harbour>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:bus_cabin>",
       "event": {
        "method": "fired",
@@ -5181,7 +5931,13 @@
     {
      "method": "nested",
      "params": {
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Harbour",
+        "token": "<id:bus_harbour>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:bus_cabin>",
       "event": {
        "method": "fireable",
@@ -5200,7 +5956,13 @@
      "result": {
       "fired": true,
       "transition": "Close Doors",
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Harbour",
+        "token": "<id:bus_harbour>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:bus_cabin>",
       "marking_version": "<version>",
       "running": false
@@ -5216,7 +5978,13 @@
     {
      "method": "nested",
      "params": {
-      "path": "<path>",
+      "path": [
+       {
+        "place": "In Transit",
+        "token": "<id>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:bus_cabin>",
       "event": {
        "method": "param_changed",
@@ -5281,7 +6049,13 @@
     {
      "method": "nested",
      "params": {
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Airport",
+        "token": "<id>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:bus_cabin>",
       "event": {
        "method": "param_changed",
@@ -5298,7 +6072,13 @@
     {
      "method": "nested",
      "params": {
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Airport",
+        "token": "<id>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:bus_cabin>",
       "event": {
        "method": "removed",
@@ -5316,7 +6096,13 @@
     {
      "method": "nested",
      "params": {
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Airport",
+        "token": "<id>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:bus_cabin>",
       "event": {
        "method": "added",
@@ -5335,7 +6121,13 @@
     {
      "method": "nested",
      "params": {
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Airport",
+        "token": "<id>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:bus_cabin>",
       "event": {
        "method": "added",
@@ -5384,7 +6176,13 @@
     {
      "method": "nested",
      "params": {
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Airport",
+        "token": "<id:bus_airport>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:bus_cabin>",
       "event": {
        "method": "fireable",
@@ -5419,7 +6217,13 @@
     {
      "method": "nested",
      "params": {
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Airport",
+        "token": "<id:ferry_airport>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:ferry_cabin>",
       "event": {
        "method": "fired",
@@ -5462,7 +6266,13 @@
      "result": {
       "fired": true,
       "transition": "Go To Door From Upper Deck",
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Airport",
+        "token": "<id:ferry_airport>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:ferry_cabin>",
       "marking_version": "<version>",
       "running": false
@@ -5478,7 +6288,13 @@
     {
      "method": "nested",
      "params": {
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Airport",
+        "token": "<id:ferry_airport>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:ferry_cabin>",
       "event": {
        "method": "removed",
@@ -5547,7 +6363,13 @@
     {
      "method": "nested",
      "params": {
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Airport",
+        "token": "<id:ferry_airport>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:ferry_cabin>",
       "event": {
        "method": "fired",
@@ -5588,7 +6410,13 @@
     {
      "method": "nested",
      "params": {
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Airport",
+        "token": "<id:ferry_airport>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:ferry_cabin>",
       "event": {
        "method": "fireable",
@@ -5607,7 +6435,13 @@
      "result": {
       "fired": true,
       "transition": "Go To Door From Upper Deck",
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Airport",
+        "token": "<id:ferry_airport>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:ferry_cabin>",
       "marking_version": "<version>",
       "running": false
@@ -5623,7 +6457,13 @@
     {
      "method": "nested",
      "params": {
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Airport",
+        "token": "<id:ferry_airport>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:ferry_cabin>",
       "event": {
        "method": "removed",
@@ -5676,7 +6516,13 @@
     {
      "method": "nested",
      "params": {
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Airport",
+        "token": "<id:ferry_airport>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:ferry_cabin>",
       "event": {
        "method": "fireable",
@@ -5767,7 +6613,13 @@
     {
      "method": "nested",
      "params": {
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Airport",
+        "token": "<id:bus_airport>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:bus_cabin>",
       "event": {
        "method": "added",
@@ -5786,7 +6638,13 @@
     {
      "method": "nested",
      "params": {
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Airport",
+        "token": "<id:bus_airport>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:bus_cabin>",
       "event": {
        "method": "fireable",
@@ -5806,7 +6664,13 @@
       "status": "injected",
       "id": "<id:bus_hal>",
       "marking_version": "<version>",
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Airport",
+        "token": "<id:bus_airport>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:bus_cabin>"
      }
     }
@@ -5907,7 +6771,13 @@
        {
         "name": "cabin",
         "nested_id": "<id:shuttle_cabin>",
-        "path": "<path>",
+        "path": [
+         {
+          "place": "Depot",
+          "token": "<id:shuttle>",
+          "net": "cabin"
+         }
+        ],
         "template": "Pod",
         "count": 2
        }
@@ -5920,7 +6790,13 @@
    "send": {
     "method": "get_state",
     "params": {
-     "path": "transit/Nowhere/#1/cabin"
+     "path": [
+      {
+       "place": "Nowhere",
+       "token": "1",
+       "net": "cabin"
+      }
+     ]
     }
    },
    "expect": [
@@ -5937,7 +6813,12 @@
    "send": {
     "method": "get_state",
     "params": {
-     "path": "transit/Depot/#1"
+     "path": [
+      {
+       "place": "Depot",
+       "token": "1"
+      }
+     ]
     }
    },
    "expect": [
@@ -5945,7 +6826,7 @@
      "id": "67",
      "error": {
       "message": "<label>",
-      "code": "unknown_net"
+      "code": "invalid_params"
      }
     }
    ]
@@ -5972,7 +6853,7 @@
     "method": "get_state",
     "params": {
      "nested_id": "<id:bus_cabin>",
-     "path": "transit"
+     "path": []
     }
    },
    "expect": [
@@ -6072,7 +6953,13 @@
     {
      "method": "nested",
      "params": {
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Depot",
+        "token": "<id:shuttle>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:shuttle_cabin>",
       "event": {
        "method": "fired",
@@ -6113,7 +7000,13 @@
     {
      "method": "nested",
      "params": {
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Depot",
+        "token": "<id:shuttle>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:shuttle_cabin>",
       "event": {
        "method": "fireable",
@@ -6132,7 +7025,13 @@
      "result": {
       "fired": true,
       "transition": "Close Doors",
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Depot",
+        "token": "<id:shuttle>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:shuttle_cabin>",
       "marking_version": "<version>",
       "running": false
@@ -6148,7 +7047,13 @@
     {
      "method": "nested",
      "params": {
-      "path": "<path>",
+      "path": [
+       {
+        "place": "In Transit",
+        "token": "<id>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:shuttle_cabin>",
       "event": {
        "method": "param_changed",
@@ -6254,7 +7159,13 @@
        {
         "name": "cabin",
         "nested_id": "<id:shuttle_cabin>",
-        "path": "<path>",
+        "path": [
+         {
+          "place": "In Transit",
+          "token": "<id:shuttle_in_transit>",
+          "net": "cabin"
+         }
+        ],
         "template": "Pod",
         "count": 2
        }
@@ -6271,7 +7182,13 @@
     {
      "method": "nested",
      "params": {
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Airport",
+        "token": "<id>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:shuttle_cabin>",
       "event": {
        "method": "param_changed",
@@ -6288,7 +7205,13 @@
     {
      "method": "nested",
      "params": {
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Airport",
+        "token": "<id>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:shuttle_cabin>",
       "event": {
        "method": "removed",
@@ -6306,7 +7229,13 @@
     {
      "method": "nested",
      "params": {
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Airport",
+        "token": "<id>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:shuttle_cabin>",
       "event": {
        "method": "added",
@@ -6325,7 +7254,13 @@
     {
      "method": "nested",
      "params": {
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Airport",
+        "token": "<id>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:shuttle_cabin>",
       "event": {
        "method": "added",
@@ -6374,7 +7309,13 @@
     {
      "method": "nested",
      "params": {
-      "path": "<path>",
+      "path": [
+       {
+        "place": "Airport",
+        "token": "<id:shuttle_airport>",
+        "net": "cabin"
+       }
+      ],
       "nested_id": "<id:shuttle_cabin>",
       "event": {
        "method": "fireable",
@@ -6431,7 +7372,13 @@
           "<id:shuttle_front>"
          ]
         ],
-        "path": "<path>",
+        "path": [
+         {
+          "place": "Depot",
+          "token": "<id:shuttle>",
+          "net": "cabin"
+         }
+        ],
         "nested_id": "<id:shuttle_cabin>"
        }
       ]

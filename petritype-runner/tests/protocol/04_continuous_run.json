@@ -41,7 +41,7 @@
       "send": {"method": "get_state", "params": {"token_limit": 1}},
       "expect": [
         {"id": "5", "result": {
-          "protocol_version": 1, "runtime": "rust", "net": "parcel-intake",
+          "protocol_version": 2, "runtime": "rust", "net": "parcel-intake",
           "generation": 1, "marking_version": 3, "running": false,
           "topology": {
             "places": [

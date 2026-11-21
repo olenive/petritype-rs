@@ -10,7 +10,7 @@ use petritype::{
 };
 use serde_json::Value;
 
-use crate::protocol;
+use crate::protocol::{self, PathStep};
 
 /// The protocol's cap on a label, in characters (PROTOCOL.md §5.3).
 pub(crate) const LABEL_LIMIT: usize = 1000;
@@ -401,12 +401,12 @@ fn edge_kind(kind: petritype::EdgeKind) -> Option<protocol::EdgeKind> {
 }
 
 /// Up to `limit` tokens of `place` from `offset`, oldest first, as wire
-/// tokens, each with its keys and the nets it holds. `path` is the wire path
-/// of `net` itself, which the paths in `nets` extend; `place_name` is the
-/// place's.
+/// tokens, each with its keys and the nets it holds. `path` is the path of
+/// `net` itself (empty for the loaded net), which the paths in `nets`
+/// extend; `place_name` is the place's.
 pub(crate) fn tokens(
     net: &Net,
-    path: &str,
+    path: &[PathStep],
     place: PlaceId,
     place_name: &str,
     offset: usize,
@@ -423,7 +423,7 @@ pub(crate) fn tokens(
 /// nets.
 pub(crate) fn entry(
     net: &Net,
-    path: &str,
+    path: &[PathStep],
     place: PlaceId,
     place_name: &str,
     token: TokenId,
@@ -443,7 +443,7 @@ pub(crate) fn entry(
 /// is not nested.
 pub(crate) fn nets(
     net: &Net,
-    path: &str,
+    path: &[PathStep],
     place: PlaceId,
     place_name: &str,
     token: TokenId,
@@ -454,18 +454,35 @@ pub(crate) fn nets(
         .map(|(name, inner)| protocol::InnerNet {
             name: name.to_owned(),
             nested_id: inner.id().to_string(),
-            path: level(path, place_name, token, name),
+            path: path
+                .iter()
+                .cloned()
+                .chain([step(place_name, token, name)])
+                .collect(),
             template: inner.template().map(str::to_owned),
             count: inner.places().map(|(_, info)| info.count).sum(),
         })
         .collect()
 }
 
-/// `path` one level further down (PROTOCOL.md §12.1): the place, the token
-/// with `#` in front, and the net's name within the token, which is empty
-/// for a token that is a net, so that such a path ends in `/`.
-pub(crate) fn level(path: &str, place_name: &str, token: TokenId, net: &str) -> String {
-    format!("{path}/{place_name}/#{token}/{net}")
+/// The step down to the net named `net` in the token `token` of the place
+/// named `place_name` (PROTOCOL.md §12.1): `{place, token, net}`, the names
+/// taken whole, and `net` empty for a token that is itself a net.
+pub(crate) fn step(place_name: &str, token: TokenId, net: &str) -> PathStep {
+    PathStep::Token {
+        place: place_name.to_owned(),
+        token: token.to_string(),
+        net: net.to_owned(),
+    }
+}
+
+/// A token id as a path step or a request spells it, in its one canonical
+/// form, the decimal the runner writes (PROTOCOL.md §2): `"01"` and `"+1"`
+/// name no token.
+pub(crate) fn token_id(text: &str) -> Option<TokenId> {
+    text.parse::<TokenId>()
+        .ok()
+        .filter(|id| id.to_string() == text)
 }
 
 #[cfg(test)]
@@ -473,17 +490,30 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_level_is_place_token_and_net_and_a_bare_net_ends_in_a_slash() {
+    fn a_step_takes_every_name_whole() {
         let token: TokenId = "17".parse().unwrap();
         assert_eq!(
-            level("City", "Depot", token, "cabin"),
-            "City/Depot/#17/cabin"
+            step("Depot/North", token, "#cabin"),
+            PathStep::Token {
+                place: "Depot/North".into(),
+                token: "17".into(),
+                net: "#cabin".into()
+            }
         );
-        assert_eq!(level("City", "Yard", token, ""), "City/Yard/#17/");
         assert_eq!(
-            level("City/Depot/#17/cabin", "Door", token, "luggage"),
-            "City/Depot/#17/cabin/Door/#17/luggage"
+            protocol::to_value(step("Yard", token, "")),
+            serde_json::json!({"place": "Yard", "token": "17", "net": ""}),
+            "a token that is a net holds one net, named with the empty string"
         );
+    }
+
+    #[test]
+    fn only_the_canonical_decimal_names_a_token() {
+        assert_eq!(token_id("17"), "17".parse().ok());
+        assert_eq!(token_id("0"), "0".parse().ok());
+        for text in ["01", "+1", "", " 1", "1.0", "#1", "-1"] {
+            assert_eq!(token_id(text), None, "{text:?}");
+        }
     }
 
     #[test]

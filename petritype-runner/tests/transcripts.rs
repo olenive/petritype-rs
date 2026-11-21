@@ -22,17 +22,19 @@
 //!   then its response. A body that is launched is run at once and fed back,
 //!   and a run that asks for a tick gets one, so the lines of the whole
 //!   firing belong to the exchange that caused it.
-//! - Masks may stand for any value in any position: `"<label>"`, `"<time>"`,
-//!   `"<id>"` and `"<path>"` match any string, `"<ms>"` and `"<version>"` any
-//!   number (a boolean is not a number), `"<any>"` any value at all.
+//! - Masks may stand for any value in any position: `"<label>"`, `"<time>"`
+//!   and `"<id>"` match any string, `"<ms>"` and `"<version>"` any number (a
+//!   boolean is not a number), `"<any>"` any value at all.
 //!   `{"<unordered>": [...]}` (an object with that one key) matches an array
 //!   holding the same elements in some order, each matched by a distinct
 //!   element. `"<id:NAME>"` matches any string and binds it to `NAME` for the
 //!   rest of the transcript: a later `"<id:NAME>"` in an `expect` must be that
-//!   string, and one anywhere in a `send`'s params is replaced by it, whole or
-//!   inside a longer string (`"transit/Depot/#<id:bus>/cabin"`, a path). A
-//!   line that fails to match binds nothing, and neither does an exchange
-//!   that fails.
+//!   string, and one anywhere in a `send`'s params is replaced by it whole,
+//!   a token id in a step of a path included
+//!   (`{"place": "Depot", "token": "<id:bus>", "net": "cabin"}`). A line that
+//!   fails to match binds nothing, and neither does an exchange that fails.
+//!   (Until protocol version 2 a path was text, masked whole as `"<path>"`,
+//!   and a capture was substituted inside a longer string to spell one.)
 //!   Numbers compare by value (`0` matches `0.0`); objects must have exactly
 //!   the expected keys; arrays the expected length, element by element.
 //!   These are PROTOCOL.md §11's rules, and the Python harness's
@@ -80,8 +82,10 @@
 //! net; recorded again the same day for the light as one place, and again
 //! for its two transitions, `Go` and `Change`, each replaying with no runner
 //! change; and again for its controls and its colours, with six `press`
-//! exchanges at the end, which replays once the runner knew `press`). The
-//! shared set of §11, over the
+//! exchanges at the end, which replays once the runner knew `press`). All
+//! four were recorded again on 2026-11-21 for protocol version 2: each pins
+//! `protocol_version` 2, and `05_nested_nets.json` spells its paths as lists
+//! of steps. The shared set of §11, over the
 //! conformance nets `parcel-distribution`, `transit`, `wildlife`, `shop` and
 //! `traffic-light`, lives in the Python repository and is replayed here from
 //! a sibling checkout by `the_shared_transcripts_hold`.
@@ -213,7 +217,7 @@ fn normalise(value: Value) -> Value {
 /// What `<id:NAME>` masks have bound so far in one transcript.
 type Bindings = BTreeMap<String, String>;
 
-const STRING_MASKS: [&str; 4] = ["<label>", "<time>", "<id>", "<path>"];
+const STRING_MASKS: [&str; 3] = ["<label>", "<time>", "<id>"];
 const NUMBER_MASKS: [&str; 2] = ["<ms>", "<version>"];
 const ANY: &str = "<any>";
 const UNORDERED: &str = "<unordered>";
@@ -312,32 +316,17 @@ fn pair_up(
     false
 }
 
-/// `value` with every `"<id:NAME>"` replaced by its binding, whole or inside
-/// a longer string.
+/// `value` with every string that is an `"<id:NAME>"` replaced by its
+/// binding. A capture is substituted whole: text around one is left as it
+/// is (PROTOCOL.md §11).
 fn substitute(value: &Value, bindings: &Bindings, where_: &str) -> Value {
     match value {
-        Value::String(s) if s.contains("<id:") => {
-            let mut text = String::with_capacity(s.len());
-            let mut rest = s.as_str();
-            while let Some(start) = rest.find("<id:") {
-                let Some(end) = rest[start..].find('>').map(|end| start + end) else {
-                    break;
-                };
-                let mask = &rest[start..=end];
-                let Some(name) = capture_name(mask) else {
-                    text.push_str(&rest[..=end]);
-                    rest = &rest[end + 1..];
-                    continue;
-                };
-                let bound = bindings
-                    .get(name)
-                    .unwrap_or_else(|| panic!("{where_}: {mask} is sent before any line bound it"));
-                text.push_str(&rest[..start]);
-                text.push_str(bound);
-                rest = &rest[end + 1..];
-            }
-            text.push_str(rest);
-            Value::String(text)
+        Value::String(mask) if capture_name(mask).is_some() => {
+            let name = capture_name(mask).unwrap();
+            let bound = bindings
+                .get(name)
+                .unwrap_or_else(|| panic!("{where_}: {mask} is sent before any line bound it"));
+            Value::String(bound.clone())
         }
         Value::Array(items) => Value::Array(
             items
@@ -606,14 +595,18 @@ fn captures() {
         "an empty name is no capture"
     );
     assert_eq!(
-        substitute(&json!({"path": "transit/Depot/#<id:x>/cabin"}), b, "here"),
-        json!({"path": "transit/Depot/#7/cabin"}),
-        "a capture inside a longer string, as a path spells a token"
+        substitute(
+            &json!({"path": [{"place": "Depot", "token": "<id:x>", "net": "cabin"}]}),
+            b,
+            "here"
+        ),
+        json!({"path": [{"place": "Depot", "token": "7", "net": "cabin"}]}),
+        "a token id in a step of a path"
     );
     assert_eq!(
-        substitute(&json!("a/#<id:x>/b/#<id:x>/<id:>/<label>"), b, "here"),
-        json!("a/#7/b/#7/<id:>/<label>"),
-        "every capture in it, and nothing that is not one"
+        substitute(&json!("#<id:x>/cabin"), b, "here"),
+        json!("#<id:x>/cabin"),
+        "a capture is substituted whole, never inside a longer string"
     );
 }
 
@@ -646,8 +639,8 @@ fn the_fold() {
 #[test]
 fn the_nested_folds() {
     let wrap = |event: Value, nested_id: &str| {
-        json!({"method": "nested", "params": {"path": "c/P/#1/n", "nested_id": nested_id,
-               "event": event, "marking_version": 5, "running": false}})
+        json!({"method": "nested", "params": {"path": [{"place": "P", "token": "1", "net": "n"}],
+               "nested_id": nested_id, "event": event, "marking_version": 5, "running": false}})
     };
     let launched = json!({"method": "launched", "params": {"transition": "Sit",
                           "consumed": [["Door", "1"]], "marking_version": 1, "running": false}});

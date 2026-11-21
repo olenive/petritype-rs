@@ -3,7 +3,7 @@
 //! The protocol is newline-delimited JSON, specified once for every runtime
 //! and viewer in
 //! [PROTOCOL.md](https://github.com/olenive/petritype/blob/main/PROTOCOL.md)
-//! (version 1). A host (a server's worker, the Bevy viewer)
+//! (version 2). A host (a server's worker, the Bevy viewer)
 //! spawns a net process, asks it to `describe` and `load` a net, and then
 //! drives and watches it with `get_state`, `step`, `start`, `inject` and the
 //! rest, reading the notifications the process writes as the net changes.
@@ -80,15 +80,20 @@
 //!   `NetBuilder::serializable_param`; its `transition` is ignored.
 //! - A token that carries nets of its own (`petritype::Nested`, a place
 //!   declared with `place_nested`) lists them in `nets` wherever a token is
-//!   given in full, and the reads and `inject` take a `path`
-//!   (`"transit/Depot/#0/cabin"`) or a `nested_id` to act on one of them
+//!   given in full, and the reads and `inject` take a `path`, a list of
+//!   steps from the loaded net down
+//!   (`[{"place": "Depot", "token": "0", "net": "cabin"}]`,
+//!   [`protocol::PathStep`]), or a `nested_id` to act on one of them
 //!   (PROTOCOL.md §12). What happens inside arrives as one `nested`
 //!   notification around the inner net's own, with that net's own
 //!   `marking_version`; the outer one does not move. `step` and a running
 //!   net fire one transition in the order the nested places' stepping
 //!   rules give (`petritype::Stepping`): the outer net's choice, launched,
-//!   or one inner firing, inline, which the outer net's `progress` counts
-//!   under the inner net's path.
+//!   or one inner firing, inline. Progress is per net: an inner firing is
+//!   counted in the progress of the net it was in, and no other.
+//! - A net that holds a subnet place is refused at `load` as
+//!   `unsupported`, for now: subnet places come to the wire in a later
+//!   step of this runner.
 //! - A place that declares keys (`NetBuilder::keys`) lists them as
 //!   `key_names`, and its tokens carry theirs as `keys` wherever a token is
 //!   given, `produced` entries included (PROTOCOL.md §13). `query` asks for

@@ -323,9 +323,11 @@ fn a_firing_inside_a_token_is_told_nested_and_its_net_can_be_read() {
     assert_eq!(inner["marking_version"], 1);
     assert_eq!(inner["progress"]["step_count"], 1);
 
-    // The outer net counts the firing too, and the log holds it.
+    // Progress is per net (PROTOCOL.md §5.4): the outer net does not count
+    // the firing, and the log, which is one for the process, holds it.
     let outer = result(&mut host, "get_state", json!({}));
-    assert_eq!(outer["progress"]["step_count"], 1);
+    assert_eq!(outer["progress"]["step_count"], 0);
+    assert_eq!(outer["progress"]["fired_counts"], json!({}));
     let log = result(&mut host, "get_log", json!({}));
     assert_eq!(log["entries"][0]["transition"], "Move");
     assert_eq!(log["entries"][0]["nested_id"], nested_id.as_str());

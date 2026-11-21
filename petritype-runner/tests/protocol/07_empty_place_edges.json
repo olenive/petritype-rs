@@ -10,7 +10,7 @@
     {
      "id": "1",
      "result": {
-      "protocol_version": 1,
+      "protocol_version": 2,
       "runtime": "<label>",
       "runtime_version": "<label>",
       "nets": [
@@ -69,7 +69,7 @@
     {
      "id": "3",
      "result": {
-      "protocol_version": 1,
+      "protocol_version": 2,
       "runtime": "<label>",
       "net": "shop",
       "generation": 1,
@@ -432,7 +432,7 @@
     {
      "id": "11",
      "result": {
-      "protocol_version": 1,
+      "protocol_version": 2,
       "runtime": "<label>",
       "net": "shop",
       "generation": 1,

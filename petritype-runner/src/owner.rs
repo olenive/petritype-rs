@@ -24,8 +24,8 @@ use serde_json::{Map, Value, json};
 use crate::errors::{CoreError, code_of};
 use crate::projection::{Projection, Seen};
 use crate::protocol::{
-    self, Describe, DistinctResult, ErrorCode, HiddenKind, LogEntry, Notification, PlaceTokens,
-    QueryMatch, QueryResult, Request, Response, State, TokenBody, TokenValue,
+    self, Describe, DistinctResult, ErrorCode, HiddenKind, LogEntry, Notification, PathStep,
+    PlaceTokens, QueryMatch, QueryResult, Request, Response, State, TokenBody, TokenValue,
 };
 use crate::registry::{Hosting, LoadError, NetEntry, Params};
 use crate::time::iso8601;
@@ -102,7 +102,7 @@ const SERVED_WHEN_HOSTED: &[&str] = &[
     "distinct",
 ];
 
-/// Every method of protocol version 1.
+/// Every method of protocol version 2.
 const METHODS: &[&str] = &[
     "describe",
     "load",
@@ -206,8 +206,7 @@ struct HostFlight {
 /// (DESIGN §19.3.3).
 struct Loaded {
     entry: usize,
-    /// The entry's name: what `get_state` calls the net, and the first
-    /// segment of every path (PROTOCOL.md §12.1).
+    /// The entry's name: what `get_state` calls the net.
     name: &'static str,
     params: Params,
     net: Net,
@@ -258,7 +257,7 @@ struct Inner {
     /// The template that built it, when one did.
     template: Option<String>,
     /// The path it was last found at or reported under.
-    last_path: String,
+    last_path: Vec<PathStep>,
     /// The connection's projection of this net, while `set_filter` named it
     /// and set one (PROTOCOL.md §13.4); it goes with the record.
     projection: Option<Projection>,
@@ -268,7 +267,7 @@ impl Inner {
     /// A record for `net`, found at `path`. `silent` records its fireable
     /// set as already known, as a `load` does for the outer net; otherwise
     /// the first non-empty set is announced.
-    fn new(net: Option<&Net>, path: String, silent: bool) -> Inner {
+    fn new(net: Option<&Net>, path: Vec<PathStep>, silent: bool) -> Inner {
         let mut inner = Inner {
             marking_version: 0,
             topology: None,
@@ -321,15 +320,14 @@ struct InFlight {
     inline: bool,
 }
 
+/// One net's progress (PROTOCOL.md §5.4) besides its `step_count`, which is
+/// the core's `fired_count`: what the net's own transitions did, by their
+/// own names. A firing in an inner net is that net's progress alone.
 #[derive(Default)]
 struct ProgressKept {
     last_fired: Option<String>,
     fired_counts: BTreeMap<String, u64>,
     last_progress_at: Option<SystemTime>,
-    /// The inner firings counted here besides the net's own, which its
-    /// `fired_count` holds: the outer net's count of the firings the runner
-    /// made inside its tokens.
-    inside: u64,
 }
 
 impl ProgressKept {
@@ -337,14 +335,6 @@ impl ProgressKept {
         self.last_fired = Some(transition.to_owned());
         *self.fired_counts.entry(transition.to_owned()).or_default() += 1;
         self.last_progress_at = Some(now);
-    }
-
-    /// An inner firing, counted by the outer net under `key`: its path
-    /// without the outer net's name, then the transition
-    /// (`Depot/#17/cabin/Sit`), as the Python runner counts it.
-    fn fired_inside(&mut self, key: &str, now: SystemTime) {
-        self.inside += 1;
-        self.fired(key, now);
     }
 }
 
@@ -380,7 +370,7 @@ struct Level {
 #[derive(Debug, Clone)]
 struct Found {
     levels: Vec<Level>,
-    path: String,
+    path: Vec<PathStep>,
     nested_id: NetId,
     name: String,
 }
@@ -393,7 +383,7 @@ enum Target {
 
 /// What [`walk`] calls with each inner net: the levels down to it, its path,
 /// its name within its token, and the net. `Some` stops the walk.
-type Visit<'v, 'a, R> = dyn FnMut(&[Level], &str, &str, &'a Net) -> Option<R> + 'v;
+type Visit<'v, 'a, R> = dyn FnMut(&[Level], &[PathStep], &str, &'a Net) -> Option<R> + 'v;
 
 /// `[place, token]` pairs of one net, as its events carry them.
 type Pairs = Vec<(PlaceId, TokenId)>;
@@ -401,15 +391,20 @@ type Pairs = Vec<(PlaceId, TokenId)>;
 /// Calls `visit` with every inner net below `net`, at every depth and in
 /// passive places too, in walk order (nested places in place order, tokens
 /// oldest first, a token's nets in order, a net's own inner nets straight
-/// after it), until `visit` answers `Some`.
+/// after it), until `visit` answers `Some`. `levels` and `path` are the way
+/// down to `net`, empty for the loaded net, and are left as they were.
+///
+/// A place a net has for a port of one of its subnet places is not walked:
+/// the nets of a port's tokens are reached through the subnet (PROTOCOL.md
+/// §12.1), and subnet places are not served yet.
 fn walk<'a, R>(
     net: &'a Net,
     levels: &mut Vec<Level>,
-    path: &str,
+    path: &mut Vec<PathStep>,
     visit: &mut Visit<'_, 'a, R>,
 ) -> Option<R> {
     for (place, info) in net.places() {
-        if !info.nested {
+        if !info.nested || info.port_of.is_some() {
             continue;
         }
         for (token, _) in net.tokens(place) {
@@ -422,9 +417,10 @@ fn walk<'a, R>(
                     token,
                     index,
                 });
-                let here = translate::level(path, info.name, token, name);
+                path.push(translate::step(info.name, token, name));
                 let found =
-                    visit(levels, &here, name, inner).or_else(|| walk(inner, levels, &here, visit));
+                    visit(levels, path, name, inner).or_else(|| walk(inner, levels, path, visit));
+                path.pop();
                 levels.pop();
                 if found.is_some() {
                     return found;
@@ -435,97 +431,125 @@ fn walk<'a, R>(
     None
 }
 
-/// The first inner net below `outer`, at any depth, that `wanted` picks.
-fn find<'a>(
-    outer: &'a Net,
-    outer_name: &str,
-    wanted: impl Fn(&Net) -> bool,
-) -> Option<(Found, &'a Net)> {
-    walk(
-        outer,
-        &mut Vec::new(),
-        outer_name,
-        &mut |levels, path, name, net| {
-            wanted(net).then(|| {
-                let found = Found {
-                    levels: levels.to_vec(),
-                    path: path.to_owned(),
-                    nested_id: net.id(),
-                    name: name.to_owned(),
-                };
-                (found, net)
-            })
-        },
-    )
+/// Calls `visit` with every inner net of the loaded net `outer`, as
+/// [`walk`] does.
+fn walk_all<'a, R>(outer: &'a Net, visit: &mut Visit<'_, 'a, R>) -> Option<R> {
+    walk(outer, &mut Vec::new(), &mut Vec::new(), visit)
 }
 
-/// The inner net a wire path names, or `None` for a path that is the loaded
-/// net's name alone, which names the outer net. The error says which
-/// segment failed.
+/// The first inner net below `outer`, at any depth, that `wanted` picks.
+fn find(outer: &Net, wanted: impl Fn(&Net) -> bool) -> Option<(Found, &Net)> {
+    walk_all(outer, &mut |levels, path, name, net| {
+        wanted(net).then(|| {
+            let found = Found {
+                levels: levels.to_vec(),
+                path: path.to_vec(),
+                nested_id: net.id(),
+                name: name.to_owned(),
+            };
+            (found, net)
+        })
+    })
+}
+
+/// The name of the first subnet place in `net`, or in a net its tokens
+/// hold at any depth. A `load` of such a net is refused for now: subnet
+/// places come to the wire in a later step of this runner.
+fn first_subnet_place(net: &Net) -> Option<String> {
+    let own = |net: &Net| {
+        net.places()
+            .find(|(_, info)| info.subnet)
+            .map(|(_, info)| info.name.to_owned())
+    };
+    own(net).or_else(|| walk_all(net, &mut |_, _, _, inner| own(inner)))
+}
+
+/// The inner net a request's path names (PROTOCOL.md §12.1), resolved one
+/// step at a time from the loaded net down, or `None` for the empty path,
+/// which names the loaded net. The error names the step that failed by its
+/// index from 0.
 fn resolve_path<'a>(
     outer: &'a Net,
-    outer_name: &str,
-    path: &str,
+    steps: &[PathStep],
 ) -> Result<Option<(Found, &'a Net)>, String> {
-    let mut segments = path.split('/');
-    if segments.next() != Some(outer_name) {
-        return Err(format!(
-            "path {path:?} does not start with the loaded net's name {outer_name:?}"
-        ));
-    }
-    let rest: Vec<&str> = segments.collect();
-    if rest.is_empty() {
+    if steps.is_empty() {
         return Ok(None);
     }
     let mut net = outer;
-    let mut levels = Vec::new();
-    let mut here = outer_name.to_owned();
+    let mut levels = Vec::with_capacity(steps.len());
     let mut name = "";
-    for level in rest.chunks(3) {
-        let &[place_name, token_segment, net_name] = level else {
-            return Err(format!(
-                "path {path:?} stops after {:?}: each level is a place, a #token and a net",
-                level.last().copied().unwrap_or_default()
-            ));
-        };
-        let place = net
-            .place_named(place_name)
-            .ok_or_else(|| format!("path {path:?}: {here:?} has no place {place_name:?}"))?;
-        let token = token_segment
-            .strip_prefix('#')
-            .and_then(|id| id.parse::<TokenId>().ok())
-            .ok_or_else(|| {
-                format!("path {path:?}: {token_segment:?} is not a token, which is written #id")
-            })?;
-        let nets = net.nested(place, token).ok_or_else(|| {
-            if net.tokens(place).any(|(t, _)| t == token) {
-                format!("path {path:?}: token #{token} in {place_name:?} holds no nets")
-            } else {
-                format!("path {path:?}: there is no token #{token} in {place_name:?}")
-            }
-        })?;
-        let index = nets
-            .iter()
-            .position(|(n, _)| *n == net_name)
-            .ok_or_else(|| {
-                format!("path {path:?}: token #{token} in {place_name:?} holds no net {net_name:?}")
-            })?;
-        here = translate::level(&here, place_name, token, net_name);
-        levels.push(Level {
-            place,
-            token,
-            index,
-        });
-        net = nets[index].1;
-        name = net_name;
+    for (index, step) in steps.iter().enumerate() {
+        let (level, below, below_name) =
+            descend_step(net, step).map_err(|why| format!("step {index} of the path: {why}"))?;
+        levels.push(level);
+        net = below;
+        name = below_name;
     }
     let found = Found {
         levels,
-        path: here,
+        path: steps.to_vec(),
         nested_id: net.id(),
         name: name.to_owned(),
     };
     Ok(Some((found, net)))
+}
+
+/// One step of a path down from `net` (PROTOCOL.md §12.1): the level it
+/// takes, the net it reaches and that net's name in its token, or why it
+/// names no live net. Names are compared exactly as given, and a token id
+/// only in its canonical form.
+///
+/// A step of the subnet form names the subnet of a subnet place, which this
+/// runner does not serve yet, so it reaches no net: when subnet places come
+/// to the wire, that arm takes a level into the subnet.
+fn descend_step<'a, 's>(
+    net: &'a Net,
+    step: &'s PathStep,
+) -> Result<(Level, &'a Net, &'s str), String> {
+    match step {
+        PathStep::Token {
+            place: place_name,
+            token,
+            net: wanted,
+        } => {
+            let (place, info) = net
+                .place_named(place_name)
+                .and_then(|place| net.places().find(|&(id, _)| id == place))
+                .ok_or_else(|| format!("no place named {place_name:?}"))?;
+            if info.subnet {
+                return Err(format!(
+                    "{place_name:?} is a subnet place, which a step names by its place alone"
+                ));
+            }
+            if !info.nested {
+                return Err(format!("place {place_name:?} holds no nets"));
+            }
+            let nets = translate::token_id(token)
+                .and_then(|id| Some((id, net.nested(place, id)?)))
+                .ok_or_else(|| format!("no token {token:?} in {place_name:?}"));
+            let (token_id, nets) = nets?;
+            let index = nets
+                .iter()
+                .position(|(name, _)| name == wanted)
+                .ok_or_else(|| {
+                    format!("token {token:?} in {place_name:?} holds no net named {wanted:?}")
+                })?;
+            let level = Level {
+                place,
+                token: token_id,
+                index,
+            };
+            Ok((level, nets[index].1, wanted))
+        }
+        PathStep::Subnet { place } => {
+            Err(match net.place_named(place).and_then(|id| net.subnet(id)) {
+                Some(_) => {
+                    format!("{place:?} is a subnet place, which this runner does not serve yet")
+                }
+                None => format!("no subnet place named {place:?}"),
+            })
+        }
+    }
 }
 
 /// The net `levels` lead to from `net`, as the marking stands.
@@ -610,10 +634,8 @@ impl<'e> Lifted<'e> {
 #[derive(Debug, Clone)]
 struct InnerFiring {
     transition: String,
-    path: String,
+    path: Vec<PathStep>,
     nested_id: String,
-    /// The firing failed: its net's progress did not count it.
-    failed: bool,
 }
 
 /// What one flush wrote: the events, for the caller to read ids off, and
@@ -870,15 +892,10 @@ impl Loaded {
     /// taken silently: what `load` and `reset` start from.
     fn know_all(&mut self) {
         let mut seen = Vec::new();
-        walk(
-            &self.net,
-            &mut Vec::new(),
-            self.name,
-            &mut |_, path, _, net| {
-                seen.push((net.id(), Inner::new(Some(net), path.to_owned(), true)));
-                None::<()>
-            },
-        );
+        walk_all(&self.net, &mut |_, path, _, net| {
+            seen.push((net.id(), Inner::new(Some(net), path.to_vec(), true)));
+            None::<()>
+        });
         self.inner.extend(seen);
     }
 
@@ -889,23 +906,21 @@ impl Loaded {
     /// are.
     fn know_new(&mut self) {
         let mut seen = Vec::new();
-        walk(
-            &self.net,
-            &mut Vec::new(),
-            self.name,
-            &mut |_, path, _, net| {
-                if !self.inner.contains_key(&net.id()) {
-                    seen.push((net.id(), Inner::new(Some(net), path.to_owned(), true)));
-                }
-                None::<()>
-            },
-        );
+        walk_all(&self.net, &mut |_, path, _, net| {
+            if !self.inner.contains_key(&net.id()) {
+                seen.push((net.id(), Inner::new(Some(net), path.to_vec(), true)));
+            }
+            None::<()>
+        });
         self.inner.extend(seen);
     }
 
     /// The net a request's `path` or `nested_id` names (PROTOCOL.md §12.1):
-    /// both is `invalid_params`, neither the outer net, and one that names
-    /// no live inner net `unknown_net`.
+    /// both is `invalid_params`, and neither names the outer net, as the
+    /// empty path does. A path of the wrong shape is `invalid_params`, read before
+    /// anything is resolved ([`protocol::parse_path`]); a path or an id that
+    /// names no live inner net is `unknown_net`, a path's message naming the
+    /// step that failed.
     fn resolve(&self, args: &Args) -> Result<Target, (ErrorCode, String)> {
         let path = optional(args, "path");
         let nested_id = optional(args, "nested_id");
@@ -915,11 +930,15 @@ impl Loaded {
                 ErrorCode::InvalidParams,
                 "give a path or a nested_id, not both".to_owned(),
             )),
-            (Some(Value::String(path)), None) => resolve_path(&self.net, self.name, path)
-                .map(|found| found.map_or(Target::Outer, |(found, _)| Target::Inner(found)))
-                .map_err(|message| (ErrorCode::UnknownNet, message)),
+            (Some(path), None) => {
+                let steps = protocol::parse_path(path)
+                    .map_err(|message| (ErrorCode::InvalidParams, message))?;
+                resolve_path(&self.net, &steps)
+                    .map(|found| found.map_or(Target::Outer, |(found, _)| Target::Inner(found)))
+                    .map_err(|message| (ErrorCode::UnknownNet, message))
+            }
             (None, Some(Value::String(wanted))) => {
-                find(&self.net, self.name, |net| net.id().to_string() == *wanted)
+                find(&self.net, |net| net.id().to_string() == *wanted)
                     .map(|(found, _)| Target::Inner(found))
                     .ok_or_else(|| {
                         (
@@ -928,9 +947,9 @@ impl Loaded {
                         )
                     })
             }
-            _ => Err((
+            (None, Some(_)) => Err((
                 ErrorCode::InvalidParams,
-                "\"path\" and \"nested_id\" must be strings".to_owned(),
+                "\"nested_id\" must be a string".to_owned(),
             )),
         }
     }
@@ -962,15 +981,10 @@ impl Loaded {
             return;
         }
         let mut live = HashSet::new();
-        walk(
-            &self.net,
-            &mut Vec::new(),
-            self.name,
-            &mut |_, _, _, net| {
-                live.insert(net.id());
-                None::<()>
-            },
-        );
+        walk_all(&self.net, &mut |_, _, _, net| {
+            live.insert(net.id());
+            None::<()>
+        });
         self.inner.retain(|id, _| live.contains(id));
         self.touched.retain(|id| live.contains(id));
     }
@@ -1060,11 +1074,11 @@ impl Loaded {
         }
     }
 
-    /// The wire path of a lifted event: the loaded net's name, then per
-    /// level the place's name in the net above, the token and the net's
-    /// name. Makes a record for each net on the way that has none.
-    fn lifted_path(&mut self, lifted: &Lifted<'_>) -> String {
-        let mut path = self.name.to_owned();
+    /// The wire path of a lifted event: one step per level, the place's name
+    /// in the net above, the token and the net's name in the token. Makes a
+    /// record for each net on the way that has none.
+    fn lifted_path(&mut self, lifted: &Lifted<'_>) -> Vec<PathStep> {
+        let mut path = Vec::with_capacity(lifted.levels.len());
         for (depth, &(place, token, name, id)) in lifted.levels.iter().enumerate() {
             let place_name = match depth {
                 0 => self.names.place(place),
@@ -1075,7 +1089,7 @@ impl Loaded {
                         .map_or_else(|| place.to_string(), |inner| inner.names.place(place))
                 }
             };
-            path = translate::level(&path, &place_name, token, name);
+            path.push(translate::step(&place_name, token, name));
             let live = Lifted {
                 levels: lifted.levels[..=depth].to_vec(),
                 event: lifted.event,
@@ -1278,7 +1292,7 @@ impl Loaded {
     fn log_lifted(
         &mut self,
         lifted: &Lifted<'_>,
-        path: &str,
+        path: &[PathStep],
         now: SystemTime,
         launched: &mut HashMap<NetId, Pairs>,
         firings: &mut Vec<InnerFiring>,
@@ -1335,15 +1349,14 @@ impl Loaded {
             produced: inner.names.pairs(&made),
             error: failure.as_ref().map(|(error, _)| error.clone()),
             restored: failure.as_ref().map(|&(_, restored)| restored),
-            path: Some(path.to_owned()),
+            path: Some(path.to_vec()),
             nested_id: Some(nested_id.to_string()),
         };
         self.push_log(entry, lifted.chain());
         firings.push(InnerFiring {
             transition,
-            path: path.to_owned(),
+            path: path.to_vec(),
             nested_id: nested_id.to_string(),
-            failed: failure.is_some(),
         });
     }
 
@@ -1365,20 +1378,15 @@ impl Loaded {
         self.last_fireable = fireable_names(&self.net, &self.names);
         let records = &mut self.inner;
         let mut refreshed = HashSet::new();
-        walk(
-            &self.net,
-            &mut Vec::new(),
-            self.name,
-            &mut |_, path, _, net| {
-                if let Some(record) = records.get_mut(&net.id()) {
-                    record.see(net);
-                    path.clone_into(&mut record.last_path);
-                    record.last_fireable = fireable_names(net, &record.names);
-                    refreshed.insert(net.id());
-                }
-                None::<()>
-            },
-        );
+        walk_all(&self.net, &mut |_, path, _, net| {
+            if let Some(record) = records.get_mut(&net.id()) {
+                record.see(net);
+                path.clone_into(&mut record.last_path);
+                record.last_fireable = fireable_names(net, &record.names);
+                refreshed.insert(net.id());
+            }
+            None::<()>
+        });
         self.touched.retain(|id| !refreshed.contains(id));
     }
 
@@ -1446,8 +1454,7 @@ impl Loaded {
                     if !full && only.is_empty() {
                         continue;
                     }
-                    let Some((found, net)) = find(&self.net, self.name, |net| net.id() == id)
-                    else {
+                    let Some((found, net)) = find(&self.net, |net| net.id() == id) else {
                         continue;
                     };
                     let (gone, came) =
@@ -1485,7 +1492,7 @@ impl Loaded {
     fn compare_inner_fireable(&mut self, outer_version: u64, out: &mut Vec<Outgoing>) {
         let running = self.running;
         for id in std::mem::take(&mut self.touched) {
-            let Some((found, net)) = find(&self.net, self.name, |net| net.id() == id) else {
+            let Some((found, net)) = find(&self.net, |net| net.id() == id) else {
                 continue;
             };
             let Some(inner) = self.inner.get_mut(&id) else {
@@ -1524,9 +1531,9 @@ struct View<'a> {
     names: &'a Names,
     progress: &'a ProgressKept,
     marking_version: u64,
-    /// The net's wire path: the loaded net's name for the outer one, which
-    /// the paths of its tokens' `nets` extend.
-    path: String,
+    /// The net's wire path, empty for the outer one, which the paths of its
+    /// tokens' `nets` extend.
+    path: Vec<PathStep>,
     /// What a result about an inner net carries besides (§12.3).
     inner: Option<InnerView>,
     /// The connection's projection of this net, if it set one (§13.4).
@@ -1543,7 +1550,7 @@ struct InnerView {
 impl View<'_> {
     /// The `path` and `nested_id` a result about an inner net carries; both
     /// `None` for the outer net.
-    fn address(&self) -> (Option<String>, Option<String>) {
+    fn address(&self) -> (Option<Vec<PathStep>>, Option<String>) {
         match &self.inner {
             Some(inner) => (Some(self.path.clone()), Some(inner.nested_id.clone())),
             None => (None, None),
@@ -1878,7 +1885,10 @@ impl Owner {
                             .ok_or_else(|| {
                                 (
                                     ErrorCode::UnknownNet,
-                                    format!("no live inner net at {:?}", found.path),
+                                    format!(
+                                        "no live inner net at {}",
+                                        protocol::to_line(&found.path)
+                                    ),
                                 )
                             })?;
                         inner.projection = projection;
@@ -2029,7 +2039,7 @@ impl Owner {
                 .ok_or_else(|| {
                     (
                         ErrorCode::UnknownNet,
-                        format!("no live inner net at {:?}", found.path),
+                        format!("no live inner net at {}", protocol::to_line(&found.path)),
                     )
                 })?;
                 applied
@@ -2338,6 +2348,10 @@ impl Owner {
     ///
     /// Every inner net goes with the old marking (PROTOCOL.md §12.6): the
     /// new generation's are walked and recorded afresh, at version 0.
+    ///
+    /// A net that holds a subnet place, or whose tokens hold a net that
+    /// does, is refused as `unsupported`: subnet places come to the wire in
+    /// a later step of this runner (PROTOCOL.md §12.7).
     fn build(
         &mut self,
         id: &str,
@@ -2364,6 +2378,15 @@ impl Owner {
                 return false;
             }
         };
+        if let Some(place) = first_subnet_place(&net) {
+            respond_error(
+                out,
+                id,
+                ErrorCode::Unsupported,
+                format!("{place:?} is a subnet place, which this runner does not serve yet"),
+            );
+            return false;
+        }
         self.install(entry, params, net);
         push(
             out,
@@ -2424,7 +2447,7 @@ impl Owner {
                 names: &loaded.names,
                 progress: &loaded.progress,
                 marking_version: self.marking_version,
-                path: loaded.name.to_owned(),
+                path: Vec::new(),
                 inner: None,
                 projection: loaded.projection.as_ref(),
             });
@@ -2432,7 +2455,7 @@ impl Owner {
         let gone = || {
             (
                 ErrorCode::UnknownNet,
-                format!("no live inner net at {:?}", found.path),
+                format!("no live inner net at {}", protocol::to_line(&found.path)),
             )
         };
         let net = descend(&loaded.net, &found.levels).ok_or_else(gone)?;
@@ -2544,9 +2567,9 @@ impl Owner {
             transitions,
             marking: protocol::Marking { places },
             progress: protocol::Progress {
-                // The outer net's count includes the firings the runner made
-                // inside its tokens (§12.3), as the Python runner's does.
-                step_count: net.fired_count() + view.progress.inside,
+                // Per net (§5.4): this net's own firings, none of those in
+                // the nets inside it.
+                step_count: net.fired_count(),
                 last_fired: view.progress.last_fired.clone(),
                 fired_counts: view.progress.fired_counts.clone(),
                 last_progress_at: view.progress.last_progress_at.map(iso8601),
@@ -2627,8 +2650,9 @@ impl Owner {
     }
 
     /// Reports the inner firing a deep step just made inline: its events,
-    /// `nested`, the outer progress, the `step` that asked for it if one
-    /// did, and a stop of a run on a failure (`failure`).
+    /// `nested`, the `step` that asked for it if one did, and a stop of a
+    /// run on a failure (`failure`). The inner net's progress counted it
+    /// when the flush lifted it, and no net around it counts it (§5.4).
     fn report_inside(
         &mut self,
         failure: Option<Failure>,
@@ -2643,22 +2667,6 @@ impl Owner {
         loaded.know_new();
         let flushed = self.flush_events(now, None, true, out);
         let loaded = self.loaded_mut();
-        // The outer net counts the firing too, under its path without the
-        // outer net's name, then the transition (`Depot/#17/cabin/Sit`), as
-        // the Python runner does; the inner net's own progress counted it
-        // under its own name when the flush lifted it.
-        if failure.is_none()
-            && let Some(firing) = flushed.inner_firings.last()
-        {
-            let below = firing
-                .path
-                .strip_prefix(loaded.name)
-                .and_then(|rest| rest.strip_prefix('/'))
-                .unwrap_or(&firing.path);
-            loaded
-                .progress
-                .fired_inside(&format!("{below}/{}", firing.transition), now);
-        }
         loaded.prune();
         if let Some(failure) = &failure
             && loaded.running
@@ -3268,25 +3276,14 @@ impl Owner {
         // A token the host put in or a firing produced may carry nets
         // nobody has seen: their fireable sets are taken silently (§7.2).
         loaded.know_new();
-        let inner_firings = if self.listening {
-            self.tell_events(events, now, None, true, &mut out)
-                .inner_firings
+        // Each firing is counted in the progress of the net it was in alone
+        // (PROTOCOL.md §5.4), as the events are told or noted.
+        if self.listening {
+            self.tell_events(events, now, None, true, &mut out);
         } else {
-            self.note_events(&events, now)
-        };
-        let loaded = self.loaded.as_mut().expect(HOSTED);
-        // The outer net counts each firing inside its tokens too, under its
-        // path without the outer net's name, as a `step` that made it does.
-        for firing in inner_firings.iter().filter(|f| !f.failed) {
-            let below = firing
-                .path
-                .strip_prefix(loaded.name)
-                .and_then(|rest| rest.strip_prefix('/'))
-                .unwrap_or(&firing.path);
-            loaded
-                .progress
-                .fired_inside(&format!("{below}/{}", firing.transition), now);
+            self.note_events(&events, now);
         }
+        let loaded = self.loaded.as_mut().expect(HOSTED);
         // While a staged firing's body holds tokens, the nets inside them
         // keep their records, as they do under `launch`.
         if self.host_flights.is_empty() {
@@ -3305,9 +3302,8 @@ impl Owner {
     /// listener's would be. No fireable set is compared:
     /// [`set_listening`](Owner::set_listening) takes them afresh. A hosted
     /// net has no projection (`set_filter` is not served there), so there
-    /// is no view to reconcile either. Returns the inner firings, as
-    /// [`tell_events`](Owner::tell_events) does.
-    fn note_events(&mut self, events: &[Event], now: SystemTime) -> Vec<InnerFiring> {
+    /// is no view to reconcile either.
+    fn note_events(&mut self, events: &[Event], now: SystemTime) {
         let host_flights = &mut self.host_flights;
         let marking_version = &mut self.marking_version;
         let loaded = self.loaded.as_mut().expect(HOSTED);
@@ -3323,7 +3319,6 @@ impl Owner {
             }
             loaded.record_host_firing(event, now, host_flights);
         }
-        inner_firings
     }
 }
 
@@ -3465,11 +3460,23 @@ mod tests {
         b.seed(yard, [worker(1), worker(2)]);
         let net = b.build().unwrap();
         let mut ids = Vec::new();
-        walk(&net, &mut Vec::new(), "city", &mut |_, _, _, n| {
+        walk_all(&net, &mut |_, _, _, n| {
             ids.push(n.id());
             None::<()>
         });
         (net, ids)
+    }
+
+    /// The steps of a path, each `(place, token, net)`.
+    fn steps(levels: &[(&str, &str, &str)]) -> Vec<PathStep> {
+        levels
+            .iter()
+            .map(|&(place, token, net)| PathStep::Token {
+                place: place.into(),
+                token: token.into(),
+                net: net.into(),
+            })
+            .collect()
     }
 
     #[test]
@@ -3477,51 +3484,74 @@ mod tests {
         let (net, ids) = yard();
         assert_eq!(ids.len(), 4, "two workers, a crate in each");
         let mut paths = Vec::new();
-        walk(&net, &mut Vec::new(), "city", &mut |_, path, _, _| {
-            paths.push(path.to_owned());
+        walk_all(&net, &mut |_, path, _, _| {
+            paths.push(path.to_vec());
             None::<()>
         });
         assert_eq!(
             paths,
             [
-                "city/Yard/#0/",
+                steps(&[("Yard", "0", "")]),
                 // The crate is seeded after the work, so it has the next id.
-                "city/Yard/#0//Crate/#1/",
-                "city/Yard/#1/",
-                "city/Yard/#1//Crate/#2/",
+                steps(&[("Yard", "0", ""), ("Crate", "1", "")]),
+                steps(&[("Yard", "1", "")]),
+                steps(&[("Yard", "1", ""), ("Crate", "2", "")]),
             ]
         );
     }
 
     #[test]
-    fn a_path_resolves_level_by_level_and_names_the_segment_that_failed() {
+    fn a_path_resolves_step_by_step_and_names_the_step_that_failed() {
         let (net, ids) = yard();
-        let (found, inner) = resolve_path(&net, "city", "city/Yard/#1//Crate/#2/")
+        let (found, inner) = resolve_path(&net, &steps(&[("Yard", "1", ""), ("Crate", "2", "")]))
             .unwrap()
             .unwrap();
         assert_eq!(found.nested_id, ids[3]);
         assert_eq!(inner.id(), ids[3]);
         assert_eq!(found.levels.len(), 2);
         assert_eq!(found.name, "", "a bare net is unnamed");
-        assert!(resolve_path(&net, "city", "city").unwrap().is_none());
+        assert!(
+            resolve_path(&net, &[]).unwrap().is_none(),
+            "the empty path is the loaded net"
+        );
         for (path, says) in [
-            ("town/Yard/#0/", "\"city\""),
-            ("city/Lot/#0/", "no place \"Lot\""),
-            ("city/Yard/#0", "stops after \"#0\""),
-            ("city/Yard/0/", "\"0\" is not a token"),
-            ("city/Yard/#9/", "no token #9"),
-            ("city/Yard/#0/cabin", "no net \"cabin\""),
-            ("city/Yard/#0//Crate/#1", "stops after \"#1\""),
+            (
+                steps(&[("Lot", "0", "")]),
+                "step 0 of the path: no place named \"Lot\"",
+            ),
+            (
+                steps(&[("Yard", "9", "")]),
+                "step 0 of the path: no token \"9\" in \"Yard\"",
+            ),
+            (steps(&[("Yard", "00", "")]), "no token \"00\""),
+            (
+                steps(&[("Yard", "0", "cabin")]),
+                "holds no net named \"cabin\"",
+            ),
+            (
+                steps(&[("Yard", "0", ""), ("Crate", "7", "")]),
+                "step 1 of the path: no token \"7\" in \"Crate\"",
+            ),
+            (
+                steps(&[("Yard", "0", ""), ("Todo", "0", "")]),
+                "step 1 of the path: place \"Todo\" holds no nets",
+            ),
+            (
+                vec![PathStep::Subnet {
+                    place: "Yard".into(),
+                }],
+                "step 0 of the path: no subnet place named \"Yard\"",
+            ),
         ] {
-            let error = resolve_path(&net, "city", path).err().unwrap();
-            assert!(error.contains(says), "{path}: {error}");
+            let error = resolve_path(&net, &path).err().unwrap();
+            assert!(error.contains(says), "{path:?}: {error}");
         }
     }
 
     #[test]
     fn descending_mutably_lifts_at_every_level() {
         let (mut net, ids) = yard();
-        let (found, _) = find(&net, "city", |n| n.id() == ids[1]).unwrap();
+        let (found, _) = find(&net, |n| n.id() == ids[1]).unwrap();
         let added = descend_mut(&mut net, &found.levels, |crate_net| {
             let straw = crate_net.place_ref::<u32>("Straw").unwrap();
             crate_net.put(straw, 7)

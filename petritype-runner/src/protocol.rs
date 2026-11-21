@@ -13,6 +13,10 @@
 //!
 //! A key's value is the core's [`KeyValue`]: a string, an integer or a
 //! boolean, written as the bare JSON value (PROTOCOL.md §13.1).
+//!
+//! The address of an inner net, its `path`, is a list of [`PathStep`]s, one
+//! per level from the loaded net down (PROTOCOL.md §12.1), never text: no
+//! character in a name has a special meaning.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -23,8 +27,9 @@ use serde::ser::{SerializeMap, SerializeSeq};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::{Map, Value};
 
-/// The protocol version this crate speaks.
-pub const PROTOCOL_VERSION: u32 = 1;
+/// The protocol version this crate speaks. A reader of version 2 does not
+/// read version 1 (PROTOCOL.md §10).
+pub const PROTOCOL_VERSION: u32 = 2;
 
 /// What every Rust runner reports as its `runtime`.
 pub const RUNTIME: &str = "rust";
@@ -228,6 +233,123 @@ pub(crate) fn to_value(value: impl Serialize) -> Value {
 
 pub(crate) fn to_line(value: impl Serialize) -> String {
     serde_json::to_string(&value).expect("protocol shapes always serialise")
+}
+
+// ----- addresses -------------------------------------------------------------
+
+/// One step of a `path` (PROTOCOL.md §12.1): one level of nesting, naming a
+/// place of the net the steps before it reach.
+///
+/// On the wire a step is an object: `{"place", "token", "net"}` for a net
+/// carried by a token, `{"place"}` alone for a subnet. Names are compared
+/// exactly as given, whatever characters they hold.
+///
+/// Read off a request with [`parse_path`], which says which step was wrong;
+/// `Deserialize` reads one step by the same rules, [`PathStep::parse`].
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
+#[serde(untagged)]
+pub enum PathStep {
+    /// A net carried by a token: `{"place": "Depot", "token": "17", "net":
+    /// "cabin"}`.
+    Token {
+        /// The place that holds the token.
+        place: String,
+        /// The token's id, a string (PROTOCOL.md §2).
+        token: String,
+        /// The net's name within the token; `""` for a token that is itself
+        /// a net.
+        net: String,
+    },
+    /// A subnet: `{"place": "Level 3"}`, its subnet place.
+    Subnet {
+        /// The subnet place.
+        place: String,
+    },
+}
+
+impl PathStep {
+    /// The place this step names, in the net the steps before it reach.
+    pub fn place(&self) -> &str {
+        match self {
+            PathStep::Token { place, .. } | PathStep::Subnet { place } => place,
+        }
+    }
+
+    /// Reads one step (PROTOCOL.md §12.1): an object with a string `place`
+    /// and either both of `token` and `net`, each a string, or neither. A
+    /// `null` is a value of the wrong type, not an absent field. Other keys
+    /// are ignored (§2).
+    ///
+    /// # Errors
+    ///
+    /// What is wrong with the step, for an `invalid_params` answer.
+    pub fn parse(value: &Value) -> Result<PathStep, String> {
+        let Value::Object(step) = value else {
+            return Err(format!("is an object, not {}", kind(value)));
+        };
+        let text = |key: &str| match step.get(key) {
+            None => Ok(None),
+            Some(Value::String(text)) => Ok(Some(text.clone())),
+            Some(other) => Err(format!(
+                "has a {key:?} that is {}, not a string",
+                kind(other)
+            )),
+        };
+        let place = text("place")?.ok_or("has no \"place\"")?;
+        match (text("token")?, text("net")?) {
+            (Some(token), Some(net)) => Ok(PathStep::Token { place, token, net }),
+            (None, None) => Ok(PathStep::Subnet { place }),
+            (Some(_), None) => {
+                Err("has \"token\" without \"net\": a token's net is named by both".into())
+            }
+            (None, Some(_)) => {
+                Err("has \"net\" without \"token\": a token's net is named by both".into())
+            }
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for PathStep {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = Value::deserialize(deserializer)?;
+        PathStep::parse(&value).map_err(|why| de::Error::custom(format!("a path step {why}")))
+    }
+}
+
+/// Reads a request's `path` (PROTOCOL.md §12.1): a list of steps, each read
+/// by [`PathStep::parse`]. The empty list is the loaded net. Whether the
+/// steps name a live net is the runner's question, asked after this one.
+///
+/// # Errors
+///
+/// What is wrong with the shape, naming the step by its index from 0, for
+/// an `invalid_params` answer.
+pub fn parse_path(value: &Value) -> Result<Vec<PathStep>, String> {
+    let Value::Array(steps) = value else {
+        return Err(format!(
+            "\"path\" is a list of steps, one per level from the loaded net down, not {}",
+            kind(value)
+        ));
+    };
+    steps
+        .iter()
+        .enumerate()
+        .map(|(index, step)| {
+            PathStep::parse(step).map_err(|why| format!("step {index} of the path {why}"))
+        })
+        .collect()
+}
+
+/// What kind of JSON value `value` is, for a message.
+fn kind(value: &Value) -> &'static str {
+    match value {
+        Value::Null => "null",
+        Value::Bool(_) => "a boolean",
+        Value::Number(_) => "a number",
+        Value::String(_) => "a string",
+        Value::Array(_) => "a list",
+        Value::Object(_) => "an object",
+    }
 }
 
 // ----- notifications ---------------------------------------------------------
@@ -455,9 +577,9 @@ pub enum Notification {
     /// carries the outer net's, which an inner event never moves, so this
     /// is not a state notification of the outer net.
     Nested {
-        /// The inner net's path as the marking stood when the event was
-        /// lifted (§12.1).
-        path: String,
+        /// The inner net's full path from the loaded net, as the marking
+        /// stood when the event was lifted (§12.1).
+        path: Vec<PathStep>,
         /// The inner net's nested id.
         nested_id: String,
         /// The inner notification, `{method, params}`.
@@ -642,7 +764,7 @@ impl Notification {
 /// The answer to `describe` (PROTOCOL.md §6.1).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Describe {
-    /// Always 1 here.
+    /// Always 2 here ([`PROTOCOL_VERSION`]).
     pub protocol_version: u32,
     /// `"rust"`.
     pub runtime: String,
@@ -688,7 +810,7 @@ pub struct ParamDescription {
 /// The answer to `get_state` (PROTOCOL.md §5).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct State {
-    /// Always 1 here.
+    /// Always 2 here ([`PROTOCOL_VERSION`]).
     pub protocol_version: u32,
     /// `"rust"`.
     pub runtime: String,
@@ -711,7 +833,7 @@ pub struct State {
     pub progress: Progress,
     /// The inner net's path, for the state of an inner net (§12.3).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub path: Option<String>,
+    pub path: Option<Vec<PathStep>>,
     /// The inner net's nested id, for the state of an inner net.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nested_id: Option<String>,
@@ -1111,8 +1233,9 @@ pub struct InnerNet {
     pub name: String,
     /// Its nested id: stable while the token moves.
     pub nested_id: String,
-    /// Its path as the marking stands now.
-    pub path: String,
+    /// Its path as the marking stands now: the path of the net the token is
+    /// in, and one step more.
+    pub path: Vec<PathStep>,
     /// The template that built it, when it has one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub template: Option<String>,
@@ -1159,7 +1282,7 @@ pub struct PlaceTokens {
     pub has_more: bool,
     /// The inner net's path, for a page of an inner net.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub path: Option<String>,
+    pub path: Option<Vec<PathStep>>,
     /// The inner net's nested id, for a page of an inner net.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nested_id: Option<String>,
@@ -1179,7 +1302,7 @@ pub struct TokenValue {
     pub value: TokenBody,
     /// The inner net's path, for a token of an inner net.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub path: Option<String>,
+    pub path: Option<Vec<PathStep>>,
     /// The inner net's nested id, for a token of an inner net.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nested_id: Option<String>,
@@ -1264,7 +1387,7 @@ pub struct LogEntry {
     pub restored: Option<bool>,
     /// For a firing inside an inner net: its path when it fired (§8).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub path: Option<String>,
+    pub path: Option<Vec<PathStep>>,
     /// For a firing inside an inner net: its nested id.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nested_id: Option<String>,
@@ -1322,10 +1445,18 @@ mod tests {
         assert_eq!(back, n);
     }
 
+    fn cabin() -> PathStep {
+        PathStep::Token {
+            place: "Depot".into(),
+            token: "17".into(),
+            net: "cabin".into(),
+        }
+    }
+
     #[test]
     fn a_nested_notification_wraps_the_inner_one_and_moves_no_outer_version() {
         let n = Notification::Nested {
-            path: "City/Depot/#17/cabin".into(),
+            path: vec![cabin()],
             nested_id: "3".into(),
             event: Box::new(Notification::Added {
                 place: "Door".into(),
@@ -1343,7 +1474,7 @@ mod tests {
         assert_eq!(
             to_value(&n),
             json!({"method": "nested", "params": {
-                "path": "City/Depot/#17/cabin", "nested_id": "3",
+                "path": [{"place": "Depot", "token": "17", "net": "cabin"}], "nested_id": "3",
                 "event": {"method": "added", "params": {
                     "place": "Door", "id": "1", "label": "\"Ada\"",
                     "marking_version": 4, "running": false}},
@@ -1390,7 +1521,7 @@ mod tests {
             nets: vec![InnerNet {
                 name: "cabin".into(),
                 nested_id: "3".into(),
-                path: "City/Depot/#1/cabin".into(),
+                path: vec![cabin()],
                 template: None,
                 count: 0,
             }],
@@ -1398,7 +1529,82 @@ mod tests {
         };
         assert_eq!(
             to_value(&held)["nets"],
-            json!([{"name": "cabin", "nested_id": "3", "path": "City/Depot/#1/cabin", "count": 0}])
+            json!([{"name": "cabin", "nested_id": "3",
+                    "path": [{"place": "Depot", "token": "17", "net": "cabin"}], "count": 0}])
+        );
+    }
+
+    #[test]
+    fn a_path_is_a_list_of_steps_of_two_forms() {
+        let path = json!([
+            {"place": "Depot", "token": "17", "net": "cabin"},
+            {"place": "Level 3"},
+            {"place": "Yard/North", "token": "4", "net": "", "colour": "ignored"},
+        ]);
+        let steps = parse_path(&path).unwrap();
+        assert_eq!(
+            steps,
+            [
+                cabin(),
+                PathStep::Subnet {
+                    place: "Level 3".into()
+                },
+                PathStep::Token {
+                    place: "Yard/North".into(),
+                    token: "4".into(),
+                    net: String::new()
+                },
+            ],
+            "a name may hold any character, and another key in a step is ignored"
+        );
+        assert_eq!(steps[1].place(), "Level 3");
+        assert_eq!(
+            to_value(&steps),
+            json!([{"place": "Depot", "token": "17", "net": "cabin"}, {"place": "Level 3"},
+                   {"place": "Yard/North", "token": "4", "net": ""}])
+        );
+        let back: Vec<PathStep> = serde_json::from_value(to_value(&steps)).unwrap();
+        assert_eq!(back, steps);
+        assert_eq!(parse_path(&json!([])).unwrap(), [], "the loaded net");
+    }
+
+    #[test]
+    fn a_path_of_the_wrong_shape_says_which_step_is_wrong() {
+        for (path, says) in [
+            (json!("transit/Depot/#17/cabin"), "is a list of steps"),
+            (json!({"place": "Depot"}), "not an object"),
+            (json!(null), "not null"),
+            (
+                json!(["Depot"]),
+                "step 0 of the path is an object, not a string",
+            ),
+            (
+                json!([{"token": "1", "net": ""}]),
+                "step 0 of the path has no \"place\"",
+            ),
+            (
+                json!([{"place": "Depot", "token": "1", "net": "cabin"}, {"place": "Door", "token": "3"}]),
+                "step 1 of the path has \"token\" without \"net\"",
+            ),
+            (
+                json!([{"place": "Depot", "net": "cabin"}]),
+                "has \"net\" without \"token\"",
+            ),
+            (
+                json!([{"place": "Depot", "token": null, "net": "cabin"}]),
+                "has a \"token\" that is null",
+            ),
+            (
+                json!([{"place": "Depot", "token": 17, "net": "cabin"}]),
+                "has a \"token\" that is a number",
+            ),
+            (json!([{"place": null}]), "has a \"place\" that is null"),
+        ] {
+            let error = parse_path(&path).unwrap_err();
+            assert!(error.contains(says), "{path}: {error}");
+        }
+        assert!(
+            serde_json::from_value::<PathStep>(json!({"place": "Depot", "token": "1"})).is_err()
         );
     }
 

@@ -151,8 +151,9 @@ outer first they fire only when the outer net has nothing to fire, which is the 
 vehicle places, since its guards wait on what is inside. A passive place's nets are stepped by an outer body alone.
 Each level follows the rules of its own places, and one `step_deep` fires one transition in the whole tree.
 `b.tie_break(TieBreak::RoundRobin)` takes a net's own transitions of equal priority in turn the same way.
-Served by `petritype-runner`, an inner net is addressed by its path (`transit/Depot/#0/cabin`) or its
-stable nested id, and its events arrive wrapped in `nested` notifications (PROTOCOL.md §12, `DESIGN.md` §19.3.11).
+Served by `petritype-runner`, an inner net is addressed by its path, a list of steps from the loaded net down
+(`[{"place": "Depot", "token": "0", "net": "cabin"}]`), or by its stable nested id, and its events arrive wrapped
+in `nested` notifications (PROTOCOL.md §12, `DESIGN.md` §19.3.11 and §19.3.15).
 
 ## Subnet places
 

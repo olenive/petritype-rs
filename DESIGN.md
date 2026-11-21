@@ -2660,8 +2660,8 @@ The decisions that shape it, all of 2026-10-03:
 | keyed edges, `kind: "take_where"` / `"mutate_where"` with `filter` (§5.1, §13.5) | `EdgeKind::{TakeWhere, MutateWhere}` and `EdgeInfo::Input::filter` (slice 19), the filter's `places` mapped from ids to names by the runner (slice 20; sent without `kind` before it) |
 | edges an empty place satisfies, `kind: "drain"` / `"survey"` (§5.1) | `EdgeKind::{Drain, Survey}` (slice 22, §4.4, §19.3.14), no `filter` |
 | `topology.places[].nested`, `passive` (§12.2) | `TopologyPlace::nested`, written only when true; `passive` when `TopologyPlace::stepping` is `Stepping::Passive` (since 2026-11-21; the wire's `stepping` comes with protocol version 2) |
-| `path`, `nested_id` (§12.1) | a path walked through `net.nested(place, token)` level by level; a nested id is the inner net's `NetId` printed with its `Display`, found by walking every nested place at every depth; mutable reach (`inject`) through `nested_scope` at each level |
-| a token's `nets` (§12.2) | `net.nested(place, token)`: each net's name, `id()`, its path, `template()`, and the sum of its places' counts |
+| `path`, `nested_id` (§12.1) | a path is a list of steps (`protocol::PathStep`, since protocol version 2), read by `protocol::parse_path` and resolved one step at a time through `net.nested(place, token)`; a nested id is the inner net's `NetId` printed with its `Display`, found by walking every nested place at every depth; mutable reach (`inject`) through `nested_scope` at each level (§19.3.15) |
+| a token's `nets` (§12.2) | `net.nested(place, token)`: each net's name, `id()`, its path (the path of the net the token is in and one step more), `template()`, and the sum of its places' counts |
 | `nested` notification (§12.4) | `Event::Nested`, unwrapped to the event the innermost net logged: one wrapper with the full path, the inner notification built with that net's names and version |
 | inner `marking_version` (§12.3) | the runner's counter per inner net, one per state notification of that net; the outer one does not move |
 | `step` or a running net, inside (§12.3) | `step_deep_staged()` → `StagedStep::Inside`, inline: `nested` around `fired` (slice 21; `select()` and then `step_inside()` before) |
@@ -2673,8 +2673,8 @@ The decisions that shape it, all of 2026-10-03:
 | `transitions[name]` | `is_enabled`, `is_in_flight`, membership of `fireable()`, `priority_of` |
 | `marking` | `tokens(place)` ids; the wire `label` is `debug(place, token)` cut by the runner at the protocol's 1000 characters, whatever the net's own `label_limit` |
 | token id `"17"` | `TokenId` printed with its `Display` (the bare number) |
-| `progress.step_count` | `fired_count()`, plus, for the outer net, the firings the runner made inside its tokens (slice 20) |
-| `progress.last_fired`, `fired_counts`, `last_progress_at` | kept by the runner from the events: the core dropped them on purpose (§2) and does not get them back; the outer net's count an inner firing under its path without the net's name, then the transition (`Depot/#17/cabin/Sit`) |
+| `progress.step_count` | `fired_count()` of the net read: per net, since protocol version 2 (§5.4, §19.3.15); from slice 20 until then the outer net's also counted the firings the runner made inside its tokens |
+| `progress.last_fired`, `fired_counts`, `last_progress_at` | kept by the runner from the events, per net, each under the net's own transition names: the core dropped them on purpose (§2) and does not get them back |
 | `marking_version` | the runner's own counter, one per state notification. Not `state_counter`, which starts at 0 again when `reset` rebuilds the net |
 | `generation` | the runner's counter of loads and resets; a rebuilt `Net` numbers its tokens from the start again, which is why the protocol has generations at all |
 | state notifications | `Event` variants, ids resolved to names through the read API, produced tokens labelled with `label()`; `ParamChanged { type_name }` reported under the parameter's wire name from `serializable_param` when it has one |
@@ -2730,7 +2730,7 @@ a wire format they do not own. `Snapshot` stays unserialisable; tokens are
 
 ### 19.3 The `petritype-runner` crate
 
-**Designed and built 2026-10-03**; as-built notes in §19.3.10, nested nets in §19.3.11, keys in §19.3.12, the protocol's wording gaps and the engine policies in §19.3.13. A library crate in this
+**Designed and built 2026-10-03**; as-built notes in §19.3.10, nested nets in §19.3.11, keys in §19.3.12, the protocol's wording gaps and the engine policies in §19.3.13, protocol version 2 in §19.3.15. A library crate in this
 workspace plus an example binary. A net's bodies are the user's code, so the
 binary is always the user's own: it lists its nets and hands over to the
 crate. Dependencies: `petritype` with `serde`, `serde`, `serde_json`, and
@@ -2841,7 +2841,7 @@ The core dropped these on purpose (§2); the runner keeps them:
 | `inner: HashMap<NetId, Inner>` | slice 17: per inner net, its own `marking_version`, `Topology` and `Names`, progress, last fireable set, template and last path (§19.3.11) |
 | `touched: Vec<NetId>` | slice 17: inner nets with events since their fireable set was last compared |
 | `projection: Option<Projection>` | slice 20: the connection's filter for the outer net and what it has been shown (§19.3.12); an inner net's is in its `Inner` |
-| `progress: {step_count, last_fired, fired_counts, last_progress_at}` | `progress`; the outer net's also counts the inner firings the runner made (slice 20) |
+| `progress: {step_count, last_fired, fired_counts, last_progress_at}` | `progress`, the outer net's own; an inner net's is in its `Inner` (per net since protocol version 2, §19.3.15) |
 | `idle: bool` | one `idle` per idle spell |
 | `factory`, `params` | `reset` rebuilds from them |
 
@@ -3072,14 +3072,14 @@ runner change.
 
 - **Addressing** (§12.1). Every read and `inject` takes `path` or
   `nested_id`; both is `invalid_params`, neither the outer net. A path is
-  walked level by level through `Net::nested`: the first segment must be
-  the entry's name, then per level the place, `#` and the token id, and the
-  net's name in the token, so that an unnamed inner net (a bare `Net`
-  token) ends its level in `/`; the entry's name alone is the outer net. A
+  walked level by level through `Net::nested`. Until protocol version 2
+  (2026-11-21, §19.3.15) it was text: the entry's name, then per level the
+  place, `#` and the token id, and the net's name in the token, joined with
+  `/`; since then it is a list of steps, `[]` the outer net. A
   nested id is the inner net's `NetId` as its `Display` prints it, found by
   walking every nested place, passive ones included, at every depth. No
-  match is `unknown_net`, and the message names the segment that failed
-  (the place, the token, the net, a level cut short) or the id. `step`,
+  match is `unknown_net`, and the message names the step that failed (by
+  its index from 0) or the id. `step`,
   `start`, `stop`, `reset`, `enable`, `disable` and `set_param` act on the
   outer net alone, and a `path` or `nested_id` on one is `invalid_params`
   (`step` too, as in the Python runner). An `inject` into an inner net goes
@@ -3142,14 +3142,12 @@ runner change.
   `wants_tick` asking for the next, so `execution_stopped {reason:
   "no_fireable_transitions"}` and `idle` mean deep quiescence, and an inner
   failure stops a run as an outer one does. An inner net's `progress`
-  counts its own firings (its `step_count` is its `fired_count`). The outer
-  net's counted its own only until slice 20; it now counts each inner
-  firing the runner makes too, as the Python runner does: `step_count` one
-  more, `fired_counts` and `last_fired` under the path without the net's
-  name and then the transition (`Depot/#17/cabin/Sit`, the path where the
-  inner net fired), and `last_progress_at`. A failed inner firing counts in
-  neither; an inner firing an outer body makes counts in its own net's
-  alone. No shared transcript pins it; the Python track asked for parity.
+  counts its own firings (its `step_count` is its `fired_count`), and so
+  does the outer net's: progress is per net (PROTOCOL.md §5.4, since
+  protocol version 2, §19.3.15). From slice 20 until then the outer net's
+  also counted each inner firing the runner made, under the inner net's
+  text path without the net's name and then the transition, as the Python
+  runner did. A failed inner firing counts in neither.
 - **Inner `fireable`** (§7.2, §12.4). After a batch, after the outer
   `fireable`, each inner net that had events (in that batch, or since the
   last compare, across a launch) is compared with the last set sent for it,
@@ -3193,7 +3191,8 @@ runner change.
 - **The harness** (`tests/transcripts.rs`) replays a transcript over a
   conformance net against that net alone, wherever the file is. It gained
   the `<path>` mask, captures substituted inside a longer string when
-  sending (`"transit/Depot/#<id:bus>/cabin"`), and two folds: a `nested`
+  sending (a text path's token, both gone with protocol version 2,
+  §19.3.15), and two folds: a `nested`
   `launched` followed by its `nested` `distributed` into a `nested`
   `fired`, and a `launched` … `distributed` pair with only the firing's own
   `nested` and `mutated` lines between into those lines and a `fired`. The
@@ -3296,8 +3295,9 @@ unchanged, both from the Python repository and from a verbatim copy in
   names. These lines are state notifications of their net and move its
   version, as in Python: the one place a filtered connection's version runs
   ahead of the version an unfiltered one would have read.
-- **The outer progress** counts the runner's inner firings (§19.3.11), for
-  parity with the Python runner.
+- **The outer progress** counted the runner's inner firings (§19.3.11),
+  for parity with the Python runner, until protocol version 2 made
+  progress per net in both (§19.3.15).
 - **`set_param` keeps the parameter's JSON type**, as it always has: the
   value goes through the parameter's strict decoder (§6.4), so a string for
   a number, a float for an integer or a number for a string is
@@ -3463,6 +3463,62 @@ what a drain took, none from an empty place, and nothing a survey read.
   `08_traffic_light.json` was recorded again the same day, for the light
   as one place and then for its two transitions (§18); its copy here is
   again the shared file each time, and it replays with no runner change.
+
+#### 19.3.15 Protocol version 2: structured addresses, 2026-11-21
+
+The runner's half of step 2 of the subnet places change
+(`dev-docs/subnet-place-spec.md` §2.1, §4), on PROTOCOL.md version 2, which
+the Python track wrote, built and recorded first.
+
+- **The version.** `protocol::PROTOCOL_VERSION` is 2, in `describe` and in
+  every `get_state`. A reader of version 2 does not read version 1 (§10).
+- **A path is a list of steps** (§12.1): `protocol::PathStep::Token {
+  place, token, net }` for a net carried by a token, written `{"place",
+  "token", "net"}`, and `PathStep::Subnet { place }` for a subnet, written
+  `{"place"}`; `[]` is the loaded net. It is the type of every `path` the
+  runner writes: a token's `nets[]`, the results about an inner net
+  (`get_state`, `get_place_tokens`, `get_token`, `inject`, `step`), the
+  `nested` notification and the log entries.
+- **Reading a request's path** is two questions, in this order.
+  `protocol::parse_path` reads the shape: a list, each step an object with
+  a string `place` and both or neither of `token` and `net`, each a
+  string, a `null` being a value of the wrong type and any other key
+  ignored. A wrong shape is `invalid_params`, its message naming the step
+  by its index from 0, before anything is resolved. Then `resolve_path`
+  takes one step at a time (`descend_step`): the place by its name
+  (`Net::place_named`, so never the place a net has for a port), whose
+  tokens must carry nets; the token by its id in its one canonical form
+  (`translate::token_id`, so `"01"` names no token); the net by its name
+  in the token. A step that names nothing is `unknown_net`, its message
+  starting `step N of the path:` as the Python runner's does. A step of the
+  subnet form is read and answered `unknown_net`: its arm in `descend_step`
+  is where a level into a subnet goes when subnet places come to the wire.
+- **Nothing is spelt as text.** `translate::level`, which joined a level
+  with `/` and `#`, and the `resolve_path` that split one, are gone;
+  `translate::step` builds a step from the names taken whole, so a place
+  named `#Bay/1` or a net named `#a/b` is addressed as any other. The walk
+  keeps its path as a stack of steps. Nothing in the runner checked names
+  for `/` or `#`: the rule that such names cannot be spelt was the text
+  form's, and went with it. A message that shows a path writes it as JSON.
+- **Progress is per net** (§5.4). `ProgressKept::inside` and its
+  `fired_inside` are gone: the outer net's `step_count` is its own
+  `fired_count` and its `fired_counts` name its own transitions, and an
+  inner firing is counted in its own net's progress alone, whether a
+  `step`, a run or the program behind a hosted net made it.
+- **Subnet places are not served yet.** `load` and `reset` refuse a net that
+  holds a subnet place, or whose tokens hold a net that does, as
+  `unsupported` (`first_subnet_place`), and the net loaded before stays. The
+  walk skips the places a net has for ports. A hosted net (`Host::new`)
+  cannot be refused and is not checked, and neither is a token's net with a
+  subnet place that arrives after `load`.
+- **The harness** follows §11: the `<path>` mask is gone, and a capture is
+  substituted whole, a token id in a step of a path included, never inside
+  a longer string.
+- **Transcripts.** The shared `05` to `08` are copied verbatim from the
+  Python track's recording for version 2 (each pins `protocol_version` 2,
+  and `05` spells its paths as lists of steps) and replay with nothing
+  more than the above. Of our own, `01` and `04` pin `protocol_version` 2
+  in place of 1, and `02` and `03`, which carry no version, are unchanged.
 
 ### 19.4 Who spawns it
 

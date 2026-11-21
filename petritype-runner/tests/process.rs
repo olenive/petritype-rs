@@ -204,7 +204,7 @@ fn describe_flag_prints_one_line() {
     let text = String::from_utf8(output.stdout).unwrap();
     assert_eq!(text.lines().count(), 1);
     let describe: Value = serde_json::from_str(text.trim()).unwrap();
-    assert_eq!(describe["protocol_version"], 1);
+    assert_eq!(describe["protocol_version"], 2);
     assert_eq!(describe["nets"][0]["name"], "parcel-fleet");
     assert_eq!(describe["nets"][1]["name"], "parcel-distribution");
     assert_eq!(

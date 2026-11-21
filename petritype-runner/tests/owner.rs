@@ -279,7 +279,7 @@ fn versions(lines: &[Value]) -> Vec<u64> {
 fn describe_works_before_load() {
     let mut h = H::new();
     let d = h.result("describe", json!({}));
-    assert_eq!(d["protocol_version"], 1);
+    assert_eq!(d["protocol_version"], 2);
     assert_eq!(d["runtime"], "rust");
     assert_eq!(d["runtime_version"], env!("CARGO_PKG_VERSION"));
     assert_eq!(d["nets"].as_array().unwrap().len(), 6);
@@ -460,7 +460,7 @@ fn generation_and_marking_version_across_load_and_reset() {
 fn get_state_has_the_protocol_shape() {
     let mut h = H::loaded("pipeline");
     let s = h.result("get_state", json!({}));
-    assert_eq!(s["protocol_version"], 1);
+    assert_eq!(s["protocol_version"], 2);
     assert_eq!(s["runtime"], "rust");
     assert_eq!(s["net"], "pipeline");
     assert_eq!(s["running"], false);
@@ -1284,14 +1284,19 @@ fn nested_places_say_so_and_their_tokens_list_their_nets() {
     assert!(truck["nested_id"].is_string());
     assert_eq!(
         truck,
-        json!({"name": "bin", "nested_id": truck["nested_id"], "path": "depot/Lot/#0/bin",
+        json!({"name": "bin", "nested_id": truck["nested_id"],
+               "path": [{"place": "Lot", "token": "0", "net": "bin"}],
                "template": "Bin", "count": 2})
     );
     let yard = held(&state, "Yard");
     assert_eq!(
         (&yard["name"], &yard["path"], &yard["count"]),
-        (&json!(""), &json!("depot/Yard/#1/"), &json!(1)),
-        "a bare net is unnamed, and its path ends in a slash"
+        (
+            &json!(""),
+            &json!([{"place": "Yard", "token": "1", "net": ""}]),
+            &json!(1)
+        ),
+        "a bare net is unnamed, and its step names it with the empty string"
     );
     assert_ne!(yard["nested_id"], truck["nested_id"]);
 
@@ -1332,15 +1337,13 @@ fn a_path_and_a_nested_id_name_the_same_inner_net() {
     assert_eq!(by_id["progress"]["step_count"], 0);
 
     let yard = held(&state, "Yard");
-    let bare = h.result("get_state", json!({"path": "depot/Yard/#1/"}));
+    let bare = h.result(
+        "get_state",
+        json!({"path": [{"place": "Yard", "token": "1", "net": ""}]}),
+    );
     assert_eq!(
         (&bare["net"], &bare["nested_id"]),
         (&json!(""), &yard["nested_id"])
-    );
-    assert_eq!(
-        h.result("get_state", json!({"path": "depot"}))["net"],
-        "depot",
-        "the loaded net's name alone is the outer net"
     );
 
     let page = h.result(
@@ -1368,19 +1371,69 @@ fn a_path_and_a_nested_id_name_the_same_inner_net() {
     );
 }
 
+/// The step `{place, token, net}`.
+fn step(place: &str, token: &str, net: &str) -> Value {
+    json!({"place": place, "token": token, "net": net})
+}
+
 #[test]
-fn an_address_that_names_no_live_net_says_which_segment_failed() {
+fn the_empty_path_names_the_loaded_net() {
+    let mut h = loaded_over("depot");
+    let outer = h.result("get_state", json!({}));
+    assert_eq!(h.result("get_state", json!({"path": []})), outer);
+    assert_eq!(
+        h.result("get_place_tokens", json!({"place": "Lot", "path": []})),
+        h.result("get_place_tokens", json!({"place": "Lot"})),
+        "no path or nested_id in the answer: it is about the outer net"
+    );
+    assert_eq!(
+        h.result(
+            "inject",
+            json!({"place": "Parcels", "token": 7, "path": []})
+        ),
+        json!({"status": "injected", "id": "2", "marking_version": 1})
+    );
+    assert_eq!(
+        h.error("step", json!({"path": []})),
+        "invalid_params",
+        "an outer-only method takes no path at all"
+    );
+}
+
+#[test]
+fn an_address_that_names_no_live_net_says_which_step_failed() {
     let mut h = loaded_over("depot");
     let lines = h.send("inject", json!({"place": "Parcels", "token": 7}));
     assert_eq!(lines.last().unwrap()["result"]["id"], "2");
     for (path, says) in [
-        ("city/Lot/#0/bin", "\"depot\""),
-        ("depot/Nowhere/#0/bin", "no place \"Nowhere\""),
-        ("depot/Parcels/#2/bin", "#2 in \"Parcels\" holds no nets"),
-        ("depot/Lot/#0", "stops after \"#0\""),
-        ("depot/Lot/0/bin", "\"0\" is not a token"),
-        ("depot/Lot/#7/bin", "no token #7"),
-        ("depot/Lot/#0/cabin", "no net \"cabin\""),
+        (
+            json!([step("Nowhere", "0", "bin")]),
+            "step 0 of the path: no place named \"Nowhere\"",
+        ),
+        (
+            json!([step("Parcels", "2", "bin")]),
+            "step 0 of the path: place \"Parcels\" holds no nets",
+        ),
+        (
+            json!([step("Lot", "7", "bin")]),
+            "step 0 of the path: no token \"7\" in \"Lot\"",
+        ),
+        (
+            json!([step("Lot", "00", "bin")]),
+            "no token \"00\" in \"Lot\"",
+        ),
+        (
+            json!([step("Lot", "0", "cabin")]),
+            "token \"0\" in \"Lot\" holds no net named \"cabin\"",
+        ),
+        (
+            json!([step("Lot", "0", "bin"), step("In", "0", "")]),
+            "step 1 of the path: place \"In\" holds no nets",
+        ),
+        (
+            json!([{"place": "Lot"}]),
+            "step 0 of the path: no subnet place named \"Lot\"",
+        ),
     ] {
         let lines = h.send("get_state", json!({ "path": path }));
         assert_eq!(lines[0]["error"]["code"], "unknown_net", "{path}");
@@ -1398,7 +1451,7 @@ fn an_address_that_names_no_live_net_says_which_segment_failed() {
         "a nested id is a string"
     );
     assert_eq!(
-        h.error("get_state", json!({"nested_id": id, "path": "depot"})),
+        h.error("get_state", json!({"nested_id": id, "path": []})),
         "invalid_params",
         "one address or the other"
     );
@@ -1416,6 +1469,214 @@ fn an_address_that_names_no_live_net_says_which_segment_failed() {
 }
 
 #[test]
+fn a_path_of_the_wrong_shape_is_invalid_params_before_anything_is_resolved() {
+    // PROTOCOL.md §12.1: a `path` that is not a list, a step without
+    // `place`, one of `token` and `net` without the other, and a step value
+    // that is not a string are `invalid_params`, even where the steps would
+    // name no net, and the message names the step by its index from 0.
+    let mut h = loaded_over("depot");
+    for (path, says) in [
+        (json!("depot/Lot/#0/bin"), "\"path\" is a list of steps"),
+        (
+            json!(step("Lot", "0", "bin")),
+            "\"path\" is a list of steps",
+        ),
+        (json!(["Lot"]), "step 0 of the path is an object"),
+        (
+            json!([{"token": "0", "net": "bin"}]),
+            "step 0 of the path has no \"place\"",
+        ),
+        (
+            json!([{"place": "Lot", "token": "0"}]),
+            "step 0 of the path has \"token\" without \"net\"",
+        ),
+        (
+            json!([step("Lot", "0", "bin"), {"place": "In", "net": ""}]),
+            "step 1 of the path has \"net\" without \"token\"",
+        ),
+        (
+            json!([{"place": "Lot", "token": 0, "net": "bin"}]),
+            "has a \"token\" that is a number",
+        ),
+        (
+            json!([{"place": "Nowhere", "token": null, "net": "bin"}]),
+            "has a \"token\" that is null",
+        ),
+        (json!([{"place": null}]), "has a \"place\" that is null"),
+    ] {
+        for method in ["get_state", "get_log", "query"] {
+            let lines = h.send(method, json!({ "path": path }));
+            assert_eq!(lines.len(), 1, "{method} {path}: {lines:#?}");
+            assert_eq!(
+                lines[0]["error"]["code"], "invalid_params",
+                "{method} {path}"
+            );
+            let message = lines[0]["error"]["message"].as_str().unwrap();
+            assert!(message.contains(says), "{method} {path}: {message}");
+        }
+        let lines = h.send("inject", json!({"place": "In", "token": 1, "path": path}));
+        assert_eq!(lines[0]["error"]["code"], "invalid_params", "inject {path}");
+    }
+    // Another key in a step is ignored (PROTOCOL.md §2).
+    let truck = h.result(
+        "get_state",
+        json!({"path": [{"place": "Lot", "token": "0", "net": "bin", "colour": "red"}]}),
+    );
+    assert_eq!(truck["net"], "bin");
+    assert_eq!(truck["path"], json!([step("Lot", "0", "bin")]));
+}
+
+/// A `Crate`: a name and one inner net, under a name that holds `/` and
+/// starts with `#`.
+struct Crate {
+    label: String,
+    inside: Net,
+}
+
+impl std::fmt::Debug for Crate {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Crate")
+            .field("label", &self.label)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Nested for Crate {
+    fn nets(&self) -> Vec<(&str, &Net)> {
+        vec![("#a/b", &self.inside)]
+    }
+
+    fn nets_mut(&mut self) -> Vec<(&str, &mut Net)> {
+        vec![("#a/b", &mut self.inside)]
+    }
+}
+
+/// `odd`: names a text address could not have spelt. `#Bay/1` holds a
+/// crate whose net, `#a/b`, has `In/Out -Move-> #Done`, holding 4; `Bay/2`
+/// holds a bare net with the same inside, holding 5, under an empty name.
+fn odd(_: &Params) -> Result<Net, LoadError> {
+    fn inside(n: u32) -> Net {
+        let mut b = NetBuilder::new();
+        let input = b.place::<u32>("In/Out");
+        let done = b.place::<u32>("#Done");
+        b.serializable(input);
+        b.seed(input, [n]);
+        b.transition("Move/On", (TakeEdge(input),), (done,), |n: u32| (n,));
+        b.build().unwrap()
+    }
+    let mut b = NetBuilder::new();
+    let bay = b.place_nested::<Crate>("#Bay/1");
+    let bare = b.place_nested::<Net>("Bay/2");
+    b.stepping(bay, Stepping::OuterFirst);
+    b.stepping(bare, Stepping::OuterFirst);
+    b.seed(
+        bay,
+        [Crate {
+            label: "c".into(),
+            inside: inside(4),
+        }],
+    );
+    b.seed(bare, [inside(5)]);
+    Ok(b.build()?)
+}
+
+#[test]
+fn every_name_can_be_spelt_in_a_path() {
+    // PROTOCOL.md §12.1: no character in a name has a special meaning, so a
+    // place name that holds `/` or starts with `#`, and a net name that
+    // does, are named whole in their steps.
+    let mut h = H::over(vec![NetEntry::new("odd", odd)]);
+    h.result("load", json!({"net": "odd"}));
+    let state = h.result("get_state", json!({}));
+    let crated = held(&state, "#Bay/1");
+    assert_eq!(crated["name"], "#a/b");
+    assert_eq!(crated["path"], json!([step("#Bay/1", "0", "#a/b")]));
+    let bare = held(&state, "Bay/2");
+    assert_eq!(bare["path"], json!([step("Bay/2", "1", "")]));
+
+    let inner = h.result("get_state", json!({"path": crated["path"]}));
+    assert_eq!(
+        (&inner["net"], &inner["nested_id"]),
+        (&json!("#a/b"), &crated["nested_id"])
+    );
+    assert_eq!(inner["marking"]["places"]["In/Out"]["count"], 1);
+    let lines = h.send(
+        "inject",
+        json!({"place": "In/Out", "token": 9, "path": bare["path"]}),
+    );
+    assert_eq!(lines[0]["params"]["path"], bare["path"]);
+    assert_eq!(
+        lines.last().unwrap()["result"]["path"],
+        bare["path"],
+        "{lines:#?}"
+    );
+
+    // A firing inside is told under the same path, and the step says so.
+    let lines = h.send("step", json!({}));
+    assert_eq!(lines[0]["params"]["path"], crated["path"]);
+    assert_eq!(
+        lines[0]["params"]["event"]["params"]["transition"],
+        "Move/On"
+    );
+    assert_eq!(
+        lines[0]["params"]["event"]["params"]["produced"][0][0],
+        "#Done"
+    );
+    let answer = &lines.last().unwrap()["result"];
+    assert_eq!(
+        (&answer["transition"], &answer["path"]),
+        (&json!("Move/On"), &crated["path"])
+    );
+    let log = h.result("get_log", json!({"path": crated["path"]}));
+    assert_eq!(log["entries"][0]["path"], crated["path"]);
+    assert_eq!(log["entries"][0]["consumed"][0][0], "In/Out");
+}
+
+/// A net holding the subnet place `Level`, whose subnet has the port
+/// `Lobby`.
+fn world() -> Result<Net, LoadError> {
+    let mut level = NetBuilder::new();
+    let lobby = level.place::<u32>("Lobby");
+    level.port(lobby);
+    let mut b = NetBuilder::new();
+    b.place::<u32>("Door");
+    b.subnet_place("Level", level.build()?);
+    Ok(b.build()?)
+}
+
+#[test]
+fn a_net_that_holds_a_subnet_place_is_not_served_yet() {
+    // Subnet places come to the wire in a later step: until then a net
+    // that holds one, at any depth, is refused at `load`, and the net
+    // loaded before stays.
+    let mut h = H::over(vec![
+        NetEntry::new("depot", depot),
+        NetEntry::new("world", |_: &Params| world()),
+        NetEntry::new("shelved", |_: &Params| {
+            let mut b = NetBuilder::new();
+            let shelf = b.place_nested::<Net>("Shelf");
+            b.seed(shelf, [world()?]);
+            Ok(b.build()?)
+        }),
+    ]);
+    h.result("load", json!({"net": "depot"}));
+    for net in ["world", "shelved"] {
+        let lines = h.send("load", json!({ "net": net }));
+        let error = &lines.last().unwrap()["error"];
+        assert_eq!(error["code"], "unsupported", "{net}: {lines:#?}");
+        assert_eq!(
+            error["message"], "\"Level\" is a subnet place, which this runner does not serve yet",
+            "{net}"
+        );
+    }
+    let state = h.result("get_state", json!({}));
+    assert_eq!(
+        (&state["net"], &state["generation"]),
+        (&json!("depot"), &json!(1))
+    );
+}
+
+#[test]
 fn switches_parameters_and_runs_are_the_outer_net_s_alone() {
     let mut h = loaded_over("depot");
     let id = held(&h.result("get_state", json!({})), "Lot")["nested_id"].clone();
@@ -1427,8 +1688,8 @@ fn switches_parameters_and_runs_are_the_outer_net_s_alone() {
             json!({"param": "lid", "value": true, "nested_id": id}),
         ),
         ("step", json!({"nested_id": id})),
-        ("step", json!({"path": "depot/Lot/#0/bin"})),
-        ("start", json!({"path": "depot/Lot/#0/bin"})),
+        ("step", json!({"path": [step("Lot", "0", "bin")]})),
+        ("start", json!({"path": [step("Lot", "0", "bin")]})),
         ("stop", json!({"nested_id": id})),
         ("reset", json!({"nested_id": id})),
     ] {
@@ -1530,18 +1791,17 @@ fn a_step_fires_inside_when_the_outer_net_has_nothing() {
     assert_eq!(inner["progress"]["fired_counts"], json!({"Move": 2}));
     let state = h.result("get_state", json!({}));
     assert_eq!(
-        state["progress"]["step_count"], 2,
-        "the outer net counts the firings inside its tokens"
-    );
-    assert_eq!(
-        state["progress"]["fired_counts"],
-        json!({"Lot/#0/bin/Move": 2}),
-        "under their path without the net's name, then the transition"
+        state["progress"],
+        json!({"step_count": 0, "last_fired": null, "fired_counts": {}, "last_progress_at": null}),
+        "progress is per net: the firings inside its tokens are not the outer net's"
     );
 }
 
 #[test]
-fn the_outer_progress_counts_inner_firings_under_their_path() {
+fn progress_is_per_net() {
+    // PROTOCOL.md §5.4: a net's progress counts the firings of its own
+    // transitions, by their own names, and a firing in an inner net is
+    // counted in that net's progress alone.
     let mut h = loaded_over("depot");
     let truck = held(&h.result("get_state", json!({})), "Lot");
     h.send("disable", json!({"transition": "Drive"}));
@@ -1551,10 +1811,9 @@ fn the_outer_progress_counts_inner_firings_under_their_path() {
     let progress = h.result("get_state", json!({}))["progress"].clone();
     assert_eq!(
         progress,
-        json!({"step_count": 2, "last_fired": "Drive",
-               "fired_counts": {"Lot/#0/bin/Move": 1, "Drive": 1},
+        json!({"step_count": 1, "last_fired": "Drive", "fired_counts": {"Drive": 1},
                "last_progress_at": "2026-10-03T09:35:02.413Z"}),
-        "Python's keys: the path as it was when the inner net fired"
+        "the outer net's own firing, and not the bin's"
     );
     let inner = h.result("get_state", json!({"nested_id": truck["nested_id"]}));
     assert_eq!(
@@ -1578,8 +1837,45 @@ fn the_outer_progress_counts_inner_firings_under_their_path() {
     );
     assert_eq!(
         h.result("get_state", json!({}))["progress"]["step_count"],
-        3
+        1
     );
+    assert_eq!(
+        h.result("get_state", json!({"nested_id": truck["nested_id"]}))["progress"]["step_count"],
+        2
+    );
+}
+
+#[test]
+fn progress_is_per_net_at_two_depths() {
+    // `deep`: the middle net's own `Move`, then its bin's, each counted
+    // where it fired, and nothing counted out here.
+    let mut h = loaded_over("deep");
+    let middle = held(&h.result("get_state", json!({})), "Shelf");
+    let leaf = held(
+        &h.result("get_state", json!({"nested_id": middle["nested_id"]})),
+        "Box",
+    );
+    let fired: Vec<Value> = (0..2)
+        .map(|_| h.result("step", json!({}))["nested_id"].clone())
+        .collect();
+    assert_eq!(
+        fired,
+        [middle["nested_id"].clone(), leaf["nested_id"].clone()]
+    );
+    let progress = |h: &mut H, address: Value| h.result("get_state", address)["progress"].clone();
+    let at = "2026-10-03T09:35:02.413Z";
+    assert_eq!(
+        progress(&mut h, json!({})),
+        json!({"step_count": 0, "last_fired": null, "fired_counts": {}, "last_progress_at": null})
+    );
+    let one_move = json!({"step_count": 1, "last_fired": "Move", "fired_counts": {"Move": 1},
+                          "last_progress_at": at});
+    assert_eq!(
+        progress(&mut h, json!({"nested_id": middle["nested_id"]})),
+        one_move,
+        "the middle net's own Move, not its bin's"
+    );
+    assert_eq!(progress(&mut h, json!({"path": leaf["path"]})), one_move);
 }
 
 #[test]
@@ -1659,8 +1955,11 @@ fn a_moved_token_keeps_its_nested_id_and_a_consumed_one_takes_it_away() {
     assert_eq!(state["marking"]["places"]["Lot"]["count"], 0);
     let moved = held(&state, "Gate");
     assert_eq!(moved["nested_id"], truck["nested_id"], "the stable name");
-    assert!(moved["path"].as_str().unwrap().starts_with("depot/Gate/#"));
-    assert_ne!(moved["path"], truck["path"]);
+    assert_eq!(
+        moved["path"],
+        json!([step("Gate", "2", "bin")]),
+        "a new place and a new token id: a new path"
+    );
     assert_eq!(
         h.error("get_state", json!({"path": truck["path"]})),
         "unknown_net",
@@ -1704,7 +2003,7 @@ fn reset_makes_every_old_nested_id_unknown() {
     );
     let fresh = held(&h.result("get_state", json!({})), "Lot");
     assert_ne!(fresh["nested_id"], truck["nested_id"]);
-    assert_eq!(fresh["path"], "depot/Lot/#0/bin");
+    assert_eq!(fresh["path"], json!([step("Lot", "0", "bin")]));
     assert_eq!(
         h.result("get_state", json!({"nested_id": fresh["nested_id"]}))["marking_version"],
         0,
@@ -1754,11 +2053,9 @@ fn a_read_of_a_net_whose_token_a_body_holds_waits_for_the_landing() {
     );
     let lines = h.land();
     assert_eq!(tags(&lines), ["distributed", "fireable", "#3", "#4"]);
-    assert!(
-        lines[3]["result"]["path"]
-            .as_str()
-            .unwrap()
-            .starts_with("depot/Gate/#"),
+    assert_eq!(
+        lines[3]["result"]["path"],
+        json!([step("Gate", "2", "bin")]),
         "{lines:#?}"
     );
 }
@@ -1822,14 +2119,15 @@ fn an_inner_failure_is_a_failed_step_and_stops_a_run() {
 fn get_log_keeps_one_ring_and_filters_it_by_the_chain_of_nets() {
     let mut h = loaded_over("deep");
     let middle = held(&h.result("get_state", json!({})), "Shelf");
-    assert_eq!(middle["path"], "deep/Shelf/#0/");
+    assert_eq!(middle["path"], json!([step("Shelf", "0", "")]));
     let leaf = held(
         &h.result("get_state", json!({"nested_id": middle["nested_id"]})),
         "Box",
     );
     assert_eq!(
-        leaf["path"], "deep/Shelf/#0//Box/#1/",
-        "a path through two bare nets, each level ending in its empty name"
+        leaf["path"],
+        json!([step("Shelf", "0", ""), step("Box", "1", "")]),
+        "a path through two bare nets, each step naming its net with the empty string"
     );
 
     // Depth two: one wrapper, the full path, the innermost net's version.
@@ -2763,7 +3061,7 @@ fn a_step_follows_the_loaded_net_s_tie_break_and_stepping_rules() {
     let first = h.result("step", json!({}));
     assert_eq!(
         (&first["transition"], &first["path"]),
-        (&json!("Work"), &json!("carousel/Desk/#1/"))
+        (&json!("Work"), &json!([step("Desk", "1", "")]))
     );
     let rest: Vec<Value> = (0..3)
         .map(|_| h.result("step", json!({}))["transition"].clone())
@@ -2793,7 +3091,7 @@ fn a_step_follows_the_loaded_net_s_tie_break_and_stepping_rules() {
     let second = h.result("step", json!({}));
     assert_eq!(
         (&second["transition"], &second["path"]),
-        (&json!("Work"), &json!("carousel/Desk/#1/"))
+        (&json!("Work"), &json!([step("Desk", "1", "")]))
     );
     let rest: Vec<Value> = (0..4)
         .map(|_| h.result("step", json!({}))["transition"].clone())
@@ -3104,7 +3402,7 @@ fn press_errors() {
         (json!({"control": "speed", "value": 10.5}), "invalid_params"),
         (json!({"control": "mode", "value": "c"}), "invalid_params"),
         (
-            json!({"control": "flip", "path": "panel/Light/#0/"}),
+            json!({"control": "flip", "path": [step("Light", "0", "")]}),
             "invalid_params",
         ),
         (json!({"control": "refuse"}), "internal"),

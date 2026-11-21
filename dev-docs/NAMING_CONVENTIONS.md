@@ -112,7 +112,7 @@ rename backlog.
 | a registry in effect while nets are deserialised | `Templates::scope(f)` (thread-local stack, innermost first), `templates.restore(value)` | a process-wide registry | |
 | a net's saved JSON form | `{"template", "marking", "params", "enabled"}`: `Serialize` / `Deserialize` for `Net`, `net.to_json()` | `NetJson.save`, `NetJson.restore` | |
 | a copy of a net, built again from its template | `net.fork()` → `NetError::{NoTemplate, InFlight, RebuildFailed}`; per token type `Nested::fork` (default `NotForkable`); in a snapshot `NetError::CannotFork`, read with `snapshot.nested(place, token)` | `fork(token)` (a deep copy) | |
-| an inner net's address on the wire | **path**: `<net>/<place>/#<token>/<name>` per level, a bare net's name empty so its level ends in `/` (PROTOCOL.md §12.1) | same | |
+| an inner net's address on the wire | **path**: a list of **steps**, one per level from the loaded net down, `protocol::PathStep::{Token { place, token, net }, Subnet { place }}`, a bare net's `net` the empty string; `[]` is the loaded net (PROTOCOL.md §12.1, version 2) | `wire.PathStep` | |
 | an inner net's stable name on the wire | **nested id**: its `NetId` as `Display` prints it, opaque to a reader | `net_id`, as a string | |
 | an inner net's event on the wire | the `nested {path, nested_id, event}` notification, `protocol::Notification::Nested` | `NestedEvent` | |
 | the nets a token holds, on a token entry | `nets: [{name, nested_id, path, template?, count}]`, `protocol::InnerNet` | `Tokens.nets` | |

@@ -58,9 +58,9 @@ inside one shows what is happening there.
   open a place the author did not expose.
 - There is one kind of port place. A place is not an entry or an exit:
   direction comes from the edges that touch it.
-- **A port place belongs to both nets.** The outer net lists it among its own
-  places, marked as a port of that subnet place, and the subnet lists it too.
-  There is one set of tokens.
+- **A port place belongs to both nets.** The outer net knows each port of its
+  subnet places and refers to one by a pair, the subnet place and the port,
+  with no combined name. There is one set of tokens.
 - An edge of the outer net to or from a port place is an ordinary edge. Every
   way of choosing an output place applies (by position, by type, by an output
   distribution function), and so does every kind of input edge.
@@ -119,7 +119,9 @@ inside one shows what is happening there.
   after it.
 - **This changes the present default for nets carried by tokens**, which is
   outer first. The transit example, the transcripts the two runtimes share and
-  the Python runtime's default change with it.
+  the Python runtime's default change with it. The old setting for a whole net
+  and the separate passive setting are removed: the rule per place is the only
+  way to say it.
 - An inside that never comes to rest stops the outer net under inner first.
   Such a place is set to take turns or passive. A net driven by time is given
   time as tokens, a beat on every tick, and is at rest between beats.
@@ -134,10 +136,10 @@ inside one shows what is happening there.
 
 ### The protocol and the two runtimes
 
-- The change is additive. A place in the topology gains optional marks: that
-  it is a subnet place, with its template's name, or that it is a port place.
-  A subnet is read by path, as a token's net is. A net without subnet places
-  describes itself as it does today.
+- The protocol becomes version 2. The address of an inner net, which was text
+  joined with slashes, becomes a list of steps, so that no character in a name
+  has a special meaning. The topology describes a subnet place and its ports,
+  and a subnet is read by its address, as a token's net is.
 - The Python runtime gains subnet places, port places and the per-place
   stepping rule in the same round as the Rust one. The two are kept in step.
 
@@ -152,8 +154,8 @@ inside one shows what is happening there.
 - Unfolding the box inside the outer drawing, so that the subnet appears in a
   frame among the outer net's nodes, is for a second round.
 - First round: the desktop viewer in full, and the closed symbol in the Python
-  library's Graphviz drawing. The web app and the share page get nothing new
-  and keep working, since the protocol change is additive. Both are expected
+  library's Graphviz drawing. The web app and the share page are not changed,
+  and stay on version 1 of the protocol until they are moved. Both are expected
   to move to the desktop viewer in time.
 
 ## How it relates to what exists
@@ -195,11 +197,7 @@ In the literature's terms, tokens that carry nets are *nets within nets*
 hierarchical coloured nets, with port places as there, and with the difference
 that the inside here is a net of its own with its own stepping.
 
-## Left for the spec
+## The spec
 
-- The builder's names for declaring a subnet place and a port place.
-- The order among several places that share a stepping rule.
-- The protocol's field names, and the new and re-recorded transcripts.
-- The closed symbol's layout, and what the inspector, the thumbnail, the
-  history and the filters show for a subnet place.
-- How the change of the stepping default is announced to existing users.
+`subnet-place-spec.md` says how this is to be built, and records the decisions
+taken while it was written.

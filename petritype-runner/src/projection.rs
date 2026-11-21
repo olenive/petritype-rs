@@ -9,10 +9,16 @@
 //! token that leaves is told of exactly when the connection was shown it,
 //! which only the projection can remember, since the token is gone by the
 //! time its event is read.
+//!
+//! A port place is projected by its subnet's filter, in the reads and the
+//! notifications of both nets that see it (PROTOCOL.md §12.7). So a net's
+//! own projection covers its own places alone, and a [`Lens`] puts the two
+//! together for one event of a net: its own projection for its own places,
+//! and its subnets' for the places it has for their ports.
 
 use std::collections::{BTreeSet, HashSet};
 
-use petritype::{Clause, Filter, Net, PlaceId, TokenId};
+use petritype::{Clause, Filter, Net, NetId, PlaceId, TokenId};
 
 /// `(place, token)` pairs, as the core's events carry them.
 pub(crate) type Pairs = Vec<(PlaceId, TokenId)>;
@@ -49,9 +55,13 @@ impl Projection {
     /// The projection of `net` through `filter`, the connection shown what
     /// the filter keeps now. `set_filter` announces nothing: the client
     /// changed its view and reads it afresh.
+    ///
+    /// The filter is kept to `net`'s own places ([`own_places`]): what it
+    /// says of a port of one of `net`'s subnet places is the subnet's to
+    /// say.
     pub(crate) fn new(filter: Filter, net: &Net) -> Projection {
         let mut projection = Projection {
-            filter,
+            filter: own_places(filter, net),
             shown: HashSet::new(),
             taken: HashSet::new(),
         };
@@ -174,16 +184,6 @@ impl Projection {
         self.taken.clear();
     }
 
-    /// A firing placed these tokens (`distributed`, `fired`): the ones the
-    /// filter keeps, which are what the connection is told of.
-    pub(crate) fn placed(&mut self, net: Option<&Net>, produced: &[(PlaceId, TokenId)]) -> Pairs {
-        produced
-            .iter()
-            .copied()
-            .filter(|&(place, token)| self.arrived(net, place, token))
-            .collect()
-    }
-
     /// The tokens that came into view or went out of it with no token
     /// event of their own (a change of a net parameter a clause names,
     /// or of the inner nets a key reads), found by comparing what the
@@ -248,6 +248,163 @@ impl Projection {
                 .retain(|&(place, token)| net.tokens(place).any(|(t, _)| t == token));
         }
         (gone, came)
+    }
+}
+
+/// `filter` kept to `net`'s own places: the places `net` has for the ports
+/// of its subnet places are projected by their subnets' filters, never by
+/// `net`'s (PROTOCOL.md §12.7). A net without subnet places keeps the
+/// filter as it is.
+fn own_places(mut filter: Filter, net: &Net) -> Filter {
+    let windows: Vec<PlaceId> = net
+        .places()
+        .filter(|(_, info)| info.port_of.is_some())
+        .map(|(id, _)| id)
+        .collect();
+    if windows.is_empty() {
+        return filter;
+    }
+    filter.places = Some(match filter.places.take() {
+        Some(places) => places
+            .into_iter()
+            .filter(|place| !windows.contains(place))
+            .collect(),
+        None => net
+            .places()
+            .filter(|(_, info)| info.port_of.is_none())
+            .map(|(id, _)| id)
+            .collect(),
+    });
+    filter
+}
+
+/// One subnet place of a net, as a [`Lens`] holds it: the subnet's record,
+/// the subnet's projection, and the places the net has for its ports, each
+/// with the port's own id in the subnet.
+#[derive(Debug)]
+pub(crate) struct SubnetLens {
+    /// The subnet place, in the net the lens is of.
+    pub(crate) place: PlaceId,
+    /// The subnet's nested id: whose record the projection goes back to.
+    pub(crate) id: NetId,
+    /// Each window, and the port it is for, by its id in the subnet.
+    pub(crate) windows: Vec<(PlaceId, PlaceId)>,
+    /// The subnet's projection, while `set_filter` has set one.
+    pub(crate) projection: Option<Projection>,
+}
+
+/// What a connection is told of the tokens one event of a net names
+/// (PROTOCOL.md §12.7, §13.4): the net's own projection decides for its own
+/// places, and a subnet's for the places the net has for the subnet's
+/// ports, which it reads under the port's own id in the subnet. A place no
+/// projection covers is told as it is.
+///
+/// The projections are taken out of the owner's records for the length of
+/// one event and put back after it, since an event of a subnet in the same
+/// batch goes through the subnet's projection on its own.
+#[derive(Debug, Default)]
+pub(crate) struct Lens {
+    /// The net's own projection.
+    pub(crate) own: Option<Projection>,
+    /// The net's subnet places.
+    pub(crate) subnets: Vec<SubnetLens>,
+}
+
+impl Lens {
+    /// The projection that decides for `place` of `net`, the net that
+    /// projection reads (`net` itself, or the subnet of a window), and the
+    /// place's id there; `None` when no projection covers it.
+    fn route<'n>(
+        &mut self,
+        net: Option<&'n Net>,
+        place: PlaceId,
+    ) -> Option<(&mut Projection, Option<&'n Net>, PlaceId)> {
+        for subnet in &mut self.subnets {
+            if let Some(&(_, port)) = subnet.windows.iter().find(|(window, _)| *window == place) {
+                let inside = net.and_then(|net| net.subnet(subnet.place));
+                return subnet
+                    .projection
+                    .as_mut()
+                    .map(|projection| (projection, inside, port));
+            }
+        }
+        self.own.as_mut().map(|projection| (projection, net, place))
+    }
+
+    /// [`Projection::arrived`], or true where no projection covers the
+    /// place.
+    pub(crate) fn arrived(&mut self, net: Option<&Net>, place: PlaceId, token: TokenId) -> bool {
+        self.route(net, place)
+            .is_none_or(|(projection, net, place)| projection.arrived(net, place, token))
+    }
+
+    /// [`Projection::left`], or true where no projection covers the place.
+    pub(crate) fn left(&mut self, place: PlaceId, token: TokenId) -> bool {
+        self.route(None, place)
+            .is_none_or(|(projection, _, place)| projection.left(place, token))
+    }
+
+    /// [`Projection::changed`], or [`Seen::Mutated`] where no projection
+    /// covers the place.
+    pub(crate) fn changed(&mut self, net: Option<&Net>, place: PlaceId, token: TokenId) -> Seen {
+        self.route(net, place)
+            .map_or(Seen::Mutated, |(projection, net, place)| {
+                projection.changed(net, place, token)
+            })
+    }
+
+    /// [`Projection::took`], token by token, each by the projection that
+    /// covers its place.
+    pub(crate) fn took(&mut self, consumed: &[(PlaceId, TokenId)]) -> Pairs {
+        consumed
+            .iter()
+            .copied()
+            .filter(|&(place, token)| {
+                self.route(None, place)
+                    .is_none_or(|(projection, _, place)| {
+                        !projection.took(&[(place, token)]).is_empty()
+                    })
+            })
+            .collect()
+    }
+
+    /// [`Projection::failed`], token by token, each by the projection that
+    /// covers its place.
+    pub(crate) fn failed(&mut self, consumed: &[(PlaceId, TokenId)], restored: bool) -> Pairs {
+        consumed
+            .iter()
+            .copied()
+            .filter(|&(place, token)| {
+                self.route(None, place)
+                    .is_none_or(|(projection, _, place)| {
+                        !projection.failed(&[(place, token)], restored).is_empty()
+                    })
+            })
+            .collect()
+    }
+
+    /// [`Projection::landed`], for every projection the lens holds: one
+    /// firing at a time across the tree, so what any of them holds as
+    /// taken is this firing's.
+    pub(crate) fn landed(&mut self) {
+        for projection in self.own.iter_mut().chain(
+            self.subnets
+                .iter_mut()
+                .filter_map(|s| s.projection.as_mut()),
+        ) {
+            projection.landed();
+        }
+    }
+
+    /// A firing placed these tokens (`distributed`, `fired`): the ones the
+    /// projection that covers each one's place keeps, which are what the
+    /// connection is told of, every one where none covers it.
+    pub(crate) fn placed(&mut self, net: Option<&Net>, produced: &[(PlaceId, TokenId)]) -> Pairs {
+        produced
+            .iter()
+            .copied()
+            .filter(|&(place, token)| self.arrived(net, place, token))
+            .collect()
     }
 }
 

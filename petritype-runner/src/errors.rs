@@ -70,7 +70,11 @@ pub(crate) fn code_of(error: CoreError<'_>) -> ErrorCode {
             // does not have, a value that is not a string, an integer or a
             // boolean: the request's parameters are wrong.
             FilterError::Shape(_) => ErrorCode::InvalidParams,
-            FilterError::UnknownPlace(_) => ErrorCode::UnknownPlace,
+            // A port its subnet place does not have, or a port beside a
+            // place that is no subnet place (PROTOCOL.md §12.7).
+            FilterError::UnknownPlace(_) | FilterError::UnknownPort { .. } => {
+                ErrorCode::UnknownPlace
+            }
         },
         CoreError::Press(error) => match error {
             PressError::UnknownControl { .. } => ErrorCode::UnknownControl,

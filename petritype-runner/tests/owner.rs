@@ -1435,7 +1435,11 @@ fn an_address_that_names_no_live_net_says_which_step_failed() {
         ),
         (
             json!([{"place": "Lot"}]),
-            "step 0 of the path: no subnet place named \"Lot\"",
+            "step 0 of the path: place \"Lot\" is not a subnet place",
+        ),
+        (
+            json!([{"place": "Nowhere"}]),
+            "step 0 of the path: no place named \"Nowhere\"",
         ),
     ] {
         let lines = h.send("get_state", json!({ "path": path }));
@@ -1648,12 +1652,11 @@ fn world() -> Result<Net, LoadError> {
 }
 
 #[test]
-fn a_net_that_holds_a_subnet_place_is_not_served_yet() {
-    // Subnet places come to the wire in a later step: until then a net
-    // that holds one, at any depth, is refused at `load`, and the net
-    // loaded before stays.
+fn a_net_that_holds_a_subnet_place_loads_at_any_depth() {
+    // PROTOCOL.md §12.7: a net that holds a subnet place, or whose tokens
+    // hold a net that does, loads, and its subnets are addressed by a step
+    // of the subnet form. `tests/subnets.rs` has the rest.
     let mut h = H::over(vec![
-        NetEntry::new("depot", depot),
         NetEntry::new("world", |_: &Params| world()),
         NetEntry::new("shelved", |_: &Params| {
             let mut b = NetBuilder::new();
@@ -1662,21 +1665,16 @@ fn a_net_that_holds_a_subnet_place_is_not_served_yet() {
             Ok(b.build()?)
         }),
     ]);
-    h.result("load", json!({"net": "depot"}));
-    for net in ["world", "shelved"] {
-        let lines = h.send("load", json!({ "net": net }));
-        let error = &lines.last().unwrap()["error"];
-        assert_eq!(error["code"], "unsupported", "{net}: {lines:#?}");
-        assert_eq!(
-            error["message"], "\"Level\" is a subnet place, which this runner does not serve yet",
-            "{net}"
-        );
-    }
+    h.result("load", json!({"net": "world"}));
+    let level = h.result("get_state", json!({"path": [{"place": "Level"}]}));
+    assert_eq!(level["net"], "Level");
+    assert_eq!(level["topology"]["places"][0]["port"], true);
+    h.result("load", json!({"net": "shelved"}));
     let state = h.result("get_state", json!({}));
-    assert_eq!(
-        (&state["net"], &state["generation"]),
-        (&json!("depot"), &json!(1))
-    );
+    let token = &state["marking"]["places"]["Shelf"]["tokens"][0];
+    let path = json!([step("Shelf", token["id"].as_str().unwrap(), ""), {"place": "Level"}]);
+    let level = h.result("get_state", json!({ "path": path }));
+    assert_eq!((&level["net"], &level["path"]), (&json!("Level"), &path));
 }
 
 #[test]

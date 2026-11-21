@@ -9,7 +9,9 @@
 //! `petritype/examples/shop/net.rs` and
 //! `petritype/examples/traffic_light/net.rs` as they are, not copied; and
 //! `stepping-rules` (§11, §12.3), which has no example of its own and is
-//! written here.
+//! written here. The conformance net `levels` (§11, §12.7) is written here
+//! too, and carried by [`levels_registry`] for the transcripts over it; the
+//! example binary does not carry it yet.
 
 use std::fmt;
 
@@ -471,6 +473,128 @@ fn stepping_rules_entry() -> NetEntry {
 #[allow(dead_code)]
 pub fn stepping_rules_registry() -> Vec<NetEntry> {
     vec![stepping_rules_entry()]
+}
+
+/// The protocol's conformance net `levels` (PROTOCOL.md §11, §12.7): a
+/// small world with two levels built from one template, a hero entering a
+/// level through one port place and leaving through another. Its names,
+/// places, transitions, guards, template and seed are fixed by §11; the
+/// Python twin is `tests/protocol_nets/levels.py`. It is not the core's
+/// `levels` example, whose heroes count the levels they clear and fight
+/// once on the way in: this one walks into the arena, fights there and
+/// wins, so that a transcript shows a firing out of a port, one wholly
+/// inside and one into a port.
+pub mod levels {
+    use petritype::{Net, NetBuilder, Params, PlaceId, TakeEdge, Templates};
+    use petritype_runner::LoadError;
+    use serde::{Deserialize, Serialize};
+
+    /// A hero, and whether they have fought in the level they are in.
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+    pub struct Hero {
+        pub name: String,
+        pub fought: bool,
+    }
+
+    /// The hero at the front of `place`.
+    fn front(net: &Net, place: PlaceId) -> Option<&Hero> {
+        let (token, _) = net.tokens(place).next()?;
+        net.token::<Hero>(place, token)
+    }
+
+    /// The template `Level`: `Lobby -Walk In-> Arena -Fight-> Arena -Win->
+    /// Exit Hall`, the lobby and the exit hall its ports, every place
+    /// serializable and empty. `Walk In` sets `fought` false; `Fight`, for
+    /// a front hero who has not fought, sets it true; `Win`, for one who
+    /// has, hands them on. No parameters.
+    fn level(_: &Params) -> Result<Net, petritype::BuildError> {
+        let mut b = NetBuilder::new();
+        let lobby = b.place::<Hero>("Lobby");
+        let arena = b.place::<Hero>("Arena");
+        let exit = b.place::<Hero>("Exit Hall");
+        for place in [lobby, arena, exit] {
+            b.serializable(place);
+        }
+        b.port(lobby);
+        b.port(exit);
+        b.transition("Walk In", (TakeEdge(lobby),), (arena,), |hero: Hero| {
+            (Hero {
+                fought: false,
+                ..hero
+            },)
+        });
+        b.transition("Fight", (TakeEdge(arena),), (arena,), |hero: Hero| {
+            (Hero {
+                fought: true,
+                ..hero
+            },)
+        })
+        .guard(move |net: &Net| front(net, arena.id()).is_some_and(|hero| !hero.fought));
+        b.transition("Win", (TakeEdge(arena),), (exit,), |hero: Hero| (hero,))
+            .guard(move |net: &Net| front(net, arena.id()).is_some_and(|hero| hero.fought));
+        b.build()
+    }
+
+    /// `Level`, under its name, which builds both levels and stamps them.
+    pub fn templates() -> Templates {
+        let mut templates = Templates::new();
+        templates.register("Level", level);
+        templates
+    }
+
+    /// The world as §11 seeds it: `Door` holding Ada, who has not fought;
+    /// `Level 1` and `Level 2`, subnet places each holding a `Level`, inner
+    /// first; and `Outside`. `Enter` takes the hero from the door into
+    /// level 1's lobby, `Climb` from level 1's exit hall into level 2's
+    /// lobby, and `Leave` from level 2's exit hall to `Outside`.
+    pub fn levels(_: &petritype_runner::Params) -> Result<Net, LoadError> {
+        let templates = templates();
+        let level = || {
+            templates
+                .build("Level", &Params::new())
+                .map_err(|error| LoadError::Other(error.to_string()))
+        };
+        let mut b = NetBuilder::new();
+        b.templates(&templates);
+        let door = b.place::<Hero>("Door");
+        let level_1 = b.subnet_place("Level 1", level()?);
+        let level_2 = b.subnet_place("Level 2", level()?);
+        let outside = b.place::<Hero>("Outside");
+        b.serializable(door);
+        b.serializable(outside);
+        let lobby_1 = b.port_of::<Hero>(level_1, "Lobby");
+        let exit_1 = b.port_of::<Hero>(level_1, "Exit Hall");
+        let lobby_2 = b.port_of::<Hero>(level_2, "Lobby");
+        let exit_2 = b.port_of::<Hero>(level_2, "Exit Hall");
+        b.seed(
+            door,
+            [Hero {
+                name: "Ada".to_owned(),
+                fought: false,
+            }],
+        );
+        b.transition("Enter", (TakeEdge(door),), (lobby_1,), |hero: Hero| (hero,));
+        b.transition("Climb", (TakeEdge(exit_1),), (lobby_2,), |hero: Hero| {
+            (hero,)
+        });
+        b.transition("Leave", (TakeEdge(exit_2),), (outside,), |hero: Hero| {
+            (hero,)
+        });
+        Ok(b.build()?)
+    }
+}
+
+/// The `levels` entry, as PROTOCOL.md §11 names and describes it.
+fn levels_entry() -> NetEntry {
+    NetEntry::new("levels", levels::levels)
+        .description("Heroes enter two levels through one port and leave through another")
+        .hosting(Hosting::Manual)
+}
+
+/// The `levels` net alone, for the transcripts over it (PROTOCOL.md §11).
+#[allow(dead_code)]
+pub fn levels_registry() -> Vec<NetEntry> {
+    vec![levels_entry()]
 }
 
 /// The conformance net's entry, as PROTOCOL.md §11 names and describes it.

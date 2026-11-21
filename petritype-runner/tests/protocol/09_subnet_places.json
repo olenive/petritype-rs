@@ -1,0 +1,1464 @@
+{
+ "net": "levels",
+ "params": {},
+ "exchanges": [
+  {
+   "send": {
+    "method": "describe"
+   },
+   "expect": [
+    {
+     "id": "1",
+     "result": {
+      "protocol_version": 2,
+      "runtime": "<label>",
+      "runtime_version": "<label>",
+      "nets": [
+       {
+        "name": "levels",
+        "description": "Heroes enter two levels through one port and leave through another",
+        "mode": "manual",
+        "params": []
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "load",
+    "params": {
+     "net": "levels"
+    }
+   },
+   "expect": [
+    {
+     "method": "load_progress",
+     "params": {
+      "step": "build",
+      "message": "<label>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "reloaded",
+     "params": {
+      "generation": 1,
+      "reason": "load",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "2",
+     "result": {
+      "status": "loaded",
+      "generation": 1,
+      "marking_version": "<version>"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "get_state"
+   },
+   "expect": [
+    {
+     "id": "3",
+     "result": {
+      "protocol_version": 2,
+      "runtime": "<label>",
+      "net": "levels",
+      "generation": 1,
+      "marking_version": "<version>",
+      "running": false,
+      "topology": {
+       "places": [
+        {
+         "name": "Door",
+         "type_name": "<label>",
+         "serializable": true
+        },
+        {
+         "name": "Level 1",
+         "type_name": "<label>",
+         "subnet": true,
+         "ports": [
+          {
+           "name": "Lobby",
+           "type_name": "<label>",
+           "serializable": true
+          },
+          {
+           "name": "Exit Hall",
+           "type_name": "<label>",
+           "serializable": true
+          }
+         ],
+         "stepping": "inner_first"
+        },
+        {
+         "name": "Level 2",
+         "type_name": "<label>",
+         "subnet": true,
+         "ports": [
+          {
+           "name": "Lobby",
+           "type_name": "<label>",
+           "serializable": true
+          },
+          {
+           "name": "Exit Hall",
+           "type_name": "<label>",
+           "serializable": true
+          }
+         ],
+         "stepping": "inner_first"
+        },
+        {
+         "name": "Outside",
+         "type_name": "<label>",
+         "serializable": true
+        }
+       ],
+       "transitions": [
+        {
+         "name": "Enter",
+         "detail": "<any>"
+        },
+        {
+         "name": "Climb",
+         "detail": "<any>"
+        },
+        {
+         "name": "Leave",
+         "detail": "<any>"
+        }
+       ],
+       "edges": {
+        "<unordered>": [
+         {
+          "place": "Door",
+          "transition": "Enter",
+          "direction": "in",
+          "kind": "take"
+         },
+         {
+          "place": "Level 1",
+          "port": "Exit Hall",
+          "transition": "Climb",
+          "direction": "in",
+          "kind": "take"
+         },
+         {
+          "place": "Level 2",
+          "port": "Exit Hall",
+          "transition": "Leave",
+          "direction": "in",
+          "kind": "take"
+         },
+         {
+          "place": "Level 1",
+          "port": "Lobby",
+          "transition": "Enter",
+          "direction": "out"
+         },
+         {
+          "place": "Level 2",
+          "port": "Lobby",
+          "transition": "Climb",
+          "direction": "out"
+         },
+         {
+          "place": "Outside",
+          "transition": "Leave",
+          "direction": "out"
+         }
+        ]
+       }
+      },
+      "transitions": {
+       "Enter": {
+        "enabled": true,
+        "fireable": true,
+        "in_flight": false,
+        "priority": 0.0
+       },
+       "Climb": {
+        "enabled": true,
+        "fireable": false,
+        "in_flight": false,
+        "priority": 0.0
+       },
+       "Leave": {
+        "enabled": true,
+        "fireable": false,
+        "in_flight": false,
+        "priority": 0.0
+       }
+      },
+      "marking": {
+       "places": {
+        "Door": {
+         "count": 1,
+         "tokens": [
+          {
+           "id": "<id:ada>",
+           "label": "<label>"
+          }
+         ]
+        },
+        "Level 1": {
+         "subnet": {
+          "nested_id": "<id:level_1>",
+          "path": [
+           {
+            "place": "Level 1"
+           }
+          ],
+          "template": "Level",
+          "count": 0
+         },
+         "ports": {
+          "Lobby": {
+           "count": 0,
+           "tokens": []
+          },
+          "Exit Hall": {
+           "count": 0,
+           "tokens": []
+          }
+         }
+        },
+        "Level 2": {
+         "subnet": {
+          "nested_id": "<id:level_2>",
+          "path": [
+           {
+            "place": "Level 2"
+           }
+          ],
+          "template": "Level",
+          "count": 0
+         },
+         "ports": {
+          "Lobby": {
+           "count": 0,
+           "tokens": []
+          },
+          "Exit Hall": {
+           "count": 0,
+           "tokens": []
+          }
+         }
+        },
+        "Outside": {
+         "count": 0,
+         "tokens": []
+        }
+       }
+      },
+      "progress": {
+       "step_count": 0,
+       "last_fired": null,
+       "fired_counts": {},
+       "last_progress_at": null
+      }
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "get_state",
+    "params": {
+     "path": [
+      {
+       "place": "Level 1"
+      }
+     ]
+    }
+   },
+   "expect": [
+    {
+     "id": "4",
+     "result": {
+      "protocol_version": 2,
+      "runtime": "<label>",
+      "net": "Level 1",
+      "generation": 1,
+      "marking_version": "<version>",
+      "running": false,
+      "topology": {
+       "places": [
+        {
+         "name": "Lobby",
+         "type_name": "<label>",
+         "serializable": true,
+         "port": true
+        },
+        {
+         "name": "Arena",
+         "type_name": "<label>",
+         "serializable": true
+        },
+        {
+         "name": "Exit Hall",
+         "type_name": "<label>",
+         "serializable": true,
+         "port": true
+        }
+       ],
+       "transitions": [
+        {
+         "name": "Walk In",
+         "detail": "<any>"
+        },
+        {
+         "name": "Fight",
+         "detail": "<any>"
+        },
+        {
+         "name": "Win",
+         "detail": "<any>"
+        }
+       ],
+       "edges": {
+        "<unordered>": [
+         {
+          "place": "Lobby",
+          "transition": "Walk In",
+          "direction": "in",
+          "kind": "take"
+         },
+         {
+          "place": "Arena",
+          "transition": "Fight",
+          "direction": "in",
+          "kind": "take"
+         },
+         {
+          "place": "Arena",
+          "transition": "Win",
+          "direction": "in",
+          "kind": "take"
+         },
+         {
+          "place": "Arena",
+          "transition": "Walk In",
+          "direction": "out"
+         },
+         {
+          "place": "Arena",
+          "transition": "Fight",
+          "direction": "out"
+         },
+         {
+          "place": "Exit Hall",
+          "transition": "Win",
+          "direction": "out"
+         }
+        ]
+       }
+      },
+      "transitions": {
+       "Walk In": {
+        "enabled": true,
+        "fireable": false,
+        "in_flight": false,
+        "priority": 0.0
+       },
+       "Fight": {
+        "enabled": true,
+        "fireable": false,
+        "in_flight": false,
+        "priority": 0.0
+       },
+       "Win": {
+        "enabled": true,
+        "fireable": false,
+        "in_flight": false,
+        "priority": 0.0
+       }
+      },
+      "marking": {
+       "places": {
+        "Lobby": {
+         "count": 0,
+         "tokens": []
+        },
+        "Arena": {
+         "count": 0,
+         "tokens": []
+        },
+        "Exit Hall": {
+         "count": 0,
+         "tokens": []
+        }
+       }
+      },
+      "progress": {
+       "step_count": 0,
+       "last_fired": null,
+       "fired_counts": {},
+       "last_progress_at": null
+      },
+      "path": [
+       {
+        "place": "Level 1"
+       }
+      ],
+      "nested_id": "<id:level_1>",
+      "template": "Level"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "get_state",
+    "params": {
+     "nested_id": "<id:level_2>"
+    }
+   },
+   "expect": [
+    {
+     "id": "5",
+     "result": {
+      "protocol_version": 2,
+      "runtime": "<label>",
+      "net": "Level 2",
+      "generation": 1,
+      "marking_version": "<version>",
+      "running": false,
+      "topology": {
+       "places": [
+        {
+         "name": "Lobby",
+         "type_name": "<label>",
+         "serializable": true,
+         "port": true
+        },
+        {
+         "name": "Arena",
+         "type_name": "<label>",
+         "serializable": true
+        },
+        {
+         "name": "Exit Hall",
+         "type_name": "<label>",
+         "serializable": true,
+         "port": true
+        }
+       ],
+       "transitions": [
+        {
+         "name": "Walk In",
+         "detail": "<any>"
+        },
+        {
+         "name": "Fight",
+         "detail": "<any>"
+        },
+        {
+         "name": "Win",
+         "detail": "<any>"
+        }
+       ],
+       "edges": {
+        "<unordered>": [
+         {
+          "place": "Lobby",
+          "transition": "Walk In",
+          "direction": "in",
+          "kind": "take"
+         },
+         {
+          "place": "Arena",
+          "transition": "Fight",
+          "direction": "in",
+          "kind": "take"
+         },
+         {
+          "place": "Arena",
+          "transition": "Win",
+          "direction": "in",
+          "kind": "take"
+         },
+         {
+          "place": "Arena",
+          "transition": "Walk In",
+          "direction": "out"
+         },
+         {
+          "place": "Arena",
+          "transition": "Fight",
+          "direction": "out"
+         },
+         {
+          "place": "Exit Hall",
+          "transition": "Win",
+          "direction": "out"
+         }
+        ]
+       }
+      },
+      "transitions": {
+       "Walk In": {
+        "enabled": true,
+        "fireable": false,
+        "in_flight": false,
+        "priority": 0.0
+       },
+       "Fight": {
+        "enabled": true,
+        "fireable": false,
+        "in_flight": false,
+        "priority": 0.0
+       },
+       "Win": {
+        "enabled": true,
+        "fireable": false,
+        "in_flight": false,
+        "priority": 0.0
+       }
+      },
+      "marking": {
+       "places": {
+        "Lobby": {
+         "count": 0,
+         "tokens": []
+        },
+        "Arena": {
+         "count": 0,
+         "tokens": []
+        },
+        "Exit Hall": {
+         "count": 0,
+         "tokens": []
+        }
+       }
+      },
+      "progress": {
+       "step_count": 0,
+       "last_fired": null,
+       "fired_counts": {},
+       "last_progress_at": null
+      },
+      "path": [
+       {
+        "place": "Level 2"
+       }
+      ],
+      "nested_id": "<id:level_2>",
+      "template": "Level"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "step"
+   },
+   "expect": [
+    {
+     "method": "fired",
+     "params": {
+      "transition": "Enter",
+      "consumed": [
+       [
+        "Door",
+        "<id:ada>"
+       ]
+      ],
+      "produced": [
+       [
+        {
+         "place": "Level 1",
+         "port": "Lobby"
+        },
+        "<id:level_1_ada>",
+        "<label>"
+       ]
+      ],
+      "duration_ms": "<ms>",
+      "subnet_marking_versions": {
+       "Level 1": "<version>"
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "fireable",
+     "params": {
+      "transitions": [],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "nested",
+     "params": {
+      "path": [
+       {
+        "place": "Level 1"
+       }
+      ],
+      "nested_id": "<id:level_1>",
+      "event": {
+       "method": "fireable",
+       "params": {
+        "transitions": [
+         "Walk In"
+        ],
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "6",
+     "result": {
+      "fired": true,
+      "transition": "Enter",
+      "marking_version": "<version>",
+      "running": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "step"
+   },
+   "expect": [
+    {
+     "method": "nested",
+     "params": {
+      "path": [
+       {
+        "place": "Level 1"
+       }
+      ],
+      "nested_id": "<id:level_1>",
+      "event": {
+       "method": "fired",
+       "params": {
+        "transition": "Walk In",
+        "consumed": [
+         [
+          "Lobby",
+          "<id:level_1_ada>"
+         ]
+        ],
+        "produced": [
+         [
+          "Arena",
+          "<id:level_1_ada_arena>",
+          "<label>"
+         ]
+        ],
+        "duration_ms": "<ms>",
+        "outer_marking_version": "<version>",
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "nested",
+     "params": {
+      "path": [
+       {
+        "place": "Level 1"
+       }
+      ],
+      "nested_id": "<id:level_1>",
+      "event": {
+       "method": "fireable",
+       "params": {
+        "transitions": [
+         "Fight"
+        ],
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "7",
+     "result": {
+      "fired": true,
+      "transition": "Walk In",
+      "path": [
+       {
+        "place": "Level 1"
+       }
+      ],
+      "nested_id": "<id:level_1>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "step"
+   },
+   "expect": [
+    {
+     "method": "nested",
+     "params": {
+      "path": [
+       {
+        "place": "Level 1"
+       }
+      ],
+      "nested_id": "<id:level_1>",
+      "event": {
+       "method": "fired",
+       "params": {
+        "transition": "Fight",
+        "consumed": [
+         [
+          "Arena",
+          "<id:level_1_ada_arena>"
+         ]
+        ],
+        "produced": [
+         [
+          "Arena",
+          "<id:level_1_ada_arena_2>",
+          "<label>"
+         ]
+        ],
+        "duration_ms": "<ms>",
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "nested",
+     "params": {
+      "path": [
+       {
+        "place": "Level 1"
+       }
+      ],
+      "nested_id": "<id:level_1>",
+      "event": {
+       "method": "fireable",
+       "params": {
+        "transitions": [
+         "Win"
+        ],
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "8",
+     "result": {
+      "fired": true,
+      "transition": "Fight",
+      "path": [
+       {
+        "place": "Level 1"
+       }
+      ],
+      "nested_id": "<id:level_1>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "step"
+   },
+   "expect": [
+    {
+     "method": "nested",
+     "params": {
+      "path": [
+       {
+        "place": "Level 1"
+       }
+      ],
+      "nested_id": "<id:level_1>",
+      "event": {
+       "method": "fired",
+       "params": {
+        "transition": "Win",
+        "consumed": [
+         [
+          "Arena",
+          "<id:level_1_ada_arena_2>"
+         ]
+        ],
+        "produced": [
+         [
+          "Exit Hall",
+          "<id:level_1_ada_exit_hall>",
+          "<label>"
+         ]
+        ],
+        "duration_ms": "<ms>",
+        "outer_marking_version": "<version>",
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "fireable",
+     "params": {
+      "transitions": [
+       "Climb"
+      ],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "nested",
+     "params": {
+      "path": [
+       {
+        "place": "Level 1"
+       }
+      ],
+      "nested_id": "<id:level_1>",
+      "event": {
+       "method": "fireable",
+       "params": {
+        "transitions": [],
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "9",
+     "result": {
+      "fired": true,
+      "transition": "Win",
+      "path": [
+       {
+        "place": "Level 1"
+       }
+      ],
+      "nested_id": "<id:level_1>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "get_place_tokens",
+    "params": {
+     "place": "Level 1",
+     "port": "Exit Hall"
+    }
+   },
+   "expect": [
+    {
+     "id": "10",
+     "result": {
+      "place": "Level 1",
+      "port": "Exit Hall",
+      "marking_version": "<version>",
+      "count": 1,
+      "offset": 0,
+      "limit": 200,
+      "tokens": [
+       {
+        "id": "<id:level_1_ada_exit_hall>",
+        "label": "<label>"
+       }
+      ],
+      "has_more": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "get_place_tokens",
+    "params": {
+     "place": "Exit Hall",
+     "path": [
+      {
+       "place": "Level 1"
+      }
+     ]
+    }
+   },
+   "expect": [
+    {
+     "id": "11",
+     "result": {
+      "place": "Exit Hall",
+      "marking_version": "<version>",
+      "count": 1,
+      "offset": 0,
+      "limit": 200,
+      "tokens": [
+       {
+        "id": "<id:level_1_ada_exit_hall>",
+        "label": "<label>"
+       }
+      ],
+      "has_more": false,
+      "path": [
+       {
+        "place": "Level 1"
+       }
+      ],
+      "nested_id": "<id:level_1>"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "get_token",
+    "params": {
+     "id": "<id:level_1_ada_exit_hall>",
+     "path": [
+      {
+       "place": "Level 1"
+      }
+     ]
+    }
+   },
+   "expect": [
+    {
+     "id": "12",
+     "result": {
+      "id": "<id:level_1_ada_exit_hall>",
+      "place": "Exit Hall",
+      "type_name": "<label>",
+      "kind": "json",
+      "value": {
+       "name": "Ada",
+       "fought": true
+      },
+      "path": [
+       {
+        "place": "Level 1"
+       }
+      ],
+      "nested_id": "<id:level_1>"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "step"
+   },
+   "expect": [
+    {
+     "method": "fired",
+     "params": {
+      "transition": "Climb",
+      "consumed": [
+       [
+        {
+         "place": "Level 1",
+         "port": "Exit Hall"
+        },
+        "<id:level_1_ada_exit_hall>"
+       ]
+      ],
+      "produced": [
+       [
+        {
+         "place": "Level 2",
+         "port": "Lobby"
+        },
+        "<id:level_2_ada>",
+        "<label>"
+       ]
+      ],
+      "duration_ms": "<ms>",
+      "subnet_marking_versions": {
+       "Level 1": "<version>",
+       "Level 2": "<version>"
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "fireable",
+     "params": {
+      "transitions": [],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "nested",
+     "params": {
+      "path": [
+       {
+        "place": "Level 2"
+       }
+      ],
+      "nested_id": "<id:level_2>",
+      "event": {
+       "method": "fireable",
+       "params": {
+        "transitions": [
+         "Walk In"
+        ],
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "13",
+     "result": {
+      "fired": true,
+      "transition": "Climb",
+      "marking_version": "<version>",
+      "running": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "inject",
+    "params": {
+     "place": "Level 1",
+     "port": "Lobby",
+     "token": {
+      "name": "Bram",
+      "fought": false
+     }
+    }
+   },
+   "expect": [
+    {
+     "method": "added",
+     "params": {
+      "place": "Level 1",
+      "port": "Lobby",
+      "id": "<id:level_1_bram>",
+      "label": "<label>",
+      "subnet_marking_versions": {
+       "Level 1": "<version>"
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "nested",
+     "params": {
+      "path": [
+       {
+        "place": "Level 1"
+       }
+      ],
+      "nested_id": "<id:level_1>",
+      "event": {
+       "method": "fireable",
+       "params": {
+        "transitions": [
+         "Walk In"
+        ],
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "14",
+     "result": {
+      "status": "injected",
+      "id": "<id:level_1_bram>",
+      "marking_version": "<version>"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "inject",
+    "params": {
+     "place": "Exit Hall",
+     "path": [
+      {
+       "place": "Level 2"
+      }
+     ],
+     "token": {
+      "name": "Cato",
+      "fought": true
+     }
+    }
+   },
+   "expect": [
+    {
+     "method": "nested",
+     "params": {
+      "path": [
+       {
+        "place": "Level 2"
+       }
+      ],
+      "nested_id": "<id:level_2>",
+      "event": {
+       "method": "added",
+       "params": {
+        "place": "Exit Hall",
+        "id": "<id:level_2_cato>",
+        "label": "<label>",
+        "outer_marking_version": "<version>",
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "fireable",
+     "params": {
+      "transitions": [
+       "Leave"
+      ],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "15",
+     "result": {
+      "status": "injected",
+      "id": "<id:level_2_cato>",
+      "marking_version": "<version>",
+      "path": [
+       {
+        "place": "Level 2"
+       }
+      ],
+      "nested_id": "<id:level_2>"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "query"
+   },
+   "expect": [
+    {
+     "id": "16",
+     "result": {
+      "marking_version": "<version>",
+      "count": 3,
+      "matches": [
+       {
+        "place": "Level 1",
+        "port": "Lobby",
+        "token": {
+         "id": "<id:level_1_bram>",
+         "label": "<label>"
+        },
+        "json": {
+         "name": "Bram",
+         "fought": false
+        }
+       },
+       {
+        "place": "Level 2",
+        "port": "Lobby",
+        "token": {
+         "id": "<id:level_2_ada>",
+         "label": "<label>"
+        },
+        "json": {
+         "name": "Ada",
+         "fought": true
+        }
+       },
+       {
+        "place": "Level 2",
+        "port": "Exit Hall",
+        "token": {
+         "id": "<id:level_2_cato>",
+         "label": "<label>"
+        },
+        "json": {
+         "name": "Cato",
+         "fought": true
+        }
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "get_place_tokens",
+    "params": {
+     "place": "Level 1"
+    }
+   },
+   "expect": [
+    {
+     "id": "17",
+     "error": {
+      "message": "<label>",
+      "code": "invalid_params"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "inject",
+    "params": {
+     "place": "Level 1",
+     "port": "Arena",
+     "token": {
+      "name": "Dara",
+      "fought": false
+     }
+    }
+   },
+   "expect": [
+    {
+     "id": "18",
+     "error": {
+      "message": "<label>",
+      "code": "unknown_place"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "get_place_tokens",
+    "params": {
+     "place": "Door",
+     "port": "Lobby"
+    }
+   },
+   "expect": [
+    {
+     "id": "19",
+     "error": {
+      "message": "<label>",
+      "code": "unknown_place"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "get_log"
+   },
+   "expect": [
+    {
+     "id": "20",
+     "result": {
+      "entries": [
+       {
+        "seq": 1,
+        "transition": "Enter",
+        "started_at": "<time>",
+        "duration_ms": "<ms>",
+        "outcome": "fired",
+        "consumed": [
+         [
+          "Door",
+          "<id:ada>"
+         ]
+        ],
+        "produced": [
+         [
+          {
+           "place": "Level 1",
+           "port": "Lobby"
+          },
+          "<id:level_1_ada>"
+         ]
+        ]
+       },
+       {
+        "seq": 2,
+        "transition": "Walk In",
+        "started_at": "<time>",
+        "duration_ms": "<ms>",
+        "outcome": "fired",
+        "consumed": [
+         [
+          "Lobby",
+          "<id:level_1_ada>"
+         ]
+        ],
+        "produced": [
+         [
+          "Arena",
+          "<id:level_1_ada_arena>"
+         ]
+        ],
+        "path": [
+         {
+          "place": "Level 1"
+         }
+        ],
+        "nested_id": "<id:level_1>"
+       },
+       {
+        "seq": 3,
+        "transition": "Fight",
+        "started_at": "<time>",
+        "duration_ms": "<ms>",
+        "outcome": "fired",
+        "consumed": [
+         [
+          "Arena",
+          "<id:level_1_ada_arena>"
+         ]
+        ],
+        "produced": [
+         [
+          "Arena",
+          "<id:level_1_ada_arena_2>"
+         ]
+        ],
+        "path": [
+         {
+          "place": "Level 1"
+         }
+        ],
+        "nested_id": "<id:level_1>"
+       },
+       {
+        "seq": 4,
+        "transition": "Win",
+        "started_at": "<time>",
+        "duration_ms": "<ms>",
+        "outcome": "fired",
+        "consumed": [
+         [
+          "Arena",
+          "<id:level_1_ada_arena_2>"
+         ]
+        ],
+        "produced": [
+         [
+          "Exit Hall",
+          "<id:level_1_ada_exit_hall>"
+         ]
+        ],
+        "path": [
+         {
+          "place": "Level 1"
+         }
+        ],
+        "nested_id": "<id:level_1>"
+       },
+       {
+        "seq": 5,
+        "transition": "Climb",
+        "started_at": "<time>",
+        "duration_ms": "<ms>",
+        "outcome": "fired",
+        "consumed": [
+         [
+          {
+           "place": "Level 1",
+           "port": "Exit Hall"
+          },
+          "<id:level_1_ada_exit_hall>"
+         ]
+        ],
+        "produced": [
+         [
+          {
+           "place": "Level 2",
+           "port": "Lobby"
+          },
+          "<id:level_2_ada>"
+         ]
+        ]
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "reset"
+   },
+   "expect": [
+    {
+     "method": "reloaded",
+     "params": {
+      "generation": 2,
+      "reason": "reset",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "21",
+     "result": {
+      "status": "reset",
+      "generation": 2,
+      "marking_version": "<version>"
+     }
+    }
+   ]
+  }
+ ]
+}

@@ -1,6 +1,6 @@
 //! The state machine at the heart of the runner (DESIGN §19.3.2–§19.3.6,
-//! §19.3.11 for nested nets, and §19.3.12 for keys, queries and the
-//! connection's projection).
+//! §19.3.11 for nested nets, §19.3.12 for keys, queries and the
+//! connection's projection, and §19.3.17 for subnet places).
 //!
 //! [`Owner`] owns the registry and the loaded net and turns each [`Input`]
 //! into the [`Outgoing`] lines and firings it causes. It creates no threads,
@@ -16,16 +16,17 @@ use std::time::{Duration, SystemTime};
 
 use petritype::control::Pressed;
 use petritype::{
-    BodyPanicked, Completed, Event, Filter, Firing, FiringFailed, JsonCommand, Net, NetError,
-    NetId, PlaceId, StagedStep, TokenId, Topology, TransitionId,
+    BodyPanicked, Command, Completed, Event, Filter, Firing, FiringFailed, JsonCommand, Net,
+    NetError, NetId, PlaceId, StagedStep, TokenId, Topology, TransitionId,
 };
 use serde_json::{Map, Value, json};
 
 use crate::errors::{CoreError, code_of};
-use crate::projection::{Projection, Seen};
+use crate::projection::{Lens, Projection, Seen, SubnetLens};
 use crate::protocol::{
     self, Describe, DistinctResult, ErrorCode, HiddenKind, LogEntry, Notification, PathStep,
-    PlaceTokens, QueryMatch, QueryResult, Request, Response, State, TokenBody, TokenValue,
+    PlaceEntry, PlaceMarking, PlaceName, PlaceTokens, QueryMatch, QueryResult, Request, Response,
+    State, SubnetEntry, SubnetMarking, TokenBody, TokenValue,
 };
 use crate::registry::{Hosting, LoadError, NetEntry, Params};
 use crate::time::iso8601;
@@ -231,6 +232,52 @@ struct Loaded {
     /// while `set_filter` has set one. A generation's own: `load` and
     /// `reset` clear it.
     projection: Option<Projection>,
+    /// The loaded net's subnet places (PROTOCOL.md §12.7).
+    seats: Vec<Seat>,
+}
+
+/// One subnet place of a net, as the owner keeps it (PROTOCOL.md §12.7):
+/// the place, its subnet's nested id, and the places the net has for the
+/// subnet's ports, its *windows* (DESIGN §6.7), each with the port's own id
+/// in the subnet. A subnet lives as long as its net, so a net's seats never
+/// change.
+#[derive(Debug, Clone)]
+struct Seat {
+    place: PlaceId,
+    id: NetId,
+    windows: Vec<(PlaceId, PlaceId)>,
+}
+
+/// The subnet places of `net`, in declaration order.
+fn seats_of(net: &Net) -> Vec<Seat> {
+    net.places()
+        .filter(|(_, info)| info.subnet)
+        .filter_map(|(place, _)| {
+            let subnet = net.subnet(place)?;
+            let windows = net
+                .places()
+                .filter(|(_, info)| info.port_of == Some(place))
+                .filter_map(|(window, info)| Some((window, subnet.place_named(info.name)?)))
+                .collect();
+            Some(Seat {
+                place,
+                id: subnet.id(),
+                windows,
+            })
+        })
+        .collect()
+}
+
+/// The net around a subnet: the net that holds its subnet place, which
+/// sees the subnet's ports too, so that a change of one moves its version
+/// as well (PROTOCOL.md §12.7). It never changes: a subnet lives in its
+/// net for that net's whole life.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Around {
+    /// The loaded net.
+    Loaded,
+    /// An inner net, by its nested id.
+    Inner(NetId),
 }
 
 /// What the runner keeps about one inner net (PROTOCOL.md §12.3,
@@ -241,7 +288,9 @@ struct Loaded {
 /// request names it, or when one of its events arrives)
 /// and dropped at the first landing (or inner firing) after which its
 /// nested id no longer resolves: the token that held it was consumed and
-/// not put back.
+/// not put back. A subnet's record lives as long as the net around it
+/// (PROTOCOL.md §12.7): for the loaded net's subnets, from `load` or
+/// `reset` until the next.
 struct Inner {
     /// Its own version: 0 when first seen, one more per state notification
     /// of this net. Never the outer net's.
@@ -261,13 +310,18 @@ struct Inner {
     /// The connection's projection of this net, while `set_filter` named it
     /// and set one (PROTOCOL.md §13.4); it goes with the record.
     projection: Option<Projection>,
+    /// Its subnet places, empty while `topology` is `None`.
+    seats: Vec<Seat>,
+    /// For a subnet, the net around it; `None` for a net a token carries.
+    around: Option<Around>,
 }
 
 impl Inner {
-    /// A record for `net`, found at `path`. `silent` records its fireable
-    /// set as already known, as a `load` does for the outer net; otherwise
-    /// the first non-empty set is announced.
-    fn new(net: Option<&Net>, path: Vec<PathStep>, silent: bool) -> Inner {
+    /// A record for `net`, found at `path`, a subnet of the net `around`
+    /// says or a token's net for `None`. `silent` records its fireable set
+    /// as already known, as a `load` does for the outer net; otherwise the
+    /// first non-empty set is announced.
+    fn new(net: Option<&Net>, path: Vec<PathStep>, silent: bool, around: Option<Around>) -> Inner {
         let mut inner = Inner {
             marking_version: 0,
             topology: None,
@@ -277,6 +331,8 @@ impl Inner {
             template: None,
             last_path: path,
             projection: None,
+            seats: Vec::new(),
+            around,
         };
         if let Some(net) = net {
             inner.see(net);
@@ -294,7 +350,13 @@ impl Inner {
             self.names = Names::new(&topology);
             self.topology = Some(topology);
             self.template = net.template().map(str::to_owned);
+            self.seats = seats_of(net);
         }
+    }
+
+    /// Whether this net is a subnet, whose ports the net around it sees.
+    fn is_subnet(&self) -> bool {
+        self.around.is_some()
     }
 }
 
@@ -308,6 +370,7 @@ struct Logged {
 
 /// The one firing that is airborne, or running inline.
 struct InFlight {
+    transition: TransitionId,
     name: String,
     started_at: SystemTime,
     /// The `step` request waiting for this firing to land, if one launched it.
@@ -355,14 +418,19 @@ type Args = Map<String, Value>;
 
 // ----- addressing inner nets (PROTOCOL.md §12.1) ------------------------------
 
-/// One step down from a net to one of its inner nets: the nested place, the
-/// token in it, and which of the token's nets, by its position in
-/// `Nested::nets` (names need not be unique; positions are).
+/// One step down from a net to one of its inner nets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct Level {
-    place: PlaceId,
-    token: TokenId,
-    index: usize,
+enum Level {
+    /// A net a token carries: the nested place, the token in it, and which
+    /// of the token's nets, by its position in `Nested::nets` (names need
+    /// not be unique; positions are).
+    Token {
+        place: PlaceId,
+        token: TokenId,
+        index: usize,
+    },
+    /// The subnet of a subnet place.
+    Subnet { place: PlaceId },
 }
 
 /// An inner net found in the live marking: how to get there, its path as the
@@ -389,14 +457,16 @@ type Visit<'v, 'a, R> = dyn FnMut(&[Level], &[PathStep], &str, &'a Net) -> Optio
 type Pairs = Vec<(PlaceId, TokenId)>;
 
 /// Calls `visit` with every inner net below `net`, at every depth and in
-/// passive places too, in walk order (nested places in place order, tokens
+/// passive places too, in walk order (places in declaration order, a
+/// subnet place's subnet at its place's position, a nested place's tokens
 /// oldest first, a token's nets in order, a net's own inner nets straight
 /// after it), until `visit` answers `Some`. `levels` and `path` are the way
 /// down to `net`, empty for the loaded net, and are left as they were.
 ///
 /// A place a net has for a port of one of its subnet places is not walked:
 /// the nets of a port's tokens are reached through the subnet (PROTOCOL.md
-/// §12.1), and subnet places are not served yet.
+/// §12.1), whose own place the port is. A subnet's name, as `visit` is
+/// given it, is its subnet place's.
 fn walk<'a, R>(
     net: &'a Net,
     levels: &mut Vec<Level>,
@@ -404,7 +474,22 @@ fn walk<'a, R>(
     visit: &mut Visit<'_, 'a, R>,
 ) -> Option<R> {
     for (place, info) in net.places() {
-        if !info.nested || info.port_of.is_some() {
+        if info.port_of.is_some() {
+            continue;
+        }
+        if let Some(subnet) = net.subnet(place).filter(|_| info.subnet) {
+            levels.push(Level::Subnet { place });
+            path.push(translate::subnet_step(info.name));
+            let found = visit(levels, path, info.name, subnet)
+                .or_else(|| walk(subnet, levels, path, visit));
+            path.pop();
+            levels.pop();
+            if found.is_some() {
+                return found;
+            }
+            continue;
+        }
+        if !info.nested {
             continue;
         }
         for (token, _) in net.tokens(place) {
@@ -412,7 +497,7 @@ fn walk<'a, R>(
                 continue;
             };
             for (index, (name, inner)) in nets.into_iter().enumerate() {
-                levels.push(Level {
+                levels.push(Level::Token {
                     place,
                     token,
                     index,
@@ -452,16 +537,19 @@ fn find(outer: &Net, wanted: impl Fn(&Net) -> bool) -> Option<(Found, &Net)> {
     })
 }
 
-/// The name of the first subnet place in `net`, or in a net its tokens
-/// hold at any depth. A `load` of such a net is refused for now: subnet
-/// places come to the wire in a later step of this runner.
-fn first_subnet_place(net: &Net) -> Option<String> {
-    let own = |net: &Net| {
-        net.places()
-            .find(|(_, info)| info.subnet)
-            .map(|(_, info)| info.name.to_owned())
-    };
-    own(net).or_else(|| walk_all(net, &mut |_, _, _, inner| own(inner)))
+/// The net around the net `levels` lead to from `outer`, when the last
+/// level is into a subnet; `None` for the loaded net and for a net a token
+/// carries.
+fn around_of(outer: &Net, levels: &[Level]) -> Option<Around> {
+    let (last, above) = levels.split_last()?;
+    if !matches!(last, Level::Subnet { .. }) {
+        return None;
+    }
+    Some(if above.is_empty() {
+        Around::Loaded
+    } else {
+        Around::Inner(descend(outer, above)?.id())
+    })
 }
 
 /// The inner net a request's path names (PROTOCOL.md §12.1), resolved one
@@ -495,13 +583,9 @@ fn resolve_path<'a>(
 }
 
 /// One step of a path down from `net` (PROTOCOL.md §12.1): the level it
-/// takes, the net it reaches and that net's name in its token, or why it
-/// names no live net. Names are compared exactly as given, and a token id
-/// only in its canonical form.
-///
-/// A step of the subnet form names the subnet of a subnet place, which this
-/// runner does not serve yet, so it reaches no net: when subnet places come
-/// to the wire, that arm takes a level into the subnet.
+/// takes, the net it reaches and that net's name (in its token, or for a
+/// subnet its subnet place's), or why it names no live net. Names are
+/// compared exactly as given, and a token id only in its canonical form.
 fn descend_step<'a, 's>(
     net: &'a Net,
     step: &'s PathStep,
@@ -518,7 +602,7 @@ fn descend_step<'a, 's>(
                 .ok_or_else(|| format!("no place named {place_name:?}"))?;
             if info.subnet {
                 return Err(format!(
-                    "{place_name:?} is a subnet place, which a step names by its place alone"
+                    "place {place_name:?} is a subnet place, whose step names the place alone"
                 ));
             }
             if !info.nested {
@@ -534,56 +618,93 @@ fn descend_step<'a, 's>(
                 .ok_or_else(|| {
                     format!("token {token:?} in {place_name:?} holds no net named {wanted:?}")
                 })?;
-            let level = Level {
+            let level = Level::Token {
                 place,
                 token: token_id,
                 index,
             };
             Ok((level, nets[index].1, wanted))
         }
-        PathStep::Subnet { place } => {
-            Err(match net.place_named(place).and_then(|id| net.subnet(id)) {
-                Some(_) => {
-                    format!("{place:?} is a subnet place, which this runner does not serve yet")
-                }
-                None => format!("no subnet place named {place:?}"),
-            })
+        PathStep::Subnet { place: place_name } => {
+            let place = net
+                .place_named(place_name)
+                .ok_or_else(|| format!("no place named {place_name:?}"))?;
+            let subnet = net
+                .subnet(place)
+                .ok_or_else(|| format!("place {place_name:?} is not a subnet place"))?;
+            Ok((Level::Subnet { place }, subnet, place_name))
         }
     }
 }
 
 /// The net `levels` lead to from `net`, as the marking stands.
 fn descend<'a>(net: &'a Net, levels: &[Level]) -> Option<&'a Net> {
-    levels.iter().try_fold(net, |here, level| {
-        here.nested(level.place, level.token)?
+    levels.iter().try_fold(net, |here, level| match *level {
+        Level::Token {
+            place,
+            token,
+            index,
+        } => here
+            .nested(place, token)?
             .into_iter()
-            .nth(level.index)
-            .map(|(_, inner)| inner)
+            .nth(index)
+            .map(|(_, inner)| inner),
+        Level::Subnet { place } => here.subnet(place),
     })
 }
 
 /// Calls `f` with the net `levels` lead to, mutably, through
-/// `Net::nested_scope` at every level, so that what `f` did there is lifted
-/// level by level into the outer log as each scope closes. `None` if the
-/// levels lead nowhere.
+/// `Net::nested_scope` or `Net::subnet_scope` at every level, so that what
+/// `f` did there is lifted level by level into the outer log as each scope
+/// closes. `None` if the levels lead nowhere, or into a subnet held still
+/// while a firing on one of its ports is in flight.
 fn descend_mut<R>(net: &mut Net, levels: &[Level], f: impl FnOnce(&mut Net) -> R) -> Option<R> {
     let Some((level, rest)) = levels.split_first() else {
         return Some(f(net));
     };
-    net.nested_scope(level.place, level.token, |nets| {
-        let (_, inner) = nets.get_mut(level.index)?;
-        descend_mut(inner, rest, f)
-    })
-    .flatten()
+    match *level {
+        Level::Token {
+            place,
+            token,
+            index,
+        } => net
+            .nested_scope(place, token, |nets| {
+                let (_, inner) = nets.get_mut(index)?;
+                descend_mut(inner, rest, f)
+            })
+            .flatten(),
+        Level::Subnet { place } => net
+            .subnet_scope(place, |subnet| descend_mut(subnet, rest, f))
+            .ok()
+            .flatten(),
+    }
+}
+
+/// Whether an event was lifted out of an inner net: out of a token's net
+/// (`Event::Nested`) or out of a subnet (`Event::Subnet`).
+fn is_lifted(event: &Event) -> bool {
+    matches!(event, Event::Nested { .. } | Event::Subnet { .. })
+}
+
+/// One level an event was lifted through.
+#[derive(Debug, Clone, Copy)]
+struct LiftLevel<'e> {
+    /// The place in the net above: a nested place, or a subnet place.
+    place: PlaceId,
+    /// The token in it as it was when the event was lifted; `None` for a
+    /// subnet place, which holds a net and no tokens.
+    token: Option<TokenId>,
+    /// The net's name in the token; `""` for a subnet.
+    net: &'e str,
+    /// Its nested id.
+    id: NetId,
 }
 
 /// An event lifted out of an inner net, unwrapped down to the net it
 /// happened in: one wrapper on the wire whatever the depth (§12.4).
 struct Lifted<'e> {
-    /// Per level, outer to inner: the place and token in the net above as
-    /// they were when the event was lifted, the net's name in the token,
-    /// and its nested id.
-    levels: Vec<(PlaceId, TokenId, &'e str, NetId)>,
+    /// Per level, outer to inner.
+    levels: Vec<LiftLevel<'e>>,
     /// What the innermost net logged.
     event: &'e Event,
 }
@@ -592,40 +713,93 @@ impl<'e> Lifted<'e> {
     /// `None` for an event of the outer net itself.
     fn of(mut event: &'e Event) -> Option<Lifted<'e>> {
         let mut levels = Vec::new();
-        while let Event::Nested {
-            place,
-            token,
-            net,
-            nested_id,
-            event: inner,
-        } = event
-        {
-            levels.push((*place, *token, net.as_str(), *nested_id));
-            event = inner;
+        loop {
+            match event {
+                Event::Nested {
+                    place,
+                    token,
+                    net,
+                    nested_id,
+                    event: inner,
+                } => {
+                    levels.push(LiftLevel {
+                        place: *place,
+                        token: Some(*token),
+                        net: net.as_str(),
+                        id: *nested_id,
+                    });
+                    event = inner;
+                }
+                Event::Subnet {
+                    place,
+                    nested_id,
+                    event: inner,
+                } => {
+                    levels.push(LiftLevel {
+                        place: *place,
+                        token: None,
+                        net: "",
+                        id: *nested_id,
+                    });
+                    event = inner;
+                }
+                _ => break,
+            }
         }
         (!levels.is_empty()).then_some(Lifted { levels, event })
     }
 
     /// The nested id of the net the event happened in.
     fn nested_id(&self) -> NetId {
-        self.levels.last().expect("a lifted event has a level").3
+        self.levels.last().expect("a lifted event has a level").id
     }
 
     fn chain(&self) -> Vec<NetId> {
-        self.levels.iter().map(|level| level.3).collect()
+        self.levels.iter().map(|level| level.id).collect()
     }
 
     /// The net it happened in, if its token is where the event says, at
     /// every level: not while a body holds it, nor once it is gone.
     fn live<'a>(&self, outer: &'a Net) -> Option<&'a Net> {
-        self.levels
-            .iter()
-            .try_fold(outer, |here, &(place, token, _, id)| {
-                here.nested(place, token)?
+        self.levels.iter().try_fold(outer, |here, level| {
+            let found = match level.token {
+                Some(token) => here
+                    .nested(level.place, token)?
                     .into_iter()
-                    .find(|(_, inner)| inner.id() == id)
-                    .map(|(_, inner)| inner)
-            })
+                    .find(|(_, inner)| inner.id() == level.id)
+                    .map(|(_, inner)| inner),
+                None => here.subnet(level.place),
+            };
+            found.filter(|inner| inner.id() == level.id)
+        })
+    }
+}
+
+/// The places a state notification made of `event` changed, as its own net
+/// names them (PROTOCOL.md §12.7): what a firing took or put, what a failed
+/// one put back when it restored, and the place of a token that was added,
+/// removed or mutated. What happened counts, not what a connection's filter
+/// lets the notification list, and a read edge, or a drain of an empty
+/// place, takes nothing.
+fn changed_places(event: &Event) -> Vec<PlaceId> {
+    let places = |pairs: &[(PlaceId, TokenId)]| pairs.iter().map(|&(place, _)| place).collect();
+    match event {
+        Event::Fired {
+            consumed, produced, ..
+        } => [places(consumed), places(produced)].concat(),
+        Event::Launched { consumed, .. } => places(consumed),
+        Event::Distributed { produced, .. } => places(produced),
+        Event::Failed {
+            consumed,
+            restored: true,
+            ..
+        } => places(consumed),
+        Event::Added { place, .. }
+        | Event::Removed { place, .. }
+        | Event::Mutated { place, .. } => {
+            vec![*place]
+        }
+        _ => Vec::new(),
     }
 }
 
@@ -744,7 +918,7 @@ fn produced(
         None => tokens
             .iter()
             .map(|&(place, token)| protocol::Produced {
-                place: names.place(place),
+                place: names.place_name(place),
                 id: token.to_string(),
                 label: String::new(),
                 color: None,
@@ -755,73 +929,97 @@ fn produced(
 }
 
 /// A token event (`Added`, `Removed` or `Mutated`) as the notification the
-/// connection is told (PROTOCOL.md §7.1, §13.4), through `projection` when
-/// the net has one: a token the filter hides is told of as `hidden`, and a
+/// connection is told (PROTOCOL.md §7.1, §13.4), through the projections
+/// `lens` holds: a token the filter hides is told of as `hidden`, and a
 /// mutation that carries a token across the filter's boundary as an `added`
-/// or a `removed`, in place of its `mutated`. `net` is the net it happened
-/// in, `None` when it cannot be read. `None` for any other event.
+/// or a `removed`, in place of its `mutated`. A port of one of the net's
+/// subnet places is named by the pair and projected by its subnet's filter
+/// (§12.7). `net` is the net it happened in, `None` when it cannot be read.
+/// `None` for any other event.
 fn token_line(
     names: &Names,
     net: Option<&Net>,
-    projection: Option<&mut Projection>,
+    lens: &mut Lens,
     event: &Event,
     marking_version: u64,
     running: bool,
 ) -> Option<Notification> {
     let keys = |place, token| net.and_then(|net| translate::keys(net, place, token));
-    let hidden = |kind, place| Notification::Hidden {
-        kind,
-        place: names.place(place),
-        marking_version,
-        running,
+    let hidden = |kind, place| {
+        let (place, port) = names.split(place);
+        Notification::Hidden {
+            kind,
+            place,
+            port,
+            subnet_marking_versions: None,
+            outer_marking_version: None,
+            marking_version,
+            running,
+        }
     };
-    let added = |place, token: TokenId| Notification::Added {
-        place: names.place(place),
-        id: token.to_string(),
-        label: net.map_or_else(String::new, |net| translate::label(net, place, token)),
-        color: net.and_then(|net| translate::color(net, place, token)),
-        keys: keys(place, token),
-        marking_version,
-        running,
+    let added = |place, token: TokenId| {
+        let (where_, port) = names.split(place);
+        Notification::Added {
+            place: where_,
+            port,
+            id: token.to_string(),
+            label: net.map_or_else(String::new, |net| translate::label(net, place, token)),
+            color: net.and_then(|net| translate::color(net, place, token)),
+            keys: keys(place, token),
+            subnet_marking_versions: None,
+            outer_marking_version: None,
+            marking_version,
+            running,
+        }
     };
-    let removed = |place, token: TokenId| Notification::Removed {
-        place: names.place(place),
-        id: token.to_string(),
-        marking_version,
-        running,
+    let removed = |place, token: TokenId| {
+        let (place, port) = names.split(place);
+        Notification::Removed {
+            place,
+            port,
+            id: token.to_string(),
+            subnet_marking_versions: None,
+            outer_marking_version: None,
+            marking_version,
+            running,
+        }
     };
     Some(match *event {
         Event::Added { place, token } => {
-            if projection.is_none_or(|p| p.arrived(net, place, token)) {
+            if lens.arrived(net, place, token) {
                 added(place, token)
             } else {
                 hidden(HiddenKind::Added, place)
             }
         }
         Event::Removed { place, token } => {
-            if projection.is_none_or(|p| p.left(place, token)) {
+            if lens.left(place, token) {
                 removed(place, token)
             } else {
                 hidden(HiddenKind::Removed, place)
             }
         }
-        Event::Mutated { place, token } => {
-            match projection.map_or(Seen::Mutated, |p| p.changed(net, place, token)) {
-                Seen::Mutated => Notification::Mutated {
-                    place: names.place(place),
+        Event::Mutated { place, token } => match lens.changed(net, place, token) {
+            Seen::Mutated => {
+                let (where_, port) = names.split(place);
+                Notification::Mutated {
+                    place: where_,
+                    port,
                     id: token.to_string(),
                     label: net
                         .and_then(|net| net.debug(place, token))
                         .map(translate::cut),
                     keys: keys(place, token),
+                    subnet_marking_versions: None,
+                    outer_marking_version: None,
                     marking_version,
                     running,
-                },
-                Seen::Added => added(place, token),
-                Seen::Removed => removed(place, token),
-                Seen::Hidden => hidden(HiddenKind::Mutated, place),
+                }
             }
-        }
+            Seen::Added => added(place, token),
+            Seen::Removed => removed(place, token),
+            Seen::Hidden => hidden(HiddenKind::Mutated, place),
+        },
         _ => return None,
     })
 }
@@ -829,7 +1027,8 @@ fn token_line(
 /// The lines that tell a connection which tokens went out of its view and
 /// which came into it although none of them moved (PROTOCOL.md §13.4): a
 /// `removed` for each of `gone`, then an `added` for each of `came`, each a
-/// state notification stamped from `version` upward.
+/// state notification stamped from `version` upward, beside the place it
+/// changed.
 fn view_lines(
     names: &Names,
     net: &Net,
@@ -837,54 +1036,63 @@ fn view_lines(
     came: &[(PlaceId, TokenId)],
     version: &mut u64,
     running: bool,
-) -> Vec<Notification> {
+) -> Vec<(PlaceId, Notification)> {
     let mut lines = Vec::with_capacity(gone.len() + came.len());
     for &(place, token) in gone {
         *version += 1;
-        lines.push(Notification::Removed {
-            place: names.place(place),
-            id: token.to_string(),
-            marking_version: *version,
-            running,
-        });
+        let (where_, port) = names.split(place);
+        lines.push((
+            place,
+            Notification::Removed {
+                place: where_,
+                port,
+                id: token.to_string(),
+                subnet_marking_versions: None,
+                outer_marking_version: None,
+                marking_version: *version,
+                running,
+            },
+        ));
     }
     for &(place, token) in came {
         *version += 1;
-        lines.push(Notification::Added {
-            place: names.place(place),
-            id: token.to_string(),
-            label: translate::label(net, place, token),
-            color: translate::color(net, place, token),
-            keys: translate::keys(net, place, token),
-            marking_version: *version,
-            running,
-        });
+        let (where_, port) = names.split(place);
+        lines.push((
+            place,
+            Notification::Added {
+                place: where_,
+                port,
+                id: token.to_string(),
+                label: translate::label(net, place, token),
+                color: translate::color(net, place, token),
+                keys: translate::keys(net, place, token),
+                subnet_marking_versions: None,
+                outer_marking_version: None,
+                marking_version: *version,
+                running,
+            },
+        ));
     }
     lines
 }
 
 /// The tokens one firing event names, as the connection is told of them:
 /// what `consumed` it took (moved out of view, kept for a restore) and what
-/// `produced` it placed, through `projection` when the net has one, every
-/// one of them when it has none. `landed` says the firing ended with this
-/// event.
+/// `produced` it placed, through the projections `lens` holds, every one of
+/// them where none covers its place. `landed` says the firing ended with
+/// this event.
 fn firing_tokens(
-    projection: Option<&mut Projection>,
+    lens: &mut Lens,
     net: Option<&Net>,
     consumed: &[(PlaceId, TokenId)],
     produced: &[(PlaceId, TokenId)],
     landed: bool,
 ) -> (Pairs, Pairs) {
-    match projection {
-        None => (consumed.to_vec(), produced.to_vec()),
-        Some(projection) => {
-            let consumed = projection.took(consumed);
-            if landed {
-                projection.landed();
-            }
-            (consumed, projection.placed(net, produced))
-        }
+    let consumed = lens.took(consumed);
+    if landed {
+        lens.landed();
     }
+    (consumed, lens.placed(net, produced))
 }
 
 impl Loaded {
@@ -892,8 +1100,10 @@ impl Loaded {
     /// taken silently: what `load` and `reset` start from.
     fn know_all(&mut self) {
         let mut seen = Vec::new();
-        walk_all(&self.net, &mut |_, path, _, net| {
-            seen.push((net.id(), Inner::new(Some(net), path.to_vec(), true)));
+        let outer = &self.net;
+        walk_all(outer, &mut |levels, path, _, net| {
+            let around = around_of(outer, levels);
+            seen.push((net.id(), Inner::new(Some(net), path.to_vec(), true, around)));
             None::<()>
         });
         self.inner.extend(seen);
@@ -906,9 +1116,11 @@ impl Loaded {
     /// are.
     fn know_new(&mut self) {
         let mut seen = Vec::new();
-        walk_all(&self.net, &mut |_, path, _, net| {
+        let outer = &self.net;
+        walk_all(outer, &mut |levels, path, _, net| {
             if !self.inner.contains_key(&net.id()) {
-                seen.push((net.id(), Inner::new(Some(net), path.to_vec(), true)));
+                let around = around_of(outer, levels);
+                seen.push((net.id(), Inner::new(Some(net), path.to_vec(), true, around)));
             }
             None::<()>
         });
@@ -966,10 +1178,133 @@ impl Loaded {
                 inner.last_path.clone_from(&found.path);
             }
             None => {
-                self.inner
-                    .insert(found.nested_id, Inner::new(net, found.path.clone(), true));
+                let around = around_of(&self.net, &found.levels);
+                self.inner.insert(
+                    found.nested_id,
+                    Inner::new(net, found.path.clone(), true, around),
+                );
             }
         }
+    }
+
+    /// The projections one event of the net `of` (the loaded net for
+    /// `None`) goes through, taken out of their records: the net's own, and
+    /// each of its subnets', for the places it has for their ports
+    /// (PROTOCOL.md §12.7). [`restore`](Loaded::restore) puts them back.
+    fn lens(&mut self, of: Option<NetId>) -> Lens {
+        let (own, seats) = match of {
+            None => (self.projection.take(), self.seats.clone()),
+            Some(id) => self.inner.get_mut(&id).map_or((None, Vec::new()), |inner| {
+                (inner.projection.take(), inner.seats.clone())
+            }),
+        };
+        let subnets = seats
+            .into_iter()
+            .map(|seat| SubnetLens {
+                place: seat.place,
+                id: seat.id,
+                projection: self
+                    .inner
+                    .get_mut(&seat.id)
+                    .and_then(|inner| inner.projection.take()),
+                windows: seat.windows,
+            })
+            .collect();
+        Lens { own, subnets }
+    }
+
+    /// Puts back the projections [`lens`](Loaded::lens) took.
+    fn restore(&mut self, of: Option<NetId>, lens: Lens) {
+        match of {
+            None => self.projection = lens.own,
+            Some(id) => {
+                if let Some(inner) = self.inner.get_mut(&id) {
+                    inner.projection = lens.own;
+                }
+            }
+        }
+        for subnet in lens.subnets {
+            if let Some(inner) = self.inner.get_mut(&subnet.id) {
+                inner.projection = subnet.projection;
+            }
+        }
+    }
+
+    /// Raises the versions on the far side of the port places a state
+    /// notification of the net `of` (the loaded net for `None`) changed,
+    /// `changed` being the places it changed as that net names them, and
+    /// says what they became (PROTOCOL.md §12.7): for each subnet place one
+    /// of whose windows changed, its subnet's new version, by the subnet
+    /// place's name, the notification's `subnet_marking_versions`; and when
+    /// `of` is a subnet and one of its own ports changed, the new version of
+    /// the net around it, its `outer_marking_version`, which for the loaded
+    /// net is `loaded_version`. Each net moves once, however many of its
+    /// ports changed, and is touched, so that its fireable set is compared.
+    /// The caller has raised `of`'s own version.
+    fn cross(
+        &mut self,
+        of: Option<NetId>,
+        changed: &[PlaceId],
+        loaded_version: &mut u64,
+    ) -> (Option<BTreeMap<String, u64>>, Option<u64>) {
+        if changed.is_empty() {
+            return (None, None);
+        }
+        let (moved, around): (Vec<(String, NetId)>, Option<Around>) = {
+            let (seats, names, around, topology) = match of {
+                None => (&self.seats, &self.names, None, None),
+                Some(id) => match self.inner.get(&id) {
+                    Some(inner) => (
+                        &inner.seats,
+                        &inner.names,
+                        inner.around,
+                        inner.topology.as_ref(),
+                    ),
+                    None => return (None, None),
+                },
+            };
+            let moved = seats
+                .iter()
+                .filter(|seat| seat.windows.iter().any(|(w, _)| changed.contains(w)))
+                .map(|seat| (names.place(seat.place), seat.id))
+                .collect();
+            let own_port = topology.is_some_and(|topology| {
+                topology
+                    .places
+                    .iter()
+                    .any(|place| place.port && changed.contains(&place.id))
+            });
+            (moved, around.filter(|_| own_port))
+        };
+        let mut subnets = BTreeMap::new();
+        for (name, id) in moved {
+            let here = of.map_or(Around::Loaded, Around::Inner);
+            let inner = self
+                .inner
+                .entry(id)
+                .or_insert_with(|| Inner::new(None, Vec::new(), true, Some(here)));
+            inner.marking_version += 1;
+            subnets.insert(name, inner.marking_version);
+            self.touch(id);
+        }
+        let outer = match around {
+            None => None,
+            Some(Around::Loaded) => {
+                *loaded_version += 1;
+                Some(*loaded_version)
+            }
+            Some(Around::Inner(id)) => {
+                let version = self.inner.get_mut(&id).map(|inner| {
+                    inner.marking_version += 1;
+                    inner.marking_version
+                });
+                if version.is_some() {
+                    self.touch(id);
+                }
+                version
+            }
+        };
+        ((!subnets.is_empty()).then_some(subnets), outer)
     }
 
     /// Drops the records of inner nets whose nested ids no longer resolve:
@@ -1075,27 +1410,31 @@ impl Loaded {
     }
 
     /// The wire path of a lifted event: one step per level, the place's name
-    /// in the net above, the token and the net's name in the token. Makes a
-    /// record for each net on the way that has none.
+    /// in the net above, and for a token's net the token and the net's name
+    /// in the token. Makes a record for each net on the way that has none.
     fn lifted_path(&mut self, lifted: &Lifted<'_>) -> Vec<PathStep> {
         let mut path = Vec::with_capacity(lifted.levels.len());
-        for (depth, &(place, token, name, id)) in lifted.levels.iter().enumerate() {
+        for (depth, level) in lifted.levels.iter().enumerate() {
+            let place = level.place;
             let place_name = match depth {
                 0 => self.names.place(place),
                 _ => {
-                    let above = lifted.levels[depth - 1].3;
+                    let above = lifted.levels[depth - 1].id;
                     self.inner
                         .get(&above)
                         .map_or_else(|| place.to_string(), |inner| inner.names.place(place))
                 }
             };
-            path.push(translate::step(&place_name, token, name));
+            path.push(match level.token {
+                Some(token) => translate::step(&place_name, token, level.net),
+                None => translate::subnet_step(&place_name),
+            });
             let live = Lifted {
                 levels: lifted.levels[..=depth].to_vec(),
                 event: lifted.event,
             }
             .live(&self.net);
-            match self.inner.get_mut(&id) {
+            match self.inner.get_mut(&level.id) {
                 Some(inner) => {
                     if let Some(net) = live {
                         inner.see(net);
@@ -1103,7 +1442,12 @@ impl Loaded {
                     inner.last_path.clone_from(&path);
                 }
                 None => {
-                    self.inner.insert(id, Inner::new(live, path.clone(), false));
+                    let around = level.token.is_none().then(|| match depth {
+                        0 => Around::Loaded,
+                        _ => Around::Inner(lifted.levels[depth - 1].id),
+                    });
+                    self.inner
+                        .insert(level.id, Inner::new(live, path.clone(), false, around));
                 }
             }
         }
@@ -1113,32 +1457,38 @@ impl Loaded {
     /// One event lifted out of an inner net as the `nested` line the wire
     /// carries (PROTOCOL.md §12.4): the notification the inner net would
     /// send on its own, with its own names and version, inside one wrapper
-    /// with the full path and the outer net's version, unchanged. An inner
-    /// firing also gets its log entry and its net's progress here.
+    /// with the full path and the loaded net's version. An inner firing also
+    /// gets its log entry and its net's progress here.
+    ///
+    /// A change of a port place (§12.7) moves the versions on its far side
+    /// too ([`cross`](Loaded::cross)), which the inner notification
+    /// carries; when the loaded net is the net around the subnet that told
+    /// it, `loaded_version` moves, and the wrapper carries its new value.
     fn lift(
         &mut self,
         event: &Event,
-        outer_version: u64,
+        loaded_version: &mut u64,
         now: SystemTime,
         launched: &mut HashMap<NetId, Pairs>,
         firings: &mut Vec<InnerFiring>,
     ) -> Notification {
-        let lifted = Lifted::of(event).expect("lift is given a Nested event");
+        let lifted = Lifted::of(event).expect("lift is given a lifted event");
         let path = self.lifted_path(&lifted);
         let nested_id = lifted.nested_id();
         let running = self.running;
         self.touch(nested_id);
+        // The inner net's own projection, if `set_filter` named it, and its
+        // subnets' for its windows: its events are told through them,
+        // whatever the outer net's is.
+        let mut lens = self.lens(Some(nested_id));
         let live = lifted.live(&self.net);
         let inner = self
             .inner
-            .get_mut(&nested_id)
+            .get(&nested_id)
             .expect("lifted_path made the record");
         let names = &inner.names;
-        // The inner net's own projection, if `set_filter` named it: its
-        // events are told through it, whatever the outer net's is.
-        let mut projection = inner.projection.as_mut();
         let version = inner.marking_version + 1;
-        let notification = match lifted.event {
+        let mut notification = match lifted.event {
             // An inner firing is inline in the core (`step_deep`), so it is
             // one piece on the wire too.
             Event::Fired {
@@ -1146,13 +1496,14 @@ impl Loaded {
                 consumed,
                 produced: made,
             } => {
-                let (consumed, made) =
-                    firing_tokens(projection.as_deref_mut(), live, consumed, made, true);
+                let (consumed, made) = firing_tokens(&mut lens, live, consumed, made, true);
                 Notification::Fired {
                     transition: names.transition(*transition),
                     consumed: names.pairs(&consumed),
                     produced: produced(names, live, &made),
                     duration_ms: 0.0,
+                    subnet_marking_versions: None,
+                    outer_marking_version: None,
                     marking_version: version,
                     running,
                 }
@@ -1161,11 +1512,12 @@ impl Loaded {
                 transition,
                 consumed,
             } => {
-                let (consumed, _) =
-                    firing_tokens(projection.as_deref_mut(), live, consumed, &[], false);
+                let (consumed, _) = firing_tokens(&mut lens, live, consumed, &[], false);
                 Notification::Launched {
                     transition: names.transition(*transition),
                     consumed: names.pairs(&consumed),
+                    subnet_marking_versions: None,
+                    outer_marking_version: None,
                     marking_version: version,
                     running,
                 }
@@ -1174,11 +1526,13 @@ impl Loaded {
                 transition,
                 produced: made,
             } => {
-                let (_, made) = firing_tokens(projection.as_deref_mut(), live, &[], made, true);
+                let (_, made) = firing_tokens(&mut lens, live, &[], made, true);
                 Notification::Distributed {
                     transition: names.transition(*transition),
                     produced: produced(names, live, &made),
                     duration_ms: 0.0,
+                    subnet_marking_versions: None,
+                    outer_marking_version: None,
                     marking_version: version,
                     running,
                 }
@@ -1189,15 +1543,14 @@ impl Loaded {
                 restored,
                 error,
             } => {
-                let told = match projection.as_deref_mut() {
-                    Some(projection) => projection.failed(consumed, *restored),
-                    None => consumed.clone(),
-                };
+                let told = lens.failed(consumed, *restored);
                 Notification::Failed {
                     transition: names.transition(*transition),
                     error: error.clone(),
                     restored: *restored,
                     consumed: names.pairs(&told),
+                    subnet_marking_versions: None,
+                    outer_marking_version: None,
                     marking_version: version,
                     running,
                 }
@@ -1205,7 +1558,7 @@ impl Loaded {
             // Under rule 3 (lifted at launch, the token in the body's hands)
             // there is no net to label from, nor to read keys from.
             event @ (Event::Added { .. } | Event::Removed { .. } | Event::Mutated { .. }) => {
-                token_line(names, live, projection, event, version, running).expect("a token event")
+                token_line(names, live, &mut lens, event, version, running).expect("a token event")
             }
             Event::Toggled {
                 transition,
@@ -1244,34 +1597,45 @@ impl Loaded {
                 running,
             },
         };
+        self.restore(Some(nested_id), lens);
         // The quiet path (`note_lifted`) raises versions by this rule
         // without building the notification: the two must agree.
         debug_assert_eq!(notification.is_state(), is_state_event(lifted.event));
         if notification.is_state() {
-            inner.marking_version = version;
+            self.inner
+                .get_mut(&nested_id)
+                .expect("lifted_path made the record")
+                .marking_version = version;
+            let (subnets, outer) = self.cross(
+                Some(nested_id),
+                &changed_places(lifted.event),
+                loaded_version,
+            );
+            notification.across(subnets, outer);
         }
         self.log_lifted(&lifted, &path, now, launched, firings);
         Notification::Nested {
             path,
             nested_id: nested_id.to_string(),
             event: Box::new(notification),
-            marking_version: outer_version,
+            marking_version: *loaded_version,
             running,
         }
     }
 
     /// What one event lifted out of an inner net changes when nobody is
     /// listening to a hosted net: what [`lift`](Loaded::lift) keeps (the
-    /// net's record, its version, its log entry and its progress), with no
-    /// notification built.
+    /// net's record, its version and the versions across its ports, its log
+    /// entry and its progress), with no notification built.
     fn note_lifted(
         &mut self,
         event: &Event,
+        loaded_version: &mut u64,
         now: SystemTime,
         launched: &mut HashMap<NetId, Pairs>,
         firings: &mut Vec<InnerFiring>,
     ) {
-        let lifted = Lifted::of(event).expect("note_lifted is given a Nested event");
+        let lifted = Lifted::of(event).expect("note_lifted is given a lifted event");
         let path = self.lifted_path(&lifted);
         let nested_id = lifted.nested_id();
         self.touch(nested_id);
@@ -1280,6 +1644,11 @@ impl Loaded {
                 .get_mut(&nested_id)
                 .expect("lifted_path made the record")
                 .marking_version += 1;
+            self.cross(
+                Some(nested_id),
+                &changed_places(lifted.event),
+                loaded_version,
+            );
         }
         self.log_lifted(&lifted, &path, now, launched, firings);
     }
@@ -1437,9 +1806,11 @@ impl Loaded {
                     }
                     let (gone, came) =
                         projection.reconcile(&self.net, (!full).then_some(only.as_slice()));
-                    for line in
-                        view_lines(&self.names, &self.net, &gone, &came, outer_version, running)
-                    {
+                    let lines =
+                        view_lines(&self.names, &self.net, &gone, &came, outer_version, running);
+                    for (place, mut line) in lines {
+                        let (subnets, _) = self.cross(None, &[place], outer_version);
+                        line.across(subnets, None);
                         push(out, line);
                     }
                 }
@@ -1467,7 +1838,11 @@ impl Loaded {
                         &mut inner.marking_version,
                         running,
                     );
-                    for line in lines {
+                    // A token of a subnet's port that comes into view or
+                    // goes out of it is a change of the port (§12.7).
+                    for (place, mut line) in lines {
+                        let (subnets, outer) = self.cross(Some(id), &[place], outer_version);
+                        line.across(subnets, outer);
                         push(
                             out,
                             Notification::Nested {
@@ -1485,16 +1860,23 @@ impl Loaded {
     }
 
     /// The `fireable` of each inner net that had events since it was last
-    /// compared, `nested`, when it differs from the last one sent: after
-    /// the outer net's (PROTOCOL.md §12.4). Not a state notification, so no
-    /// version moves. A net whose token is gone, or in a body's hands, is
-    /// skipped.
+    /// compared, or whose ports a change told by another net touched
+    /// (§12.7), `nested`, when it differs from the last one sent: after the
+    /// outer net's, and a net's before those of the nets inside it, so
+    /// shallower nets first (PROTOCOL.md §12.4). Not a state notification,
+    /// so no version moves. A net whose token is gone, or in a body's
+    /// hands, is skipped.
     fn compare_inner_fireable(&mut self, outer_version: u64, out: &mut Vec<Outgoing>) {
         let running = self.running;
-        for id in std::mem::take(&mut self.touched) {
-            let Some((found, net)) = find(&self.net, |net| net.id() == id) else {
-                continue;
-            };
+        let mut touched: Vec<(NetId, Found, &Net)> = std::mem::take(&mut self.touched)
+            .into_iter()
+            .filter_map(|id| {
+                let (found, net) = find(&self.net, |net| net.id() == id)?;
+                Some((id, found, net))
+            })
+            .collect();
+        touched.sort_by_key(|(_, found, _)| found.path.len());
+        for (id, found, net) in touched {
             let Some(inner) = self.inner.get_mut(&id) else {
                 continue;
             };
@@ -1538,16 +1920,87 @@ struct View<'a> {
     inner: Option<InnerView>,
     /// The connection's projection of this net, if it set one (§13.4).
     projection: Option<&'a Projection>,
+    /// Whether the net is a subnet, whose topology marks its ports.
+    subnet: bool,
+    /// Its subnet places.
+    seats: &'a [Seat],
+    /// Every inner net's record: its subnets' among them, whose projections
+    /// project their ports (§12.7).
+    records: &'a HashMap<NetId, Inner>,
 }
 
 struct InnerView {
     nested_id: String,
-    /// Its name within the token: what its `get_state` calls it.
+    /// Its name within the token, or a subnet's place: what its
+    /// `get_state` calls it.
     name: String,
     template: Option<String>,
 }
 
-impl View<'_> {
+/// A port place of one of a net's subnet places, as a read of that net
+/// reads it: in the subnet, whose place it is (PROTOCOL.md §12.7).
+struct PortRead<'a> {
+    /// The subnet.
+    net: &'a Net,
+    /// The port's id in the subnet.
+    place: PlaceId,
+    /// The port's name.
+    name: String,
+    /// The subnet's path, which the paths of its tokens' nets extend.
+    path: Vec<PathStep>,
+    /// The subnet's projection, which projects the port in both views.
+    projection: Option<&'a Projection>,
+}
+
+impl<'a> PortRead<'a> {
+    /// The port's `count`, its tokens from `offset` up to `limit`, and
+    /// under the subnet's filter `matching`.
+    fn page(&self, offset: usize, limit: usize) -> (usize, Option<usize>, Vec<protocol::Token>) {
+        page(
+            self.net,
+            &self.path,
+            self.place,
+            &self.name,
+            self.projection,
+            offset,
+            limit,
+        )
+    }
+}
+
+/// One place's `count`, its tokens from `offset` up to `limit`, and, under
+/// the connection's filter, `matching`, the page then of the tokens the
+/// filter keeps (§13.4).
+fn page(
+    net: &Net,
+    path: &[PathStep],
+    place: PlaceId,
+    name: &str,
+    projection: Option<&Projection>,
+    offset: usize,
+    limit: usize,
+) -> (usize, Option<usize>, Vec<protocol::Token>) {
+    let count = net.count(place);
+    match projection {
+        None => (
+            count,
+            None,
+            translate::tokens(net, path, place, name, offset, limit),
+        ),
+        Some(projection) => {
+            let kept = projection.kept_in(net, place);
+            let tokens = kept
+                .iter()
+                .skip(offset)
+                .take(limit)
+                .map(|&token| translate::entry(net, path, place, name, token))
+                .collect();
+            (count, Some(kept.len()), tokens)
+        }
+    }
+}
+
+impl<'a> View<'a> {
     /// The `path` and `nested_id` a result about an inner net carries; both
     /// `None` for the outer net.
     fn address(&self) -> (Option<Vec<PathStep>>, Option<String>) {
@@ -1556,6 +2009,142 @@ impl View<'_> {
             None => (None, None),
         }
     }
+
+    /// The subnet place a window of this net is for, and the port's id in
+    /// the subnet; `None` for a place of the net's own.
+    fn seat(&self, window: PlaceId) -> Option<(&'a Seat, PlaceId)> {
+        self.seats.iter().find_map(|seat| {
+            seat.windows
+                .iter()
+                .find(|(w, _)| *w == window)
+                .map(|&(_, port)| (seat, port))
+        })
+    }
+
+    /// A window of this net read as its port, in its subnet; `None` for a
+    /// place of the net's own.
+    fn port(&self, window: PlaceId) -> Option<PortRead<'a>> {
+        let (seat, place) = self.seat(window)?;
+        let net = self.net.subnet(seat.place)?;
+        let mut path = self.path.clone();
+        path.push(translate::subnet_step(&self.names.place(seat.place)));
+        Some(PortRead {
+            net,
+            place,
+            name: self.names.place(window),
+            path,
+            projection: self
+                .records
+                .get(&seat.id)
+                .and_then(|inner| inner.projection.as_ref()),
+        })
+    }
+
+    /// One token entry of a place of this net, a window's read in its
+    /// subnet, so that the paths of the token's nets go through the subnet
+    /// (§12.1).
+    fn entry(&self, place: PlaceId, token: TokenId) -> protocol::Token {
+        match self.port(place) {
+            Some(port) => translate::entry(port.net, &port.path, port.place, &port.name, token),
+            None => translate::entry(self.net, &self.path, place, &self.names.place(place), token),
+        }
+    }
+
+    /// The place a request names by `place` and `port` (PROTOCOL.md
+    /// §12.7): a place of this net by its name, or a port of one of its
+    /// subnet places by the pair, as the place this net has for it. A
+    /// subnet place named without a `port` holds no tokens of its own and
+    /// is `invalid_params`; a place this net does not have, a `port` its
+    /// subnet place does not have, and a `port` beside a place that is no
+    /// subnet place are `unknown_place`.
+    fn place(&self, place: &str, port: Option<&str>) -> Result<PlaceId, (ErrorCode, String)> {
+        resolve_place(self.net, place, port)
+    }
+}
+
+/// [`View::place`], for any net.
+fn resolve_place(
+    net: &Net,
+    place: &str,
+    port: Option<&str>,
+) -> Result<PlaceId, (ErrorCode, String)> {
+    let id = net
+        .place_named(place)
+        .ok_or_else(|| (ErrorCode::UnknownPlace, format!("no place named {place:?}")))?;
+    let subnet = net.subnet(id).is_some();
+    match port {
+        None if subnet => Err((
+            ErrorCode::InvalidParams,
+            format!(
+                "{place:?} is a subnet place, which holds no tokens of its own: \
+                 name one of its ports as \"port\""
+            ),
+        )),
+        None => Ok(id),
+        Some(port) if !subnet => Err((
+            ErrorCode::UnknownPlace,
+            format!("{place:?} is not a subnet place, so it has no port {port:?}"),
+        )),
+        Some(port) => translate::window_of(net, id, port).ok_or_else(|| {
+            (
+                ErrorCode::UnknownPlace,
+                format!("subnet place {place:?} has no port {port:?}"),
+            )
+        }),
+    }
+}
+
+/// A request's optional `port`: `None` when absent or `null`, and
+/// `invalid_params` when it is not a string.
+fn port_arg(args: &Args) -> Result<Option<&str>, (ErrorCode, String)> {
+    match optional(args, "port") {
+        None => Ok(None),
+        Some(Value::String(port)) => Ok(Some(port)),
+        Some(_) => Err((
+            ErrorCode::InvalidParams,
+            "\"port\" must be a string".to_owned(),
+        )),
+    }
+}
+
+/// Appends one token, as JSON, to `place` of `net`, or to the port `port`
+/// of its subnet place `place` (PROTOCOL.md §6.4, §12.7). A port's token is
+/// decoded as the subnet's port decodes it and put into the place `net`
+/// has for the port, so that `net` tells of it, under the subnet's id.
+fn put_json(
+    net: &mut Net,
+    place: &str,
+    port: Option<&str>,
+    token: Value,
+) -> Result<(), (ErrorCode, String)> {
+    let failed =
+        |error: petritype::CommandError| (code_of(CoreError::Command(&error)), error.to_string());
+    let id = resolve_place(net, place, port)?;
+    let Some(port) = port else {
+        return net
+            .apply_json(JsonCommand::Extend {
+                place: place.to_owned(),
+                tokens: vec![token],
+            })
+            .map_err(failed);
+    };
+    let subnet = net
+        .place_named(place)
+        .and_then(|subnet| net.subnet(subnet))
+        .expect("resolve_place found the subnet place");
+    let decoded = Command::from_json(
+        subnet,
+        JsonCommand::Extend {
+            place: port.to_owned(),
+            tokens: vec![token],
+        },
+    )
+    .map_err(failed)?;
+    let Command::Extend { tokens, .. } = decoded else {
+        unreachable!("an extend decodes to an extend")
+    };
+    net.apply(Command::Extend { place: id, tokens })
+        .map_err(failed)
 }
 
 impl Owner {
@@ -1791,37 +2380,32 @@ impl Owner {
             }
             "get_place_tokens" => {
                 let place = string_arg(args, "place")?;
+                let port = port_arg(args)?;
                 let offset = usize_arg(args, "offset")?.unwrap_or(0);
                 let limit = page_limit(args, "limit")?;
                 let target = self.target(args)?;
                 let view = self.view(&target)?;
-                let place_id = view.net.place_named(place).ok_or_else(|| {
-                    (ErrorCode::UnknownPlace, format!("no place named {place:?}"))
-                })?;
-                let count = view.net.count(place_id);
+                let place_id = view.place(place, port)?;
                 // Under the connection's filter the page is of the tokens it
-                // keeps, and `has_more` is relative to them (§13.4).
-                let (matching, tokens) = match view.projection {
-                    None => (
-                        None,
-                        translate::tokens(view.net, &view.path, place_id, place, offset, limit),
+                // keeps, and `has_more` is relative to them (§13.4). A port
+                // is read in its subnet, under the subnet's filter (§12.7),
+                // and answered with the version of the net addressed.
+                let (count, matching, tokens) = match view.port(place_id) {
+                    Some(port) => port.page(offset, limit),
+                    None => page(
+                        view.net,
+                        &view.path,
+                        place_id,
+                        place,
+                        view.projection,
+                        offset,
+                        limit,
                     ),
-                    Some(projection) => {
-                        let kept = projection.kept_in(view.net, place_id);
-                        let tokens = kept
-                            .iter()
-                            .skip(offset)
-                            .take(limit)
-                            .map(|&token| {
-                                translate::entry(view.net, &view.path, place_id, place, token)
-                            })
-                            .collect();
-                        (Some(kept.len()), tokens)
-                    }
                 };
                 let (path, nested_id) = view.address();
                 let page = PlaceTokens {
                     place: place.to_owned(),
+                    port: port.map(str::to_owned),
                     marking_version: view.marking_version,
                     count,
                     matching,
@@ -1839,14 +2423,17 @@ impl Owner {
                 let key = string_arg(args, "key")?.to_owned();
                 let target = self.target(args)?;
                 let view = self.view(&target)?;
+                // A place by its name, a port by {"place", "port"} (§12.7).
                 let places = match optional(args, "places") {
                     None => None,
                     Some(Value::Array(names)) => {
-                        let names: Vec<String> = names
+                        let names: Vec<PlaceName> = names
                             .iter()
-                            .map(|name| name.as_str().map(str::to_owned))
-                            .collect::<Option<_>>()
-                            .ok_or_else(not_place_names)?;
+                            .map(PlaceName::parse)
+                            .collect::<Result<_, _>>()
+                            .map_err(|why| {
+                                (ErrorCode::InvalidParams, format!("in \"places\", {why}"))
+                            })?;
                         Some(translate::place_ids(&names, view.net).map_err(filter_error)?)
                     }
                     Some(_) => return Err(not_place_names()),
@@ -1984,9 +2571,11 @@ impl Owner {
         Ok(())
     }
 
-    /// `inject {place, token, path?, nested_id?}`: the token decoded into
-    /// the named net's place and appended (PROTOCOL.md §6.4, §12.3). Into an
-    /// inner net it goes through `nested_scope` at every level, so its
+    /// `inject {place, port?, token, path?, nested_id?}`: the token decoded
+    /// into the named net's place and appended (PROTOCOL.md §6.4, §12.3), or
+    /// into the port `port` of its subnet place `place` (§12.7), which the
+    /// net that holds the subnet place tells of. Into an inner net it goes
+    /// through `nested_scope` or `subnet_scope` at every level, so its
     /// `added` comes out `nested`, and the answer carries that net's version
     /// and its address, `path` and `nested_id`.
     fn inject(
@@ -1997,16 +2586,13 @@ impl Owner {
         out: &mut Vec<Outgoing>,
     ) -> Result<(), (ErrorCode, String)> {
         let place = string_arg(args, "place")?.to_owned();
+        let port = port_arg(args)?.map(str::to_owned);
         let token = args.get("token").cloned().ok_or_else(|| {
             (
                 ErrorCode::InvalidParams,
                 "inject needs a \"token\"".to_owned(),
             )
         })?;
-        let command = JsonCommand::Extend {
-            place,
-            tokens: vec![token],
-        };
         let no_event = || {
             (
                 ErrorCode::Internal,
@@ -2015,7 +2601,7 @@ impl Owner {
         };
         match self.target(args)? {
             Target::Outer => {
-                self.apply(command)?;
+                put_json(&mut self.loaded_mut().net, &place, port.as_deref(), token)?;
                 self.loaded_mut().know_new();
                 let flushed = self.flush_events(now, None, true, out);
                 let added = flushed
@@ -2033,17 +2619,15 @@ impl Owner {
                 );
             }
             Target::Inner(found) => {
-                let applied = descend_mut(&mut self.loaded_mut().net, &found.levels, |net| {
-                    net.apply_json(command)
+                descend_mut(&mut self.loaded_mut().net, &found.levels, |net| {
+                    put_json(net, &place, port.as_deref(), token)
                 })
                 .ok_or_else(|| {
                     (
                         ErrorCode::UnknownNet,
                         format!("no live inner net at {}", protocol::to_line(&found.path)),
                     )
-                })?;
-                applied
-                    .map_err(|error| (code_of(CoreError::Command(&error)), error.to_string()))?;
+                })??;
                 self.loaded_mut().know_new();
                 let flushed = self.flush_events(now, None, true, out);
                 let added = flushed
@@ -2183,6 +2767,12 @@ impl Owner {
     /// filter, or else every token) in place order then token order, from
     /// the key index; `count` all of them, and the first `token_limit` in
     /// full, each with its JSON where its place is serializable.
+    ///
+    /// The ports of the net's subnet places are covered at their subnet
+    /// place's position, each match there naming the pair (§12.7). Without
+    /// a `filter` a port is projected by its subnet's connection filter and
+    /// the net's own places by the net's; a `filter` of the request's own
+    /// applies to every place, ports included.
     fn query(
         &mut self,
         id: &str,
@@ -2193,27 +2783,49 @@ impl Owner {
         let target = self.target(args)?;
         let view = self.view(&target)?;
         let net = view.net;
-        let given = match optional(args, "filter") {
-            Some(value) => Some(translate::filter(value, net).map_err(filter_error)?),
-            None => None,
+        let failed = |error: NetError| (code_of(CoreError::Net(&error)), error.to_string());
+        let found: Vec<(PlaceId, TokenId)> = match optional(args, "filter") {
+            Some(value) => {
+                let given = translate::filter(value, net).map_err(filter_error)?;
+                net.query_ids(&given).map_err(failed)?
+            }
+            None => {
+                let mut found: Vec<(PlaceId, TokenId)> = match view.projection {
+                    Some(projection) => projection.kept(net),
+                    None => net
+                        .query_ids(&Filter::new())
+                        .map_err(failed)?
+                        .into_iter()
+                        .filter(|&(place, _)| view.names.window(place).is_none())
+                        .collect(),
+                };
+                for seat in view.seats {
+                    for &(window, _) in &seat.windows {
+                        let Some(port) = view.port(window) else {
+                            continue;
+                        };
+                        let kept = match port.projection {
+                            Some(projection) => projection.kept_in(port.net, port.place),
+                            None => port.net.tokens(port.place).map(|(t, _)| t).collect(),
+                        };
+                        found.extend(kept.into_iter().map(|token| (window, token)));
+                    }
+                }
+                // Place order: a window's id follows its subnet place's.
+                found.sort_by_key(|&(place, _)| place);
+                found
+            }
         };
-        let every = Filter::new();
-        let filter = given
-            .as_ref()
-            .or(view.projection.map(|projection| &projection.filter))
-            .unwrap_or(&every);
-        let found = net
-            .query_ids(filter)
-            .map_err(|error| (code_of(CoreError::Net(&error)), error.to_string()))?;
         let matches = found
             .iter()
             .take(limit)
             .map(|&(place, token)| {
-                let name = view.names.place(place);
+                let (name, port) = view.names.split(place);
                 QueryMatch {
-                    token: translate::entry(net, &view.path, place, &name, token),
+                    token: view.entry(place, token),
                     json: net.json(place, token),
                     place: name,
+                    port,
                 }
             })
             .collect();
@@ -2347,11 +2959,8 @@ impl Owner {
     /// response, leaves the previous net as it was, and returns false.
     ///
     /// Every inner net goes with the old marking (PROTOCOL.md §12.6): the
-    /// new generation's are walked and recorded afresh, at version 0.
-    ///
-    /// A net that holds a subnet place, or whose tokens hold a net that
-    /// does, is refused as `unsupported`: subnet places come to the wire in
-    /// a later step of this runner (PROTOCOL.md §12.7).
+    /// new generation's are walked and recorded afresh, at version 0, its
+    /// subnets among them (§12.7).
     fn build(
         &mut self,
         id: &str,
@@ -2378,15 +2987,6 @@ impl Owner {
                 return false;
             }
         };
-        if let Some(place) = first_subnet_place(&net) {
-            respond_error(
-                out,
-                id,
-                ErrorCode::Unsupported,
-                format!("{place:?} is a subnet place, which this runner does not serve yet"),
-            );
-            return false;
-        }
         self.install(entry, params, net);
         push(
             out,
@@ -2409,8 +3009,10 @@ impl Owner {
         let topology = net.topology();
         let names = Names::new(&topology);
         let last_fireable = fireable_names(&net, &names);
+        let seats = seats_of(&net);
         self.generation += 1;
         let mut loaded = Loaded {
+            seats,
             entry,
             name: self.nets[entry].name,
             params,
@@ -2450,6 +3052,9 @@ impl Owner {
                 path: Vec::new(),
                 inner: None,
                 projection: loaded.projection.as_ref(),
+                subnet: false,
+                seats: &loaded.seats,
+                records: &loaded.inner,
             });
         };
         let gone = || {
@@ -2474,6 +3079,9 @@ impl Owner {
                 template: inner.template.clone(),
             }),
             projection: inner.projection.as_ref(),
+            subnet: inner.is_subnet(),
+            seats: &inner.seats,
+            records: &loaded.inner,
         })
     }
 
@@ -2506,11 +3114,45 @@ impl Owner {
             }
             kept
         });
+        // A subnet place is `{subnet, ports}` (§12.7), each port read in the
+        // subnet under the subnet's filter; the places the net has for those
+        // ports have no entry of their own.
         let places = view
             .topology
             .places
             .iter()
+            .filter(|p| p.port_of.is_none())
             .map(|p| {
+                if let Some(seat) = view.seats.iter().find(|seat| seat.place == p.id)
+                    && let Some(subnet) = net.subnet(p.id)
+                {
+                    let mut path = view.path.clone();
+                    path.push(translate::subnet_step(&p.name));
+                    let ports = seat
+                        .windows
+                        .iter()
+                        .filter_map(|&(window, _)| view.port(window))
+                        .map(|port| {
+                            let (count, matching, tokens) = port.page(0, token_limit);
+                            let marking = PlaceMarking {
+                                count,
+                                matching,
+                                tokens,
+                            };
+                            (port.name, marking)
+                        })
+                        .collect();
+                    let entry = SubnetMarking {
+                        subnet: SubnetEntry {
+                            nested_id: subnet.id().to_string(),
+                            path,
+                            template: subnet.template().map(str::to_owned),
+                            count: translate::own_count(subnet),
+                        },
+                        ports,
+                    };
+                    return (p.name.clone(), PlaceEntry::Subnet(entry));
+                }
                 let (matching, tokens) = match &kept {
                     None => (
                         None,
@@ -2526,14 +3168,12 @@ impl Owner {
                         (Some(ids.len()), tokens)
                     }
                 };
-                (
-                    p.name.clone(),
-                    protocol::PlaceMarking {
-                        count: net.count(p.id),
-                        matching,
-                        tokens,
-                    },
-                )
+                let marking = PlaceMarking {
+                    count: net.count(p.id),
+                    matching,
+                    tokens,
+                };
+                (p.name.clone(), PlaceEntry::Tokens(marking))
             })
             .collect();
         let (path, nested_id) = view.address();
@@ -2562,7 +3202,7 @@ impl Owner {
                 } else {
                     Vec::new()
                 },
-                ..translate::topology(view.topology, view.names)
+                ..translate::topology(net, view.topology, view.names, view.subnet)
             },
             transitions,
             marking: protocol::Marking { places },
@@ -2580,15 +3220,20 @@ impl Owner {
         })
     }
 
+    /// `get_token {id}` (PROTOCOL.md §6.5): the live token with that id, in
+    /// its one canonical form (`"01"` names no token), among the net's own
+    /// places. A port's tokens carry their subnet's ids, which may equal the
+    /// net's own, so a port's token is read through its subnet (§12.7).
     fn token(&self, target: &Target, wanted: &str) -> Result<TokenValue, (ErrorCode, String)> {
         let view = self.view(target)?;
         let unknown = || (ErrorCode::UnknownToken, format!("no live token {wanted:?}"));
-        let token: TokenId = wanted.parse().map_err(|_| unknown())?;
+        let token = translate::token_id(wanted).ok_or_else(unknown)?;
         let net = view.net;
         let place = view
             .topology
             .places
             .iter()
+            .filter(|p| p.port_of.is_none())
             .find(|p| net.tokens(p.id).any(|(t, _)| t == token))
             .ok_or_else(unknown)?;
         // A token the connection's filter hides is not there for it
@@ -2734,6 +3379,7 @@ impl Owner {
         loaded.idle = false;
         let inline = !firing.is_pending();
         loaded.in_flight = Some(InFlight {
+            transition,
             name,
             started_at: now,
             step_id,
@@ -2978,6 +3624,9 @@ impl Owner {
         let inline = flight.is_some_and(|f| f.inline);
         let duration = flight.map_or(0.0, |f| duration_ms(f.started_at, now));
         let mut inline_consumed: Vec<(PlaceId, TokenId)> = Vec::new();
+        // What an inline firing's `launched` took, as it happened, for the
+        // port places its one `fired` changed (§12.7).
+        let mut inline_taken: Vec<PlaceId> = Vec::new();
         let mut inner_launched = HashMap::new();
         let mut inner_firings = Vec::new();
         // What may bring tokens into a projection's view, or take them out
@@ -2989,18 +3638,19 @@ impl Owner {
         for event in wire_order(&events) {
             if let Some(lifted) = Lifted::of(event) {
                 let mut above = None;
-                for &(place, token, _, id) in &lifted.levels {
-                    lifted_through.push((above, place, token));
-                    above = Some(id);
+                for level in &lifted.levels {
+                    // A subnet place holds no token for a key to read.
+                    if let Some(token) = level.token {
+                        lifted_through.push((above, level.place, token));
+                    }
+                    above = Some(level.id);
                 }
                 if matches!(lifted.event, Event::ParamChanged { .. }) {
                     params_changed.push(Some(lifted.nested_id()));
                 }
-            }
-            if matches!(event, Event::Nested { .. }) {
                 let line = loaded.lift(
                     event,
-                    *marking_version,
+                    marking_version,
                     now,
                     &mut inner_launched,
                     &mut inner_firings,
@@ -3008,12 +3658,14 @@ impl Owner {
                 push(out, line);
                 continue;
             }
+            // The connection's projection of the outer net, if it set one,
+            // and of its subnets, for its windows: every token a line names
+            // goes through the one that covers its place (§12.7, §13.4).
+            let mut lens = loaded.lens(None);
             let names = &loaded.names;
             let net = &loaded.net;
-            // The connection's projection of the outer net, if it set one:
-            // every token a line names goes through it (§13.4).
-            let projection = loaded.projection.as_mut();
             let version = *marking_version + 1;
+            let mut changed = changed_places(event);
             let notification = match event {
                 Event::Fired {
                     transition,
@@ -3021,59 +3673,69 @@ impl Owner {
                     produced,
                 } => {
                     let (consumed, produced) =
-                        firing_tokens(projection, Some(net), consumed, produced, true);
-                    Notification::Fired {
+                        firing_tokens(&mut lens, Some(net), consumed, produced, true);
+                    Some(Notification::Fired {
                         transition: names.transition(*transition),
                         consumed: names.pairs(&consumed),
                         produced: names.produced(net, &produced),
                         duration_ms: duration,
+                        subnet_marking_versions: None,
+                        outer_marking_version: None,
                         marking_version: version,
                         running,
-                    }
+                    })
                 }
                 Event::Launched { consumed, .. } if inline => {
                     // Reported with the landing, as one `fired`.
-                    inline_consumed = firing_tokens(projection, Some(net), consumed, &[], false).0;
-                    continue;
+                    inline_consumed = firing_tokens(&mut lens, Some(net), consumed, &[], false).0;
+                    inline_taken = changed_places(event);
+                    None
                 }
                 Event::Launched {
                     transition,
                     consumed,
                 } => {
-                    let (consumed, _) = firing_tokens(projection, Some(net), consumed, &[], false);
-                    Notification::Launched {
+                    let (consumed, _) = firing_tokens(&mut lens, Some(net), consumed, &[], false);
+                    Some(Notification::Launched {
                         transition: names.transition(*transition),
                         consumed: names.pairs(&consumed),
+                        subnet_marking_versions: None,
+                        outer_marking_version: None,
                         marking_version: version,
                         running,
-                    }
+                    })
                 }
                 Event::Distributed {
                     transition,
                     produced,
                 } if inline => {
-                    let (_, produced) = firing_tokens(projection, Some(net), &[], produced, true);
-                    Notification::Fired {
+                    let (_, produced) = firing_tokens(&mut lens, Some(net), &[], produced, true);
+                    changed.append(&mut inline_taken);
+                    Some(Notification::Fired {
                         transition: names.transition(*transition),
                         consumed: names.pairs(&inline_consumed),
                         produced: names.produced(net, &produced),
                         duration_ms: duration,
+                        subnet_marking_versions: None,
+                        outer_marking_version: None,
                         marking_version: version,
                         running,
-                    }
+                    })
                 }
                 Event::Distributed {
                     transition,
                     produced,
                 } => {
-                    let (_, produced) = firing_tokens(projection, Some(net), &[], produced, true);
-                    Notification::Distributed {
+                    let (_, produced) = firing_tokens(&mut lens, Some(net), &[], produced, true);
+                    Some(Notification::Distributed {
                         transition: names.transition(*transition),
                         produced: names.produced(net, &produced),
                         duration_ms: duration,
+                        subnet_marking_versions: None,
+                        outer_marking_version: None,
                         marking_version: version,
                         running,
-                    }
+                    })
                 }
                 Event::Failed {
                     transition,
@@ -3081,38 +3743,36 @@ impl Owner {
                     restored,
                     error,
                 } => {
-                    let told = match projection {
-                        Some(projection) => projection.failed(consumed, *restored),
-                        None => consumed.clone(),
-                    };
-                    Notification::Failed {
+                    let told = lens.failed(consumed, *restored);
+                    Some(Notification::Failed {
                         transition: names.transition(*transition),
                         error: error.clone(),
                         restored: *restored,
                         consumed: names.pairs(&told),
+                        subnet_marking_versions: None,
+                        outer_marking_version: None,
                         marking_version: version,
                         running,
-                    }
+                    })
                 }
                 event @ (Event::Added { .. } | Event::Removed { .. } | Event::Mutated { .. }) => {
-                    token_line(names, Some(net), projection, event, version, running)
-                        .expect("a token event")
+                    token_line(names, Some(net), &mut lens, event, version, running)
                 }
                 Event::Toggled {
                     transition,
                     enabled,
-                } => Notification::Toggled {
+                } => Some(Notification::Toggled {
                     transition: names.transition(*transition),
                     enabled: *enabled,
                     marking_version: version,
                     running,
-                },
+                }),
                 // The name the `set_param` being served used; for a change
                 // nobody asked for over the wire, the wire name the net
                 // registered, or the type name if it registered none.
                 Event::ParamChanged { type_name } => {
                     params_changed.push(None);
-                    Notification::ParamChanged {
+                    Some(Notification::ParamChanged {
                         param: loaded
                             .pending_param
                             .clone()
@@ -3120,30 +3780,38 @@ impl Owner {
                             .unwrap_or_else(|| (*type_name).to_owned()),
                         marking_version: version,
                         running,
-                    }
+                    })
                 }
                 // An `import_marking`: the marking was replaced wholesale and
                 // is not told as events (DESIGN §8.1), so a reader refetches.
-                Event::Resynced => Notification::Reloaded {
+                Event::Resynced => Some(Notification::Reloaded {
                     generation,
                     reason: "resync".into(),
                     marking_version: *marking_version,
                     running,
-                },
+                }),
                 // An event this runner does not know: say the marking moved
                 // in a way it cannot describe.
-                _ => Notification::Reloaded {
+                _ => Some(Notification::Reloaded {
                     generation,
                     reason: "resync".into(),
                     marking_version: *marking_version,
                     running,
-                },
+                }),
+            };
+            loaded.restore(None, lens);
+            let Some(mut notification) = notification else {
+                continue;
             };
             // The quiet path (`note_events`) raises the version by this
             // rule without building the notification: the two must agree.
             debug_assert_eq!(notification.is_state(), is_state_event(event));
             if notification.is_state() {
                 *marking_version = version;
+                // A change of a window is a change of its subnet's port too
+                // (§12.7): the subnet's version rides along.
+                let (subnets, _) = loaded.cross(None, &changed, marking_version);
+                notification.across(subnets, None);
             }
             push(out, notification);
             if hosted {
@@ -3295,11 +3963,12 @@ impl Owner {
 
     /// Keeps what `events` changed, for a hosted net nobody is listening
     /// to, and builds no notification: the marking version, raised once
-    /// for each event a state notification would have told of; the log
-    /// entry and progress of every firing, the outer net's and the inner
-    /// nets'; and the inner nets' records and versions, and which of them
-    /// had events. In the wire's order, so that the log is the one a
-    /// listener's would be. No fireable set is compared:
+    /// for each event a state notification would have told of, and the
+    /// versions across the port places it changed (§12.7); the log entry
+    /// and progress of every firing, the outer net's and the inner nets';
+    /// and the inner nets' records and versions, and which of them had
+    /// events. In the wire's order, so that the log is the one a listener's
+    /// would be. No fireable set is compared:
     /// [`set_listening`](Owner::set_listening) takes them afresh. A hosted
     /// net has no projection (`set_filter` is not served there), so there
     /// is no view to reconcile either.
@@ -3310,28 +3979,71 @@ impl Owner {
         let mut inner_launched = HashMap::new();
         let mut inner_firings = Vec::new();
         for event in wire_order(events) {
-            if matches!(event, Event::Nested { .. }) {
-                loaded.note_lifted(event, now, &mut inner_launched, &mut inner_firings);
+            if is_lifted(event) {
+                loaded.note_lifted(
+                    event,
+                    marking_version,
+                    now,
+                    &mut inner_launched,
+                    &mut inner_firings,
+                );
                 continue;
             }
             if is_state_event(event) {
                 *marking_version += 1;
+                loaded.cross(None, &changed_places(event), marking_version);
             }
             loaded.record_host_firing(event, now, host_flights);
         }
     }
 }
 
-/// Whether a read must wait for the airborne body to land: it names an inner
-/// net that does not resolve now, which may be inside the token the body
-/// holds (PROTOCOL.md §12.3). After the landing it resolves, or is
+/// Whether a read must wait for the airborne body to land (PROTOCOL.md
+/// §12.3, §12.7): it names an inner net that does not resolve now, which
+/// may be inside the token the body holds, or a subnet one of whose ports
+/// the airborne firing has an edge on. After the landing it resolves, or is
 /// `unknown_net` then.
 fn held_by_the_body(loaded: &Loaded, request: &Request) -> bool {
-    ADDRESSED_READS.contains(&request.method.as_str())
-        && matches!(
-            &request.params,
-            Value::Object(args) if matches!(loaded.resolve(args), Err((ErrorCode::UnknownNet, _)))
-        )
+    if !ADDRESSED_READS.contains(&request.method.as_str()) {
+        return false;
+    }
+    let Value::Object(args) = &request.params else {
+        return false;
+    };
+    match loaded.resolve(args) {
+        Err((ErrorCode::UnknownNet, _)) => true,
+        Ok(Target::Inner(found)) => match (found.levels.as_slice(), &loaded.in_flight) {
+            ([Level::Subnet { place }], Some(flight)) => loaded.reaches(flight.transition, *place),
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
+impl Loaded {
+    /// Whether the loaded net's `transition` has an edge, of any kind, on a
+    /// port of its subnet place `subnet` (PROTOCOL.md §12.7).
+    fn reaches(&self, transition: TransitionId, subnet: PlaceId) -> bool {
+        let windows: Vec<PlaceId> = self
+            .seats
+            .iter()
+            .filter(|seat| seat.place == subnet)
+            .flat_map(|seat| seat.windows.iter().map(|&(window, _)| window))
+            .collect();
+        self.topology.edges.iter().any(|edge| match *edge {
+            petritype::EdgeInfo::Input {
+                place,
+                transition: t,
+                ..
+            }
+            | petritype::EdgeInfo::Output {
+                place,
+                transition: t,
+                ..
+            } => t == transition && windows.contains(&place),
+            _ => false,
+        })
+    }
 }
 
 /// How a landing failed, for `execution_stopped` and the log.
@@ -3393,7 +4105,7 @@ fn filter_error(error: FilterError) -> (ErrorCode, String) {
 fn not_place_names() -> (ErrorCode, String) {
     (
         ErrorCode::InvalidParams,
-        "\"places\" is a list of place names".to_owned(),
+        "\"places\" is a list of place names and {\"place\", \"port\"} objects".to_owned(),
     )
 }
 
@@ -3540,7 +4252,7 @@ mod tests {
                 vec![PathStep::Subnet {
                     place: "Yard".into(),
                 }],
-                "step 0 of the path: no subnet place named \"Yard\"",
+                "step 0 of the path: place \"Yard\" is not a subnet place",
             ),
         ] {
             let error = resolve_path(&net, &path).err().unwrap();

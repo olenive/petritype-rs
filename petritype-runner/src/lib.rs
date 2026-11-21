@@ -92,9 +92,15 @@
 //!   such place's `stepping`): the outer net's choice, launched, or one
 //!   inner firing, inline. Progress is per net: an inner firing is
 //!   counted in the progress of the net it was in, and no other.
-//! - A net that holds a subnet place is refused at `load` as
-//!   `unsupported`, for now: subnet places come to the wire in a later
-//!   step of this runner.
+//! - A subnet place (`NetBuilder::subnet_place`) holds a net of its own,
+//!   its subnet, addressed by the step `{"place": "Level 1"}` and served as
+//!   one more inner net (PROTOCOL.md §12.7). The net around it names a port
+//!   of the subnet by the pair: `port` beside `place` in an object, and
+//!   `{"place", "port"}` ([`protocol::PlaceName`]) where a place is named
+//!   by position. A port's tokens carry the subnet's ids, are projected by
+//!   the subnet's filter, and are told once, by the net that changed them;
+//!   that notification carries the other net's new version too, as
+//!   `subnet_marking_versions` or `outer_marking_version`.
 //! - A place that declares keys (`NetBuilder::keys`) lists them as
 //!   `key_names`, and its tokens carry theirs as `keys` wherever a token is
 //!   given, `produced` entries included (PROTOCOL.md §13). `query` asks for

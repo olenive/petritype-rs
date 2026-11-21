@@ -61,7 +61,8 @@
 //!   2026-10-12 (decision A1 of that phase), which the Python harness's
 //!   `fold()` follows too, and it says outright: "A firing that failed is
 //!   not folded: its `launched` stays, and its `failed` follows the lines
-//!   between."
+//!   between." Since 2026-11-21 the `fired` carries the versions across the
+//!   port places either piece changed (§12.7), as `fired` documents.
 //! - Type names are the example's: the harness rewrites this test crate's
 //!   module path to `parcel_runner::nets::`, as the example binary spells it.
 //!
@@ -87,11 +88,13 @@
 //! `protocol_version` 2, and `05_nested_nets.json` spells its paths as lists
 //! of steps, and was recorded once more the same day with the `stepping` of
 //! `transit`'s places. `10_stepping_rules.json` over `stepping-rules`
-//! (2026-11-21, a place of nets under each stepping rule) is a verbatim copy
-//! too. The shared set of §11, over the conformance nets
-//! `parcel-distribution`, `transit`, `wildlife`, `shop`, `traffic-light` and
-//! `stepping-rules`, lives in the Python repository and is replayed here
-//! from a sibling checkout by `the_shared_transcripts_hold`.
+//! (2026-11-21, a place of nets under each stepping rule) and
+//! `09_subnet_places.json` over `levels` (2026-11-21, subnet places and
+//! their ports) are verbatim copies too. The shared set of §11, over the
+//! conformance nets `parcel-distribution`, `transit`, `wildlife`, `shop`,
+//! `traffic-light`, `stepping-rules` and `levels`, lives in the Python
+//! repository and is replayed here from a sibling checkout by
+//! `the_shared_transcripts_hold`.
 //! A transcript over a conformance net is replayed against a runner carrying
 //! that net alone (§11), whichever directory it is in, so that it may pin
 //! `describe` in full; any other against everything the example carries.
@@ -133,15 +136,37 @@ fn run(owner: &mut Owner, input: Input) -> Vec<Value> {
 
 /// The `fired` that a `launched` (its params `l`) and its `distributed` (`d`)
 /// tell in two pieces.
+///
+/// The versions across the port places either piece changed (PROTOCOL.md
+/// §11, §12.7) come from both: `subnet_marking_versions` holds the subnet
+/// places either names, the `distributed`'s value for one both name, and
+/// `outer_marking_version` is the `distributed`'s when it has one, else the
+/// `launched`'s; each is on the `fired` when a piece has it.
 fn fired(l: &Value, d: &Value) -> Value {
-    json!({"method": "fired", "params": {
+    let mut params = json!({
         "transition": d["transition"],
         "consumed": l["consumed"],
         "produced": d["produced"],
         "duration_ms": d["duration_ms"],
         "marking_version": d["marking_version"],
         "running": d["running"],
-    }})
+    });
+    let mut subnets = Map::new();
+    for piece in [l, d] {
+        if let Some(versions) = piece["subnet_marking_versions"].as_object() {
+            subnets.extend(versions.clone());
+        }
+    }
+    if !subnets.is_empty() {
+        params["subnet_marking_versions"] = Value::Object(subnets);
+    }
+    if let Some(outer) = [d, l]
+        .into_iter()
+        .find_map(|piece| piece.get("outer_marking_version"))
+    {
+        params["outer_marking_version"] = outer.clone();
+    }
+    json!({"method": "fired", "params": params})
 }
 
 /// The lines a firing's own body causes, which may stand between its
@@ -362,6 +387,7 @@ fn registry_for(net: &str) -> Vec<petritype_runner::NetEntry> {
         "shop" => nets::shop_registry(),
         "traffic-light" => nets::traffic_light_registry(),
         "stepping-rules" => nets::stepping_rules_registry(),
+        "levels" => nets::levels_registry(),
         _ => nets::registry(),
     }
 }
@@ -479,8 +505,8 @@ fn shared_dir() -> PathBuf {
 }
 
 /// The shared transcripts of PROTOCOL.md §11, over the conformance nets
-/// `parcel-distribution`, `transit`, `wildlife`, `shop`, `traffic-light` and
-/// `stepping-rules`, replayed exactly as ours are, each against a registry
+/// `parcel-distribution`, `transit`, `wildlife`, `shop`, `traffic-light`,
+/// `stepping-rules` and `levels`, replayed exactly as ours are, each against a registry
 /// carrying its own net alone, which §11 makes the rule so that a shared
 /// transcript may pin `describe` in full. A shared transcript over a net this runner does not
 /// carry fails at its `load`.
@@ -704,6 +730,43 @@ fn the_nested_folds() {
         fold(interrupted.clone()),
         interrupted,
         "only the firing's own lines may stand between its pieces"
+    );
+}
+
+#[test]
+fn the_fold_carries_the_versions_across_a_port_from_both_pieces() {
+    // PROTOCOL.md §11, §12.7: `subnet_marking_versions` holds the subnet
+    // places either piece names, the `distributed`'s value for one both
+    // name; `outer_marking_version` is the `distributed`'s, else the
+    // `launched`'s.
+    let folded = fold(vec![
+        json!({"method": "launched", "params": {"transition": "Climb", "consumed": [],
+               "subnet_marking_versions": {"Level 1": 4, "Level 2": 2},
+               "outer_marking_version": 7, "marking_version": 1, "running": false}}),
+        json!({"method": "distributed", "params": {"transition": "Climb", "produced": [],
+               "duration_ms": 0.0, "subnet_marking_versions": {"Level 2": 3},
+               "marking_version": 2, "running": false}}),
+    ]);
+    assert_eq!(
+        folded,
+        [
+            json!({"method": "fired", "params": {"transition": "Climb", "consumed": [],
+                "produced": [], "duration_ms": 0.0,
+                "subnet_marking_versions": {"Level 1": 4, "Level 2": 3},
+                "outer_marking_version": 7, "marking_version": 2, "running": false}})
+        ]
+    );
+    let plain = fold(vec![
+        json!({"method": "launched", "params": {"transition": "T", "consumed": [],
+               "marking_version": 1, "running": false}}),
+        json!({"method": "distributed", "params": {"transition": "T", "produced": [],
+               "duration_ms": 0.0, "marking_version": 2, "running": false}}),
+    ]);
+    let params = plain[0]["params"].as_object().unwrap();
+    assert!(
+        !params.contains_key("subnet_marking_versions")
+            && !params.contains_key("outer_marking_version"),
+        "on the fired only when a piece has them"
     );
 }
 

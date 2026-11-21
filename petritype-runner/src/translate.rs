@@ -46,9 +46,17 @@ pub(crate) fn color(net: &Net, place: PlaceId, token: TokenId) -> Option<String>
 
 /// The name tables of one generation, taken from its [`Topology`] once.
 /// Empty by default: every id then prints as its number.
+///
+/// A place the net has for a port of one of its subnet places, a *window*
+/// (DESIGN §6.7), is named by the pair of the subnet place and the port
+/// (PROTOCOL.md §12.7): [`place_name`](Names::place_name) and
+/// [`split`](Names::split) give the pair, and [`place`](Names::place) the
+/// port's own name alone.
 #[derive(Debug, Default)]
 pub(crate) struct Names {
     places: HashMap<PlaceId, String>,
+    /// Each window's subnet place, by the window.
+    windows: HashMap<PlaceId, PlaceId>,
     transitions: HashMap<TransitionId, String>,
 }
 
@@ -60,6 +68,11 @@ impl Names {
                 .iter()
                 .map(|p| (p.id, p.name.clone()))
                 .collect(),
+            windows: topology
+                .places
+                .iter()
+                .filter_map(|p| Some((p.id, p.port_of?)))
+                .collect(),
             transitions: topology
                 .transitions
                 .iter()
@@ -68,11 +81,36 @@ impl Names {
         }
     }
 
+    /// A place's own name; a window's is its port's.
     pub(crate) fn place(&self, place: PlaceId) -> String {
         self.places
             .get(&place)
             .cloned()
             .unwrap_or_else(|| place.to_string())
+    }
+
+    /// The subnet place a window is for, or `None` for a place of the
+    /// net's own.
+    pub(crate) fn window(&self, place: PlaceId) -> Option<PlaceId> {
+        self.windows.get(&place).copied()
+    }
+
+    /// A place as a position names it (PROTOCOL.md §7.1, §8): its name, or
+    /// `{"place", "port"}` for a window.
+    pub(crate) fn place_name(&self, place: PlaceId) -> protocol::PlaceName {
+        match self.window(place) {
+            None => protocol::PlaceName::Place(self.place(place)),
+            Some(subnet) => protocol::PlaceName::Port {
+                place: self.place(subnet),
+                port: self.place(place),
+            },
+        }
+    }
+
+    /// A place as an object names it (PROTOCOL.md §7.1, §12.7): `place`,
+    /// and `port` beside it for a window.
+    pub(crate) fn split(&self, place: PlaceId) -> (String, Option<String>) {
+        self.place_name(place).split()
     }
 
     pub(crate) fn transition(&self, transition: TransitionId) -> String {
@@ -82,11 +120,14 @@ impl Names {
             .unwrap_or_else(|| transition.to_string())
     }
 
-    /// `[place, id]` pairs.
-    pub(crate) fn pairs(&self, tokens: &[(PlaceId, TokenId)]) -> Vec<(String, String)> {
+    /// `[place, id]` pairs, a window's place as the pair.
+    pub(crate) fn pairs(
+        &self,
+        tokens: &[(PlaceId, TokenId)],
+    ) -> Vec<(protocol::PlaceName, String)> {
         tokens
             .iter()
-            .map(|&(place, token)| (self.place(place), token.to_string()))
+            .map(|&(place, token)| (self.place_name(place), token.to_string()))
             .collect()
     }
 
@@ -100,7 +141,7 @@ impl Names {
         tokens
             .iter()
             .map(|&(place, token)| protocol::Produced {
-                place: self.place(place),
+                place: self.place_name(place),
                 id: token.to_string(),
                 label: label(net, place, token),
                 color: color(net, place, token),
@@ -108,6 +149,26 @@ impl Names {
             })
             .collect()
     }
+}
+
+/// The place `net` has for the port `port` of its subnet place `subnet`,
+/// its window, if it has that subnet place and the subnet that port.
+pub(crate) fn window_of(net: &Net, subnet: PlaceId, port: &str) -> Option<PlaceId> {
+    net.places()
+        .find(|(_, info)| info.port_of == Some(subnet) && info.name == port)
+        .map(|(id, _)| id)
+}
+
+/// How many tokens a net holds in its own places (PROTOCOL.md §12.2,
+/// §12.7): its ports included, the places it has for the ports of its
+/// subnet places not, since those tokens are the subnets', and a subnet
+/// place holds none of its own. What `nets[].count` and a subnet's `count`
+/// are.
+pub(crate) fn own_count(net: &Net) -> usize {
+    net.places()
+        .filter(|(_, info)| info.port_of.is_none() && !info.subnet)
+        .map(|(_, info)| info.count)
+        .sum()
 }
 
 /// A token's keys as the wire carries them (PROTOCOL.md §13.1): `Some` when
@@ -147,10 +208,12 @@ pub(crate) fn filter_to_wire(filter: &Filter, names: &Names) -> protocol::Filter
                 _ => None,
             })
             .collect(),
-        places: filter
-            .places
-            .as_ref()
-            .map(|places| places.iter().map(|&place| names.place(place)).collect()),
+        places: filter.places.as_ref().map(|places| {
+            places
+                .iter()
+                .map(|&place| names.place_name(place))
+                .collect()
+        }),
         prefix: filter.prefix.clone(),
     }
 }
@@ -162,6 +225,15 @@ pub(crate) enum FilterError {
     Shape(String),
     /// `places` names a place the net does not have: `unknown_place`.
     UnknownPlace(String),
+    /// `places` names a port its subnet place does not have, or a port
+    /// beside a place that is no subnet place (PROTOCOL.md §12.7):
+    /// `unknown_place`.
+    UnknownPort {
+        /// The place named as the port's subnet place.
+        place: String,
+        /// The port named.
+        port: String,
+    },
 }
 
 impl fmt::Display for FilterError {
@@ -169,6 +241,9 @@ impl fmt::Display for FilterError {
         match self {
             FilterError::Shape(message) => f.write_str(message),
             FilterError::UnknownPlace(name) => write!(f, "no place named {name:?}"),
+            FilterError::UnknownPort { place, port } => {
+                write!(f, "no subnet place {place:?} with a port {port:?}")
+            }
         }
     }
 }
@@ -181,7 +256,7 @@ pub(crate) fn filter(value: &Value, net: &Net) -> Result<Filter, FilterError> {
     filter_from_wire(&wire, net)
 }
 
-/// A wire filter's places, by name, turned into `net`'s ids.
+/// A wire filter's places, by name or by pair, turned into `net`'s ids.
 pub(crate) fn filter_from_wire(wire: &protocol::Filter, net: &Net) -> Result<Filter, FilterError> {
     let places = wire
         .places
@@ -208,16 +283,31 @@ pub(crate) fn filter_from_wire(wire: &protocol::Filter, net: &Net) -> Result<Fil
     })
 }
 
-/// Place names turned into `net`'s ids; the first that names no place is
-/// [`FilterError::UnknownPlace`].
-pub(crate) fn place_ids(names: &[String], net: &Net) -> Result<Vec<PlaceId>, FilterError> {
-    names
-        .iter()
-        .map(|name| {
-            net.place_named(name)
-                .ok_or_else(|| FilterError::UnknownPlace(name.clone()))
-        })
-        .collect()
+/// Places named by name or by pair turned into `net`'s ids, a port into the
+/// place `net` has for it; the first that names no place is
+/// [`FilterError::UnknownPlace`] or [`FilterError::UnknownPort`]. A subnet
+/// place named alone is a place of the net, which holds no tokens.
+pub(crate) fn place_ids(
+    names: &[protocol::PlaceName],
+    net: &Net,
+) -> Result<Vec<PlaceId>, FilterError> {
+    names.iter().map(|name| place_id(name, net)).collect()
+}
+
+/// One place named by name or by pair, as `net`'s id.
+pub(crate) fn place_id(name: &protocol::PlaceName, net: &Net) -> Result<PlaceId, FilterError> {
+    match name {
+        protocol::PlaceName::Place(name) => net
+            .place_named(name)
+            .ok_or_else(|| FilterError::UnknownPlace(name.clone())),
+        protocol::PlaceName::Port { place, port } => net
+            .place_named(place)
+            .and_then(|subnet| window_of(net, subnet, port))
+            .ok_or_else(|| FilterError::UnknownPort {
+                place: place.clone(),
+                port: port.clone(),
+            }),
+    }
 }
 
 /// The topology keyed by names (PROTOCOL.md §5.1): places with `nested`
@@ -231,24 +321,62 @@ pub(crate) fn place_ids(names: &[String], net: &Net) -> Result<Vec<PlaceId>, Fil
 /// only. Python petritype writes `slot` from a return edge's `return_index`,
 /// which an output distribution function's edges do not have, so the two
 /// runtimes draw `transit`'s `Arrive` alike.
-pub(crate) fn topology(topology: &Topology, names: &Names) -> protocol::Topology {
+///
+/// `net` is the net `topology` was taken from. A subnet place of it
+/// (PROTOCOL.md §12.7) is written with its subnet's template as its
+/// `type_name` (or `""`) and its ports as the subnet's own topology has
+/// them, read from the subnet; the places the net has for those ports are
+/// not listed on their own, and an edge on one names the subnet place and
+/// the port. `subnet` says that `net` is itself a subnet, whose topology
+/// marks its ports `port: true`; a net that is no subnet has no net around
+/// it to reach them, and marks none (§5.1).
+pub(crate) fn topology(
+    net: &Net,
+    topology: &Topology,
+    names: &Names,
+    subnet: bool,
+) -> protocol::Topology {
     let slotted: HashMap<TransitionId, bool> = topology
         .transitions
         .iter()
         .map(|t| (t.id, t.positional && t.outputs.len() > 1))
         .collect();
+    let place = |p: &petritype::TopologyPlace, port: bool| protocol::Place {
+        name: p.name.clone(),
+        type_name: p.type_name.to_owned(),
+        serializable: Some(p.serializable),
+        nested: p.nested,
+        subnet: false,
+        ports: None,
+        port,
+        stepping: p.stepping.and_then(stepping),
+        key_names: p.key_names.iter().map(|name| (*name).to_owned()).collect(),
+        style: p.style.and_then(place_style),
+    };
     protocol::Topology {
         places: topology
             .places
             .iter()
-            .map(|p| protocol::Place {
-                name: p.name.clone(),
-                type_name: p.type_name.to_owned(),
-                serializable: p.serializable,
-                nested: p.nested,
-                stepping: p.stepping.and_then(stepping),
-                key_names: p.key_names.iter().map(|name| (*name).to_owned()).collect(),
-                style: p.style.and_then(place_style),
+            .filter(|p| p.port_of.is_none())
+            .map(|p| match net.subnet(p.id).filter(|_| p.subnet) {
+                None => place(p, subnet && p.port),
+                Some(inside) => protocol::Place {
+                    type_name: inside.template().unwrap_or_default().to_owned(),
+                    serializable: None,
+                    subnet: true,
+                    ports: Some(
+                        inside
+                            .topology()
+                            .places
+                            .iter()
+                            .filter(|port| port.port)
+                            .map(|port| place(port, false))
+                            .collect(),
+                    ),
+                    key_names: Vec::new(),
+                    style: None,
+                    ..place(p, false)
+                },
             })
             .collect(),
         transitions: topology
@@ -273,7 +401,8 @@ pub(crate) fn topology(topology: &Topology, names: &Names) -> protocol::Topology
                     filter,
                     ..
                 } => Some(protocol::Edge {
-                    place: names.place(*place),
+                    place: names.split(*place).0,
+                    port: names.split(*place).1,
                     transition: names.transition(*transition),
                     direction: protocol::Direction::In,
                     kind: edge_kind(*kind),
@@ -287,7 +416,8 @@ pub(crate) fn topology(topology: &Topology, names: &Names) -> protocol::Topology
                     place,
                     slot,
                 } => Some(protocol::Edge {
-                    place: names.place(*place),
+                    place: names.split(*place).0,
+                    port: names.split(*place).1,
                     transition: names.transition(*transition),
                     direction: protocol::Direction::Out,
                     kind: None,
@@ -451,8 +581,8 @@ pub(crate) fn entry(
 
 /// The `nets` of a token entry (PROTOCOL.md §12.2): each net the token
 /// holds, in the token's order, with its nested id, its path as of now, its
-/// template and how many tokens it holds. Empty for a token of a place that
-/// is not nested.
+/// template and how many tokens it holds ([`own_count`]). Empty for a token
+/// of a place that is not nested.
 pub(crate) fn nets(
     net: &Net,
     path: &[PathStep],
@@ -472,9 +602,17 @@ pub(crate) fn nets(
                 .chain([step(place_name, token, name)])
                 .collect(),
             template: inner.template().map(str::to_owned),
-            count: inner.places().map(|(_, info)| info.count).sum(),
+            count: own_count(inner),
         })
         .collect()
+}
+
+/// The step down to the subnet of the subnet place named `place_name`
+/// (PROTOCOL.md §12.1): `{place}`.
+pub(crate) fn subnet_step(place_name: &str) -> PathStep {
+    PathStep::Subnet {
+        place: place_name.to_owned(),
+    }
 }
 
 /// The step down to the net named `net` in the token `token` of the place
@@ -573,7 +711,7 @@ mod tests {
         );
         let net = b.build().unwrap();
         let core = net.topology();
-        let wire = topology(&core, &Names::new(&core));
+        let wire = topology(&net, &core, &Names::new(&core), false);
         let slots: Vec<(&str, Option<usize>)> = wire
             .edges
             .iter()

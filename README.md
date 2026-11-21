@@ -176,6 +176,9 @@ place's stepping rule like a token's net, its events arrive as `Event::Subnet`, 
 the net around it, written in the marking as a list of one under its place. `petritype/examples/levels.rs` is a
 world of two levels built from one template (`cargo run -p petritype --example levels --features serde`);
 `DESIGN.md` §6.7 has the rules.
+Served by `petritype-runner`, a subnet is addressed by the step `{"place": "Level 1"}`, the net around it names a
+port by the pair (`{"place": "Level 1", "port": "Lobby"}`), and a change of a port moves the versions of both nets
+that see it (PROTOCOL.md §12.7, `DESIGN.md` §19.3.17).
 
 ## Keys and queries
 

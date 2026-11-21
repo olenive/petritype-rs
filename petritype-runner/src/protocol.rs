@@ -340,6 +340,65 @@ pub fn parse_path(value: &Value) -> Result<Vec<PathStep>, String> {
         .collect()
 }
 
+/// A place as an object or a position names it (PROTOCOL.md §7.1, §8,
+/// §12.7, §13.2): a place of the net's own by its name, or a port place of
+/// one of the net's subnet places by the pair of the subnet place and the
+/// port, never by a combined name.
+///
+/// On the wire a place of the net's own is its name, `"Door"`, and a port is
+/// the object `{"place": "Level 3", "port": "Lobby"}`: in the first element
+/// of a `consumed` or `produced` entry, of a log entry's pairs, and of a
+/// filter's `places`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum PlaceName {
+    /// A place of the net's own, by its name.
+    Place(String),
+    /// A port place of one of the net's subnet places.
+    Port {
+        /// The subnet place.
+        place: String,
+        /// The port, by its own name in the subnet.
+        port: String,
+    },
+}
+
+impl PlaceName {
+    /// The place's `place` field and its `port` field, as an object that
+    /// names a place writes them (`added`, `removed`, `mutated`, `hidden`,
+    /// an edge, a page of tokens, a query's match): the subnet place and the
+    /// port for a port, the name and no port for a place of the net's own.
+    pub fn split(self) -> (String, Option<String>) {
+        match self {
+            PlaceName::Place(name) => (name, None),
+            PlaceName::Port { place, port } => (place, Some(port)),
+        }
+    }
+
+    /// Reads one entry of a filter's or a `distinct`'s `places` (PROTOCOL.md
+    /// §13.2): a place name, or an object with a string `place` and a string
+    /// `port`. Other keys of the object are ignored (§2).
+    ///
+    /// # Errors
+    ///
+    /// What is wrong with the entry, for an `invalid_params` answer.
+    pub fn parse(value: &Value) -> Result<PlaceName, String> {
+        const SHAPE: &str =
+            "a place is named by its name or, for a port, by {\"place\", \"port\"}, both strings";
+        match value {
+            Value::String(name) => Ok(PlaceName::Place(name.clone())),
+            Value::Object(object) => match (object.get("place"), object.get("port")) {
+                (Some(Value::String(place)), Some(Value::String(port))) => Ok(PlaceName::Port {
+                    place: place.clone(),
+                    port: port.clone(),
+                }),
+                _ => Err(SHAPE.into()),
+            },
+            _ => Err(SHAPE.into()),
+        }
+    }
+}
+
 /// What kind of JSON value `value` is, for a message.
 fn kind(value: &Value) -> &'static str {
     match value {
@@ -360,6 +419,13 @@ fn kind(value: &Value) -> &'static str {
 /// one) and `running` (PROTOCOL.md §7). The state notifications are the ones
 /// that raise `marking_version` by one each; see
 /// [`is_state`](Notification::is_state).
+///
+/// A port place is in the markings of two nets, its subnet and the net
+/// around it, so a state notification that changes one raises both nets'
+/// versions and carries the other net's new value besides its own
+/// (PROTOCOL.md §12.7): `subnet_marking_versions` when the net around the
+/// subnet tells it, `outer_marking_version` when the subnet does.
+/// [`across`](Notification::across) sets them.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "method", content = "params", rename_all = "snake_case")]
 pub enum Notification {
@@ -368,12 +434,18 @@ pub enum Notification {
         /// The transition that fired.
         transition: String,
         /// `[place, id]` of each token taken.
-        consumed: Vec<(String, String)>,
+        consumed: Vec<(PlaceName, String)>,
         /// Each token produced: `[place, id, label]`, and its keys when its
         /// place declares some ([`Produced`]).
         produced: Vec<Produced>,
         /// How long the body ran.
         duration_ms: f64,
+        /// See the type's documentation.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        subnet_marking_versions: Option<BTreeMap<String, u64>>,
+        /// See the type's documentation.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        outer_marking_version: Option<u64>,
         /// See the type's documentation.
         marking_version: u64,
         /// See the type's documentation.
@@ -385,7 +457,13 @@ pub enum Notification {
         /// The transition launched.
         transition: String,
         /// `[place, id]` of each token taken.
-        consumed: Vec<(String, String)>,
+        consumed: Vec<(PlaceName, String)>,
+        /// See the type's documentation.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        subnet_marking_versions: Option<BTreeMap<String, u64>>,
+        /// See the type's documentation.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        outer_marking_version: Option<u64>,
         /// See the type's documentation.
         marking_version: u64,
         /// See the type's documentation.
@@ -401,6 +479,12 @@ pub enum Notification {
         /// How long the body was airborne.
         duration_ms: f64,
         /// See the type's documentation.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        subnet_marking_versions: Option<BTreeMap<String, u64>>,
+        /// See the type's documentation.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        outer_marking_version: Option<u64>,
+        /// See the type's documentation.
         marking_version: u64,
         /// See the type's documentation.
         running: bool,
@@ -414,7 +498,13 @@ pub enum Notification {
         /// Whether the consumed tokens went back.
         restored: bool,
         /// `[place, id]` of each token the firing took.
-        consumed: Vec<(String, String)>,
+        consumed: Vec<(PlaceName, String)>,
+        /// See the type's documentation.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        subnet_marking_versions: Option<BTreeMap<String, u64>>,
+        /// See the type's documentation.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        outer_marking_version: Option<u64>,
         /// See the type's documentation.
         marking_version: u64,
         /// See the type's documentation.
@@ -423,8 +513,11 @@ pub enum Notification {
     /// A token arrived from outside; or, under the connection's filter, a
     /// token came into its view (PROTOCOL.md §13.4).
     Added {
-        /// Where.
+        /// Where: the place, or the subnet place of a port (§12.7).
         place: String,
+        /// The port of the subnet place `place`, for a port place.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        port: Option<String>,
         /// Its id.
         id: String,
         /// Its label.
@@ -437,6 +530,12 @@ pub enum Notification {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         keys: Option<Keys>,
         /// See the type's documentation.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        subnet_marking_versions: Option<BTreeMap<String, u64>>,
+        /// See the type's documentation.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        outer_marking_version: Option<u64>,
+        /// See the type's documentation.
         marking_version: u64,
         /// See the type's documentation.
         running: bool,
@@ -444,10 +543,19 @@ pub enum Notification {
     /// A token was removed from outside; or, under the connection's
     /// filter, a token went out of its view (PROTOCOL.md §13.4).
     Removed {
-        /// Where from.
+        /// Where from: the place, or the subnet place of a port (§12.7).
         place: String,
+        /// The port of the subnet place `place`, for a port place.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        port: Option<String>,
         /// Its id.
         id: String,
+        /// See the type's documentation.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        subnet_marking_versions: Option<BTreeMap<String, u64>>,
+        /// See the type's documentation.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        outer_marking_version: Option<u64>,
         /// See the type's documentation.
         marking_version: u64,
         /// See the type's documentation.
@@ -455,8 +563,11 @@ pub enum Notification {
     },
     /// A token changed in place.
     Mutated {
-        /// Where.
+        /// Where: the place, or the subnet place of a port (§12.7).
         place: String,
+        /// The port of the subnet place `place`, for a port place.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        port: Option<String>,
         /// Its id.
         id: String,
         /// Its new label.
@@ -465,6 +576,12 @@ pub enum Notification {
         /// Its keys after the change, when its place declares some (§13.1).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         keys: Option<Keys>,
+        /// See the type's documentation.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        subnet_marking_versions: Option<BTreeMap<String, u64>>,
+        /// See the type's documentation.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        outer_marking_version: Option<u64>,
         /// See the type's documentation.
         marking_version: u64,
         /// See the type's documentation.
@@ -477,8 +594,17 @@ pub enum Notification {
     Hidden {
         /// What happened to the hidden token.
         kind: HiddenKind,
-        /// The place it happened in.
+        /// The place it happened in, or the subnet place of a port (§12.7).
         place: String,
+        /// The port of the subnet place `place`, for a port place.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        port: Option<String>,
+        /// See the type's documentation.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        subnet_marking_versions: Option<BTreeMap<String, u64>>,
+        /// See the type's documentation.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        outer_marking_version: Option<u64>,
         /// See the type's documentation.
         marking_version: u64,
         /// See the type's documentation.
@@ -574,8 +700,10 @@ pub enum Notification {
     /// that net would send on its own, wrapped once whatever the depth.
     ///
     /// `event` carries the inner net's own `marking_version`; the wrapper
-    /// carries the outer net's, which an inner event never moves, so this
-    /// is not a state notification of the outer net.
+    /// carries the loaded net's, which an inner event moves only when it
+    /// changes a port place of one of the loaded net's subnet places
+    /// (§12.7), and then the event says so with `outer_marking_version`.
+    /// The wrapper is not a state notification of its own.
     Nested {
         /// The inner net's full path from the loaded net, as the marking
         /// stood when the event was lifted (§12.1).
@@ -584,7 +712,7 @@ pub enum Notification {
         nested_id: String,
         /// The inner notification, `{method, params}`.
         event: Box<Notification>,
-        /// The outer net's version, unchanged.
+        /// The loaded net's version, after the event.
         marking_version: u64,
         /// See the type's documentation.
         running: bool,
@@ -611,10 +739,13 @@ pub enum HiddenKind {
 /// when its place has a style that gives it one. With keys it is written
 /// even without a colour, as `null`, to keep the keys in fifth place. This
 /// is the one place the protocol writes `null` for an absent optional.
+///
+/// The first element is a place's name, or `{"place", "port"}` for a port
+/// place of one of the net's subnet places (§12.7, [`PlaceName`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Produced {
     /// The place the token went to.
-    pub place: String,
+    pub place: PlaceName,
     /// Its id.
     pub id: String,
     /// Its label.
@@ -658,14 +789,15 @@ impl<'de> Deserialize<'de> for Produced {
             }
 
             fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Produced, A::Error> {
-                let mut next = |what: &str| {
-                    seq.next_element::<String>()?.ok_or_else(|| {
-                        de::Error::custom(format!("a produced entry needs its {what}"))
-                    })
-                };
-                let place = next("place")?;
-                let id = next("id")?;
-                let label = next("label")?;
+                let missing =
+                    |what: &str| de::Error::custom(format!("a produced entry needs its {what}"));
+                let place = seq
+                    .next_element::<PlaceName>()?
+                    .ok_or_else(|| missing("place"))?;
+                let id = seq.next_element::<String>()?.ok_or_else(|| missing("id"))?;
+                let label = seq
+                    .next_element::<String>()?
+                    .ok_or_else(|| missing("label"))?;
                 let color: Option<String> = seq.next_element::<Option<String>>()?.flatten();
                 let keys: Option<Keys> = seq.next_element()?;
                 if seq.next_element::<de::IgnoredAny>()?.is_some() {
@@ -757,6 +889,62 @@ impl Notification {
     pub fn to_line(&self) -> String {
         to_line(self)
     }
+
+    /// Sets the versions of the nets on the far side of the port places
+    /// this notification changed (PROTOCOL.md §12.7): `subnets`, each
+    /// subnet place's subnet's new version, when the net around them tells
+    /// it, and `outer`, the new version of the net around this one, when
+    /// this net is a subnet and tells it. A notification that is not a
+    /// state notification about tokens carries neither, and is left as it
+    /// is.
+    pub fn across(&mut self, subnets: Option<BTreeMap<String, u64>>, outer: Option<u64>) {
+        match self {
+            Notification::Fired {
+                subnet_marking_versions,
+                outer_marking_version,
+                ..
+            }
+            | Notification::Launched {
+                subnet_marking_versions,
+                outer_marking_version,
+                ..
+            }
+            | Notification::Distributed {
+                subnet_marking_versions,
+                outer_marking_version,
+                ..
+            }
+            | Notification::Failed {
+                subnet_marking_versions,
+                outer_marking_version,
+                ..
+            }
+            | Notification::Added {
+                subnet_marking_versions,
+                outer_marking_version,
+                ..
+            }
+            | Notification::Removed {
+                subnet_marking_versions,
+                outer_marking_version,
+                ..
+            }
+            | Notification::Mutated {
+                subnet_marking_versions,
+                outer_marking_version,
+                ..
+            }
+            | Notification::Hidden {
+                subnet_marking_versions,
+                outer_marking_version,
+                ..
+            } => {
+                *subnet_marking_versions = subnets;
+                *outer_marking_version = outer;
+            }
+            _ => {}
+        }
+    }
 }
 
 // ----- describe --------------------------------------------------------------
@@ -815,7 +1003,8 @@ pub struct State {
     /// `"rust"`.
     pub runtime: String,
     /// The loaded net's registered name; for an inner net, its name within
-    /// the token that holds it (`""` for a bare net).
+    /// the token that holds it (`""` for a bare net), and for a subnet, the
+    /// name of its subnet place.
     pub net: String,
     /// See PROTOCOL.md §4; always 1 for an inner net.
     pub generation: u64,
@@ -913,18 +1102,37 @@ impl ControlConfig {
 }
 
 /// A place in [`Topology`].
+///
+/// A subnet place (PROTOCOL.md §12.7) is `{name, type_name, subnet: true,
+/// ports, stepping}`: its `type_name` the template that built its subnet,
+/// or `""`, and `ports` its subnet's port places in the subnet's
+/// declaration order, each as the subnet's own topology has it but without
+/// `port`. It is not serializable, holding no tokens of its own.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Place {
     /// Unique within the net.
     pub name: String,
-    /// The Rust type name of its tokens, for display.
+    /// The Rust type name of its tokens, for display; for a subnet place,
+    /// its subnet's template, or `""`.
     pub type_name: String,
-    /// Whether its tokens have a JSON form.
-    pub serializable: bool,
+    /// Whether its tokens have a JSON form. Not written for a subnet place.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub serializable: Option<bool>,
     /// Whether its tokens may hold nets of their own (§12.2); written only
     /// when true.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub nested: bool,
+    /// Whether it is a subnet place (§12.7); written only when true.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub subnet: bool,
+    /// A subnet place's ports (§12.7); written for a subnet place alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ports: Option<Vec<Place>>,
+    /// Whether the net around this net reaches the place, in a subnet's
+    /// own topology (§5.1, §12.7); written only when true, and never in the
+    /// topology of a net that is no subnet.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub port: bool,
     /// The rule by which deep stepping fires the nets the place holds
     /// (§5.1, §12.3): written exactly for a place that holds nets, the
     /// default rule included.
@@ -995,11 +1203,17 @@ pub struct TransitionDetail {
     pub detachable: bool,
 }
 
-/// An edge in [`Topology`].
+/// An edge in [`Topology`]. An edge on a port place of one of the net's
+/// subnet places names the subnet place as `place` and the port as `port`
+/// (§12.7); a reader keys an edge by its place, its port if any, its
+/// transition and its direction.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Edge {
-    /// The place end.
+    /// The place end, or the subnet place of a port.
     pub place: String,
+    /// The port of the subnet place `place`, for an edge on a port place.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub port: Option<String>,
     /// The transition end.
     pub transition: String,
     /// `"in"` (place to transition) or `"out"`.
@@ -1055,7 +1269,9 @@ pub enum EdgeKind {
 
 /// A filter on the wire (PROTOCOL.md §13.2): every clause must pass (AND
 /// across clauses), and the token must lie in a place `places` names, if
-/// given, whose name begins with `prefix`, if given. Places by name.
+/// given, whose name begins with `prefix`, if given. Places by name, a port
+/// place of one of the net's subnet places by `{"place", "port"}`
+/// ([`PlaceName`]); `prefix` is tested against a port's own name.
 ///
 /// Read off a request with [`Filter::parse`], which is as strict as the
 /// Python runner; the derived `Deserialize` is the lenient reading of a
@@ -1065,9 +1281,9 @@ pub struct Filter {
     /// Every one must pass.
     #[serde(default)]
     pub clauses: Vec<Clause>,
-    /// The places to look in, by name.
+    /// The places to look in.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub places: Option<Vec<String>>,
+    pub places: Option<Vec<PlaceName>>,
     /// The start of the name of every place to look in.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prefix: Option<String>,
@@ -1102,8 +1318,9 @@ impl Filter {
     /// `places` and `prefix`; `clauses` a list (or `null`) of objects with a
     /// string `key` and either a non-empty list `values` of strings,
     /// integers and booleans or a string `param`, never both; `places` a
-    /// list of strings; `prefix` a string. Whether the places exist is the
-    /// net's to say.
+    /// list of place names and `{"place", "port"}` objects
+    /// ([`PlaceName::parse`]); `prefix` a string. Whether the places exist
+    /// is the net's to say.
     ///
     /// # Errors
     ///
@@ -1131,11 +1348,11 @@ impl Filter {
             Some(Value::Array(places)) => Some(
                 places
                     .iter()
-                    .map(|place| place.as_str().map(str::to_owned))
-                    .collect::<Option<Vec<_>>>()
-                    .ok_or("\"places\" is a list of place names")?,
+                    .map(PlaceName::parse)
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|why| format!("in \"places\", {why}"))?,
             ),
-            Some(_) => return Err("\"places\" is a list of place names".into()),
+            Some(_) => return Err("\"places\" is a list of places".into()),
         };
         let prefix = match object.get("prefix") {
             None | Some(Value::Null) => None,
@@ -1209,7 +1426,44 @@ pub struct TransitionState {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Marking {
     /// By place name.
-    pub places: BTreeMap<String, PlaceMarking>,
+    pub places: BTreeMap<String, PlaceEntry>,
+}
+
+/// One place's entry in a [`Marking`]: its tokens, or, for a subnet place,
+/// which holds none of its own, its subnet and its ports (PROTOCOL.md
+/// §12.7).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum PlaceEntry {
+    /// A place's tokens.
+    Tokens(PlaceMarking),
+    /// A subnet place's `{subnet, ports}`.
+    Subnet(SubnetMarking),
+}
+
+/// A subnet place's entry in a [`Marking`] (PROTOCOL.md §12.7).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SubnetMarking {
+    /// Its subnet, as a token's `nets[]` entry names a net, without `name`.
+    pub subnet: SubnetEntry,
+    /// Each port's tokens, by the port's name, as a place gives them.
+    pub ports: BTreeMap<String, PlaceMarking>,
+}
+
+/// The subnet of a subnet place, as its [`SubnetMarking`] names it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SubnetEntry {
+    /// Its nested id: the same from `load` or `reset` until the next.
+    pub nested_id: String,
+    /// Its path: the path of the net that holds the subnet place, and the
+    /// step `{"place"}`.
+    pub path: Vec<PathStep>,
+    /// The template that built it, when one did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub template: Option<String>,
+    /// How many tokens its own places hold, its ports included; those of a
+    /// subnet of its own are counted in that subnet's entry. A hint.
+    pub count: usize,
 }
 
 /// One place's tokens: the true count and the oldest ones, capped.
@@ -1283,8 +1537,11 @@ pub struct Progress {
 /// The answer to `get_place_tokens`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PlaceTokens {
-    /// The place asked for.
+    /// The place asked for, or the subnet place of the port asked for.
     pub place: String,
+    /// The port asked for, beside its subnet place (§12.7).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub port: Option<String>,
     /// The version the page reflects.
     pub marking_version: u64,
     /// The true count.
@@ -1363,8 +1620,11 @@ pub struct QueryResult {
 /// One token a `query` found.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct QueryMatch {
-    /// Where it is.
+    /// Where it is: its place, or the subnet place of its port.
     pub place: String,
+    /// Its port, for a match in a port place (§12.7).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub port: Option<String>,
     /// The token entry, keys included.
     pub token: Token,
     /// Its JSON value, where its place is serializable.
@@ -1396,10 +1656,10 @@ pub struct LogEntry {
     pub duration_ms: f64,
     /// `"fired"` or `"failed"`.
     pub outcome: String,
-    /// `[place, id]` taken.
-    pub consumed: Vec<(String, String)>,
-    /// `[place, id]` produced.
-    pub produced: Vec<(String, String)>,
+    /// `[place, id]` taken, a port by `{"place", "port"}` (§12.7).
+    pub consumed: Vec<(PlaceName, String)>,
+    /// `[place, id]` produced, a port by `{"place", "port"}`.
+    pub produced: Vec<(PlaceName, String)>,
     /// The failure's text, for `"failed"`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
@@ -1481,10 +1741,13 @@ mod tests {
             nested_id: "3".into(),
             event: Box::new(Notification::Added {
                 place: "Door".into(),
+                port: None,
                 id: "1".into(),
                 label: "\"Ada\"".into(),
                 color: None,
                 keys: None,
+                subnet_marking_versions: None,
+                outer_marking_version: None,
                 marking_version: 4,
                 running: false,
             }),
@@ -1518,8 +1781,11 @@ mod tests {
         let place = Place {
             name: "P".into(),
             type_name: "u32".into(),
-            serializable: false,
+            serializable: Some(false),
             nested: false,
+            subnet: false,
+            ports: None,
+            port: false,
             stepping: None,
             key_names: Vec::new(),
             style: None,
@@ -1675,7 +1941,7 @@ mod tests {
     #[test]
     fn a_produced_entry_has_three_elements_four_with_a_colour_five_with_keys() {
         let plain = Produced {
-            place: "Out".into(),
+            place: PlaceName::Place("Out".into()),
             id: "4".into(),
             label: "4".into(),
             color: None,
@@ -1739,10 +2005,13 @@ mod tests {
         );
         let added = Notification::Added {
             place: "Light".into(),
+            port: None,
             id: "1".into(),
             label: "Red".into(),
             color: Some("#ff6347".into()),
             keys: None,
+            subnet_marking_versions: None,
+            outer_marking_version: None,
             marking_version: 2,
             running: false,
         };
@@ -1760,8 +2029,11 @@ mod tests {
         let place = Place {
             name: "Light".into(),
             type_name: "Colour".into(),
-            serializable: true,
+            serializable: Some(true),
             nested: false,
+            subnet: false,
+            ports: None,
+            port: false,
             stepping: None,
             key_names: Vec::new(),
             style: Some(PlaceStyle { fill: Fill::Token }),
@@ -1823,6 +2095,9 @@ mod tests {
         let n = Notification::Hidden {
             kind: HiddenKind::Mutated,
             place: "Savanna".into(),
+            port: None,
+            subnet_marking_versions: None,
+            outer_marking_version: None,
             marking_version: 9,
             running: false,
         };
@@ -1832,6 +2107,144 @@ mod tests {
             json!({"method": "hidden", "params": {"kind": "mutated", "place": "Savanna",
                    "marking_version": 9, "running": false}})
         );
+    }
+
+    #[test]
+    fn a_port_is_named_by_the_pair_and_a_place_of_the_net_s_own_by_its_name() {
+        let lobby = PlaceName::Port {
+            place: "Level 3".into(),
+            port: "Lobby".into(),
+        };
+        assert_eq!(
+            to_value(&lobby),
+            json!({"place": "Level 3", "port": "Lobby"})
+        );
+        assert_eq!(to_value(PlaceName::Place("Door".into())), json!("Door"));
+        let entry = Produced {
+            place: lobby.clone(),
+            id: "4".into(),
+            label: "Ada".into(),
+            color: None,
+            keys: None,
+        };
+        assert_eq!(
+            to_value(&entry),
+            json!([{"place": "Level 3", "port": "Lobby"}, "4", "Ada"])
+        );
+        let back: Produced = serde_json::from_value(to_value(&entry)).unwrap();
+        assert_eq!(back, entry);
+        assert_eq!(
+            lobby.clone().split(),
+            ("Level 3".to_owned(), Some("Lobby".to_owned()))
+        );
+        for (value, parsed) in [
+            (json!("Door"), Some(PlaceName::Place("Door".into()))),
+            (
+                json!({"place": "Level 3", "port": "Lobby", "note": "ignored"}),
+                Some(lobby),
+            ),
+            (json!({"place": "Level 3"}), None),
+            (json!({"place": "Level 3", "port": 7}), None),
+            (json!(3), None),
+        ] {
+            assert_eq!(PlaceName::parse(&value).ok(), parsed, "{value}");
+        }
+        assert!(Filter::parse(&json!({"places": [{"place": "Level 3"}]})).is_err());
+    }
+
+    #[test]
+    fn a_change_of_a_port_carries_the_version_across_it() {
+        let mut n = Notification::Removed {
+            place: "Level 3".into(),
+            port: Some("Lobby".into()),
+            id: "4".into(),
+            subnet_marking_versions: None,
+            outer_marking_version: None,
+            marking_version: 43,
+            running: false,
+        };
+        n.across(Some(BTreeMap::from([("Level 3".to_owned(), 8)])), None);
+        assert_eq!(
+            to_value(&n),
+            json!({"method": "removed", "params": {"place": "Level 3", "port": "Lobby", "id": "4",
+                   "subnet_marking_versions": {"Level 3": 8},
+                   "marking_version": 43, "running": false}})
+        );
+        let back: Notification = serde_json::from_value(to_value(&n)).unwrap();
+        assert_eq!(back, n);
+        let mut fireable = Notification::Fireable {
+            transitions: Vec::new(),
+            marking_version: 1,
+            running: false,
+        };
+        let before = fireable.clone();
+        fireable.across(None, Some(9));
+        assert_eq!(fireable, before, "not a change of tokens");
+    }
+
+    #[test]
+    fn a_subnet_place_is_written_with_its_ports_and_its_entry_with_its_subnet() {
+        let lobby = Place {
+            name: "Lobby".into(),
+            type_name: "Hero".into(),
+            serializable: Some(true),
+            nested: false,
+            subnet: false,
+            ports: None,
+            port: false,
+            stepping: None,
+            key_names: Vec::new(),
+            style: None,
+        };
+        let level = Place {
+            name: "Level 3".into(),
+            type_name: "Level".into(),
+            serializable: None,
+            subnet: true,
+            ports: Some(vec![lobby.clone()]),
+            stepping: Some(Stepping::InnerFirst),
+            ..lobby.clone()
+        };
+        assert_eq!(
+            to_value(&level),
+            json!({"name": "Level 3", "type_name": "Level", "subnet": true,
+                   "ports": [{"name": "Lobby", "type_name": "Hero", "serializable": true}],
+                   "stepping": "inner_first"})
+        );
+        let inside = Place {
+            port: true,
+            ..lobby
+        };
+        assert_eq!(to_value(&inside)["port"], json!(true));
+        let entry = PlaceEntry::Subnet(SubnetMarking {
+            subnet: SubnetEntry {
+                nested_id: "5".into(),
+                path: vec![PathStep::Subnet {
+                    place: "Level 3".into(),
+                }],
+                template: Some("Level".into()),
+                count: 2,
+            },
+            ports: BTreeMap::from([(
+                "Lobby".to_owned(),
+                PlaceMarking {
+                    count: 1,
+                    matching: None,
+                    tokens: Vec::new(),
+                },
+            )]),
+        });
+        let value = to_value(&entry);
+        assert_eq!(
+            value,
+            json!({"subnet": {"nested_id": "5", "path": [{"place": "Level 3"}], "template": "Level",
+                              "count": 2},
+                   "ports": {"Lobby": {"count": 1, "tokens": []}}})
+        );
+        let back: PlaceEntry = serde_json::from_value(value).unwrap();
+        assert_eq!(back, entry);
+        let place: PlaceEntry = serde_json::from_value(json!({"count": 0, "tokens": []})).unwrap();
+        assert!(matches!(place, PlaceEntry::Tokens(_)));
     }
 
     #[test]

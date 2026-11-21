@@ -2692,8 +2692,12 @@ The decisions that shape it, all of 2026-10-03:
 | edges an empty place satisfies, `kind: "drain"` / `"survey"` (§5.1) | `EdgeKind::{Drain, Survey}` (slice 22, §4.4, §19.3.14), no `filter` |
 | `topology.places[].nested`, `stepping` (§5.1, §12.2, §12.3) | `TopologyPlace::nested`, written only when true; `TopologyPlace::stepping` as `protocol::Stepping`, written for every place that holds nets, the default included (protocol version 2, §19.3.16; version 1 had `passive`, written when the rule was `Stepping::Passive`) |
 | `path`, `nested_id` (§12.1) | a path is a list of steps (`protocol::PathStep`, since protocol version 2), read by `protocol::parse_path` and resolved one step at a time through `net.nested(place, token)`; a nested id is the inner net's `NetId` printed with its `Display`, found by walking every nested place at every depth; mutable reach (`inject`) through `nested_scope` at each level (§19.3.15) |
-| a token's `nets` (§12.2) | `net.nested(place, token)`: each net's name, `id()`, its path (the path of the net the token is in and one step more), `template()`, and the sum of its places' counts |
-| `nested` notification (§12.4) | `Event::Nested`, unwrapped to the event the innermost net logged: one wrapper with the full path, the inner notification built with that net's names and version |
+| a token's `nets` (§12.2) | `net.nested(place, token)`: each net's name, `id()`, its path (the path of the net the token is in and one step more), `template()`, and the sum of its own places' counts, ports included and the places it has for its subnets' ports not (`translate::own_count`, §19.3.17) |
+| a subnet place, its `ports`, `subnet` and `port` (§5.1, §12.7) | `TopologyPlace::subnet`; its `type_name` is `net.subnet(place)?.template()`, or `""`; its `ports` are the subnet's own places with `TopologyPlace::port`; the places the net has for them (`TopologyPlace::port_of`, its windows) are not listed, and an edge on one names `place` and `port`; `port: true` only in a subnet's own topology (§19.3.17) |
+| a port named by the pair (§7.1, §8, §12.7, §13.2) | `protocol::PlaceName`, from a window's `port_of` |
+| a subnet place's entry `{subnet, ports}` (§12.7) | `net.subnet(place)`: its id, path, template and own count, and each port read in the subnet, under the subnet's projection |
+| `subnet_marking_versions`, `outer_marking_version` (§12.7) | the runner's, from the places a core event took, put or restored, or a token event's place (§19.3.17) |
+| `nested` notification (§12.4) | `Event::Nested` and `Event::Subnet`, unwrapped to the event the innermost net logged: one wrapper with the full path, the inner notification built with that net's names and version |
 | inner `marking_version` (§12.3) | the runner's counter per inner net, one per state notification of that net; the outer one does not move |
 | `step` or a running net, inside (§12.3) | `step_deep_staged()` → `StagedStep::Inside`, inline: `nested` around `fired` (slice 21; `select()` and then `step_inside()` before) |
 | `topology.places[].key_names`, a token's `keys` (§13.1) | `TopologyPlace::key_names`, written only when non-empty; `Net::keys`, read when the line is written (slice 20, §19.3.12) |
@@ -2761,7 +2765,7 @@ a wire format they do not own. `Snapshot` stays unserialisable; tokens are
 
 ### 19.3 The `petritype-runner` crate
 
-**Designed and built 2026-10-03**; as-built notes in §19.3.10, nested nets in §19.3.11, keys in §19.3.12, the protocol's wording gaps and the engine policies in §19.3.13, protocol version 2 in §19.3.15 and §19.3.16. A library crate in this
+**Designed and built 2026-10-03**; as-built notes in §19.3.10, nested nets in §19.3.11, keys in §19.3.12, the protocol's wording gaps and the engine policies in §19.3.13, protocol version 2 in §19.3.15 and §19.3.16, subnet places in §19.3.17. A library crate in this
 workspace plus an example binary. A net's bodies are the user's code, so the
 binary is always the user's own: it lists its nets and hands over to the
 crate. Dependencies: `petritype` with `serde`, `serde`, `serde_json`, and
@@ -3523,8 +3527,8 @@ the Python track wrote, built and recorded first.
   (`translate::token_id`, so `"01"` names no token); the net by its name
   in the token. A step that names nothing is `unknown_net`, its message
   starting `step N of the path:` as the Python runner's does. A step of the
-  subnet form is read and answered `unknown_net`: its arm in `descend_step`
-  is where a level into a subnet goes when subnet places come to the wire.
+  subnet form takes a level into the subnet of a subnet place (§19.3.17);
+  until then it was read and answered `unknown_net`.
 - **Nothing is spelt as text.** `translate::level`, which joined a level
   with `/` and `#`, and the `resolve_path` that split one, are gone;
   `translate::step` builds a step from the names taken whole, so a place
@@ -3537,12 +3541,10 @@ the Python track wrote, built and recorded first.
   `fired_count` and its `fired_counts` name its own transitions, and an
   inner firing is counted in its own net's progress alone, whether a
   `step`, a run or the program behind a hosted net made it.
-- **Subnet places are not served yet.** `load` and `reset` refuse a net that
-  holds a subnet place, or whose tokens hold a net that does, as
-  `unsupported` (`first_subnet_place`), and the net loaded before stays. The
-  walk skips the places a net has for ports. A hosted net (`Host::new`)
-  cannot be refused and is not checked, and neither is a token's net with a
-  subnet place that arrives after `load`.
+- **Subnet places came to the wire later the same day** (§19.3.17). Until
+  then `load` and `reset` refused a net that held a subnet place, or whose
+  tokens held a net that did, as `unsupported`, and the walk skipped the
+  places a net has for ports, as it still does.
 - **The harness** follows §11: the `<path>` mask is gone, and a capture is
   substituted whole, a token id in a step of a path included, never inside
   a longer string.
@@ -3591,6 +3593,127 @@ wire changes.
   change. Both replay with no runner change beyond the field and the net.
   Our own `01` lists `stepping-rules` in `describe`, which lists everything
   the example carries; none of our own showed `passive`.
+
+#### 19.3.17 Subnet places on the wire, 2026-11-21
+
+The runner's half of step 7 of the subnet places change
+(`dev-docs/subnet-place-spec.md` §2.2, §4), on PROTOCOL.md §12.7 and its
+mentions elsewhere, which the Python track wrote, built and recorded first.
+The core's subnet places are §6.7; the runner serves them with no addition
+to the core.
+
+- **A subnet is one more inner net.** A level of a path is
+  `Level::Token { place, token, index }` or `Level::Subnet { place }`: the
+  walk visits a subnet place's subnet at its place's position (and never
+  the places a net has for ports, its windows, whose tokens are reached in
+  the subnet), `descend` reads it with `Net::subnet`, `descend_mut` reaches
+  it through `Net::subnet_scope`, and `Lifted` unwraps `Event::Subnet` as it
+  unwraps `Event::Nested`. So a subnet has an `Inner` record like a token's
+  net: made by the walk at `load` and `reset`, its fireable baseline taken
+  silently, and never pruned while its net lives, with its own version,
+  topology, progress, projection and log entries (their chain holds its
+  nested id). Its name, what its `get_state` calls it, is its subnet
+  place's. Each record also keeps `around`, the net that holds its subnet
+  place (`Around::Loaded`, or `Around::Inner` by nested id), which never
+  changes, and each net, the loaded one in `Loaded`, keeps its subnet places
+  as `Seat`s: the place, the subnet's nested id, and each window with the
+  port's own id in the subnet. A subnet built without a template is served
+  as any other.
+- **Addresses** (§12.1). `descend_step` takes `{place}` to the subnet of a
+  subnet place; `place X is not a subnet place` and `place X is a subnet
+  place, whose step names the place alone` are its refusals, as the Python
+  runner's, under `unknown_net`.
+- **Topology** (§5.1, §12.7). `translate::topology` is given the net and
+  whether it is a subnet. Windows are not listed. A subnet place is
+  `{name, type_name, subnet: true, ports, stepping}`: its `type_name` the
+  subnet's template or `""`, its `ports` the subnet's own places marked
+  `port`, as the subnet's own topology has them (a nested port with its
+  `stepping`), and no `serializable`, so `protocol::Place::serializable` is
+  an `Option`. An edge on a window names the subnet place and the port
+  (`protocol::Edge::port`). `port: true` is written in a subnet's own
+  topology alone: a net loaded alone, or carried by a token, has no net
+  around it, whatever its definition marks.
+- **References** (§7.1, §8, §12.7, §13.2). `translate::Names` knows each
+  window's subnet place, so a window is named by the pair: `port` beside
+  `place` in `added`, `removed`, `mutated`, `hidden`, a page of tokens and a
+  query's match, and `protocol::PlaceName` (`"Door"` or `{"place",
+  "port"}`) in `consumed`, `produced`, the log's pairs and a filter's and a
+  `distinct`'s `places`, read strictly by `PlaceName::parse`.
+- **State** (§12.7). A subnet place's entry is `PlaceEntry::Subnet`,
+  `{subnet: {nested_id, path, template?, count}, ports}`, each port read in
+  the subnet, so that the paths of its tokens' nets go through it, under the
+  subnet's projection. `count` is `translate::own_count`: the net's own
+  places, its ports included, its windows and subnet places not. A token's
+  `nets[].count` is that count too, which before it counted a window's
+  tokens a second time.
+- **Requests.** `resolve_place` reads `place` and `port` with §12.7's
+  errors: a subnet place without `port` is `invalid_params`, a `port` its
+  subnet place lacks or beside a place that is no subnet place
+  `unknown_place`, and a `port` that is not a string `invalid_params`.
+  `inject` by the pair decodes the token as the subnet's port does
+  (`Command::from_json` on the subnet) and puts it into the window, so the
+  net around tells it, under the subnet's id; addressed to the subnet it is
+  an inject like any other. `get_token` searches the net's own places only,
+  a port's tokens carrying the subnet's ids, and reads an id in its one
+  canonical form (it took `"01"` and `"+1"`, where the Python runner and a
+  path step do not). `query` and `distinct` cover the windows at their
+  subnet place's position (the core's queries read through a window), and
+  `query` without a `filter` takes each window's tokens by its subnet's
+  projection and the net's own places by the net's.
+- **One place, two views: the projections** (§12.7, §13.4). A net's own
+  projection is kept to its own places (`projection::own_places`), and a
+  `projection::Lens`, taken out of the records for one event and put back,
+  routes each token an event names to the projection that covers its place:
+  the net's own, or for a window its subnet's, under the port's own id. A
+  lens's `landed` clears every projection it holds, since one firing happens
+  at a time across the tree.
+- **Versions** (§4, §12.7). `changed_places` reads what a core event took,
+  put, or put back when it restored, or a token event's place; an inline
+  firing's one `fired` counts its `launched`'s places too. `Loaded::cross`
+  then raises, once each, the version of each subnet one of whose windows
+  changed, and, when the net is a subnet and one of its own ports changed,
+  the version of the net around it, the loaded net's being the owner's own
+  counter; `Notification::across` writes them as `subnet_marking_versions`
+  and `outer_marking_version`. A `nested` wrapper carries the loaded net's
+  version after the event. The quiet path of a hosted net crosses alike, so
+  quiet and listening agree, and so do a filter's coming-into-view lines.
+- **Fireable sets** (§12.4, §12.7). A crossing touches each net it moved, so
+  both nets' sets are compared after a change of a port, and the inner sets
+  are compared shallower nets first, so that a net's line precedes those of
+  the nets inside it.
+- **Reads during a firing** (§12.3). `held_by_the_body` holds a read
+  addressed to a subnet one of whose windows the airborne transition has an
+  edge on (`Loaded::reaches`) until it lands; a read of any other subnet,
+  and of the loaded net, is answered at once, the window showing what the
+  launch took. A subnet's own firings are inline, as every inner firing
+  here, so the net around one is never read while a subnet's body runs.
+- **One piece inside.** A subnet's firing is one `fired`, which may carry
+  both fields, where the Python runner tells a `launched` and a
+  `distributed` that carry one each. The transcript harness folds the two
+  fields from both pieces of a firing as §11 says, so one transcript reads
+  the same for both.
+- **The host server** has nothing of its own: a hosted net's subnets are
+  walked, told and kept quiet as its other inner nets are, a change the
+  program makes through `subnet_scope` told by the subnet.
+- **The conformance net `levels`** (§11) is written in the example's
+  `nets.rs`, as `stepping-rules` is, since the core's `levels` example is
+  another story, and `nets::levels_registry` carries it alone for the
+  transcript over it. `nets::registry()`, what the example binary carries,
+  does not list it yet.
+- **Transcripts.** `09_subnet_places.json` is copied verbatim from the
+  Python track's recording and replays with nothing but the harness's fold
+  of the two version fields; `05` to `08` and `10` did not change, and our
+  own are untouched. `tests/subnets.rs` has the rest: the versions in each
+  case, at two depths, with a subnet inside a token's net and a token's net
+  inside a port, keys and filters on a port, a failed firing that restores
+  into one, read edges and an empty drain that change nothing there, the
+  read that waits, and a hosted world quiet and told.
+- **What a reader of the protocol types meets** (the viewer, §6.1 of the
+  spec): `Notification`'s firing and token variants gained `port` and the
+  two version fields and name a place by `PlaceName`, as do `Produced`,
+  `LogEntry` and `Filter::places`; `Marking::places` holds `PlaceEntry`s;
+  `Place` gained `subnet`, `ports` and `port`, and its `serializable` is an
+  `Option`.
 
 ### 19.4 Who spawns it
 

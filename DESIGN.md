@@ -964,9 +964,10 @@ token's nets, except where §6.7 says otherwise.
   (`StagedStep::Inside`). Each part is worked out afresh from the marking
   and the cursor, from one walk (`members`, each net with its place,
   token, position and rule), so the part taken after an own turn that chose
-  nothing sees what the first part saw. On the wire nothing changes yet:
-  protocol version 1 has `passive`, which the runner writes for a place
-  whose rule is `Passive`.
+  nothing sees what the first part saw. On the wire the rule is
+  `stepping`, which the runner writes on every place that holds nets since
+  protocol version 2 (§19.3.16); version 1 had `passive`, which the runner
+  wrote for a place whose rule is `Passive`.
 - **Passive places.** `step_deep` never enters a place whose rule is
   `Passive`, and its inner nets do not count against `is_quiescent_deep`.
   An outer body steps them itself: `vehicle.inner.step()`, or
@@ -2659,7 +2660,7 @@ The decisions that shape it, all of 2026-10-03:
 | `topology.edges` | `net.edges()`: `EdgeKind::{Take, TakeAll, Snapshot, Mutate}` as `"take"`, `"take_all"`, `"snapshot"`, `"mutate"`; `Output { slot }` as `slot` where the transition has more than one output and `TransitionInfo::positional` (slice 17; a routed or distributing body has no slots to speak of) |
 | keyed edges, `kind: "take_where"` / `"mutate_where"` with `filter` (§5.1, §13.5) | `EdgeKind::{TakeWhere, MutateWhere}` and `EdgeInfo::Input::filter` (slice 19), the filter's `places` mapped from ids to names by the runner (slice 20; sent without `kind` before it) |
 | edges an empty place satisfies, `kind: "drain"` / `"survey"` (§5.1) | `EdgeKind::{Drain, Survey}` (slice 22, §4.4, §19.3.14), no `filter` |
-| `topology.places[].nested`, `passive` (§12.2) | `TopologyPlace::nested`, written only when true; `passive` when `TopologyPlace::stepping` is `Stepping::Passive` (since 2026-11-21; the wire's `stepping` comes with protocol version 2) |
+| `topology.places[].nested`, `stepping` (§5.1, §12.2, §12.3) | `TopologyPlace::nested`, written only when true; `TopologyPlace::stepping` as `protocol::Stepping`, written for every place that holds nets, the default included (protocol version 2, §19.3.16; version 1 had `passive`, written when the rule was `Stepping::Passive`) |
 | `path`, `nested_id` (§12.1) | a path is a list of steps (`protocol::PathStep`, since protocol version 2), read by `protocol::parse_path` and resolved one step at a time through `net.nested(place, token)`; a nested id is the inner net's `NetId` printed with its `Display`, found by walking every nested place at every depth; mutable reach (`inject`) through `nested_scope` at each level (§19.3.15) |
 | a token's `nets` (§12.2) | `net.nested(place, token)`: each net's name, `id()`, its path (the path of the net the token is in and one step more), `template()`, and the sum of its places' counts |
 | `nested` notification (§12.4) | `Event::Nested`, unwrapped to the event the innermost net logged: one wrapper with the full path, the inner notification built with that net's names and version |
@@ -2730,7 +2731,7 @@ a wire format they do not own. `Snapshot` stays unserialisable; tokens are
 
 ### 19.3 The `petritype-runner` crate
 
-**Designed and built 2026-10-03**; as-built notes in §19.3.10, nested nets in §19.3.11, keys in §19.3.12, the protocol's wording gaps and the engine policies in §19.3.13, protocol version 2 in §19.3.15. A library crate in this
+**Designed and built 2026-10-03**; as-built notes in §19.3.10, nested nets in §19.3.11, keys in §19.3.12, the protocol's wording gaps and the engine policies in §19.3.13, protocol version 2 in §19.3.15 and §19.3.16. A library crate in this
 workspace plus an example binary. A net's bodies are the user's code, so the
 binary is always the user's own: it lists its nets and hands over to the
 crate. Dependencies: `petritype` with `serde`, `serde`, `serde_json`, and
@@ -3155,7 +3156,8 @@ runner change.
   version. As `05_nested_nets.json` has it: the cabin's `["Sit"]` after the
   first board, nothing at load.
 - **Reads** (§12.2, §12.3). `topology.places[]` carry `nested` and
-  `passive` when true. Every token entry (`get_state`, `get_place_tokens`,
+  `passive` when true (since protocol version 2 a place that holds nets
+  carries `stepping` in place of `passive`, §19.3.16). Every token entry (`get_state`, `get_place_tokens`,
   `get_token`) carries `nets: [{name, nested_id, path, template?, count}]`
   when its token holds nets; `produced`, `added` and `mutated` carry none.
   An inner `get_state` is that net's state: `net` its name in its token,
@@ -3519,6 +3521,46 @@ the Python track wrote, built and recorded first.
   and `05` spells its paths as lists of steps) and replay with nothing
   more than the above. Of our own, `01` and `04` pin `protocol_version` 2
   in place of 1, and `02` and `03`, which carry no version, are unchanged.
+
+#### 19.3.16 The stepping rule on the wire, 2026-11-21
+
+The runner's half of step 3 of the subnet places change
+(`dev-docs/subnet-place-spec.md` §2.3), on PROTOCOL.md §5.1 and §12.3 as the
+Python track rewrote them. The rule per place is the core's (§6.6), and
+the runner already stepped by it through `Net::step_deep_staged`; only the
+wire changes.
+
+- **`stepping` in the topology** (§5.1). `protocol::Place` has `stepping:
+  Option<protocol::Stepping>`, the four protocol names, `inner_first`,
+  `take_turns`, `outer_first` and `passive`, in place of `passive: bool`.
+  `translate::topology` writes `TopologyPlace::stepping`, which the core
+  gives exactly for a place that holds nets, so every nested place carries
+  its rule, the default included, and a plain place carries none. A rule
+  the runner does not know would go out as none. Nothing on the wire sets a
+  rule.
+- **While a body of a net is in flight** the nets of its outer-first places
+  wait (§12.3). The core's deep step does that already, and the runner never
+  takes a deep step while a firing of its own is airborne.
+- **`transit`** states outer first on its places of vehicles (§6.6), so its
+  topology now shows `stepping: "outer_first"` on them, and the shared
+  `05_nested_nets.json`, recorded again with those fields, replays.
+- **The conformance net `stepping-rules`** (§11): the outer places `Late`
+  (outer first), `Ring` (take turns), `Early` (inner first) and `Shelf`
+  (passive), each holding one net, then `Inbox` and `Outbox` with `Forward`
+  between them; the team at `Early` is the second level, its `Helpers`
+  taking turns with it. Each token of a place of nets is a bare `Net`, so a
+  step of a path to one names its net `""`. The nets are built from two
+  templates, `Worker` (its `jobs` read from its parameters) and `Team`, and
+  every place of nets is serializable, so a token's `nets[]` names its
+  template. The net is written in the example's `nets.rs`, as
+  `parcel-distribution` is, since the core has no example of it, and
+  `nets::stepping_rules_registry` carries it alone for the transcript over
+  it. It is hosted `manual`, with no parameters.
+- **Transcripts.** `10_stepping_rules.json` is new and `05_nested_nets.json`
+  is replaced, both verbatim from the Python track; `06` to `08` did not
+  change. Both replay with no runner change beyond the field and the net.
+  Our own `01` lists `stepping-rules` in `describe`, which lists everything
+  the example carries; none of our own showed `passive`.
 
 ### 19.4 Who spawns it
 

@@ -1,0 +1,1707 @@
+{
+ "net": "stepping-rules",
+ "params": {},
+ "exchanges": [
+  {
+   "send": {
+    "method": "describe"
+   },
+   "expect": [
+    {
+     "id": "1",
+     "result": {
+      "protocol_version": 2,
+      "runtime": "<label>",
+      "runtime_version": "<label>",
+      "nets": [
+       {
+        "name": "stepping-rules",
+        "description": "Nets under each stepping rule take their turns",
+        "mode": "manual",
+        "params": []
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "load",
+    "params": {
+     "net": "stepping-rules"
+    }
+   },
+   "expect": [
+    {
+     "method": "load_progress",
+     "params": {
+      "step": "build",
+      "message": "<label>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "reloaded",
+     "params": {
+      "generation": 1,
+      "reason": "load",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "2",
+     "result": {
+      "status": "loaded",
+      "generation": 1,
+      "marking_version": "<version>"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "get_state"
+   },
+   "expect": [
+    {
+     "id": "3",
+     "result": {
+      "protocol_version": 2,
+      "runtime": "<label>",
+      "net": "stepping-rules",
+      "generation": 1,
+      "marking_version": "<version>",
+      "running": false,
+      "topology": {
+       "places": [
+        {
+         "name": "Late",
+         "type_name": "<label>",
+         "serializable": true,
+         "nested": true,
+         "stepping": "outer_first"
+        },
+        {
+         "name": "Ring",
+         "type_name": "<label>",
+         "serializable": true,
+         "nested": true,
+         "stepping": "take_turns"
+        },
+        {
+         "name": "Early",
+         "type_name": "<label>",
+         "serializable": true,
+         "nested": true,
+         "stepping": "inner_first"
+        },
+        {
+         "name": "Shelf",
+         "type_name": "<label>",
+         "serializable": true,
+         "nested": true,
+         "stepping": "passive"
+        },
+        {
+         "name": "Inbox",
+         "type_name": "<label>",
+         "serializable": true
+        },
+        {
+         "name": "Outbox",
+         "type_name": "<label>",
+         "serializable": true
+        }
+       ],
+       "transitions": [
+        {
+         "name": "Forward",
+         "detail": "<any>"
+        }
+       ],
+       "edges": {
+        "<unordered>": [
+         {
+          "place": "Inbox",
+          "transition": "Forward",
+          "direction": "in",
+          "kind": "take"
+         },
+         {
+          "place": "Outbox",
+          "transition": "Forward",
+          "direction": "out"
+         }
+        ]
+       }
+      },
+      "transitions": {
+       "Forward": {
+        "enabled": true,
+        "fireable": true,
+        "in_flight": false,
+        "priority": 0.0
+       }
+      },
+      "marking": {
+       "places": {
+        "Late": {
+         "count": 1,
+         "tokens": [
+          {
+           "id": "<id:late>",
+           "label": "<label>",
+           "nets": [
+            {
+             "name": "",
+             "nested_id": "<id:late_2>",
+             "path": [
+              {
+               "place": "Late",
+               "token": "<id:late>",
+               "net": ""
+              }
+             ],
+             "template": "Worker",
+             "count": 1
+            }
+           ]
+          }
+         ]
+        },
+        "Ring": {
+         "count": 1,
+         "tokens": [
+          {
+           "id": "<id:ring>",
+           "label": "<label>",
+           "nets": [
+            {
+             "name": "",
+             "nested_id": "<id:ring_2>",
+             "path": [
+              {
+               "place": "Ring",
+               "token": "<id:ring>",
+               "net": ""
+              }
+             ],
+             "template": "Worker",
+             "count": 2
+            }
+           ]
+          }
+         ]
+        },
+        "Early": {
+         "count": 1,
+         "tokens": [
+          {
+           "id": "<id:early>",
+           "label": "<label>",
+           "nets": [
+            {
+             "name": "",
+             "nested_id": "<id:early_2>",
+             "path": [
+              {
+               "place": "Early",
+               "token": "<id:early>",
+               "net": ""
+              }
+             ],
+             "template": "Team",
+             "count": 2
+            }
+           ]
+          }
+         ]
+        },
+        "Shelf": {
+         "count": 1,
+         "tokens": [
+          {
+           "id": "<id:shelf>",
+           "label": "<label>",
+           "nets": [
+            {
+             "name": "",
+             "nested_id": "<id:shelf_2>",
+             "path": [
+              {
+               "place": "Shelf",
+               "token": "<id:shelf>",
+               "net": ""
+              }
+             ],
+             "template": "Worker",
+             "count": 5
+            }
+           ]
+          }
+         ]
+        },
+        "Inbox": {
+         "count": 3,
+         "tokens": [
+          {
+           "id": "<id:n0>",
+           "label": "<label>"
+          },
+          {
+           "id": "<id:n1>",
+           "label": "<label>"
+          },
+          {
+           "id": "<id:n2>",
+           "label": "<label>"
+          }
+         ]
+        },
+        "Outbox": {
+         "count": 0,
+         "tokens": []
+        }
+       }
+      },
+      "progress": {
+       "step_count": 0,
+       "last_fired": null,
+       "fired_counts": {},
+       "last_progress_at": null
+      }
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "get_state",
+    "params": {
+     "path": [
+      {
+       "place": "Early",
+       "token": "<id:early>",
+       "net": ""
+      }
+     ]
+    }
+   },
+   "expect": [
+    {
+     "id": "4",
+     "result": {
+      "protocol_version": 2,
+      "runtime": "<label>",
+      "net": "",
+      "generation": 1,
+      "marking_version": "<version>",
+      "running": false,
+      "topology": {
+       "places": [
+        {
+         "name": "Todo",
+         "type_name": "<label>",
+         "serializable": true
+        },
+        {
+         "name": "Done",
+         "type_name": "<label>",
+         "serializable": true
+        },
+        {
+         "name": "Helpers",
+         "type_name": "<label>",
+         "serializable": true,
+         "nested": true,
+         "stepping": "take_turns"
+        }
+       ],
+       "transitions": [
+        {
+         "name": "Plan",
+         "detail": "<any>"
+        }
+       ],
+       "edges": {
+        "<unordered>": [
+         {
+          "place": "Todo",
+          "transition": "Plan",
+          "direction": "in",
+          "kind": "take"
+         },
+         {
+          "place": "Done",
+          "transition": "Plan",
+          "direction": "out"
+         }
+        ]
+       }
+      },
+      "transitions": {
+       "Plan": {
+        "enabled": true,
+        "fireable": true,
+        "in_flight": false,
+        "priority": 0.0
+       }
+      },
+      "marking": {
+       "places": {
+        "Todo": {
+         "count": 1,
+         "tokens": [
+          {
+           "id": "<id:early_n0>",
+           "label": "<label>"
+          }
+         ]
+        },
+        "Done": {
+         "count": 0,
+         "tokens": []
+        },
+        "Helpers": {
+         "count": 1,
+         "tokens": [
+          {
+           "id": "<id:early_helpers>",
+           "label": "<label>",
+           "nets": [
+            {
+             "name": "",
+             "nested_id": "<id:helpers>",
+             "path": [
+              {
+               "place": "Early",
+               "token": "<id:early>",
+               "net": ""
+              },
+              {
+               "place": "Helpers",
+               "token": "<id:early_helpers>",
+               "net": ""
+              }
+             ],
+             "template": "Worker",
+             "count": 2
+            }
+           ]
+          }
+         ]
+        }
+       }
+      },
+      "progress": {
+       "step_count": 0,
+       "last_fired": null,
+       "fired_counts": {},
+       "last_progress_at": null
+      },
+      "path": [
+       {
+        "place": "Early",
+        "token": "<id:early>",
+        "net": ""
+       }
+      ],
+      "nested_id": "<id:early_2>",
+      "template": "Team"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "step"
+   },
+   "expect": [
+    {
+     "method": "nested",
+     "params": {
+      "path": [
+       {
+        "place": "Early",
+        "token": "<id:early>",
+        "net": ""
+       }
+      ],
+      "nested_id": "<id:early_2>",
+      "event": {
+       "method": "fired",
+       "params": {
+        "transition": "Plan",
+        "consumed": [
+         [
+          "Todo",
+          "<id:early_n0>"
+         ]
+        ],
+        "produced": [
+         [
+          "Done",
+          "<id:early_n0_done>",
+          "<label>"
+         ]
+        ],
+        "duration_ms": "<ms>",
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "nested",
+     "params": {
+      "path": [
+       {
+        "place": "Early",
+        "token": "<id:early>",
+        "net": ""
+       }
+      ],
+      "nested_id": "<id:early_2>",
+      "event": {
+       "method": "fireable",
+       "params": {
+        "transitions": [],
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "5",
+     "result": {
+      "fired": true,
+      "transition": "Plan",
+      "path": [
+       {
+        "place": "Early",
+        "token": "<id:early>",
+        "net": ""
+       }
+      ],
+      "nested_id": "<id:early_2>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "step"
+   },
+   "expect": [
+    {
+     "method": "nested",
+     "params": {
+      "path": [
+       {
+        "place": "Early",
+        "token": "<id:early>",
+        "net": ""
+       },
+       {
+        "place": "Helpers",
+        "token": "<id:early_helpers>",
+        "net": ""
+       }
+      ],
+      "nested_id": "<id:helpers>",
+      "event": {
+       "method": "fired",
+       "params": {
+        "transition": "Work",
+        "consumed": [
+         [
+          "Todo",
+          "<id:helpers_todo>"
+         ]
+        ],
+        "produced": [
+         [
+          "Done",
+          "<id:helpers_n0>",
+          "<label>"
+         ]
+        ],
+        "duration_ms": "<ms>",
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "6",
+     "result": {
+      "fired": true,
+      "transition": "Work",
+      "path": [
+       {
+        "place": "Early",
+        "token": "<id:early>",
+        "net": ""
+       },
+       {
+        "place": "Helpers",
+        "token": "<id:early_helpers>",
+        "net": ""
+       }
+      ],
+      "nested_id": "<id:helpers>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "step"
+   },
+   "expect": [
+    {
+     "method": "nested",
+     "params": {
+      "path": [
+       {
+        "place": "Early",
+        "token": "<id:early>",
+        "net": ""
+       },
+       {
+        "place": "Helpers",
+        "token": "<id:early_helpers>",
+        "net": ""
+       }
+      ],
+      "nested_id": "<id:helpers>",
+      "event": {
+       "method": "fired",
+       "params": {
+        "transition": "Work",
+        "consumed": [
+         [
+          "Todo",
+          "<id:helpers_todo_todo>"
+         ]
+        ],
+        "produced": [
+         [
+          "Done",
+          "<id:helpers_n1>",
+          "<label>"
+         ]
+        ],
+        "duration_ms": "<ms>",
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "nested",
+     "params": {
+      "path": [
+       {
+        "place": "Early",
+        "token": "<id:early>",
+        "net": ""
+       },
+       {
+        "place": "Helpers",
+        "token": "<id:early_helpers>",
+        "net": ""
+       }
+      ],
+      "nested_id": "<id:helpers>",
+      "event": {
+       "method": "fireable",
+       "params": {
+        "transitions": [],
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "7",
+     "result": {
+      "fired": true,
+      "transition": "Work",
+      "path": [
+       {
+        "place": "Early",
+        "token": "<id:early>",
+        "net": ""
+       },
+       {
+        "place": "Helpers",
+        "token": "<id:early_helpers>",
+        "net": ""
+       }
+      ],
+      "nested_id": "<id:helpers>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "step"
+   },
+   "expect": [
+    {
+     "method": "fired",
+     "params": {
+      "transition": "Forward",
+      "consumed": [
+       [
+        "Inbox",
+        "<id:n0>"
+       ]
+      ],
+      "produced": [
+       [
+        "Outbox",
+        "<id:n0_outbox>",
+        "<label>"
+       ]
+      ],
+      "duration_ms": "<ms>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "8",
+     "result": {
+      "fired": true,
+      "transition": "Forward",
+      "marking_version": "<version>",
+      "running": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "step"
+   },
+   "expect": [
+    {
+     "method": "nested",
+     "params": {
+      "path": [
+       {
+        "place": "Ring",
+        "token": "<id:ring>",
+        "net": ""
+       }
+      ],
+      "nested_id": "<id:ring_2>",
+      "event": {
+       "method": "fired",
+       "params": {
+        "transition": "Work",
+        "consumed": [
+         [
+          "Todo",
+          "<id:ring_todo>"
+         ]
+        ],
+        "produced": [
+         [
+          "Done",
+          "<id:ring_n0>",
+          "<label>"
+         ]
+        ],
+        "duration_ms": "<ms>",
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "9",
+     "result": {
+      "fired": true,
+      "transition": "Work",
+      "path": [
+       {
+        "place": "Ring",
+        "token": "<id:ring>",
+        "net": ""
+       }
+      ],
+      "nested_id": "<id:ring_2>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "step"
+   },
+   "expect": [
+    {
+     "method": "fired",
+     "params": {
+      "transition": "Forward",
+      "consumed": [
+       [
+        "Inbox",
+        "<id:n1>"
+       ]
+      ],
+      "produced": [
+       [
+        "Outbox",
+        "<id:n1_outbox>",
+        "<label>"
+       ]
+      ],
+      "duration_ms": "<ms>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "10",
+     "result": {
+      "fired": true,
+      "transition": "Forward",
+      "marking_version": "<version>",
+      "running": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "step"
+   },
+   "expect": [
+    {
+     "method": "nested",
+     "params": {
+      "path": [
+       {
+        "place": "Ring",
+        "token": "<id:ring>",
+        "net": ""
+       }
+      ],
+      "nested_id": "<id:ring_2>",
+      "event": {
+       "method": "fired",
+       "params": {
+        "transition": "Work",
+        "consumed": [
+         [
+          "Todo",
+          "<id:ring_todo_todo>"
+         ]
+        ],
+        "produced": [
+         [
+          "Done",
+          "<id:ring_n1>",
+          "<label>"
+         ]
+        ],
+        "duration_ms": "<ms>",
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "nested",
+     "params": {
+      "path": [
+       {
+        "place": "Ring",
+        "token": "<id:ring>",
+        "net": ""
+       }
+      ],
+      "nested_id": "<id:ring_2>",
+      "event": {
+       "method": "fireable",
+       "params": {
+        "transitions": [],
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "11",
+     "result": {
+      "fired": true,
+      "transition": "Work",
+      "path": [
+       {
+        "place": "Ring",
+        "token": "<id:ring>",
+        "net": ""
+       }
+      ],
+      "nested_id": "<id:ring_2>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "step"
+   },
+   "expect": [
+    {
+     "method": "fired",
+     "params": {
+      "transition": "Forward",
+      "consumed": [
+       [
+        "Inbox",
+        "<id:n2>"
+       ]
+      ],
+      "produced": [
+       [
+        "Outbox",
+        "<id:n2_outbox>",
+        "<label>"
+       ]
+      ],
+      "duration_ms": "<ms>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "fireable",
+     "params": {
+      "transitions": [],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "12",
+     "result": {
+      "fired": true,
+      "transition": "Forward",
+      "marking_version": "<version>",
+      "running": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "step"
+   },
+   "expect": [
+    {
+     "method": "nested",
+     "params": {
+      "path": [
+       {
+        "place": "Late",
+        "token": "<id:late>",
+        "net": ""
+       }
+      ],
+      "nested_id": "<id:late_2>",
+      "event": {
+       "method": "fired",
+       "params": {
+        "transition": "Work",
+        "consumed": [
+         [
+          "Todo",
+          "<id:late_todo>"
+         ]
+        ],
+        "produced": [
+         [
+          "Done",
+          "<id:late_n0>",
+          "<label>"
+         ]
+        ],
+        "duration_ms": "<ms>",
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "nested",
+     "params": {
+      "path": [
+       {
+        "place": "Late",
+        "token": "<id:late>",
+        "net": ""
+       }
+      ],
+      "nested_id": "<id:late_2>",
+      "event": {
+       "method": "fireable",
+       "params": {
+        "transitions": [],
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "13",
+     "result": {
+      "fired": true,
+      "transition": "Work",
+      "path": [
+       {
+        "place": "Late",
+        "token": "<id:late>",
+        "net": ""
+       }
+      ],
+      "nested_id": "<id:late_2>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "step"
+   },
+   "expect": [
+    {
+     "id": "14",
+     "result": {
+      "fired": false,
+      "marking_version": "<version>",
+      "running": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "get_state"
+   },
+   "expect": [
+    {
+     "id": "15",
+     "result": {
+      "protocol_version": 2,
+      "runtime": "<label>",
+      "net": "stepping-rules",
+      "generation": 1,
+      "marking_version": "<version>",
+      "running": false,
+      "topology": {
+       "places": [
+        {
+         "name": "Late",
+         "type_name": "<label>",
+         "serializable": true,
+         "nested": true,
+         "stepping": "outer_first"
+        },
+        {
+         "name": "Ring",
+         "type_name": "<label>",
+         "serializable": true,
+         "nested": true,
+         "stepping": "take_turns"
+        },
+        {
+         "name": "Early",
+         "type_name": "<label>",
+         "serializable": true,
+         "nested": true,
+         "stepping": "inner_first"
+        },
+        {
+         "name": "Shelf",
+         "type_name": "<label>",
+         "serializable": true,
+         "nested": true,
+         "stepping": "passive"
+        },
+        {
+         "name": "Inbox",
+         "type_name": "<label>",
+         "serializable": true
+        },
+        {
+         "name": "Outbox",
+         "type_name": "<label>",
+         "serializable": true
+        }
+       ],
+       "transitions": [
+        {
+         "name": "Forward",
+         "detail": "<any>"
+        }
+       ],
+       "edges": {
+        "<unordered>": [
+         {
+          "place": "Inbox",
+          "transition": "Forward",
+          "direction": "in",
+          "kind": "take"
+         },
+         {
+          "place": "Outbox",
+          "transition": "Forward",
+          "direction": "out"
+         }
+        ]
+       }
+      },
+      "transitions": {
+       "Forward": {
+        "enabled": true,
+        "fireable": false,
+        "in_flight": false,
+        "priority": 0.0
+       }
+      },
+      "marking": {
+       "places": {
+        "Late": {
+         "count": 1,
+         "tokens": [
+          {
+           "id": "<id:late>",
+           "label": "<label>",
+           "nets": [
+            {
+             "name": "",
+             "nested_id": "<id:late_2>",
+             "path": [
+              {
+               "place": "Late",
+               "token": "<id:late>",
+               "net": ""
+              }
+             ],
+             "template": "Worker",
+             "count": 1
+            }
+           ]
+          }
+         ]
+        },
+        "Ring": {
+         "count": 1,
+         "tokens": [
+          {
+           "id": "<id:ring>",
+           "label": "<label>",
+           "nets": [
+            {
+             "name": "",
+             "nested_id": "<id:ring_2>",
+             "path": [
+              {
+               "place": "Ring",
+               "token": "<id:ring>",
+               "net": ""
+              }
+             ],
+             "template": "Worker",
+             "count": 2
+            }
+           ]
+          }
+         ]
+        },
+        "Early": {
+         "count": 1,
+         "tokens": [
+          {
+           "id": "<id:early>",
+           "label": "<label>",
+           "nets": [
+            {
+             "name": "",
+             "nested_id": "<id:early_2>",
+             "path": [
+              {
+               "place": "Early",
+               "token": "<id:early>",
+               "net": ""
+              }
+             ],
+             "template": "Team",
+             "count": 2
+            }
+           ]
+          }
+         ]
+        },
+        "Shelf": {
+         "count": 1,
+         "tokens": [
+          {
+           "id": "<id:shelf>",
+           "label": "<label>",
+           "nets": [
+            {
+             "name": "",
+             "nested_id": "<id:shelf_2>",
+             "path": [
+              {
+               "place": "Shelf",
+               "token": "<id:shelf>",
+               "net": ""
+              }
+             ],
+             "template": "Worker",
+             "count": 5
+            }
+           ]
+          }
+         ]
+        },
+        "Inbox": {
+         "count": 0,
+         "tokens": []
+        },
+        "Outbox": {
+         "count": 3,
+         "tokens": [
+          {
+           "id": "<id:n0_outbox>",
+           "label": "<label>"
+          },
+          {
+           "id": "<id:n1_outbox>",
+           "label": "<label>"
+          },
+          {
+           "id": "<id:n2_outbox>",
+           "label": "<label>"
+          }
+         ]
+        }
+       }
+      },
+      "progress": {
+       "step_count": 3,
+       "last_fired": "Forward",
+       "fired_counts": {
+        "Forward": 3
+       },
+       "last_progress_at": "<time>"
+      }
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "reset"
+   },
+   "expect": [
+    {
+     "method": "reloaded",
+     "params": {
+      "generation": 2,
+      "reason": "reset",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "16",
+     "result": {
+      "status": "reset",
+      "generation": 2,
+      "marking_version": "<version>"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "start"
+   },
+   "expect": [
+    {
+     "id": "17",
+     "result": {
+      "status": "started",
+      "marking_version": "<version>",
+      "running": true
+     }
+    },
+    {
+     "method": "nested",
+     "params": {
+      "path": [
+       {
+        "place": "Early",
+        "token": "<id>",
+        "net": ""
+       }
+      ],
+      "nested_id": "<id:net>",
+      "event": {
+       "method": "fired",
+       "params": {
+        "transition": "Plan",
+        "consumed": [
+         [
+          "Todo",
+          "<id:net_todo>"
+         ]
+        ],
+        "produced": [
+         [
+          "Done",
+          "<id:net_n0>",
+          "<label>"
+         ]
+        ],
+        "duration_ms": "<ms>",
+        "marking_version": "<version>",
+        "running": true
+       }
+      },
+      "marking_version": "<version>",
+      "running": true
+     }
+    },
+    {
+     "method": "nested",
+     "params": {
+      "path": [
+       {
+        "place": "Early",
+        "token": "<id>",
+        "net": ""
+       }
+      ],
+      "nested_id": "<id:net>",
+      "event": {
+       "method": "fireable",
+       "params": {
+        "transitions": [],
+        "marking_version": "<version>",
+        "running": true
+       }
+      },
+      "marking_version": "<version>",
+      "running": true
+     }
+    },
+    {
+     "method": "nested",
+     "params": {
+      "path": [
+       {
+        "place": "Early",
+        "token": "<id>",
+        "net": ""
+       },
+       {
+        "place": "Helpers",
+        "token": "<id>",
+        "net": ""
+       }
+      ],
+      "nested_id": "<id:net_2>",
+      "event": {
+       "method": "fired",
+       "params": {
+        "transition": "Work",
+        "consumed": [
+         [
+          "Todo",
+          "<id:net_todo_todo>"
+         ]
+        ],
+        "produced": [
+         [
+          "Done",
+          "<id:net_n0_done>",
+          "<label>"
+         ]
+        ],
+        "duration_ms": "<ms>",
+        "marking_version": "<version>",
+        "running": true
+       }
+      },
+      "marking_version": "<version>",
+      "running": true
+     }
+    },
+    {
+     "method": "nested",
+     "params": {
+      "path": [
+       {
+        "place": "Early",
+        "token": "<id>",
+        "net": ""
+       },
+       {
+        "place": "Helpers",
+        "token": "<id>",
+        "net": ""
+       }
+      ],
+      "nested_id": "<id:net_2>",
+      "event": {
+       "method": "fired",
+       "params": {
+        "transition": "Work",
+        "consumed": [
+         [
+          "Todo",
+          "<id:net_todo_todo_2>"
+         ]
+        ],
+        "produced": [
+         [
+          "Done",
+          "<id:net_n1>",
+          "<label>"
+         ]
+        ],
+        "duration_ms": "<ms>",
+        "marking_version": "<version>",
+        "running": true
+       }
+      },
+      "marking_version": "<version>",
+      "running": true
+     }
+    },
+    {
+     "method": "nested",
+     "params": {
+      "path": [
+       {
+        "place": "Early",
+        "token": "<id>",
+        "net": ""
+       },
+       {
+        "place": "Helpers",
+        "token": "<id>",
+        "net": ""
+       }
+      ],
+      "nested_id": "<id:net_2>",
+      "event": {
+       "method": "fireable",
+       "params": {
+        "transitions": [],
+        "marking_version": "<version>",
+        "running": true
+       }
+      },
+      "marking_version": "<version>",
+      "running": true
+     }
+    },
+    {
+     "method": "fired",
+     "params": {
+      "transition": "Forward",
+      "consumed": [
+       [
+        "Inbox",
+        "<id:inbox>"
+       ]
+      ],
+      "produced": [
+       [
+        "Outbox",
+        "<id:n0_outbox_2>",
+        "<label>"
+       ]
+      ],
+      "duration_ms": "<ms>",
+      "marking_version": "<version>",
+      "running": true
+     }
+    },
+    {
+     "method": "nested",
+     "params": {
+      "path": [
+       {
+        "place": "Ring",
+        "token": "<id>",
+        "net": ""
+       }
+      ],
+      "nested_id": "<id:net_3>",
+      "event": {
+       "method": "fired",
+       "params": {
+        "transition": "Work",
+        "consumed": [
+         [
+          "Todo",
+          "<id:net_todo_todo_3>"
+         ]
+        ],
+        "produced": [
+         [
+          "Done",
+          "<id:net_n0_done_2>",
+          "<label>"
+         ]
+        ],
+        "duration_ms": "<ms>",
+        "marking_version": "<version>",
+        "running": true
+       }
+      },
+      "marking_version": "<version>",
+      "running": true
+     }
+    },
+    {
+     "method": "fired",
+     "params": {
+      "transition": "Forward",
+      "consumed": [
+       [
+        "Inbox",
+        "<id:inbox_inbox>"
+       ]
+      ],
+      "produced": [
+       [
+        "Outbox",
+        "<id:n1_outbox_2>",
+        "<label>"
+       ]
+      ],
+      "duration_ms": "<ms>",
+      "marking_version": "<version>",
+      "running": true
+     }
+    },
+    {
+     "method": "nested",
+     "params": {
+      "path": [
+       {
+        "place": "Ring",
+        "token": "<id>",
+        "net": ""
+       }
+      ],
+      "nested_id": "<id:net_3>",
+      "event": {
+       "method": "fired",
+       "params": {
+        "transition": "Work",
+        "consumed": [
+         [
+          "Todo",
+          "<id:net_todo_todo_4>"
+         ]
+        ],
+        "produced": [
+         [
+          "Done",
+          "<id:net_n1_done>",
+          "<label>"
+         ]
+        ],
+        "duration_ms": "<ms>",
+        "marking_version": "<version>",
+        "running": true
+       }
+      },
+      "marking_version": "<version>",
+      "running": true
+     }
+    },
+    {
+     "method": "nested",
+     "params": {
+      "path": [
+       {
+        "place": "Ring",
+        "token": "<id>",
+        "net": ""
+       }
+      ],
+      "nested_id": "<id:net_3>",
+      "event": {
+       "method": "fireable",
+       "params": {
+        "transitions": [],
+        "marking_version": "<version>",
+        "running": true
+       }
+      },
+      "marking_version": "<version>",
+      "running": true
+     }
+    },
+    {
+     "method": "fired",
+     "params": {
+      "transition": "Forward",
+      "consumed": [
+       [
+        "Inbox",
+        "<id:inbox_inbox_2>"
+       ]
+      ],
+      "produced": [
+       [
+        "Outbox",
+        "<id:n2_outbox_2>",
+        "<label>"
+       ]
+      ],
+      "duration_ms": "<ms>",
+      "marking_version": "<version>",
+      "running": true
+     }
+    },
+    {
+     "method": "fireable",
+     "params": {
+      "transitions": [],
+      "marking_version": "<version>",
+      "running": true
+     }
+    },
+    {
+     "method": "nested",
+     "params": {
+      "path": [
+       {
+        "place": "Late",
+        "token": "<id>",
+        "net": ""
+       }
+      ],
+      "nested_id": "<id:net_4>",
+      "event": {
+       "method": "fired",
+       "params": {
+        "transition": "Work",
+        "consumed": [
+         [
+          "Todo",
+          "<id:net_todo_todo_5>"
+         ]
+        ],
+        "produced": [
+         [
+          "Done",
+          "<id:net_n0_done_3>",
+          "<label>"
+         ]
+        ],
+        "duration_ms": "<ms>",
+        "marking_version": "<version>",
+        "running": true
+       }
+      },
+      "marking_version": "<version>",
+      "running": true
+     }
+    },
+    {
+     "method": "nested",
+     "params": {
+      "path": [
+       {
+        "place": "Late",
+        "token": "<id>",
+        "net": ""
+       }
+      ],
+      "nested_id": "<id:net_4>",
+      "event": {
+       "method": "fireable",
+       "params": {
+        "transitions": [],
+        "marking_version": "<version>",
+        "running": true
+       }
+      },
+      "marking_version": "<version>",
+      "running": true
+     }
+    },
+    {
+     "method": "execution_stopped",
+     "params": {
+      "reason": "no_fireable_transitions",
+      "marking_version": "<version>",
+      "running": false
+     }
+    }
+   ]
+  }
+ ]
+}

@@ -21,6 +21,8 @@
             {"name": "shop", "description": "Price orders with whatever promotions are running", "mode": "manual",
              "params": []},
             {"name": "traffic-light", "description": "Cars wait at a light that cycles red, green and amber, and all go when it turns green", "mode": "manual",
+             "params": []},
+            {"name": "stepping-rules", "description": "Nets under each stepping rule take their turns", "mode": "manual",
              "params": []}
           ]
         }}

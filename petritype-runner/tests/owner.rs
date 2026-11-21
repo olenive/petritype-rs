@@ -1273,12 +1273,15 @@ fn nested_places_say_so_and_their_tokens_list_their_nets() {
         json!({"name": "Parcels", "type_name": "u32", "serializable": true}),
         "a plain place says nothing of nesting"
     );
-    assert_eq!(places[1]["nested"], true);
-    assert!(places[1].get("passive").is_none());
     assert_eq!(
-        (&places[3]["nested"], &places[3]["passive"]),
-        (&json!(true), &json!(true))
+        (&places[1]["nested"], &places[1]["stepping"]),
+        (&json!(true), &json!("outer_first"))
     );
+    assert_eq!(
+        (&places[3]["nested"], &places[3]["stepping"]),
+        (&json!(true), &json!("passive"))
+    );
+    assert!(places[3].get("passive").is_none(), "passive is a rule now");
 
     let truck = held(&state, "Lot");
     assert!(truck["nested_id"].is_string());
@@ -3152,28 +3155,47 @@ fn a_run_follows_the_loaded_net_s_stepping_rules() {
     }
 }
 
-/// The carousel's topology says the desk's rule as the wire has always
-/// said it, `passive` for a passive desk and nothing for any other rule.
+/// The carousel's topology says the desk's rule by its protocol name
+/// (PROTOCOL.md §5.1, §12.3), whichever it is, on the desk alone: a place
+/// that holds no nets has no rule, and `passive` is not a field any more.
 #[test]
-fn only_a_passive_rule_is_written_on_the_wire() {
-    for (stepping, passive) in [
-        ("inner_first", None),
-        ("take_turns", None),
-        ("outer_first", None),
-        ("passive", Some(json!(true))),
-    ] {
+fn the_stepping_rule_is_written_on_every_place_that_holds_nets() {
+    for stepping in ["inner_first", "take_turns", "outer_first", "passive"] {
         let mut h = H::over(policies_registry());
         h.send(
             "load",
             json!({"net": "carousel", "params": {"stepping": stepping}}),
         );
         let state = h.result("get_state", json!({}));
-        let desk = &state["topology"]["places"][1];
-        assert_eq!(desk["name"], "Desk");
-        assert_eq!(desk["nested"], true, "{stepping}");
-        assert_eq!(desk.get("passive").cloned(), passive, "{stepping}");
-        assert!(desk.get("stepping").is_none(), "the wire is version 1 here");
+        let places = &state["topology"]["places"];
+        assert_eq!(
+            places[0],
+            json!({"name": "Wheel", "type_name": "u32", "serializable": false}),
+            "{stepping}"
+        );
+        assert_eq!(
+            places[1],
+            json!({"name": "Desk", "type_name": "petritype::net::Net", "serializable": false,
+                   "nested": true, "stepping": stepping}),
+            "{stepping}"
+        );
+        let worker = held(&state, "Desk");
+        let inner = h.result("get_state", json!({"path": worker["path"]}));
+        assert!(
+            inner["topology"]["places"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|place| place.get("stepping").is_none()),
+            "the worker's places hold no nets"
+        );
     }
+    // A place built with no rule has the default, and says so.
+    let mut h = H::over(vec![NetEntry::new("hatchery", hatchery)]);
+    h.result("load", json!({"net": "hatchery"}));
+    let state = h.result("get_state", json!({}));
+    assert_eq!(state["topology"]["places"][1]["name"], "Lot");
+    assert_eq!(state["topology"]["places"][1]["stepping"], "inner_first");
 }
 
 // ----- controls and styles (net-declared controls, 2026-10-16) -----------------

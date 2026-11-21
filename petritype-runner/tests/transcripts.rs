@@ -85,10 +85,13 @@
 //! exchanges at the end, which replays once the runner knew `press`). All
 //! four were recorded again on 2026-11-21 for protocol version 2: each pins
 //! `protocol_version` 2, and `05_nested_nets.json` spells its paths as lists
-//! of steps. The shared set of §11, over the
-//! conformance nets `parcel-distribution`, `transit`, `wildlife`, `shop` and
-//! `traffic-light`, lives in the Python repository and is replayed here from
-//! a sibling checkout by `the_shared_transcripts_hold`.
+//! of steps, and was recorded once more the same day with the `stepping` of
+//! `transit`'s places. `10_stepping_rules.json` over `stepping-rules`
+//! (2026-11-21, a place of nets under each stepping rule) is a verbatim copy
+//! too. The shared set of §11, over the conformance nets
+//! `parcel-distribution`, `transit`, `wildlife`, `shop`, `traffic-light` and
+//! `stepping-rules`, lives in the Python repository and is replayed here
+//! from a sibling checkout by `the_shared_transcripts_hold`.
 //! A transcript over a conformance net is replayed against a runner carrying
 //! that net alone (§11), whichever directory it is in, so that it may pin
 //! `describe` in full; any other against everything the example carries.
@@ -358,6 +361,7 @@ fn registry_for(net: &str) -> Vec<petritype_runner::NetEntry> {
         "wildlife" => nets::wildlife_registry(),
         "shop" => nets::shop_registry(),
         "traffic-light" => nets::traffic_light_registry(),
+        "stepping-rules" => nets::stepping_rules_registry(),
         _ => nets::registry(),
     }
 }
@@ -475,10 +479,10 @@ fn shared_dir() -> PathBuf {
 }
 
 /// The shared transcripts of PROTOCOL.md §11, over the conformance nets
-/// `parcel-distribution`, `transit`, `wildlife`, `shop` and `traffic-light`,
-/// replayed exactly as ours are, each against a registry carrying its own
-/// net alone, which §11 makes the rule so that a shared transcript may pin
-/// `describe` in full. A shared transcript over a net this runner does not
+/// `parcel-distribution`, `transit`, `wildlife`, `shop`, `traffic-light` and
+/// `stepping-rules`, replayed exactly as ours are, each against a registry
+/// carrying its own net alone, which §11 makes the rule so that a shared
+/// transcript may pin `describe` in full. A shared transcript over a net this runner does not
 /// carry fails at its `load`.
 ///
 /// They live in the Python repository (§11 makes it the home of the shared

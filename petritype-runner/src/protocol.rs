@@ -925,10 +925,11 @@ pub struct Place {
     /// when true.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub nested: bool,
-    /// Whether those inner nets are stepped only by an outer body (§12.3);
-    /// written only when true.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub passive: bool,
+    /// The rule by which deep stepping fires the nets the place holds
+    /// (§5.1, §12.3): written exactly for a place that holds nets, the
+    /// default rule included.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stepping: Option<Stepping>,
     /// The keys the place derives from its tokens, in declaration order
     /// (§13.1); written only when there are some.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -937,6 +938,26 @@ pub struct Place {
     /// style.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub style: Option<PlaceStyle>,
+}
+
+/// A [`Place`]'s `stepping` (PROTOCOL.md §12.3): when the nets in the place
+/// fire, measured against the net around them, by the protocol's four
+/// names. The core's rule is `petritype::Stepping`, and the runner writes it
+/// as this.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Stepping {
+    /// `"inner_first"`, the default: the nets fire until they are at rest
+    /// before the net around them fires.
+    InnerFirst,
+    /// `"take_turns"`: the net around them and each net here fire in turn.
+    TakeTurns,
+    /// `"outer_first"`: the nets fire only when the net around them and its
+    /// turn-takers have nothing to fire.
+    OuterFirst,
+    /// `"passive"`: deep stepping never enters the place; the program or a
+    /// body steps its nets.
+    Passive,
 }
 
 /// A [`Place`]'s `style`: `{"fill": "token"}`, a rule the viewer
@@ -1499,7 +1520,7 @@ mod tests {
             type_name: "u32".into(),
             serializable: false,
             nested: false,
-            passive: false,
+            stepping: None,
             key_names: Vec::new(),
             style: None,
         };
@@ -1507,16 +1528,25 @@ mod tests {
             to_value(&place),
             json!({"name": "P", "type_name": "u32", "serializable": false})
         );
-        let place = Place {
-            nested: true,
-            passive: true,
-            ..place
-        };
-        assert_eq!(
-            to_value(&place),
-            json!({"name": "P", "type_name": "u32", "serializable": false,
-                   "nested": true, "passive": true})
-        );
+        for (stepping, name) in [
+            (Stepping::InnerFirst, "inner_first"),
+            (Stepping::TakeTurns, "take_turns"),
+            (Stepping::OuterFirst, "outer_first"),
+            (Stepping::Passive, "passive"),
+        ] {
+            let nested = Place {
+                nested: true,
+                stepping: Some(stepping),
+                ..place.clone()
+            };
+            assert_eq!(
+                to_value(&nested),
+                json!({"name": "P", "type_name": "u32", "serializable": false,
+                       "nested": true, "stepping": name})
+            );
+            let back: Place = serde_json::from_value(to_value(&nested)).unwrap();
+            assert_eq!(back, nested);
+        }
         let held = Token {
             nets: vec![InnerNet {
                 name: "cabin".into(),
@@ -1732,7 +1762,7 @@ mod tests {
             type_name: "Colour".into(),
             serializable: true,
             nested: false,
-            passive: false,
+            stepping: None,
             key_names: Vec::new(),
             style: Some(PlaceStyle { fill: Fill::Token }),
         };

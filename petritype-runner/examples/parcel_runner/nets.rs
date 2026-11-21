@@ -2,12 +2,14 @@
 //! that the transcript tests can load the very same registry without a
 //! process.
 //!
-//! Besides the parcel nets it carries the protocol's four other conformance
-//! nets, `transit` (PROTOCOL.md §11, §12), `wildlife` (§11, §13), `shop` and
-//! `traffic-light` (§11, §5.1): the core's own example nets, included from
+//! Besides the parcel nets it carries the protocol's five other conformance
+//! nets: `transit` (PROTOCOL.md §11, §12), `wildlife` (§11, §13), `shop` and
+//! `traffic-light` (§11, §5.1), the core's own example nets, included from
 //! `petritype/examples/transit/net.rs`, `petritype/examples/wildlife/net.rs`,
 //! `petritype/examples/shop/net.rs` and
-//! `petritype/examples/traffic_light/net.rs` as they are, not copied.
+//! `petritype/examples/traffic_light/net.rs` as they are, not copied; and
+//! `stepping-rules` (§11, §12.3), which has no example of its own and is
+//! written here.
 
 use std::fmt;
 
@@ -349,6 +351,128 @@ pub fn traffic_light_registry() -> Vec<NetEntry> {
     vec![traffic_light_entry()]
 }
 
+/// The protocol's conformance net `stepping-rules` (PROTOCOL.md §11, §12.3):
+/// places of nets under each of the four stepping rules, and a second level,
+/// so that a transcript shows which transition each `step` fires. Its
+/// names, places, transitions, templates and seed are fixed by §11; the
+/// Python twin is `tests/protocol_nets/stepping_rules.py`. Every body
+/// passes its job on unchanged, and every token is an integer or a net.
+pub mod stepping_rules {
+    use std::error::Error;
+
+    use petritype::{Net, NetBuilder, Params, Stepping, TakeEdge, Templates};
+    use petritype_runner::LoadError;
+
+    /// The parameters that build a worker with `jobs` jobs.
+    fn jobs(jobs: u32) -> Params {
+        let mut params = Params::new();
+        params.insert("jobs".into(), jobs.into());
+        params
+    }
+
+    /// The template `Worker`: `Todo -Work-> Done`, both of integers, `Work`
+    /// taking the front of `Todo` and putting it into `Done`. Built with
+    /// `jobs` *n*, it holds `0` up to *n* less one in `Todo`, in that order;
+    /// with none, nothing.
+    fn worker(params: &Params) -> Result<Net, petritype::BuildError> {
+        let jobs = params
+            .get("jobs")
+            .and_then(serde_json::Value::as_u64)
+            .map_or(0, |jobs| u32::try_from(jobs).unwrap_or(u32::MAX));
+        let mut b = NetBuilder::new();
+        let todo = b.place::<u32>("Todo");
+        let done = b.place::<u32>("Done");
+        b.serializable(todo);
+        b.serializable(done);
+        b.seed(todo, 0..jobs);
+        b.transition("Work", (TakeEdge(todo),), (done,), |job: u32| (job,));
+        b.build()
+    }
+
+    /// The template `Team`: `Todo -Plan-> Done` as a worker's, holding `0`,
+    /// and `Helpers`, a place of nets that takes turns with the team,
+    /// holding one worker with two jobs.
+    fn team(workers: &Templates) -> Result<Net, Box<dyn Error + Send + Sync>> {
+        let mut b = NetBuilder::new();
+        b.templates(workers);
+        let todo = b.place::<u32>("Todo");
+        let done = b.place::<u32>("Done");
+        let helpers = b.place_nested::<Net>("Helpers");
+        b.serializable(todo);
+        b.serializable(done);
+        b.serializable(helpers);
+        b.stepping(helpers, Stepping::TakeTurns);
+        b.seed(todo, [0]);
+        b.seed(helpers, [workers.build("Worker", &jobs(2))?]);
+        b.transition("Plan", (TakeEdge(todo),), (done,), |job: u32| (job,));
+        Ok(b.build()?)
+    }
+
+    /// `Worker` and `Team`, each under its name, which every place of nets
+    /// here is built and restored from.
+    pub fn templates() -> Templates {
+        let mut workers = Templates::new();
+        workers.register("Worker", worker);
+        let mut templates = workers.clone();
+        templates.register("Team", move |_: &Params| team(&workers));
+        templates
+    }
+
+    /// The net as §11 seeds it: `Late` (outer first) one worker with one
+    /// job, `Ring` (take turns) one with two, `Early` (inner first) one
+    /// team, `Shelf` (passive) one worker with five, `Inbox` `0`, `1` and
+    /// `2`, `Outbox` nothing, and `Forward` from `Inbox` to `Outbox`. A token
+    /// of a place of nets is a net, so its one inner net is named `""`.
+    pub fn stepping_rules(_: &petritype_runner::Params) -> Result<Net, LoadError> {
+        let templates = templates();
+        let build = |name: &str, params: &Params| {
+            templates
+                .build(name, params)
+                .map_err(|error| LoadError::Other(error.to_string()))
+        };
+        let mut b = NetBuilder::new();
+        b.templates(&templates);
+        let late = b.place_nested::<Net>("Late");
+        let ring = b.place_nested::<Net>("Ring");
+        let early = b.place_nested::<Net>("Early");
+        let shelf = b.place_nested::<Net>("Shelf");
+        let inbox = b.place::<u32>("Inbox");
+        let outbox = b.place::<u32>("Outbox");
+        for (place, rule) in [
+            (late, Stepping::OuterFirst),
+            (ring, Stepping::TakeTurns),
+            (early, Stepping::InnerFirst),
+            (shelf, Stepping::Passive),
+        ] {
+            b.serializable(place);
+            b.stepping(place, rule);
+        }
+        b.serializable(inbox);
+        b.serializable(outbox);
+        b.seed(late, [build("Worker", &jobs(1))?]);
+        b.seed(ring, [build("Worker", &jobs(2))?]);
+        b.seed(early, [build("Team", &Params::new())?]);
+        b.seed(shelf, [build("Worker", &jobs(5))?]);
+        b.seed(inbox, 0..3);
+        b.transition("Forward", (TakeEdge(inbox),), (outbox,), |job: u32| (job,));
+        Ok(b.build()?)
+    }
+}
+
+/// The `stepping-rules` entry, as PROTOCOL.md §11 names and describes it.
+fn stepping_rules_entry() -> NetEntry {
+    NetEntry::new("stepping-rules", stepping_rules::stepping_rules)
+        .description("Nets under each stepping rule take their turns")
+        .hosting(Hosting::Manual)
+}
+
+/// The `stepping-rules` net alone, for the transcripts over it (PROTOCOL.md
+/// §11).
+#[allow(dead_code)]
+pub fn stepping_rules_registry() -> Vec<NetEntry> {
+    vec![stepping_rules_entry()]
+}
+
 /// The conformance net's entry, as PROTOCOL.md §11 names and describes it.
 fn conformance_entry() -> NetEntry {
     NetEntry::new("parcel-distribution", conformance::parcel_distribution)
@@ -379,5 +503,6 @@ pub fn registry() -> Vec<NetEntry> {
         wildlife_entry(),
         shop_entry(),
         traffic_light_entry(),
+        stepping_rules_entry(),
     ]
 }

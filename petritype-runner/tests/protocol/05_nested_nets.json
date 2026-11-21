@@ -88,25 +88,29 @@
          "name": "Depot",
          "type_name": "<label>",
          "serializable": true,
-         "nested": true
+         "nested": true,
+         "stepping": "outer_first"
         },
         {
          "name": "Central",
          "type_name": "<label>",
          "serializable": true,
-         "nested": true
+         "nested": true,
+         "stepping": "outer_first"
         },
         {
          "name": "Harbour",
          "type_name": "<label>",
          "serializable": true,
-         "nested": true
+         "nested": true,
+         "stepping": "outer_first"
         },
         {
          "name": "Airport",
          "type_name": "<label>",
          "serializable": true,
-         "nested": true
+         "nested": true,
+         "stepping": "outer_first"
         },
         {
          "name": "Platform@Depot",
@@ -132,7 +136,8 @@
          "name": "In Transit",
          "type_name": "<label>",
          "serializable": true,
-         "nested": true
+         "nested": true,
+         "stepping": "outer_first"
         },
         {
          "name": "Arrived",

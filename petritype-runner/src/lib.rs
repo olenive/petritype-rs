@@ -88,8 +88,9 @@
 //!   notification around the inner net's own, with that net's own
 //!   `marking_version`; the outer one does not move. `step` and a running
 //!   net fire one transition in the order the nested places' stepping
-//!   rules give (`petritype::Stepping`): the outer net's choice, launched,
-//!   or one inner firing, inline. Progress is per net: an inner firing is
+//!   rules give (`petritype::Stepping`, which the topology writes as each
+//!   such place's `stepping`): the outer net's choice, launched, or one
+//!   inner firing, inline. Progress is per net: an inner firing is
 //!   counted in the progress of the net it was in, and no other.
 //! - A net that holds a subnet place is refused at `load` as
 //!   `unsupported`, for now: subnet places come to the wire in a later

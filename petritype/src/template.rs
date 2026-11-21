@@ -349,11 +349,11 @@ impl Net {
     /// value is cloned across (all of them, not only the ones with wire
     /// names: a fork never leaves the process), and every switch, the
     /// [label limit](Net::label_limit), the
-    /// [tie-break](Net::set_tie_break) and the
-    /// [deep policy](Net::set_deep_policy) are copied. A custom
+    /// [tie-break](Net::set_tie_break) and every nested place's
+    /// [stepping rule](Net::set_stepping) are copied. A custom
     /// [selector](Net::set_selector) is a closure and is not, and neither
-    /// cursor is (the round robin's and the deep policy's): a copy starts
-    /// its rounds afresh.
+    /// cursor is (the round robin's and the ring's): a copy starts its
+    /// rounds afresh.
     ///
     /// Every place must be serializable, since the marking crosses as JSON;
     /// so the tokens of this net's own nested places are rebuilt from their
@@ -424,9 +424,16 @@ impl Net {
                 fork.transitions[transition.0 as usize].enabled = slot.enabled;
             }
         }
+        for slot in self.places.iter().filter(|slot| slot.meta.holds_nets()) {
+            if let Some(place) = fork.place_named(&slot.meta.name) {
+                let meta = &mut fork.places[place.0 as usize].meta;
+                if meta.holds_nets() {
+                    meta.stepping = slot.meta.stepping;
+                }
+            }
+        }
         fork.label_limit = self.label_limit;
         fork.tie_break = self.tie_break;
-        fork.deep_policy = self.deep_policy;
         fork.forget_setup();
         Ok(fork)
     }

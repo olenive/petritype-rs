@@ -7,8 +7,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use petritype::control::{Control, ControlKind, Pressed, Value as Pressing};
 use petritype::style::{PlaceStyle, Rgb, Style};
 use petritype::{
-    DeepPolicy, DrainEdge, Firing, MutateEdge, Nested, Net, NetBuilder, Param, SurveyEdge,
-    TakeEdge, Templates, TieBreak,
+    DrainEdge, Firing, MutateEdge, Nested, Net, NetBuilder, Param, Stepping, SurveyEdge, TakeEdge,
+    Templates, TieBreak,
 };
 use petritype_runner::protocol::Request;
 use petritype_runner::{
@@ -1170,6 +1170,8 @@ impl Nested for Truck {
 /// none. `Load` takes a parcel into the front truck's bin (a mutate edge, so
 /// inline), `Drive` moves a truck from `Lot` to `Gate` (a new token id, the
 /// same bin), and `Crush` consumes one at `Gate`, and its bin with it.
+/// `Lot` and `Gate` are outer first, so a step drives a truck before its
+/// bin moves anything.
 fn depot(_: &Params) -> Result<Net, LoadError> {
     let mut templates = Templates::new();
     templates.register("Bin", bin);
@@ -1183,7 +1185,9 @@ fn depot(_: &Params) -> Result<Net, LoadError> {
     b.serializable(lot);
     b.serializable(gate);
     b.serializable(yard);
-    b.passive(yard);
+    b.stepping(lot, Stepping::OuterFirst);
+    b.stepping(gate, Stepping::OuterFirst);
+    b.stepping(yard, Stepping::Passive);
     b.seed(
         lot,
         [Truck {
@@ -1207,8 +1211,9 @@ fn depot(_: &Params) -> Result<Net, LoadError> {
 }
 
 /// `deep`, two levels down: `Shelf` holds a bare net (the middle one) with
-/// `In` holding 2 (token 0) and, in its `Box` (token 1), a bare bin holding
-/// 1. Nothing fires out here.
+/// `In` holding 2 (token 0) and, in its `Box` (token 1), a bare bin
+/// holding 1. Nothing fires out here. `Shelf` and `Box` are outer first, so
+/// the middle net's own `Move` goes before its bin's.
 fn deep(_: &Params) -> Result<Net, LoadError> {
     let mut templates = Templates::new();
     templates.register("Bin", bin);
@@ -1221,10 +1226,12 @@ fn deep(_: &Params) -> Result<Net, LoadError> {
     b.transition("Move", (TakeEdge(input),), (output,), |n: u32| (n,));
     let boxes = b.place_nested::<Net>("Box");
     b.seed(boxes, [filled(&templates, &[1])]);
+    b.stepping(boxes, Stepping::OuterFirst);
     let middle = b.build()?;
     let mut b = NetBuilder::new();
     let shelf = b.place_nested::<Net>("Shelf");
     b.seed(shelf, [middle]);
+    b.stepping(shelf, Stepping::OuterFirst);
     Ok(b.build()?)
 }
 
@@ -2687,7 +2694,8 @@ fn rivals(_: &Params) -> Result<Net, LoadError> {
 
 /// `carousel`: `Spin` can always fire, putting back what it takes, and
 /// `Desk` holds one bare worker, `Todo` (two jobs) `-Work-> Done`. The load
-/// parameter `interleaved` sets the deep policy.
+/// parameter `stepping` is the desk's rule, by its protocol name; the
+/// core's default, inner first, as built.
 fn carousel(params: &Params) -> Result<Net, LoadError> {
     let mut inner = NetBuilder::new();
     let todo = inner.place::<u32>("Todo");
@@ -2701,17 +2709,25 @@ fn carousel(params: &Params) -> Result<Net, LoadError> {
     b.seed(wheel, [0]);
     b.seed(desk, [worker]);
     b.transition("Spin", (TakeEdge(wheel),), (wheel,), |n: u32| (n + 1,));
-    if params.get("interleaved").and_then(Value::as_bool) == Some(true) {
-        b.deep_policy(DeepPolicy::Interleaved);
-    }
+    b.stepping(desk, rule(params.get("stepping").and_then(Value::as_str)));
     Ok(b.build()?)
+}
+
+/// A stepping rule by its protocol name, inner first for none.
+fn rule(name: Option<&str>) -> Stepping {
+    match name {
+        Some("take_turns") => Stepping::TakeTurns,
+        Some("outer_first") => Stepping::OuterFirst,
+        Some("passive") => Stepping::Passive,
+        _ => Stepping::InnerFirst,
+    }
 }
 
 fn policies_registry() -> Vec<NetEntry> {
     vec![
         NetEntry::new("rivals", rivals),
         NetEntry::new("carousel", carousel)
-            .param(ParamSpec::new("interleaved", "bool").default(false)),
+            .param(ParamSpec::new("stepping", "String").default("inner_first")),
     ]
 }
 
@@ -2732,7 +2748,7 @@ fn firings(lines: &[Value]) -> Vec<String> {
 }
 
 #[test]
-fn a_step_follows_the_loaded_net_s_tie_break_and_deep_policy() {
+fn a_step_follows_the_loaded_net_s_tie_break_and_stepping_rules() {
     // Round robin: the staged choice moves the cursor as `step` would.
     let mut h = H::over(policies_registry());
     h.send("load", json!({"net": "rivals"}));
@@ -2741,17 +2757,35 @@ fn a_step_follows_the_loaded_net_s_tie_break_and_deep_policy() {
         .collect();
     assert_eq!(chosen, ["Left", "Right", "Left", "Right"]);
 
-    // The default deep policy: the outer net's choice first, every time.
+    // Inner first, the default: the worker until it is at rest, inline,
+    // then the outer net's choice.
     h.send("load", json!({"net": "carousel"}));
-    let chosen: Vec<Value> = (0..4)
+    let first = h.result("step", json!({}));
+    assert_eq!(
+        (&first["transition"], &first["path"]),
+        (&json!("Work"), &json!("carousel/Desk/#1/"))
+    );
+    let rest: Vec<Value> = (0..3)
         .map(|_| h.result("step", json!({}))["transition"].clone())
         .collect();
-    assert_eq!(chosen, ["Spin"; 4]);
+    assert_eq!(rest, ["Work", "Spin", "Spin"]);
 
-    // Interleaved: the outer net, then the worker, in turn.
+    // Outer first, and passive: the outer net's choice, every time.
+    for stepping in ["outer_first", "passive"] {
+        h.send(
+            "load",
+            json!({"net": "carousel", "params": {"stepping": stepping}}),
+        );
+        let chosen: Vec<Value> = (0..4)
+            .map(|_| h.result("step", json!({}))["transition"].clone())
+            .collect();
+        assert_eq!(chosen, ["Spin"; 4], "{stepping}");
+    }
+
+    // Take turns: the outer net, then the worker, in turn.
     h.send(
         "load",
-        json!({"net": "carousel", "params": {"interleaved": true}}),
+        json!({"net": "carousel", "params": {"stepping": "take_turns"}}),
     );
     let first = h.result("step", json!({}));
     assert_eq!(first["transition"], "Spin");
@@ -2769,7 +2803,7 @@ fn a_step_follows_the_loaded_net_s_tie_break_and_deep_policy() {
     // A reset is a new net, whose round starts at the outer net.
     h.send(
         "load",
-        json!({"net": "carousel", "params": {"interleaved": true}}),
+        json!({"net": "carousel", "params": {"stepping": "take_turns"}}),
     );
     assert_eq!(h.result("step", json!({}))["transition"], "Spin");
     h.send("reset", json!({}));
@@ -2781,22 +2815,29 @@ fn a_step_follows_the_loaded_net_s_tie_break_and_deep_policy() {
 }
 
 #[test]
-fn a_run_follows_the_loaded_net_s_deep_policy() {
-    for (interleaved, expected) in [
-        (false, vec!["Spin"; 6]),
+fn a_run_follows_the_loaded_net_s_stepping_rules() {
+    for (stepping, expected) in [
         (
-            true,
+            "inner_first",
+            vec!["inside/Work", "inside/Work", "Spin", "Spin", "Spin", "Spin"],
+        ),
+        (
+            "take_turns",
             vec!["Spin", "inside/Work", "Spin", "inside/Work", "Spin", "Spin"],
         ),
+        ("outer_first", vec!["Spin"; 6]),
+        ("passive", vec!["Spin"; 6]),
     ] {
         let mut h = H::over(policies_registry());
         h.send(
             "load",
-            json!({"net": "carousel", "params": {"interleaved": interleaved}}),
+            json!({"net": "carousel", "params": {"stepping": stepping}}),
         );
         h.auto = false;
         let mut lines = h.send("start", json!({}));
-        assert_eq!(tags(&lines), ["#2", "launched"]);
+        if expected[0] == "Spin" {
+            assert_eq!(tags(&lines), ["#2", "launched"], "{stepping}");
+        }
         while firings(&lines).len() < expected.len() {
             if h.held.is_empty() {
                 assert!(h.owner.wants_tick(), "a running net asks to go on");
@@ -2805,11 +2846,35 @@ fn a_run_follows_the_loaded_net_s_deep_policy() {
                 lines.extend(h.land());
             }
         }
-        assert_eq!(firings(&lines), expected, "interleaved: {interleaved}");
+        assert_eq!(firings(&lines), expected, "{stepping}");
         h.send("stop", json!({}));
         while !h.held.is_empty() {
             h.land();
         }
+    }
+}
+
+/// The carousel's topology says the desk's rule as the wire has always
+/// said it, `passive` for a passive desk and nothing for any other rule.
+#[test]
+fn only_a_passive_rule_is_written_on_the_wire() {
+    for (stepping, passive) in [
+        ("inner_first", None),
+        ("take_turns", None),
+        ("outer_first", None),
+        ("passive", Some(json!(true))),
+    ] {
+        let mut h = H::over(policies_registry());
+        h.send(
+            "load",
+            json!({"net": "carousel", "params": {"stepping": stepping}}),
+        );
+        let state = h.result("get_state", json!({}));
+        let desk = &state["topology"]["places"][1];
+        assert_eq!(desk["name"], "Desk");
+        assert_eq!(desk["nested"], true, "{stepping}");
+        assert_eq!(desk.get("passive").cloned(), passive, "{stepping}");
+        assert!(desk.get("stepping").is_none(), "the wire is version 1 here");
     }
 }
 

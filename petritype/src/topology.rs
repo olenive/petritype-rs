@@ -3,6 +3,7 @@
 use crate::edge::{EdgeInfo, EdgeKind};
 use crate::ids::{PlaceId, TransitionId};
 use crate::keys::Filter;
+use crate::nested::Stepping;
 use crate::net::PlaceInfo;
 use crate::style::PlaceStyle;
 use crate::transition::TransitionInfo;
@@ -88,10 +89,12 @@ pub struct TopologyPlace {
     /// without nesting is what it always was.
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "std::ops::Not::not"))]
     pub nested: bool,
-    /// [`PlaceInfo::passive`]: whether those inner nets are left to an outer
-    /// body. Written only when true, like `nested`.
-    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "std::ops::Not::not"))]
-    pub passive: bool,
+    /// [`PlaceInfo::stepping`]: how those inner nets take their turns
+    /// beside this net, `None` for a place that holds none. With `serde`,
+    /// written only for a place that holds nets, by its protocol name
+    /// (`"inner_first"`, `"take_turns"`, `"outer_first"` or `"passive"`).
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub stepping: Option<Stepping>,
     /// [`PlaceInfo::key_names`]: the keys the place derives from its tokens,
     /// in declaration order, empty for none (DESIGN §8.3). With `serde`,
     /// written only when there are some, like `nested`.
@@ -159,7 +162,7 @@ impl Topology {
                     type_name: info.type_name,
                     serializable: info.serializable,
                     nested: info.nested,
-                    passive: info.passive,
+                    stepping: info.stepping,
                     key_names: info.key_names.to_vec(),
                     style: info.style,
                 })

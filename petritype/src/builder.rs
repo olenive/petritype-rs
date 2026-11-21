@@ -58,7 +58,7 @@ use crate::firing::TieBreak;
 use crate::ids::{NetId, PlaceId, PlaceRef, TransitionId, foreign_place};
 use crate::index::KeyIndex;
 use crate::keys::{KeyValue, KeysVtable};
-use crate::nested::{DeepPolicy, Nested, NestedVtable, forget_inner_events};
+use crate::nested::{Nested, NestedVtable, Stepping, forget_inner_events};
 use crate::net::Net;
 use crate::param::ParamSlot;
 use crate::place::{CloneFn, DebugFn, ErasedToken, PlaceMeta, PlaceSlot, clone_of, debug_of};
@@ -221,15 +221,11 @@ pub struct NetBuilder {
     /// How the built net's default selector breaks ties, as set by
     /// [`tie_break`](NetBuilder::tie_break).
     tie_break: TieBreak,
-    /// How the built net's [`step_deep`](Net::step_deep) shares its firings,
-    /// as set by [`deep_policy`](NetBuilder::deep_policy).
-    deep_policy: DeepPolicy,
     /// Whether the author declared the net resettable, with
     /// [`resettable`](NetBuilder::resettable).
     resettable: bool,
-    /// The first place [`passive`](NetBuilder::passive) was asked of that
-    /// was not declared with [`place_nested`](NetBuilder::place_nested),
-    /// kept until [`build`](NetBuilder::build) reports it as
+    /// The first place given a [`stepping`](NetBuilder::stepping) rule that
+    /// holds no nets, kept until [`build`](NetBuilder::build) reports it as
     /// [`BuildError::NotNested`]: the per-place options are infallible.
     not_nested: Option<PlaceId>,
     /// The first thing wrong with a [`keys`](NetBuilder::keys) declaration,
@@ -260,7 +256,6 @@ impl NetBuilder {
             assert_acyclic: false,
             assert_no_source_transitions: false,
             tie_break: TieBreak::FirstDeclared,
-            deep_policy: DeepPolicy::OuterFirst,
             resettable: false,
             not_nested: None,
             keys_problem: None,
@@ -317,8 +312,9 @@ impl NetBuilder {
     ///
     /// - [`Net::nested`] reads a token's inner nets, for a guard or a viewer;
     /// - [`Net::step_deep`] and the [`drivers`](crate::drivers) fire them,
-    ///   after the outer net has nothing to fire, unless the place is
-    ///   [`passive`](NetBuilder::passive);
+    ///   in the order the place's [`stepping`](NetBuilder::stepping) rule
+    ///   gives: before the outer net fires, as built
+    ///   ([`Stepping::InnerFirst`]), or as the rule says;
     /// - everything they log comes out in this net's log as an
     ///   [`Event::Nested`](crate::Event::Nested), with this place and the
     ///   token's id.
@@ -374,33 +370,54 @@ impl NetBuilder {
         place
     }
 
-    /// Marks a nested place passive: [`Net::step_deep`], and so the
-    /// drivers, never step the inner nets of its tokens.
+    /// Sets how the nets a place holds take their turns beside the net
+    /// around them: [`Stepping::InnerFirst`] (the default),
+    /// [`TakeTurns`](Stepping::TakeTurns),
+    /// [`OuterFirst`](Stepping::OuterFirst) or
+    /// [`Passive`](Stepping::Passive). [`Stepping`] says what each does in a
+    /// deep step, and [`Net::set_stepping`] changes it later. A second call
+    /// replaces the first.
     ///
-    /// For an outer net that wants manual control of what happens inside: a
-    /// body with a [`MutateEdge`](crate::MutateEdge) on the place steps the
-    /// inner net itself (`vehicle.inner.step()`, or
-    /// [`drivers::run`](crate::drivers::run) on it), and what that does is
-    /// reported in the outer log as for any body that reaches inside. A
-    /// passive place's inner nets also do not count against
-    /// [`Net::is_quiescent_deep`].
+    /// ```
+    /// use petritype::{DeepStep, NetBuilder, Stepping, TakeEdge};
+    ///
+    /// let mut inner = NetBuilder::new();
+    /// let todo = inner.place::<u32>("Todo");
+    /// let done = inner.place::<u32>("Done");
+    /// inner.seed(todo, [1]);
+    /// inner.transition("Work", (TakeEdge(todo),), (done,), |n: u32| (n,));
+    /// let inner = inner.build()?;
+    ///
+    /// let mut b = NetBuilder::new();
+    /// let desk = b.place_nested::<petritype::Net>("Desk");
+    /// let inbox = b.place::<u32>("Inbox");
+    /// let outbox = b.place::<u32>("Outbox");
+    /// b.seed(desk, [inner]);
+    /// b.seed(inbox, [7]);
+    /// let forward = b.transition("Forward", (TakeEdge(inbox),), (outbox,), |n: u32| (n,)).id();
+    /// b.stepping(desk, Stepping::OuterFirst);
+    /// let mut net = b.build()?;
+    ///
+    /// assert_eq!(net.step_deep()?, Some(DeepStep::Here { transition: forward }));
+    /// assert!(matches!(net.step_deep()?, Some(DeepStep::Inside { .. })), "then the desk");
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
     ///
     /// # Errors
     ///
     /// [`BuildError::NotNested`] from [`build`](NetBuilder::build) if the
-    /// place was not declared with
-    /// [`place_nested`](NetBuilder::place_nested): only inner nets can be
-    /// left alone. The call itself is infallible, as the other per-place
-    /// options are.
+    /// place holds no nets, since it was not declared with
+    /// [`place_nested`](NetBuilder::place_nested). The call itself is
+    /// infallible, as the other per-place options are.
     ///
     /// # Panics
     ///
     /// If `place` came from a different builder.
-    pub fn passive<T: 'static>(&mut self, place: PlaceRef<T>) {
-        let index = self.index_of(place, "passive");
+    pub fn stepping<T: 'static>(&mut self, place: PlaceRef<T>, stepping: Stepping) {
+        let index = self.index_of(place, "stepping");
         let meta = &mut self.places[index].meta;
-        if meta.nested.is_some() {
-            meta.passive = true;
+        if meta.holds_nets() {
+            meta.stepping = stepping;
         } else {
             self.not_nested.get_or_insert(place.id());
         }
@@ -916,17 +933,6 @@ impl NetBuilder {
         self
     }
 
-    /// Sets how the built net's [`step_deep`](Net::step_deep) shares its
-    /// firings between the net and the inner nets its tokens carry: this net
-    /// first ([`DeepPolicy::OuterFirst`], the default) or every net in turn
-    /// ([`DeepPolicy::Interleaved`]). See [`DeepPolicy`] for what each does
-    /// to an outer net that can always fire, and [`Net::set_deep_policy`] to
-    /// change it later.
-    pub fn deep_policy(&mut self, policy: DeepPolicy) -> &mut Self {
-        self.deep_policy = policy;
-        self
-    }
-
     /// Declares that rebuilding this net with the code that built it gives
     /// back an equivalent starting state, so a tool may offer to reset it.
     ///
@@ -1089,9 +1095,8 @@ impl NetBuilder {
     ///
     /// [`BuildError::DuplicatePlaceName`] or
     /// [`BuildError::DuplicateTransitionName`] if two of either share a name;
-    /// [`BuildError::NotNested`] if a place marked
-    /// [`passive`](NetBuilder::passive) was not declared with
-    /// [`place_nested`](NetBuilder::place_nested);
+    /// [`BuildError::NotNested`] if a place given a
+    /// [`stepping`](NetBuilder::stepping) rule holds no nets;
     /// [`BuildError::DuplicateKeyName`] or
     /// [`BuildError::KeysAlreadyDeclared`] for the first
     /// [`keys`](NetBuilder::keys) declaration that repeats a name or a
@@ -1355,8 +1360,7 @@ impl NetBuilder {
             selector: None,
             tie_break: self.tie_break,
             last_pick: None,
-            deep_policy: self.deep_policy,
-            deep_cursor: None,
+            ring_cursor: None,
             resettable: self.resettable,
             label_limit: self.label_limit,
             events: Vec::new(),
@@ -1543,7 +1547,7 @@ impl NetBuilder {
                 #[cfg(feature = "serde")]
                 from_json: None,
                 nested: None,
-                passive: false,
+                stepping: Stepping::InnerFirst,
                 keys: None,
                 style: None,
                 place_style: None,
@@ -1623,7 +1627,6 @@ impl fmt::Debug for NetBuilder {
             .field("label_limit", &self.label_limit)
             .field("assert_acyclic", &self.assert_acyclic)
             .field("tie_break", &self.tie_break)
-            .field("deep_policy", &self.deep_policy)
             .field("resettable", &self.resettable)
             .field("not_nested", &self.not_nested)
             .field("keys_problem", &self.keys_problem)

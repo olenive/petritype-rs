@@ -5,7 +5,9 @@ use std::collections::HashMap;
 use std::fmt;
 
 use petritype::control::{ControlKind, Node};
-use petritype::{Clause, EdgeInfo, Filter, Net, PlaceId, TokenId, Topology, TransitionId};
+use petritype::{
+    Clause, EdgeInfo, Filter, Net, PlaceId, Stepping, TokenId, Topology, TransitionId,
+};
 use serde_json::Value;
 
 use crate::protocol;
@@ -218,8 +220,9 @@ pub(crate) fn place_ids(names: &[String], net: &Net) -> Result<Vec<PlaceId>, Fil
         .collect()
 }
 
-/// The topology keyed by names (PROTOCOL.md §5.1): places with `nested` and
-/// `passive` when true (§12.2), edges with a direction, `kind` on inputs,
+/// The topology keyed by names (PROTOCOL.md §5.1): places with `nested`
+/// when true and `passive` for a nested place whose rule is
+/// [`Stepping::Passive`] (§12.2), edges with a direction, `kind` on inputs,
 /// `slot` only for a transition with more than one output that returns
 /// them by position, `detail: {params, detachable}`, and no `hints`.
 ///
@@ -243,7 +246,7 @@ pub(crate) fn topology(topology: &Topology, names: &Names) -> protocol::Topology
                 type_name: p.type_name.to_owned(),
                 serializable: p.serializable,
                 nested: p.nested,
-                passive: p.passive,
+                passive: p.stepping == Some(Stepping::Passive),
                 key_names: p.key_names.iter().map(|name| (*name).to_owned()).collect(),
                 style: p.style.and_then(place_style),
             })

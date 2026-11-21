@@ -85,9 +85,10 @@
 //!   (PROTOCOL.md §12). What happens inside arrives as one `nested`
 //!   notification around the inner net's own, with that net's own
 //!   `marking_version`; the outer one does not move. `step` and a running
-//!   net fire the outer net's choice first and, when it has none, one
-//!   inner firing, inline, which the outer net's `progress` counts under
-//!   the inner net's path.
+//!   net fire one transition in the order the nested places' stepping
+//!   rules give (`petritype::Stepping`): the outer net's choice, launched,
+//!   or one inner firing, inline, which the outer net's `progress` counts
+//!   under the inner net's path.
 //! - A place that declares keys (`NetBuilder::keys`) lists them as
 //!   `key_names`, and its tokens carry theirs as `keys` wherever a token is
 //!   given, `produced` entries included (PROTOCOL.md §13). `query` asks for

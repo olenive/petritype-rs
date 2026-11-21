@@ -35,10 +35,11 @@
 //!
 //! [`Mode::Sequential`] is [`Net::step_deep`] in a loop: one transition at a
 //! time, chosen by the net's [`Selector`](crate::Selector), each firing
-//! complete before the next begins, and, when the net has nothing to fire
-//! itself, one firing in the first inner net that has, if its tokens carry
-//! nets of their own ([`Nested`](crate::Nested)). It is **deterministic given
-//! the selectors**, which is what makes a sequential run the thing to write a
+//! complete before the next begins, and, if its tokens carry nets of their
+//! own ([`Nested`](crate::Nested)), the inner nets' firings in the order
+//! their places' [`Stepping`](crate::Stepping) rules give. It is
+//! **deterministic given the selectors**, which is what makes a sequential
+//! run the thing to write a
 //! test or a replay against, and what makes [`Net::set_selector`] a way to
 //! shape a whole run rather than one step.
 //!
@@ -65,19 +66,19 @@
 //! the concurrent driver distributes it on the spot and sweeps again rather
 //! than calling the net quiescent: the marking moved.
 //!
-//! Inner nets do not get threads of their own. When a sweep launches nothing
-//! and nothing is airborne, the concurrent driver makes **one** inner firing
-//! inline, exactly as [`Net::step_deep`] would choose it, and sweeps again,
-//! since a guard out here may read the marking in there. The ordering
-//! guarantee of the inner nets is therefore the sequential one, but only the
-//! sequential driver promises an order for the whole run.
-//!
-//! Both drivers honour the net's [`DeepPolicy`]. Under
-//! [`Interleaved`](DeepPolicy::Interleaved) the concurrent driver takes the
-//! cycle as `step_deep` does, a launch sweep being the outer net's turn: one
-//! inline inner firing for each inner net's turn, in the order of the round,
-//! made whether or not outer bodies are airborne, so an outer net that can
-//! always launch does not starve its inner nets here either.
+//! Inner nets do not get threads of their own. The concurrent driver takes a
+//! deep step's three parts as [`Net::step_deep`] does, a launch sweep being
+//! the outer net's own turn: each time round its loop, **one** inner firing
+//! inline among the turns ahead of the outer net's (its inner-first places,
+//! then the take-turns places whose turn comes first), else the sweep, else
+//! one inner firing among the turns behind it (the rest of the take-turns
+//! places, then the outer-first places, these only once nothing out here is
+//! airborne), and then it sweeps again, since a guard out here may read the
+//! marking in there. A take-turns place has its turns whether or not outer
+//! bodies are airborne, so an outer net that can always launch does not
+//! starve it here either. The ordering guarantee of the inner nets is
+//! therefore the sequential one, but only the sequential driver promises an
+//! order for the whole run.
 //!
 //! # Limits: pacing and the fuse
 //!
@@ -159,7 +160,6 @@
 //! is returned stays the first one). `net.in_flight()` is empty whenever one
 //! of these functions returns.
 
-use std::ops::Range;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::thread;
@@ -168,7 +168,7 @@ use std::time::{Duration, Instant};
 use crate::error::{FiringFailed, NetError};
 use crate::firing::Completed;
 use crate::ids::{PlaceId, TokenId, TransitionId};
-use crate::nested::{DeepPolicy, DeepStep};
+use crate::nested::{DeepStep, Part};
 use crate::net::Net;
 
 /// Why a blocking `recv` cannot fail here: the driver holds a sender of its
@@ -182,18 +182,19 @@ const SENDER_ALIVE: &str = "the driver's own sender is alive for the whole scope
 /// reproducible one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Mode {
-    /// [`Net::step_deep`] in a loop: the net's [`Selector`](crate::Selector)
-    /// picks one of the fireable transitions, it fires to completion, and the
-    /// loop asks again; when the net itself has nothing to fire, the first
-    /// inner net that has fires once. Deterministic given the selectors.
+    /// [`Net::step_deep`] in a loop: one firing at a time, in the net or in
+    /// one of its inner nets, in the order the
+    /// [`Stepping`](crate::Stepping) rules give; the net's own turn is its
+    /// [`Selector`](crate::Selector)'s choice, fired to completion before the
+    /// loop asks again. Deterministic given the selectors.
     #[default]
     Sequential,
     /// Launch everything fireable, in declaration order, and run each
     /// detachable body on its own thread inside a
     /// [`std::thread::scope`]. The selector is not consulted and completion
     /// order is wall-clock order. Inner nets are stepped inline, one firing
-    /// at a time, whenever a sweep finds nothing to launch, or, under
-    /// [`DeepPolicy::Interleaved`], in their turns between the sweeps.
+    /// at a time, in their turns before and after the sweeps, as the
+    /// [`Stepping`](crate::Stepping) rules order them.
     Concurrent,
 }
 
@@ -419,10 +420,11 @@ pub fn run(
 /// promptly rather than at the end of the sweep.
 ///
 /// A tick is: call `each_tick`, fire, wait out the rest of `tick`. In
-/// [`Mode::Sequential`] "fire" is one [`step`](Net::step) (one firing per
-/// tick, which is what an animation wants, one firing per frame), followed by
-/// a [`sleep`](std::thread::sleep). In [`Mode::Concurrent`] it is one launch
-/// sweep, and the wait is a
+/// [`Mode::Sequential`] "fire" is one [`step_deep`](Net::step_deep) (one
+/// firing per tick, which is what an animation wants, one firing per frame),
+/// followed by a [`sleep`](std::thread::sleep). In [`Mode::Concurrent`] it
+/// is one turn: an inline inner firing ahead of the outer net's turn, else
+/// one launch sweep, else an inline inner firing behind it; and the wait is a
 /// [`recv_timeout`](std::sync::mpsc::Receiver::recv_timeout) on the
 /// completion channel until the tick's deadline, so completions are
 /// distributed the moment they arrive instead of at the next tick.
@@ -511,7 +513,7 @@ where
 // ----- the loops -----------------------------------------------------------
 
 /// [`Mode::Sequential`] for [`run`]: stop check, fuse check, one
-/// [`step`](Net::step), repeat.
+/// [`step_deep`](Net::step_deep), repeat.
 fn run_sequential(
     net: &mut Net,
     limits: Limits,
@@ -588,20 +590,17 @@ fn run_concurrent(
         let mut first_failure: Option<FiringFailed> = None;
 
         loop {
-            let interleaved = net.deep_policy() == DeepPolicy::Interleaved;
-            let (ahead, behind) = net.round();
             let mut launched_this_sweep = 0_usize;
             // An inner net took its turn this time round, inline.
             let mut inner_turn = false;
             if tally.capped(limits) {
                 capped = true;
             }
-            // Under `Interleaved`, the inner nets whose turn comes before the
-            // outer net's in this round.
+            // The inner nets whose turn comes before the outer net's.
             if !capped && fuse.is_none() && first_failure.is_none() {
                 inner_turn = inner_step(
                     net,
-                    ahead,
+                    Part::Ahead,
                     limits,
                     on_failure,
                     tally,
@@ -651,24 +650,22 @@ fn run_concurrent(
                     }
                 }
                 if launched_this_sweep > 0 {
-                    net.deep_cursor = Some(net.id());
+                    net.took_own_turn();
                 }
             }
-            // The inner nets whose turn comes after the outer net's: every
-            // one of them under `OuterFirst`, and only once nothing out here
-            // is airborne, since a guard out here may read the marking in
-            // there; under `Interleaved` the rest of the round, airborne
-            // bodies or not.
+            // The inner nets whose turn comes after the outer net's: the
+            // rest of the ring, airborne bodies or not, then the outer-first
+            // places, which the net offers only once nothing out here is
+            // airborne.
             if !inner_turn
                 && launched_this_sweep == 0
-                && (interleaved || airborne == 0)
                 && !capped
                 && fuse.is_none()
                 && first_failure.is_none()
             {
                 inner_turn = inner_step(
                     net,
-                    behind,
+                    Part::Behind,
                     limits,
                     on_failure,
                     tally,
@@ -798,14 +795,12 @@ where
             if stop.load(Ordering::Relaxed) {
                 break;
             }
-            let interleaved = net.deep_policy() == DeepPolicy::Interleaved;
-            let (ahead, behind) = net.round();
-            // One turn a tick: under `Interleaved`, an inner net's whose turn
-            // comes before the outer net's, if one has a firing; else the
-            // outer net's sweep; else an inner net's after it.
+            // One turn a tick: an inner net's whose turn comes before the
+            // outer net's, if one has a firing; else the outer net's sweep;
+            // else an inner net's after it.
             let inner_turn = inner_step(
                 net,
-                ahead,
+                Part::Ahead,
                 Limits::default(),
                 on_failure,
                 tally,
@@ -849,19 +844,15 @@ where
                 break;
             }
             if launched_this_sweep > 0 {
-                net.deep_cursor = Some(net.id());
+                net.took_own_turn();
             }
-            // Nothing out here to launch and nothing airborne (or, under
-            // `Interleaved`, airborne bodies or not): one inner firing this
-            // tick, inline, in the round's order.
-            if !inner_turn
-                && launched_this_sweep == 0
-                && (interleaved || airborne == 0)
-                && !stop.load(Ordering::Relaxed)
-            {
+            // Nothing out here to launch: one inner firing this tick, inline,
+            // among the turns behind the outer net's (the outer-first places
+            // only once nothing out here is airborne).
+            if !inner_turn && launched_this_sweep == 0 && !stop.load(Ordering::Relaxed) {
                 inner_step(
                     net,
-                    behind,
+                    Part::Behind,
                     Limits::default(),
                     on_failure,
                     tally,
@@ -917,27 +908,24 @@ where
 const LAUNCHABLE: &str =
     "a driver launches only what this net's own `fireable` just named, so it exists";
 
-/// One inner firing, inline, among the inner nets whose place in the round's
-/// walk is in `turns` ([`Net::round`]), for a concurrent loop: the fuse
-/// first, then the firing, counted, its failure handled as `on_failure`
-/// says ([`Stop`](OnFailure::Stop) keeps the first one in `first_failure`).
+/// One inner firing, inline, among the turns of one part of the net's round
+/// ([`Part`]), for a concurrent loop: the fuse first, then the firing,
+/// counted, its failure handled as `on_failure` says
+/// ([`Stop`](OnFailure::Stop) keeps the first one in `first_failure`).
 ///
-/// True when an inner net took its turn, firing or failing. False when
-/// `turns` is empty, when none of those nets had a firing, or when the fuse
-/// was spent and something anywhere is fireable, in which case `fuse` now
-/// says which, and nothing was attempted.
+/// True when an inner net took its turn, firing or failing. False when none
+/// of those nets had a firing, or when the fuse was spent and something
+/// anywhere is fireable, in which case `fuse` now says which, and nothing
+/// was attempted.
 fn inner_step(
     net: &mut Net,
-    turns: Range<usize>,
+    part: Part,
     limits: Limits,
     on_failure: OnFailure,
     tally: &mut Tally,
     fuse: &mut Option<(u64, TransitionId, String)>,
     first_failure: &mut Option<FiringFailed>,
 ) -> bool {
-    if turns.is_empty() {
-        return false;
-    }
     if let Some(limit) = limits.error_after_n_firings
         && tally.launched >= limit
         && let Some((transition, name)) = net.first_fireable_deep()
@@ -945,7 +933,7 @@ fn inner_step(
         *fuse = Some((limit, transition, name));
         return false;
     }
-    match net.inner_turn(turns) {
+    match net.take_turn(part) {
         Ok(Some(step)) => {
             tally.landed(&step);
             true

@@ -273,15 +273,15 @@
 //! - [`Nested`] is a token type that carries Petri nets of its own, and
 //!   [`NetBuilder::place_nested`] the place that holds such tokens (DESIGN
 //!   §6.6). [`Net::nested`] reads a token's inner nets, [`Net::step_deep`]
-//!   fires the net and then, when it has nothing to fire, its inner nets,
-//!   with a [`DeepStep`] saying where (or, under the [`DeepPolicy`]
-//!   `Interleaved`, the net and its inner nets in turn),
+//!   fires one transition, in the net or in one of its inner nets, with a
+//!   [`DeepStep`] saying where, in the order each nested place's
+//!   [`Stepping`] rule gives ([`NetBuilder::stepping`]: inner first, the
+//!   default, take turns, outer first, or passive, which leaves a place's
+//!   inner nets to the outer bodies that reach into them),
 //!   [`Net::step_deep_staged`] is the same step for a driver that fires the
 //!   net's own transitions in stages ([`StagedStep`]), and
 //!   [`Net::is_quiescent_deep`] asks whether anything can happen at any
-//!   depth.
-//!   [`NetBuilder::passive`] leaves a place's inner nets to the outer bodies
-//!   that reach into them, and [`Net::nested_scope`] is that reach for a
+//!   depth. [`Net::nested_scope`] is the reach inside for a
 //!   caller that is not a body. Whatever an inner net logs comes out in the
 //!   outer log as an [`Event::Nested`], with the place and token it
 //!   happened in and the inner net's own [`NetId`], which does not change as
@@ -412,7 +412,7 @@ pub use ids::{NetId, PlaceId, PlaceRef, TokenId, TransitionId};
 pub use keys::{Clause, Filter, KeyValue, Keys, Match};
 #[cfg(feature = "serde")]
 pub use marking::Marking;
-pub use nested::{DeepPolicy, DeepStep, Nested, StagedStep};
+pub use nested::{DeepStep, Nested, StagedStep, Stepping};
 pub use net::{Net, PlaceInfo};
 pub use param::Param;
 pub use routing::{Either, RoutedOutput};

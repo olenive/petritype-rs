@@ -14,7 +14,7 @@ use crate::event::Event;
 use crate::firing::{Selector, TieBreak};
 use crate::ids::{NetId, PlaceId, PlaceRef, TokenId, TransitionId, foreign_place};
 use crate::index::KeyIndex;
-use crate::nested::{DeepPolicy, lift_from};
+use crate::nested::{Stepping, lift_from};
 use crate::param::{ParamSlot, param_of, param_slot_index};
 use crate::place::{ErasedToken, PlaceSlot, erase_all};
 use crate::style::{PlaceStyle, Style};
@@ -65,14 +65,10 @@ pub struct Net {
     /// [`TieBreak::RoundRobin`], moved by [`step`](Net::step) and
     /// [`choose`](Net::choose). In memory only: never saved or forked.
     pub(crate) last_pick: Option<TransitionId>,
-    /// How [`step_deep`](Net::step_deep) shares its firings between this net
-    /// and its inner nets. Set by the builder or by
-    /// [`set_deep_policy`](Net::set_deep_policy).
-    pub(crate) deep_policy: DeepPolicy,
-    /// The net the last deep step fired in (this net's own id, or an inner
-    /// net's nested id), the cursor of [`DeepPolicy::Interleaved`]. In
-    /// memory only: never saved or forked.
-    pub(crate) deep_cursor: Option<NetId>,
+    /// The member of this net's ring that took the last turn in it: this
+    /// net's own id, or the nested id of a net in a take-turns place
+    /// ([`Stepping`]). In memory only: never saved or forked.
+    pub(crate) ring_cursor: Option<NetId>,
     /// Whether the author declared the net safe to rebuild as a reset. See
     /// [`is_resettable`](Net::is_resettable).
     pub(crate) resettable: bool,
@@ -141,11 +137,11 @@ pub struct PlaceInfo<'a> {
     /// [`Net::step_deep`] runs (DESIGN §6.6). A renderer may badge such a
     /// place, or offer to open a token.
     pub nested: bool,
-    /// Whether the place was marked
-    /// [`NetBuilder::passive`](crate::NetBuilder::passive): its inner nets
-    /// fire only when an outer body steps them. Never true unless `nested`
-    /// is.
-    pub passive: bool,
+    /// How the nets the place holds take their turns beside this net
+    /// ([`Stepping`]), as [`Net::stepping`] reads it: inner first, take
+    /// turns, outer first or passive. `Some` exactly when `nested` is true;
+    /// a place that holds no nets has no rule.
+    pub stepping: Option<Stepping>,
     /// The keys the place derives from each of its tokens, in the order
     /// [`NetBuilder::keys`](crate::NetBuilder::keys) declared them; empty for
     /// a place without keys (DESIGN §8.3). What a viewer lists in a filter
@@ -1074,8 +1070,7 @@ impl fmt::Debug for Net {
             .field("custom_selector", &self.selector.is_some())
             .field("tie_break", &self.tie_break)
             .field("last_pick", &self.last_pick)
-            .field("deep_policy", &self.deep_policy)
-            .field("deep_cursor", &self.deep_cursor)
+            .field("ring_cursor", &self.ring_cursor)
             .field("resettable", &self.resettable)
             .field("pending_events", &self.events.len())
             .field(
@@ -1120,7 +1115,7 @@ pub(crate) fn places_of(
             #[cfg(not(feature = "serde"))]
             serializable: false,
             nested: slot.meta.nested.is_some(),
-            passive: slot.meta.passive,
+            stepping: slot.meta.holds_nets().then_some(slot.meta.stepping),
             key_names: slot.meta.keys.as_ref().map_or(&[], |keys| &keys.names[..]),
             style: slot.meta.place_style,
         };

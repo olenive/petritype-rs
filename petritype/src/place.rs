@@ -6,7 +6,7 @@ use std::fmt;
 
 use crate::ids::TokenId;
 use crate::keys::KeysVtable;
-use crate::nested::NestedVtable;
+use crate::nested::{NestedVtable, Stepping};
 use crate::style::{PlaceStyle, StyleFn};
 
 /// A token as the net stores it: owned, type-erased, and safe to move to
@@ -93,10 +93,12 @@ pub(crate) struct PlaceMeta {
     /// carries `T::fork` instead, which is what
     /// [`Net::snapshot`](crate::Net::snapshot) copies its tokens with.
     pub(crate) nested: Option<NestedVtable>,
-    /// Whether [`step_deep`](crate::Net::step_deep) leaves this nested
-    /// place's inner nets alone, as asked for by
-    /// [`passive`](crate::NetBuilder::passive). Never true without `nested`.
-    pub(crate) passive: bool,
+    /// How the nets this place holds take their turns beside the net around
+    /// them, as set by [`NetBuilder::stepping`](crate::NetBuilder::stepping)
+    /// or [`Net::set_stepping`](crate::Net::set_stepping); the default,
+    /// [`InnerFirst`](Stepping::InnerFirst), until then. Read only for a
+    /// place that [holds nets](PlaceMeta::holds_nets).
+    pub(crate) stepping: Stepping,
     /// The key names and the extractor declared with
     /// [`NetBuilder::keys`](crate::NetBuilder::keys), or `None` for a place
     /// whose tokens have no keys (DESIGN §8.3). Unlike the entries above it
@@ -112,6 +114,15 @@ pub(crate) struct PlaceMeta {
     /// [`NetBuilder::place_style`](crate::NetBuilder::place_style) for
     /// drawing the place itself, or `None`.
     pub(crate) place_style: Option<PlaceStyle>,
+}
+
+impl PlaceMeta {
+    /// Whether the place holds nets, and so has a [`Stepping`] rule: a place
+    /// declared with [`place_nested`](crate::NetBuilder::place_nested),
+    /// whose tokens carry nets of their own.
+    pub(crate) fn holds_nets(&self) -> bool {
+        self.nested.is_some()
+    }
 }
 
 impl fmt::Debug for PlaceMeta {

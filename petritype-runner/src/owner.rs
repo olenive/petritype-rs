@@ -399,9 +399,9 @@ type Visit<'v, 'a, R> = dyn FnMut(&[Level], &str, &str, &'a Net) -> Option<R> + 
 type Pairs = Vec<(PlaceId, TokenId)>;
 
 /// Calls `visit` with every inner net below `net`, at every depth and in
-/// passive places too, in the order `step_deep` walks them (nested places in
-/// place order, tokens oldest first, a token's nets in order, a net's own
-/// inner nets straight after it), until `visit` answers `Some`.
+/// passive places too, in walk order (nested places in place order, tokens
+/// oldest first, a token's nets in order, a net's own inner nets straight
+/// after it), until `visit` answers `Some`.
 fn walk<'a, R>(
     net: &'a Net,
     levels: &mut Vec<Level>,
@@ -2596,11 +2596,12 @@ impl Owner {
 
     // ----- the firing cycle --------------------------------------------------
 
-    /// One firing (PROTOCOL.md §6.3, §12.3), as the loaded net's deep policy
-    /// orders it (`Net::step_deep_staged`): the outer net's own choice,
-    /// launched in stages, or an inner firing, made inline. Under the
-    /// default policy the outer net's choice comes first, and an inner
-    /// firing only when it has none.
+    /// One firing (PROTOCOL.md §6.3, §12.3), as the stepping rules of the
+    /// loaded net's nested places order it (`Net::step_deep_staged`): the
+    /// outer net's own choice, launched in stages, or an inner firing, made
+    /// inline. Under the default rule, inner first, an inner net's firing
+    /// comes first, and the outer net's choice only when every inner net in
+    /// such a place is at rest.
     fn step(
         &mut self,
         id: &str,
@@ -2852,11 +2853,11 @@ impl Owner {
         }
     }
 
-    /// Keeps a running net going: one firing in the loaded net's deep
-    /// policy's order, as `step` makes it (the outer net's next, launched,
-    /// or an inner one, inline, §12.3), or handles quiescence (nothing
-    /// fireable anywhere) with `idle` once per spell for a `"24/7"` net and
-    /// `execution_stopped` for any other.
+    /// Keeps a running net going: one firing in the order of the loaded
+    /// net's stepping rules, as `step` makes it (the outer net's next,
+    /// launched, or an inner one, inline, §12.3), or handles quiescence
+    /// (nothing fireable anywhere) with `idle` once per spell for a `"24/7"`
+    /// net and `execution_stopped` for any other.
     fn drive(&mut self, now: SystemTime, out: &mut Vec<Outgoing>) {
         let Some(loaded) = &self.loaded else {
             return;

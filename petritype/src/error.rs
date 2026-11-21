@@ -156,18 +156,17 @@ pub enum BuildError {
         /// The place it reads, which declares no keys.
         place: String,
     },
-    /// A place was marked [`passive`](crate::NetBuilder::passive) that was
-    /// not declared with
-    /// [`place_nested`](crate::NetBuilder::place_nested).
+    /// A place that holds no nets was given a
+    /// [`stepping`](crate::NetBuilder::stepping) rule.
     ///
-    /// Passive is a choice about inner nets (that
-    /// [`step_deep`](crate::Net::step_deep) leaves them to an outer body),
-    /// and an ordinary place has none, so the mark would say nothing. Declare
-    /// the place with `place_nested`, or drop the mark. Reported for the
-    /// first such place marked.
-    #[error("place {place:?} is marked passive but was not declared with place_nested")]
+    /// The rule says how the nets in a place take their turns beside the
+    /// net around them ([`Stepping`](crate::Stepping)), and an ordinary
+    /// place has none, so the rule would say nothing. Declare the place with
+    /// [`place_nested`](crate::NetBuilder::place_nested), or drop the rule.
+    /// Reported for the first such place given one.
+    #[error("place {place:?} is given a stepping rule but holds no nets")]
     NotNested {
-        /// The place that was marked.
+        /// The place that was given the rule.
         place: String,
     },
     /// One [`keys`](crate::NetBuilder::keys) declaration names the same key
@@ -470,6 +469,17 @@ pub enum NetError {
         /// The place's name, for the message; the id is the field to match
         /// on. The name is also what a caller has to go and change in the
         /// builder.
+        name: String,
+    },
+    /// [`Net::set_stepping`](crate::Net::set_stepping) was asked to change
+    /// the rule of a place that holds no nets, and so has none.
+    /// [`BuildError::NotNested`] is the same refusal in the builder.
+    #[error("place {name:?} ({place:?}) holds no nets, so it has no stepping rule")]
+    NotNested {
+        /// The place that was named.
+        place: PlaceId,
+        /// The place's name, for the message; the id is the field to match
+        /// on.
         name: String,
     },
     /// [`Net::export_marking`](crate::Net::export_marking), a save or a

@@ -9,7 +9,7 @@
 //! whether an output edge's slot is a position in what the body returns.
 
 use petritype::{
-    DeepStep, Distribution, Event, Net, NetBuilder, OutputDistribution, Routed, TakeEdge,
+    DeepStep, Distribution, Event, Net, NetBuilder, OutputDistribution, Routed, Stepping, TakeEdge,
 };
 
 // ----- step_inside ------------------------------------------------------------
@@ -44,7 +44,7 @@ fn step_inside_fires_an_inner_net_and_never_the_outer_one() {
     let done = b.place::<u32>("Done");
     let shelf = b.place_nested::<Net>("Shelf");
     let lazy = b.place_nested::<Net>("Lazy");
-    b.passive(lazy);
+    b.stepping(lazy, Stepping::Passive);
     b.seed(ready, [1]);
     b.seed(shelf, [bin(&[1])]);
     b.seed(lazy, [bin(&[2])]);

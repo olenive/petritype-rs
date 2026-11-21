@@ -93,8 +93,9 @@ rename backlog.
 | a net carried by a token / the net holding that token | **inner net** / **outer net** (DESIGN §6.6) | | same words (nets-as-tokens Python track) |
 | a token type that owns nets | trait `Nested` (`nets`, `nets_mut`: each net with a name, `""` for a bare `Net`) | | `__petritype_nets__` (proposal) |
 | place whose tokens carry nets | **nested place**, `b.place_nested::<T>(name)`, `PlaceInfo::nested` | | `nested=True` on the place (proposal) |
-| nested place whose inner nets only an outer body steps | **passive**, `b.passive(place)`, `PlaceInfo::passive` → `BuildError::NotNested` on a plain place | | |
-| one firing here, or else in the first inner net that has one | **deep step**, `net.step_deep()` → `DeepStep::{Here, Inside}`; `net.is_quiescent_deep()` | | |
+| how a nested place's inner nets take their turns beside the outer net | **stepping rule**, `Stepping::{InnerFirst, TakeTurns, OuterFirst, Passive}`, `b.stepping(place, rule)`, `net.set_stepping(place, rule)`, `net.stepping(place)`, `PlaceInfo::stepping` → `BuildError::NotNested` on a plain place | `deep_policy=` per net, `passive=True` per place | `stepping="inner_first"` and the rest, the same four names (`dev-docs/subnet-place-spec.md` §5) |
+| the take-turns band of one net: the net and the nets of its take-turns places, round from the last to fire | **ring**, its **cursor** | | |
+| one firing here or in an inner net, in the order the stepping rules give | **deep step**, `net.step_deep()` → `DeepStep::{Here, Inside}`; `net.is_quiescent_deep()` | | |
 | moving an inner net's events into the outer log | **lift** (the net does it, at six fixed moments) | | |
 | an inner net's event in the outer log | `Event::Nested { place, token, net, nested_id, event }` | | wrapping `Nested` record (proposal) |
 | the id that follows a token's inner net across moves | `nested_id`: the inner net's own `NetId` (`Display` and `Serialize` as a bare number) | | |
@@ -114,7 +115,7 @@ rename backlog.
 | an inner net's stable name on the wire | **nested id**: its `NetId` as `Display` prints it, opaque to a reader | `net_id`, as a string | |
 | an inner net's event on the wire | the `nested {path, nested_id, event}` notification, `protocol::Notification::Nested` | `NestedEvent` | |
 | the nets a token holds, on a token entry | `nets: [{name, nested_id, path, template?, count}]`, `protocol::InnerNet` | `Tokens.nets` | |
-| one inner firing, without asking this net's own selector | `net.step_inside()` (the second half of `step_deep`) | `_select_inner` in the runner | |
+| one inner firing, without asking this net's own selector | `net.step_inside()` (a deep step without this net's own turn) | `_select_inner` in the runner | |
 | the wire name behind a `ParamChanged` | `net.param_name(type_name)` | Python's events carry the name | |
 | whether a body returns its outputs by position (and so what a `slot` is) | `TransitionInfo::positional`, `TopologyTransition::positional` | a return edge's `return_index` being set | |
 | a named attribute a place derives from each of its tokens | **key** (DESIGN §8.3); the place's names `PlaceInfo::key_names`, `TopologyPlace::key_names`; `key_names` on the wire | key, `place.key_names` | |

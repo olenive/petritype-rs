@@ -2,17 +2,19 @@
 //! §6.1, §6.6, §13).
 //!
 //! A third tie-break, [`TieBreak::RoundRobin`], takes a net's transitions in
-//! turn; a deep-step policy, [`DeepPolicy::Interleaved`], takes a net and the
-//! nets its tokens carry in turn, so that an outer net that can always fire
-//! no longer starves its inner nets. The defaults are unchanged, which the
-//! earlier slices' tests go on checking.
+//! turn. The slice's second policy, a net and the nets its tokens carry
+//! taken in turn so that an outer net that can always fire no longer
+//! starves its inner nets, is since 2026-11-21 the stepping rule
+//! [`Stepping::TakeTurns`] of a nested place, and its tests here are the
+//! evidence that one level of take turns steps as that policy did. The
+//! rules' own tests are in `tests/stepping.rs`.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use petritype::drivers::{self, DriverError, Limits, Mode, OnFailure};
 use petritype::{
-    DeepPolicy, DeepStep, Nested, Net, NetBuilder, NetId, PlaceRef, StagedStep, TakeEdge, TieBreak,
+    DeepStep, Nested, Net, NetBuilder, NetId, PlaceRef, StagedStep, Stepping, TakeEdge, TieBreak,
     TransitionId,
 };
 
@@ -166,23 +168,25 @@ fn every_net_has_its_own_cursor() {
 #[cfg(feature = "serde")]
 mod saved {
     use petritype::serde_json;
-    use petritype::{DeepPolicy, NetBuilder, Params, TakeEdge, Templates, TieBreak};
+    use petritype::{Net, NetBuilder, Params, Stepping, TakeEdge, Templates, TieBreak};
 
     /// `Rivals`: `Left` and `Right` compete for `Pool`, which holds 0 to 5,
-    /// under round robin and the interleaved deep policy.
+    /// under round robin, beside an empty `Desk` of nets that take turns.
     fn templates() -> Templates {
         let mut templates = Templates::new();
         templates.register("Rivals", |_: &Params| {
             let mut b = NetBuilder::new();
             let pool = b.place::<u32>("Pool");
             let out = b.place::<u32>("Out");
+            let desk = b.place_nested::<Net>("Desk");
             b.serializable(pool);
             b.serializable(out);
+            b.serializable(desk);
             b.seed(pool, 0..6);
             b.transition("Left", (TakeEdge(pool),), (out,), |n: u32| (n,));
             b.transition("Right", (TakeEdge(pool),), (out,), |n: u32| (n,));
             b.tie_break(TieBreak::RoundRobin);
-            b.deep_policy(DeepPolicy::Interleaved);
+            b.stepping(desk, Stepping::TakeTurns);
             b.build()
         });
         templates
@@ -202,12 +206,23 @@ mod saved {
         assert_eq!(restored.select(), Some(left), "the cursor is not saved");
         assert_eq!(restored.tie_break(), TieBreak::RoundRobin, "the factory's");
 
+        let desk = net.place_named("Desk").expect("Desk");
+        net.set_stepping(desk, Stepping::Passive)
+            .expect("Desk holds nets");
         let fork = net.fork().expect("a fork");
         assert_eq!(fork.select(), Some(left), "nor forked");
         assert_eq!(
-            (fork.tie_break(), fork.deep_policy()),
-            (TieBreak::RoundRobin, DeepPolicy::Interleaved),
+            (fork.tie_break(), fork.stepping(desk)),
+            (TieBreak::RoundRobin, Some(Stepping::Passive)),
             "the settings are"
+        );
+        let restored = templates
+            .restore(serde_json::to_value(&net).expect("saves"))
+            .expect("restores");
+        assert_eq!(
+            restored.stepping(desk),
+            Some(Stepping::TakeTurns),
+            "the factory's rule: a rule is not saved"
         );
 
         // A reset is a rebuild, and a rebuilt net has no cursor either.
@@ -216,7 +231,7 @@ mod saved {
     }
 }
 
-// ----- the deep policy -----------------------------------------------------------
+// ----- take turns, one level deep ---------------------------------------------
 
 /// A bare inner net with `jobs` things to do: `Todo -Work-> Done`.
 fn worker(jobs: u32) -> Net {
@@ -234,27 +249,27 @@ fn todo(net: &Net) -> usize {
 }
 
 /// An outer net that can always fire (`Spin` puts back what it takes) and
-/// a `Desk` of workers, plus a passive `Shelf` holding a worker no deep
-/// step may touch.
+/// a `Desk` of workers under `stepping`, plus a passive `Shelf` holding a
+/// worker no deep step may touch.
 struct Carousel {
     net: Net,
     desk: PlaceRef<Net>,
     spin: TransitionId,
 }
 
-fn carousel(policy: DeepPolicy, workers: &[u32]) -> Carousel {
+fn carousel(stepping: Stepping, workers: &[u32]) -> Carousel {
     let mut b = NetBuilder::new();
     let wheel = b.place::<u32>("Wheel");
     let desk = b.place_nested::<Net>("Desk");
     let shelf = b.place_nested::<Net>("Shelf");
-    b.passive(shelf);
+    b.stepping(desk, stepping);
+    b.stepping(shelf, Stepping::Passive);
     b.seed(wheel, [0]);
     b.seed(desk, workers.iter().map(|&jobs| worker(jobs)));
     b.seed(shelf, [worker(5)]);
     let spin = b
         .transition("Spin", (TakeEdge(wheel),), (wheel,), |n: u32| (n + 1,))
         .id();
-    b.deep_policy(policy);
     Carousel {
         net: b.build().expect("a carousel"),
         desk,
@@ -310,15 +325,14 @@ fn deep_order(net: &mut Net, n: usize) -> Vec<Option<NetId>> {
 
 #[test]
 fn an_always_live_outer_net_starves_its_inner_net_under_outer_first() {
-    let mut c = carousel(DeepPolicy::default(), &[2]);
-    assert_eq!(c.net.deep_policy(), DeepPolicy::OuterFirst, "the default");
+    let mut c = carousel(Stepping::OuterFirst, &[2]);
     assert_eq!(deep_order(&mut c.net, 10), [None; 10], "Spin, every time");
     assert_eq!(desk_todo(&c), [2], "the worker never had a turn");
 }
 
 #[test]
-fn interleaved_gives_the_inner_net_its_turn() {
-    let mut c = carousel(DeepPolicy::Interleaved, &[2]);
+fn take_turns_gives_the_inner_net_its_turn() {
+    let mut c = carousel(Stepping::TakeTurns, &[2]);
     let [worker] = desk_ids(&c)[..] else {
         panic!("one worker")
     };
@@ -337,9 +351,11 @@ fn interleaved_gives_the_inner_net_its_turn() {
     );
 
     // Set on the net, it takes effect from the next deep step.
-    let mut c = carousel(DeepPolicy::OuterFirst, &[1]);
+    let mut c = carousel(Stepping::OuterFirst, &[1]);
     assert_eq!(deep_order(&mut c.net, 2), [None, None]);
-    c.net.set_deep_policy(DeepPolicy::Interleaved);
+    c.net
+        .set_stepping(c.desk.id(), Stepping::TakeTurns)
+        .expect("the desk holds nets");
     let [worker] = desk_ids(&c)[..] else {
         panic!("one worker")
     };
@@ -347,16 +363,16 @@ fn interleaved_gives_the_inner_net_its_turn() {
 }
 
 #[test]
-fn two_live_inner_nets_alternate_under_interleaved() {
+fn two_live_inner_nets_alternate_under_take_turns() {
     // No outer transition can fire: `Spin`'s wheel is empty.
-    let quiet = |policy| {
-        let mut c = carousel(policy, &[3, 3]);
+    let quiet = |stepping| {
+        let mut c = carousel(stepping, &[3, 3]);
         let wheel = c.net.place_named("Wheel").expect("a wheel");
         let (token, _) = c.net.tokens(wheel).next().expect("the wheel's token");
         c.net.remove(wheel, token).expect("removable");
         c
     };
-    let mut c = quiet(DeepPolicy::Interleaved);
+    let mut c = quiet(Stepping::TakeTurns);
     let [a, b] = desk_ids(&c)[..] else {
         panic!("two workers")
     };
@@ -367,7 +383,7 @@ fn two_live_inner_nets_alternate_under_interleaved() {
     );
     assert!(c.net.step_deep().expect("no failure").is_none());
 
-    let mut c = quiet(DeepPolicy::OuterFirst);
+    let mut c = quiet(Stepping::OuterFirst);
     let [a, b] = desk_ids(&c)[..] else {
         panic!("two workers")
     };
@@ -380,7 +396,7 @@ fn two_live_inner_nets_alternate_under_interleaved() {
 
 #[test]
 fn the_round_starts_at_the_outer_net_when_its_cursor_has_gone() {
-    let mut c = carousel(DeepPolicy::Interleaved, &[3, 3]);
+    let mut c = carousel(Stepping::TakeTurns, &[3, 3]);
     let [a, b] = desk_ids(&c)[..] else {
         panic!("two workers")
     };
@@ -408,8 +424,8 @@ impl Nested for Crate {
 }
 
 #[test]
-fn the_round_goes_down_before_it_goes_on() {
-    let nested = |policy| {
+fn two_levels_under_one_rule_step_as_the_old_policies_did() {
+    let nested = |stepping| {
         // The middle net works through two jobs of its own and holds a
         // worker with two more.
         let mut b = NetBuilder::new();
@@ -418,12 +434,13 @@ fn the_round_goes_down_before_it_goes_on() {
         let held = b.place_nested::<Net>("Held");
         b.seed(todo, 0..2);
         b.seed(held, [worker(2)]);
+        b.stepping(held, stepping);
         b.transition("Work", (TakeEdge(todo),), (done,), |n: u32| (n,));
         let middle = b.build().expect("the middle net");
         let mut b = NetBuilder::new();
         let yard = b.place_nested::<Crate>("Yard");
         b.seed(yard, [Crate { middle }]);
-        b.deep_policy(policy);
+        b.stepping(yard, stepping);
         let net = b.build().expect("the outer net");
         let (token, _) = net.tokens(yard.id()).next().expect("the crate");
         let ids = {
@@ -438,23 +455,27 @@ fn the_round_goes_down_before_it_goes_on() {
         };
         (net, ids)
     };
-    let (mut net, (middle, bottom)) = nested(DeepPolicy::Interleaved);
+    // With nothing to fire out here, the middle net and the bottom one
+    // alternate as the interleaved policy's cycle had them, but as two
+    // rings: the outer net's holds the middle net, the middle net's the
+    // bottom one.
+    let (mut net, (middle, bottom)) = nested(Stepping::TakeTurns);
     assert_eq!(
         deep_order(&mut net, 4),
         [middle, bottom, middle, bottom].map(Some),
-        "the cycle is the outer net, the middle net, the bottom net"
+        "two rings of one level each, the outer net's and the middle net's"
     );
-    let (mut net, (middle, bottom)) = nested(DeepPolicy::OuterFirst);
+    let (mut net, (middle, bottom)) = nested(Stepping::OuterFirst);
     assert_eq!(
         deep_order(&mut net, 4),
         [middle, middle, bottom, bottom].map(Some),
-        "the middle net's own selector first, under the outer net's policy"
+        "the middle net's own selector first, as its own place's rule says"
     );
 }
 
 #[test]
 fn a_staged_deep_step_hands_back_the_outer_choice_in_its_turn() {
-    let mut c = carousel(DeepPolicy::Interleaved, &[1]);
+    let mut c = carousel(Stepping::TakeTurns, &[1]);
     let wheel = c.net.place_named("Wheel").expect("a wheel");
 
     let Some(StagedStep::Chosen(chosen)) = c.net.step_deep_staged().expect("no failure") else {
@@ -478,57 +499,57 @@ fn a_staged_deep_step_hands_back_the_outer_choice_in_its_turn() {
 }
 
 #[test]
-fn the_sequential_drivers_honour_the_policy() {
-    for (policy, left) in [(DeepPolicy::OuterFirst, 2), (DeepPolicy::Interleaved, 0)] {
-        let mut c = carousel(policy, &[2]);
+fn the_sequential_drivers_follow_the_rule() {
+    for (stepping, left) in [(Stepping::OuterFirst, 2), (Stepping::TakeTurns, 0)] {
+        let mut c = carousel(stepping, &[2]);
         let limits = Limits {
             stop_after_n_firings: Some(10),
             ..Limits::default()
         };
         let summary = drivers::run(&mut c.net, Mode::Sequential, limits, OnFailure::Stop)
             .expect("nothing fails");
-        assert_eq!(summary.fired_count, 10, "{policy:?}");
-        assert_eq!(desk_todo(&c), [left], "{policy:?}");
+        assert_eq!(summary.fired_count, 10, "{stepping:?}");
+        assert_eq!(desk_todo(&c), [left], "{stepping:?}");
     }
 
     // The fuse blames what the round would have tried next.
-    for (policy, blamed) in [
-        (DeepPolicy::OuterFirst, "Spin"),
-        (DeepPolicy::Interleaved, "Work"),
+    for (stepping, blamed) in [
+        (Stepping::OuterFirst, "Spin"),
+        (Stepping::TakeTurns, "Work"),
     ] {
-        let mut c = carousel(policy, &[2]);
+        let mut c = carousel(stepping, &[2]);
         let limits = Limits {
             error_after_n_firings: Some(1),
             ..Limits::default()
         };
         match drivers::run(&mut c.net, Mode::Sequential, limits, OnFailure::Stop) {
             Err(DriverError::TooManyFirings { name, .. }) => assert_eq!(name, blamed),
-            other => panic!("{policy:?}: the fuse, not {other:?}"),
+            other => panic!("{stepping:?}: the fuse, not {other:?}"),
         }
     }
 }
 
 #[test]
-fn the_concurrent_drivers_honour_the_policy() {
-    for (policy, left) in [(DeepPolicy::OuterFirst, 3), (DeepPolicy::Interleaved, 0)] {
-        let mut c = carousel(policy, &[3]);
+fn the_concurrent_drivers_follow_the_rule() {
+    for (stepping, left) in [(Stepping::OuterFirst, 3), (Stepping::TakeTurns, 0)] {
+        let mut c = carousel(stepping, &[3]);
         let limits = Limits {
             stop_after_n_firings: Some(40),
             ..Limits::default()
         };
         let summary = drivers::run(&mut c.net, Mode::Concurrent, limits, OnFailure::Stop)
             .expect("nothing fails");
-        assert!(!summary.quiesced, "{policy:?}: Spin never stops");
+        assert!(!summary.quiesced, "{stepping:?}: Spin never stops");
         assert!(c.net.in_flight().is_empty());
         assert_eq!(
             desk_todo(&c),
             [left],
-            "{policy:?}: outer bodies airborne or not, the worker has its turns"
+            "{stepping:?}: outer bodies airborne or not, the worker has its turns"
         );
     }
 
     // On a clock, too: the worker finishes while `Spin` keeps launching.
-    let mut c = carousel(DeepPolicy::Interleaved, &[3]);
+    let mut c = carousel(Stepping::TakeTurns, &[3]);
     let desk = c.desk.id();
     let stop = AtomicBool::new(false);
     let mut ticks = 0;
@@ -553,7 +574,7 @@ fn the_concurrent_drivers_honour_the_policy() {
 }
 
 #[test]
-fn a_failed_firing_moves_the_interleaved_cursor_too() {
+fn a_failed_firing_moves_the_ring_s_cursor_too() {
     // An inner net whose one transition fails and puts its token back, so
     // that it could fail for ever, beside an outer net that can always fire.
     let mut inner = NetBuilder::new();
@@ -575,7 +596,7 @@ fn a_failed_firing_moves_the_interleaved_cursor_too() {
     b.seed(wheel, [0]);
     b.seed(desk, [inner]);
     b.transition("Spin", (TakeEdge(wheel),), (wheel,), |n: u32| (n + 1,));
-    b.deep_policy(DeepPolicy::Interleaved);
+    b.stepping(desk, Stepping::TakeTurns);
     let mut net = b.build().expect("a carousel with a failing worker");
 
     let outcomes: Vec<&str> = (0..4)

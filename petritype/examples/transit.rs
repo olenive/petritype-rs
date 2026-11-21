@@ -31,19 +31,22 @@
 //! city's own transition when it has one and otherwise the first one inside a
 //! vehicle, until all seven passengers are in `Arrived`, and prints each
 //! firing under its path as it goes. That is all a viewer's Step does, and
-//! the net is built so that it is enough: it keeps the default deep policy,
-//! [`DeepPolicy::OuterFirst`], and
-//! [`DeepPolicy::Interleaved`], which takes the city and each cabin in turn,
-//! is the policy for a net that cannot give its outer transitions guards
-//! like these (DESIGN §6.6). On the way it saves the city's
-//! marking as JSON text (the vehicles' cabins in it, each as the template
-//! that built it with its marking, parameters and switches) the first time a
-//! vehicle is between stations, loads it into a freshly built city, steps
-//! that one to the end too, and compares the two.
+//! the net is built so that it is enough: every place that holds vehicles
+//! states the stepping rule [`Stepping::OuterFirst`], so that the city goes
+//! first and a cabin moves when the city cannot.
+//! [`Stepping::TakeTurns`], which takes the city and each cabin in turn, is
+//! the rule for a net that cannot give its outer transitions guards like
+//! these, and the default, [`Stepping::InnerFirst`], lets every cabin come
+//! to rest before the city fires (DESIGN §6.6). On the way it saves the
+//! city's marking as JSON text (the vehicles' cabins in it, each as the
+//! template that built it with its marking, parameters and switches) the
+//! first time a vehicle is between stations, loads it into a freshly built
+//! city, steps that one to the end too, and compares the two.
 //!
 //! [`MutateEdge`]: petritype::MutateEdge
-//! [`DeepPolicy::OuterFirst`]: petritype::DeepPolicy::OuterFirst
-//! [`DeepPolicy::Interleaved`]: petritype::DeepPolicy::Interleaved
+//! [`Stepping::OuterFirst`]: petritype::Stepping::OuterFirst
+//! [`Stepping::TakeTurns`]: petritype::Stepping::TakeTurns
+//! [`Stepping::InnerFirst`]: petritype::Stepping::InnerFirst
 
 // A crate root's `mod` looks beside it, so the path is spelled out: the net
 // lives in `transit/net.rs`, the file a runner's example includes too.
@@ -666,6 +669,94 @@ mod tests {
                 "Alight Airport",
             ],
         );
+    }
+
+    /// Where a firing was: one `(place, token, net)` per level it is below
+    /// the city, outer to inner, and the transition.
+    type Firing = (Vec<(PlaceId, TokenId, String)>, TransitionId);
+
+    /// One firing in the order every deep step took before places had
+    /// stepping rules: the net's own [`Net::step`] and, when it fired
+    /// nothing, its nested places in declaration order, their tokens oldest
+    /// first, each token's nets in order, each of them in this same order
+    /// one level down. Written on the public API alone and blind to the
+    /// rules, as the reference the rule [`Stepping::OuterFirst`] is held to.
+    fn old_default(net: &mut Net) -> Option<Firing> {
+        if let Some(transition) = net.step().expect("no body fails") {
+            return Some((Vec::new(), transition));
+        }
+        let places: Vec<PlaceId> = net
+            .places()
+            .filter(|(_, info)| info.nested)
+            .map(|(place, _)| place)
+            .collect();
+        for place in places {
+            let tokens: Vec<TokenId> = net.tokens(place).map(|(token, _)| token).collect();
+            for token in tokens {
+                let found = net
+                    .nested_scope(place, token, |nets| {
+                        nets.iter_mut().find_map(|(name, inner)| {
+                            let (mut path, transition) = old_default(inner)?;
+                            path.insert(0, (place, token, (*name).to_owned()));
+                            Some((path, transition))
+                        })
+                    })
+                    .flatten();
+                if found.is_some() {
+                    return found;
+                }
+            }
+        }
+        None
+    }
+
+    /// Where a deep step fired, in [`old_default`]'s terms.
+    fn firing_of(step: &DeepStep) -> Firing {
+        match step {
+            DeepStep::Here { transition } => (Vec::new(), *transition),
+            DeepStep::Inside {
+                place,
+                token,
+                net,
+                step,
+                ..
+            } => {
+                let (mut path, transition) = firing_of(step);
+                path.insert(0, (*place, *token, net.clone()));
+                (path, transition)
+            }
+        }
+    }
+
+    #[test]
+    fn outer_first_on_every_place_steps_as_the_old_default_did() {
+        // Far past the journey: once everyone has arrived, the empty
+        // vehicles go on circulating, so every firing is compared.
+        for tie_break in [
+            TieBreak::FirstDeclared,
+            TieBreak::LastDeclared,
+            TieBreak::RoundRobin,
+        ] {
+            let mut ruled = build_city().expect("the city builds");
+            let mut reference = build_city().expect("the city builds");
+            for city in [&mut ruled, &mut reference] {
+                city.net.set_tie_break(tie_break);
+            }
+            for n in 0..BUDGET {
+                let step = ruled
+                    .net
+                    .step_deep()
+                    .expect("no body fails")
+                    .expect("something to fire");
+                let expected = old_default(&mut reference.net).expect("something to fire");
+                assert_eq!(firing_of(&step), expected, "firing {n}, {tie_break:?}");
+            }
+            assert_eq!(
+                ruled.net.export_marking().expect("a marking"),
+                reference.net.export_marking().expect("a marking"),
+                "{tie_break:?}"
+            );
+        }
     }
 
     #[test]

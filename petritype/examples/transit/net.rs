@@ -27,12 +27,15 @@
 //! [`Net::step_deep`], with nothing switched off and no transition picked
 //! by name: the city fires whatever it can, and a cabin gets its turn when
 //! the city can fire nothing, which is exactly when a vehicle is waiting on
-//! what happens inside it. Vehicles go round a fixed loop, `Depot`,
-//! `Central`, `Harbour`, `Airport` and back ([`Location::next`]), unless
-//! the net parameter `destination` names a station; passengers who step off
-//! go to `Arrived`, never back to a platform, or they would board again
-//! where they got off. An empty vehicle closes up and moves on, so once
-//! everyone has arrived the vehicles go on circulating.
+//! what happens inside it. That is the stepping rule
+//! [`Stepping::OuterFirst`], stated on every place that holds vehicles; a
+//! cabin holds no nets, so the city is the one level with a rule to state.
+//! Vehicles go round a fixed loop, `Depot`, `Central`, `Harbour`, `Airport`
+//! and back ([`Location::next`]), unless the net parameter `destination`
+//! names a station; passengers who step off go to `Arrived`, never back to
+//! a platform, or they would board again where they got off. An empty
+//! vehicle closes up and moves on, so once everyone has arrived the vehicles
+//! go on circulating.
 //!
 //! The net was built this way on 2026-10-10. Before, the city held back its
 //! own transitions under a script that fired them by hand; stepped with
@@ -46,8 +49,8 @@ use std::error::Error;
 use std::fmt;
 
 use petritype::{
-    Distribution, MutateEdge, Nested, Net, NetBuilder, NetError, Param, Params, PlaceRef, TakeEdge,
-    TemplateError, Templates, TokenId, TransitionId,
+    Distribution, MutateEdge, Nested, Net, NetBuilder, NetError, Param, Params, PlaceRef, Stepping,
+    TakeEdge, TemplateError, Templates, TokenId, TransitionId,
 };
 use serde::{Deserialize, Serialize};
 
@@ -586,6 +589,9 @@ pub fn build_city_with(destination: Option<Location>) -> Result<City, BoxedError
     let arrived = b.place::<String>("Arrived");
     for place in stations.places.into_iter().chain([in_transit]) {
         b.serializable(place);
+        // The journey is written around the city going first: its guards
+        // wait on the doors, and a cabin moves when the city cannot.
+        b.stepping(place, Stepping::OuterFirst);
     }
     for place in platforms.places.into_iter().chain([arrived]) {
         b.serializable(place);

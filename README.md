@@ -138,10 +138,19 @@ so `net.snapshot()` works on a net of vehicles too. `petritype/examples/transit.
 and ferries built this way (`cargo run -p petritype --example transit --features serde`), whose journey runs under plain
 `step_deep` because each vehicle's state is where the tokens in its cabin are, each door in `Doors Open` or
 `Doors Closed`, which the city's guards read; `DESIGN.md` §6.6 has the rules.
-A net whose outer transitions cannot wait on what is inside like that sets `b.deep_policy(DeepPolicy::Interleaved)`,
-and `step_deep` and the drivers then take it and each inner net in turn, so that an outer net that can always fire
-no longer starves its inner nets; `b.tie_break(TieBreak::RoundRobin)` takes a net's own transitions of equal
-priority in turn the same way. Both default to what they always did.
+
+Each nested place has a stepping rule, which says how the nets in it take their turns beside the outer net:
+
+```rust
+b.stepping(depot, Stepping::TakeTurns);   // or InnerFirst (the default), OuterFirst, Passive
+```
+
+Under inner first the nets in the place fire until they are at rest before the outer net fires. Under take turns the
+outer net and each net in the place fire in turn, so an outer net that can always fire does not starve them. Under
+outer first they fire only when the outer net has nothing to fire, which is the rule the transit city states on its
+vehicle places, since its guards wait on what is inside. A passive place's nets are stepped by an outer body alone.
+Each level follows the rules of its own places, and one `step_deep` fires one transition in the whole tree.
+`b.tie_break(TieBreak::RoundRobin)` takes a net's own transitions of equal priority in turn the same way.
 Served by `petritype-runner`, an inner net is addressed by its path (`transit/Depot/#0/cabin`) or its
 stable nested id, and its events arrive wrapped in `nested` notifications (PROTOCOL.md §12, `DESIGN.md` §19.3.11).
 

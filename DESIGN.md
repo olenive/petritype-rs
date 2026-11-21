@@ -99,7 +99,10 @@ Dropped, and why:
 - **Quiescent**: nothing fireable and nothing in flight.
 - **Inner net**: a net carried by a token, in a *nested* place; the net
   holding the token is the **outer net** (§6.6, slice 15). *Quiescent deep*:
-  quiescent here and in every inner net that is not passive.
+  quiescent here and in every inner net that is not in a passive place.
+- **Stepping rule**: how the inner nets of one nested place take their
+  turns beside the outer net, one of inner first (the default), take
+  turns, outer first or passive (§6.6, since 2026-11-21).
 - **Key**: a named attribute of a token (a string, an integer or a
   boolean) that its place derives from the token's value with an extractor
   the author declared (§8.3, slice 18). A **filter** keeps the tokens whose
@@ -194,7 +197,7 @@ struct PlaceMeta {
     #[cfg(feature = "serde")]
     from_json: Option<fn(serde_json::Value) -> Result<Box<dyn Any + Send + Sync>, _>>,
     nested: Option<NestedVtable>,   // Some iff place_nested (§6.6)
-    passive: bool,                  // step_deep leaves its inner nets alone; never true without nested
+    stepping: Stepping,             // how its inner nets take their turns (§6.6); read only where nested
     keys: Option<KeysVtable>,       // Some iff b.keys (§8.3, slice 18)
 }
 
@@ -794,10 +797,9 @@ Select, launch, run, distribute, inline. `Ok(None)` = nothing fireable, or
 the selector declined. Deterministic given the selector: the basis for tests
 and replay. `net.fire(t) -> Result<(), NetError>` fires a named transition
 regardless of the selector (`NotFireable` if it cannot fire right now).
-`net.step_deep()` (slice 15) is `step` and, when that fires nothing, one
-firing inside a token that carries nets of its own (§6.6); under
-`DeepPolicy::Interleaved` (slice 21) it is one firing in the next net in
-turn that has one.
+`net.step_deep()` (slice 15) is one firing, of `step`'s or inside a token
+that carries nets of its own, in the order the stepping rules of the nested
+places give (§6.6, since 2026-11-21).
 
 ### 6.4 Concurrent
 
@@ -844,17 +846,17 @@ pub trait Nested: Send + Sync + 'static {
 impl Nested for Net { .. }                            // one inner net, itself, named ""
 
 b.place_nested::<T: Nested + Debug + Send + Sync + 'static>(name) -> PlaceRef<T>
-b.passive(place)                                      // BuildError::NotNested on any other place
+b.stepping(place, Stepping)                           // 2026-11-21; BuildError::NotNested on a place that holds no nets
 net.nested(place, token) -> Option<Vec<(&str, &Net)>>
 net.nested_scope(place, token, f: impl FnOnce(&mut [(&str, &mut Net)]) -> R) -> Option<R>
 net.step_deep() -> Result<Option<DeepStep>, FiringFailed>
-net.step_inside() -> Result<Option<DeepStep>, FiringFailed>   // slice 17: step_deep without this net's own step
+net.step_inside() -> Result<Option<DeepStep>, FiringFailed>   // slice 17: step_deep without this net's own turn
 net.step_deep_staged() -> Result<Option<StagedStep>, FiringFailed>   // slice 21: step_deep, this net's own choice handed back
-b.deep_policy(DeepPolicy) -> &mut Self;  net.set_deep_policy(DeepPolicy);  net.deep_policy() -> DeepPolicy   // slice 21
+net.set_stepping(place, Stepping) -> Result<(), NetError>;  net.stepping(place) -> Option<Stepping>   // 2026-11-21
 net.is_quiescent_deep() -> bool
 net.place_ref::<T>(name) -> Option<PlaceRef<T>>       // a typed handle by name, checked by TypeId
 
-#[non_exhaustive] pub enum DeepPolicy { #[default] OuterFirst, Interleaved }     // slice 21
+#[non_exhaustive] pub enum Stepping { #[default] InnerFirst, TakeTurns, OuterFirst, Passive }   // 2026-11-21
 #[non_exhaustive] pub enum StagedStep { Chosen(TransitionId), Inside(DeepStep) }  // slice 21
 
 pub enum DeepStep {
@@ -868,69 +870,94 @@ pub enum DeepStep {
   `place_nested` records `T::nets` and `T::nets_mut` in the place's vtable
   (§4.2). The place is no-clone (§4.3); phase 2 lets a snapshot fork it.
 - **Running.** `step()` keeps its meaning: one firing of this net.
-  `step_deep()` tries `step()` and, when it fires nothing, walks the nested
-  places in place order, passive ones skipped, their tokens oldest first,
-  each token's nets in `nets()` order, calling `step_deep` on each; the
-  first firing found is the step. In a loop that is the policy (the
-  proposal's default 1): the outer net until it is quiet, then the inner nets
-  in place order then token order, repeated until everything is quiet.
-  Deterministic given the selectors. So an outer net that can always fire
-  starves its inner nets: a net meant to be stepped this way gives its outer
+  `step_deep()` fires at most one transition, in this net or anywhere below
+  it, in the order the stepping rules of this net's nested places give
+  (below); called in a loop it runs the net and everything in it until all
+  of it is at rest. Deterministic given the selectors.
+  `is_quiescent_deep()` is §3's quiescence here plus every inner net in a
+  place that is not passive quiescent deep; `fireable()` stays shallow. The
+  drivers step deep (§13). `step_inside()` (public since slice 17,
+  `pub(crate) step_inner` before) is a deep step without this net's own
+  turn: the turns ahead of it, then the turns behind it. It is for a
+  driver that has already asked `select()` because it fires this net's own
+  transitions in stages, and would otherwise ask the selector twice and fire
+  inline whatever it chose. The protocol runner (§19.3.11, §19.3.13) and
+  the concurrent driver (§13) take the three parts in order instead.
+- **The stepping rule** (2026-11-21; `dev-docs/subnet-place-spec.md` §1.3,
+  the one definition for both runtimes). It replaces slice 21's deep policy
+  (`DeepPolicy::{OuterFirst, Interleaved}`, set per net) and slice 15's
+  passive places (`b.passive(place)`), both removed. Each nested place has
+  one rule, `Stepping`, set with `NetBuilder::stepping` or
+  `Net::set_stepping` and read with `Net::stepping` and
+  `PlaceInfo::stepping`; the default is `InnerFirst`. One deep step of a net
+  `N` tries, in this order, and stops at the first firing or failure:
+  1. every net in a place of `N` whose rule is inner first, in walk order:
+     a deep step of that net;
+  2. the *ring* of `N`: `N` itself and every net in a place of `N` whose
+     rule is take turns, in walk order, starting after the member that
+     fired last and going round once. `N`'s turn is one firing chosen by
+     its own selector; another member's turn is a deep step of that net;
+  3. every net in a place of `N` whose rule is outer first, in walk order:
+     a deep step of that net, while nothing of `N` is in flight.
+
+  A passive place is in no band. Walk order is places in declaration
+  order, a place's tokens oldest first, a token's nets in `nets()` order. A
+  member's turn is its own deep step, so each level follows the rules of
+  its own places, and one deep step fires at most one transition in the
+  whole tree. Inner first means that whenever the outer net fires, the
+  inside is at rest; a net there that never comes to rest stops the net
+  around it, and its place takes turns or is passive instead (a net driven
+  by time is given time as tokens, and rests between them). Take turns
+  means that no live member waits longer than one round, however busy the
+  others are. Outer first is the order every deep step had before slice
+  21, and the default until 2026-11-21: an outer net that can always fire
+  starves its inner nets, so a net meant to run this way gives its outer
   transitions guards that wait on what is inside, as the transit example's
-  city waits on where each vehicle's doors are, in `Doors Open` or `Doors
-  Closed`. `is_quiescent_deep()` is §3's
-  quiescence here plus every non-passive inner net quiescent deep;
-  `fireable()` stays shallow. The drivers step deep (§13).
-  `step_inside()` (public since slice 17, `pub(crate) step_inner` before)
-  is the second half alone: the walk, without asking this net's selector.
-  It is for a driver that has already asked `select()` because it fires
-  this net's own transitions in stages: the concurrent driver, and the
-  protocol runner, whose outer bodies run on threads of their own while its
-  inner firings are inline (§19.3.11). Such a driver would otherwise ask the
-  selector twice and fire inline whatever it chose.
-- **The deep policy** (slice 21, 2026-10-12; decision B2 of the phase,
-  Python petritype's `deep_policy`). What the paragraph above describes is
-  now the default, `DeepPolicy::OuterFirst`, and there is a second,
-  `DeepPolicy::Interleaved`: the nets form a cycle, the outer net then the
-  inner nets in that same walk order; a deep step starts at the net *after*
-  the one the previous deep step fired in (the outer net when nothing has
-  fired yet, after a reset or a load, or when that net is gone), goes round
-  once, and fires in the first net that has a firing, chosen by that net's
-  own selector; one firing per step. So no live net waits longer than one
-  round while an always-live outer net or sibling fires: the policy for a
-  net that cannot give its outer transitions guards like the city's. The
-  cursor is the identity of the net that fired last, the outer net's own
-  `NetId` or an inner net's nested id, kept in memory only (never saved,
-  never forked; a net whose token was consumed or moved to a passive place
-  is gone); every deep step records it, under either policy, a failed
-  firing as well as one that landed. The policy of the net stepped, the
-  outermost, governs the whole deep step: the walk fires each net by its
-  own selector, `step`, never by its own `step_deep`, so an inner net's own
-  policy is not consulted, and counts only when an outer body steps that
-  net deep. Quiescence is unchanged. PROTOCOL.md §12.3 says the same for
-  both runtimes since 2026-10-12: "That order is the default. A net built
-  with the interleaved deep-step policy (Python
-  `deep_policy="interleaved"`, Rust `DeepPolicy::Interleaved`, since
-  2026-10-12) is driven round a cycle instead, the outer net and then the
-  inner nets in that same order: each firing goes to the first net with
-  something to fire, counting from the net after the one the last firing
-  was in, so that an outer net that can always fire does not starve the
-  inner ones; the policy, like the tie-break within each net, is the
-  runtime's own and nothing on the wire changes." Set with `NetBuilder::deep_policy` or `Net::set_deep_policy`;
-  `fork` copies it, as it does the tie-break. As built, `step_deep` is
-  `step_deep_staged` with the chosen transition fired inline, and
-  `step_inside` is the walk of `OuterFirst` alone: from the start whatever
-  the policy, moving no cursor. A driver that fires this net's own
-  transitions in stages and honours the policy steps with
-  `step_deep_staged()`, which hands back `StagedStep::Chosen(t)` when the
-  turn falls to this net (the choice taken, as `choose` takes it) and makes
-  an inner firing inline otherwise (`StagedStep::Inside`); the protocol
-  runner does (§19.3.13), and the concurrent driver uses the round's two
-  halves, `round` and `inner_turn`, inside the crate (§13).
-- **Passive.** `step_deep` never descends into a passive place, and its
-  inner nets do not count against `is_quiescent_deep`. An outer body steps
-  them itself: `vehicle.inner.step()`, or `drivers::run` on it, inside a
-  `MutateEdge` body.
+  city waits on its vehicles' doors, and that city states outer first on
+  every place that holds vehicles. Its condition on what is in flight is
+  what "nothing to fire" means for a driver with bodies airborne, whose
+  landing may give the outer net more to fire; the sequential driver steps
+  between firings, and never meets it.
+
+  The ring's *cursor* is the member that took the last turn in it, `N`'s
+  own `NetId` or a take-turns net's nested id, kept per net in memory only:
+  never saved, never forked, and a member whose token was consumed or moved
+  to a place with another rule is gone, so the round starts at `N` again.
+  A turn in the ring moves it, a failed firing as well as one that landed;
+  a firing in the other two bands leaves it alone, and so does
+  `set_stepping`. `fork` copies the rules, as it does the tie-break; a
+  saved net does not carry them, since they are part of the definition.
+  Quiescence does not depend on the rules, passive aside.
+
+  What changed: the rule is per place and applies at every level, where
+  the policy of the outermost net governed the whole tree and every level
+  below fired its own transitions before the nets inside it; inner first is
+  new, and the default; the ring holds one level, where the interleaved
+  cycle held every net of the tree. Two pieces of evidence tie the change
+  to what was there. With outer first on every place, the transit city
+  fires exactly what the old default walk fired, in the same order (a test
+  beside the example compares the two over 200 firings under each
+  tie-break, and `05_nested_nets.json` replays unchanged). One level of
+  take turns steps as the interleaved policy did (slice 21's tests, kept
+  and moved to the rule).
+
+  As built, `step_deep` is `step_deep_staged` with the chosen transition
+  fired inline, and `step_deep_staged` is the three parts: the turns ahead
+  (`take_turn(Part::Ahead)`, inside the crate), this net's choice
+  (`choose`, which makes `N` the cursor), and the turns behind
+  (`take_turn(Part::Behind)`). It hands back `StagedStep::Chosen(t)` when
+  the turn falls to this net and makes an inner firing inline otherwise
+  (`StagedStep::Inside`). Each part is worked out afresh from the marking
+  and the cursor, from one walk (`members`, each net with its place,
+  token, position and rule), so the part taken after an own turn that chose
+  nothing sees what the first part saw. On the wire nothing changes yet:
+  protocol version 1 has `passive`, which the runner writes for a place
+  whose rule is `Passive`.
+- **Passive places.** `step_deep` never enters a place whose rule is
+  `Passive`, and its inner nets do not count against `is_quiescent_deep`.
+  An outer body steps them itself: `vehicle.inner.step()`, or
+  `drivers::run` on it, inside a `MutateEdge` body; a program that is not
+  a body uses `nested_scope`.
 - **Reaching inside** adds nothing to the engine beyond reading. A
   `MutateEdge` body is handed `&mut T` and uses the inner net's own API
   (`put`, `remove`, `set_param`, `apply`, `drivers::run`). A guard reads
@@ -988,7 +1015,8 @@ pub enum DeepStep {
   nets by path or nested id, reports their events wrapped in `nested`
   notifications with versions of their own, and steps them with
   `step_inside` (PROTOCOL.md §12; §19.3.11), since slice 21 with
-  `step_deep_staged` in the order of the net's deep policy (§19.3.13).
+  `step_deep_staged` (§19.3.13), in the order of the stepping rules since
+  2026-11-21.
   `petritype-dot` draws the outer net only.
 
 **Phase 2, 2026-10-09: saving and forking** (slice 16; the proposal's R5a,
@@ -1272,7 +1300,7 @@ slice 17 maps it so by name, inside an inner net as `nested` around it.
 ### 8.2 Read API
 
 ```rust
-net.places()      -> impl Iterator<Item = (PlaceId, PlaceInfo<'_>)>    // by value: name, type_name, serializable, nested, passive, key_names (slice 18), count (count is live, never stored)
+net.places()      -> impl Iterator<Item = (PlaceId, PlaceInfo<'_>)>    // by value: name, type_name, serializable, nested, stepping (Some iff nested, 2026-11-21), key_names (slice 18), count (count is live, never stored)
 net.transitions() -> impl Iterator<Item = (TransitionId, TransitionInfo<'_>)>  // by value: name, inputs, filters (slice 19), outputs, positional (slice 17), enabled, in_flight, detachable
 net.edges()       -> impl Iterator<Item = EdgeInfo>   // Input { place, transition, kind, filter (slice 19) } | Output { transition, place, slot }; transition order, inputs then outputs
 net.topology()    -> Topology   // places, transitions, edges and topology_counter as owned values; shape only, no counts or switches (slice 14)
@@ -1280,9 +1308,9 @@ net.place_named(&str) -> Option<PlaceId>;  net.transition_named(&str) -> Option<
 net.place_ref::<T>(&str) -> Option<PlaceRef<T>>   // slice 15: a typed handle by name, checked by TypeId
 net.nested(place, token) -> Option<Vec<(&str, &Net)>>   // slice 15: a nested token's inner nets (§6.6)
 net.nested_scope(place, token, f) -> Option<R>    // slice 15: the same, mutably, lifting on return
-net.is_quiescent_deep() -> bool                   // slice 15: quiescent here and in every non-passive inner net
-net.step_inside() -> Result<Option<DeepStep>, FiringFailed>   // slice 17: step_deep's inner half, for a driver that asked select() itself (§6.6)
-net.step_deep_staged() -> Result<Option<StagedStep>, FiringFailed>   // slice 21: step_deep with this net's own choice handed back, in the deep policy's order (§6.6)
+net.is_quiescent_deep() -> bool                   // slice 15: quiescent here and in every inner net not in a passive place
+net.step_inside() -> Result<Option<DeepStep>, FiringFailed>   // slice 17: step_deep without this net's own turn, for a driver that asked select() itself (§6.6)
+net.step_deep_staged() -> Result<Option<StagedStep>, FiringFailed>   // slice 21: step_deep with this net's own choice handed back, in the stepping rules' order (§6.6)
 net.choose() -> Option<TransitionId>               // slice 21: select(), and the choice counts for the round robin (§6.1)
 #[cfg(feature = "serde")]
 net.param_name(type_name) -> Option<&str>         // slice 17: the wire name behind a ParamChanged's type name, from serializable_param
@@ -1397,8 +1425,8 @@ PlaceInfo::key_names: &[&'static str];  TopologyPlace::key_names: Vec<&'static s
 - **Reading the names.** `PlaceInfo::key_names` is a slice borrowed from
   the net rather than the `Vec` first planned, so that `PlaceInfo` stays
   `Copy` (the Bevy reader takes it by value); `TopologyPlace::key_names` is
-  owned, and with `serde` written only when non-empty, as `nested` and
-  `passive` are, so a net without keys has the topology it always had.
+  owned, and with `serde` written only when non-empty, as `nested` is, so
+  a net without keys has the topology it always had.
 - **Filters.** A token passes when it passes every clause (AND across) and
   lies in a place the filter covers; a clause accepts one of its values (OR
   within), compared by kind and value. A token of a place that does not
@@ -1790,9 +1818,10 @@ run or that a reader of the net should know about.
 
 Always:
 - Duplicate place or transition names.
-- `passive` on a place not declared with `place_nested` (`NotNested`, the
-  first one marked; slice 15). `passive` itself stays infallible, as the
-  other per-place options are.
+- `stepping` on a place that holds no nets, one not declared with
+  `place_nested` (`NotNested`, the first one given a rule; slice 15 for the
+  `passive` mark, which the rule replaced on 2026-11-21). `stepping` itself
+  stays infallible, as the other per-place options are.
 - A `keys` declaration that names a key twice (`DuplicateKeyName { place,
   name }`), or a second `keys` declaration for one place
   (`KeysAlreadyDeclared { place }`); the first offender, after `NotNested`
@@ -1882,8 +1911,9 @@ drivers::run_indefinitely(&mut net, mode, tick: Duration, stop: &AtomicBool, on_
   runs at the start of every tick with `&mut Net`, and is where the caller
   drains its own input channel or applies `Command`s: the driver stays
   channel-agnostic (§9), which is why there is no `inbox` parameter. In
-  sequential mode a tick is one `step` then a sleep (one firing per frame, as
-  Python's `_tick_sequential`); in concurrent mode it is one launch sweep,
+  sequential mode a tick is one firing then a sleep (one firing per frame,
+  as Python's `_tick_sequential`), a `step_deep` since slice 15; in
+  concurrent mode it is one launch sweep,
   and the wait on the completion channel *is* the sleep, so a completion is
   distributed the moment it lands. A Bevy system per frame is this loop with
   the frame as the tick. No `Limits`: an indefinite run has no firing budget.
@@ -1906,8 +1936,7 @@ drivers::run_indefinitely(&mut net, mode, tick: Duration, stop: &AtomicBool, on_
   `run_indefinitely` asks `is_quiescent_deep`.
 - `Mode::Concurrent` keeps its launch sweep for the outer net. When a sweep
   launches nothing and nothing is airborne, it makes one inner firing
-  inline with `step_inside`, as `step_deep` would choose it, and sweeps
-  again (an outer guard
+  inline, as `step_deep` would choose it, and sweeps again (an outer guard
   may read an inner marking). Inner nets never get threads of their own in
   this version, and the ordering guarantee is the sequential driver's.
 - Both limits count every launch, inner ones included, and the fuse blames
@@ -1917,26 +1946,33 @@ drivers::run_indefinitely(&mut net, mode, tick: Duration, stop: &AtomicBool, on_
 - `OnFailure::Disable` switches off an inner transition where it is, found
   by the failure's `path`; its `Toggled` is lifted like any inner event.
 
-**Done, slice 21** (the deep policy, §6.6; 2026-10-12):
+**Done, slice 21** (the deep policy, §6.6; 2026-10-12), **and the stepping
+rule since 2026-11-21**:
 
 - `Mode::Sequential` is `step_deep` in a loop, in `run` and
-  `run_indefinitely`, so it follows the net's policy as it stands; the loop
-  did not change.
-- `Mode::Concurrent` takes the cycle as `step_deep` does, a launch sweep
-  being the outer net's turn. Under `OuterFirst` nothing changed: one inline
-  inner firing when a sweep launches nothing and nothing is airborne. Under
-  `Interleaved` each time round the loop is one turn: an inline firing in
-  the first inner net whose turn comes before the outer net's in the round,
-  else the sweep (which, when it launches anything, makes the outer net the
-  cursor), else an inline firing in an inner net whose turn comes after.
-  Inner turns are taken whether or not outer bodies are airborne, and after
-  one the loop takes whatever has landed without waiting and goes round
-  again. `run_indefinitely` takes one such turn a tick. So an outer net
-  that can always launch does not starve its inner nets here either. The
-  two halves of the round are `Net::round` and `Net::inner_turn`, inside
-  the crate.
+  `run_indefinitely`, so it follows the stepping rules as they stand; the
+  loop did not change.
+- `Mode::Concurrent` takes a deep step's three parts as `step_deep` does, a
+  launch sweep being the outer net's own turn. Each time round the loop is
+  one turn: an inline firing among the turns ahead of the outer net's (its
+  inner-first places, then the ring's members before it), else the sweep
+  (which, when it launches anything, makes the outer net the ring's cursor,
+  through `Net::took_own_turn` inside the crate), else an inline firing
+  among the turns behind it (the rest of the ring, then the outer-first
+  places, which the net offers only while nothing of its own is airborne).
+  After an inner turn the loop takes whatever has landed without waiting
+  and goes round again. `run_indefinitely` takes one such turn a tick. So
+  an inner-first net comes to rest before the outer net launches, a
+  take-turns net has its turns whether or not outer bodies are airborne,
+  and an outer-first net waits for the sweeps to find nothing and for
+  every body to land, which is how every inner net ran here before slice
+  21. The loop has no rule of its own: the parts are
+  `Net::take_turn(Part::Ahead)` and `Net::take_turn(Part::Behind)`, inside
+  the crate, where slice 21 had the round's two ranges (`Net::round`,
+  `Net::inner_turn`) and a flag for the interleaved policy.
 - The fuse blames what the round would try next: `first_fireable_deep`
-  follows the policy.
+  takes the parts in the same order, each member's own first one level
+  down.
 
 ## 14. Crate layout
 
@@ -2288,7 +2324,9 @@ Slices, each with tests, in order:
     as absent for every optional field (A5), an inner net that an outer
     firing produces has its fireable set taken at the landing (A7), and
     `step` and a running net follow the loaded net's policies;
-    `tests/slice21.rs`.
+    `tests/slice21.rs`. The deep policy, and slice 15's passive mark, gave
+    way on 2026-11-21 to the stepping rule per place (§6.6;
+    `tests/stepping.rs`).
 22. Edges on empty places (§4.4, §6.1, §12, §19.3.14), 2026-10-14, R1 to R6
     of `dev-docs/EDGES_ON_EMPTY_PLACES.md`, shared with the Python track:
     `DrainEdge` and `SurveyEdge`, body parameter `Vec<T>`, `EdgeKind::
@@ -2481,7 +2519,7 @@ The decisions that shape it, all of 2026-10-03:
 | `topology.edges` | `net.edges()`: `EdgeKind::{Take, TakeAll, Snapshot, Mutate}` as `"take"`, `"take_all"`, `"snapshot"`, `"mutate"`; `Output { slot }` as `slot` where the transition has more than one output and `TransitionInfo::positional` (slice 17; a routed or distributing body has no slots to speak of) |
 | keyed edges, `kind: "take_where"` / `"mutate_where"` with `filter` (§5.1, §13.5) | `EdgeKind::{TakeWhere, MutateWhere}` and `EdgeInfo::Input::filter` (slice 19), the filter's `places` mapped from ids to names by the runner (slice 20; sent without `kind` before it) |
 | edges an empty place satisfies, `kind: "drain"` / `"survey"` (§5.1) | `EdgeKind::{Drain, Survey}` (slice 22, §4.4, §19.3.14), no `filter` |
-| `topology.places[].nested`, `passive` (§12.2) | `TopologyPlace::nested`, `passive`, written only when true |
+| `topology.places[].nested`, `passive` (§12.2) | `TopologyPlace::nested`, written only when true; `passive` when `TopologyPlace::stepping` is `Stepping::Passive` (since 2026-11-21; the wire's `stepping` comes with protocol version 2) |
 | `path`, `nested_id` (§12.1) | a path walked through `net.nested(place, token)` level by level; a nested id is the inner net's `NetId` printed with its `Display`, found by walking every nested place at every depth; mutable reach (`inject`) through `nested_scope` at each level |
 | a token's `nets` (§12.2) | `net.nested(place, token)`: each net's name, `id()`, its path, `template()`, and the sum of its places' counts |
 | `nested` notification (§12.4) | `Event::Nested`, unwrapped to the event the innermost net logged: one wrapper with the full path, the inner notification built with that net's names and version |

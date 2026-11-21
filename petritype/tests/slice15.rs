@@ -13,7 +13,7 @@ use std::fmt;
 use petritype::drivers::{self, DriverError, Limits, Mode, OnFailure};
 use petritype::{
     BuildError, DeepStep, Event, FiringFailed, MutateEdge, Nested, Net, NetBuilder, PlaceId,
-    PlaceRef, SnapshotEdge, TakeEdge, TokenId, TransitionId,
+    PlaceRef, SnapshotEdge, Stepping, TakeEdge, TokenId, TransitionId,
 };
 
 /// An inner net with work to do: `Todo -> Work -> Done`.
@@ -234,31 +234,66 @@ fn nested_answers_only_for_a_nested_place_and_a_token_in_it() {
         .expect("the bus");
     assert_eq!(nets[0].0, "cabin");
 
-    let places: Vec<(bool, bool)> = net
+    let places: Vec<(bool, Option<Stepping>)> = net
         .places()
-        .map(|(_, info)| (info.nested, info.passive))
+        .map(|(_, info)| (info.nested, info.stepping))
         .collect();
-    assert_eq!(places, [(false, false), (true, false)]);
+    assert_eq!(
+        places,
+        [(false, None), (true, Some(Stepping::InnerFirst))],
+        "only a nested place has a rule, inner first as built"
+    );
     let topology = net.topology();
     assert!(!topology.places[0].nested && topology.places[1].nested);
 }
 
 #[test]
-fn passive_on_a_place_that_is_not_nested_is_a_build_error() {
+fn a_stepping_rule_on_a_place_that_holds_no_nets_is_a_build_error() {
     let mut b = NetBuilder::new();
     let plain = b.place::<u32>("Plain");
     let other = b.place::<u32>("Other");
-    b.passive(plain);
-    b.passive(other);
+    let desks = b.place_nested::<Net>("Desks");
+    b.stepping(desks, Stepping::TakeTurns);
+    b.stepping(plain, Stepping::Passive);
+    b.stepping(other, Stepping::InnerFirst);
     let error = b.build().expect_err("Plain holds no nets");
     assert!(
         matches!(&error, BuildError::NotNested { place } if place == "Plain"),
-        "the first one marked: {error:?}"
+        "the first one given a rule: {error:?}"
     );
     assert_eq!(
         error.to_string(),
-        "place \"Plain\" is marked passive but was not declared with place_nested"
+        "place \"Plain\" is given a stepping rule but holds no nets"
     );
+
+    // After the build, the same refusal is the net's.
+    let mut b = NetBuilder::new();
+    let plain = b.place::<u32>("Plain");
+    let desks = b.place_nested::<Net>("Desks");
+    let mut net = b.build().expect("builds");
+    let error = net
+        .set_stepping(plain.id(), Stepping::Passive)
+        .expect_err("Plain holds no nets");
+    assert!(
+        matches!(&error, petritype::NetError::NotNested { place, name }
+            if *place == plain.id() && name == "Plain"),
+        "{error:?}"
+    );
+    assert_eq!(
+        error.to_string(),
+        format!(
+            "place \"Plain\" ({:?}) holds no nets, so it has no stepping rule",
+            plain.id()
+        )
+    );
+    assert!(matches!(
+        net.set_stepping(PlaceId::new(9), Stepping::Passive),
+        Err(petritype::NetError::NoSuchPlace { .. })
+    ));
+    net.set_stepping(desks.id(), Stepping::OuterFirst)
+        .expect("Desks holds nets");
+    assert_eq!(net.stepping(desks.id()), Some(Stepping::OuterFirst));
+    assert_eq!(net.stepping(plain.id()), None);
 }
 
 #[test]
@@ -342,12 +377,14 @@ fn what_a_seeded_inner_net_logged_before_the_build_is_setup() {
 // ----- running ------------------------------------------------------------
 
 #[test]
-fn step_deep_goes_outer_first_then_place_order_then_token_order() {
+fn step_deep_under_outer_first_goes_outer_first_then_place_order_then_token_order() {
     let mut b = NetBuilder::new();
     let inbox = b.place::<u32>("Inbox");
     let outbox = b.place::<u32>("Outbox");
     let first = b.place_nested::<Net>("First");
     let second = b.place_nested::<Pair>("Second");
+    b.stepping(first, Stepping::OuterFirst);
+    b.stepping(second, Stepping::OuterFirst);
     b.seed(inbox, [1]);
     let a = worker(1);
     let b_ = worker(1);
@@ -416,7 +453,7 @@ fn a_passive_place_is_stepped_only_by_a_body() {
     let mut b = NetBuilder::new();
     let machines = b.place_nested::<Net>("Machines");
     let cranks = b.place::<()>("Cranks");
-    b.passive(machines);
+    b.stepping(machines, Stepping::Passive);
     let Worker {
         net: inner,
         todo,
@@ -437,7 +474,10 @@ fn a_passive_place_is_stepped_only_by_a_body() {
         .id();
     let mut net = b.build().expect("builds");
     let machine = only(&net, machines.id());
-    assert!(net.places().next().expect("Machines").1.passive);
+    assert_eq!(
+        net.places().next().expect("Machines").1.stepping,
+        Some(Stepping::Passive)
+    );
 
     // Left alone: the inner net has work, and nothing does it.
     assert!(net.is_quiescent_deep(), "a passive place does not count");
@@ -1204,19 +1244,35 @@ mod wire {
     }
 
     #[test]
-    fn a_topology_marks_nested_and_passive_places_and_only_those() {
+    fn a_topology_marks_nested_places_and_their_rules_and_only_those() {
         let mut b = NetBuilder::new();
         let _plain = b.place::<u32>("Plain");
         let depot = b.place_nested::<Bus>("Depot");
-        b.passive(depot);
+        let _yard = b.place_nested::<Bus>("Yard");
+        b.stepping(depot, Stepping::Passive);
         let net = b.build().expect("builds");
+        let bus = std::any::type_name::<Bus>();
         assert_eq!(
             serde_json::to_value(net.topology()).unwrap()["places"],
             json!([
                 {"id": 0, "name": "Plain", "type_name": "u32", "serializable": false},
-                {"id": 1, "name": "Depot", "type_name": std::any::type_name::<Bus>(),
-                 "serializable": false, "nested": true, "passive": true},
+                {"id": 1, "name": "Depot", "type_name": bus,
+                 "serializable": false, "nested": true, "stepping": "passive"},
+                {"id": 2, "name": "Yard", "type_name": bus,
+                 "serializable": false, "nested": true, "stepping": "inner_first"},
             ]),
+        );
+        let names = [
+            Stepping::InnerFirst,
+            Stepping::TakeTurns,
+            Stepping::OuterFirst,
+            Stepping::Passive,
+        ]
+        .map(|stepping| serde_json::to_value(stepping).unwrap());
+        assert_eq!(
+            names,
+            ["inner_first", "take_turns", "outer_first", "passive"].map(|name| json!(name)),
+            "the protocol's names"
         );
     }
 }

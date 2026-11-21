@@ -1284,6 +1284,23 @@ snapshot.subnet(place) -> Option<&Snapshot>
   a deeper level. The stepping rules and the ring's cursor are not saved. A
   net without subnet places saves to the bytes it always did
   (`tests/subnet_saving.rs` checks one against what the commit before wrote).
+- **Drawing.** `petritype-layout` is told each place's `PlaceKind`
+  (`Ordinary`, `Subnet`, or `Port` of a subnet place), read off the net by
+  `Layout::compute` and given with each `LayoutPlace` by a renderer that
+  lays a net out by name. A subnet place is one node of the layout, so an
+  edge on a port ranks and orders as an edge on the box; a port is no node
+  of its own and has no `placement`. The box is sized for its port circles
+  (of `Layout::port_radius`, a ghost's 14 by default, each with its count
+  beside it), its title and the count inside, and its neighbours keep the
+  room a place gives them, across its rank and to the ranks beside it. Each
+  port's circle goes on the side of the box that faces most of the
+  transitions it joins, the side with more ports when that is a tie, and
+  on each side the circles follow where their transitions ended up.
+  `Layout::subnet_box` answers with the box, the room for its title and
+  count, and each circle; `position_of_place` answers for a port with its
+  circle's centre, and `radius_of_place` with its radius. A net with no
+  subnet places lays out to the same numbers as before (the crate's tests
+  pin seven layouts to what the commit before computed).
 - **Considered and set aside: moving the queue.** The spec first had a
   firing borrow a port's queue into the window for the length of the firing.
   A spike showed it does not hold: the two nets' counts differ while a
@@ -2120,7 +2137,7 @@ Cargo workspace, edition 2024, MSRV = current stable minus two (must be
 | `petritype` | builder, `Net`, events, checks, `drivers` | `thiserror`; feature `serde` adds `serde`, `serde_json` |
 | `petritype-derive` | `#[derive(Routed)]` on enums (variants) and structs (leaf); `#[derive(Inputs)]` and `#[derive(Outputs)]` on structs (slice 23, §4.4) | `syn` 2, `quote`, `proc-macro2`; re-exported by `petritype` unconditionally as `petritype::Routed`, `petritype::Inputs` and `petritype::Outputs` |
 | `petritype-dot` | Graphviz DOT text of a net and its marking (**done, slice 12**) | `petritype` only |
-| `petritype-layout` | the layered layout: ranks, orders, clusters by name prefix and ghosted hubs, in its own `Point` and `Bounds` (moved out of `petritype-bevy` 2026-10-19, so a renderer that is not Bevy can share it) | `petritype` only |
+| `petritype-layout` | the layered layout: ranks, orders, clusters by name prefix, ghosted hubs, and subnet places as one box each holding its ports' circles (§6.7), in its own `Point` and `Bounds` (moved out of `petritype-bevy` 2026-10-19, so a renderer that is not Bevy can share it) | `petritype` only |
 | `petritype-activity` | the activity model behind the viewer's thumbnail: a pulse and an ember per place and transition, decaying on wall time or on firings, with flow, failure and a base glow from the token count; `ActivitySettings`; the `Grid` of cells from a whole-net layout; the `Thumbnail`'s colour per cell and its SVG (2026-10-19; a record of activity over time comes later) | `petritype`, `petritype-layout`; feature `serde` adds `serde`, `serde_json` |
 | `petritype-bevy` | `NetRes`, mirror systems, token entities, in-flight highlighting, task-pool driver | pins one Bevy version |
 | `petritype-tokio` | only if a need appears | |

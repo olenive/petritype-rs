@@ -69,6 +69,44 @@
 //! A part of a net, such as what a viewer's filter shows, is laid out on its
 //! own with [`Layout::compute_subgraph`]: one drawing, never clustered.
 //!
+//! # Subnet places
+//!
+//! A [subnet place](petritype::NetBuilder::subnet_place) holds a net of its
+//! own, which the net around it reaches through the subnet's port places.
+//! The layout is told which places are subnet places and which ports belong
+//! to each by the [`PlaceKind`] of each [`LayoutPlace`] it is given:
+//! [`Layout::compute`] reads it off the net, and a renderer that feeds the
+//! layout by name gives it with each place. A port is named by the pair of
+//! its subnet place and its own name, so a port may have the name of any
+//! place outside.
+//!
+//! A subnet place is drawn closed, as a box with rounded corners that holds
+//! a small circle for each port, with the place's name as its title and the
+//! count of tokens inside under it. It takes part in the four passes as
+//! **one node**: an edge to or from one of its ports counts as an edge to or
+//! from the box, so the box ranks and orders as a place would. The box is
+//! as large as its circles, its title and its count need, and the layout
+//! keeps its neighbours as clear of it as of a place: its slot in its rank
+//! is wider by as much as the box is wider than a place, and the gaps to
+//! the ranks beside it grow so that its transitions are as far from it as
+//! from a place.
+//!
+//! Each port circle sits on the side of the box that faces the transitions
+//! it is joined to: the side the ranks come from when most of them are in
+//! earlier ranks, the other side when most are in later ones. A port with
+//! no such majority, or joined to nothing yet, joins the side most of the
+//! box's other ports are on, and the side the ranks come from on a tie. On
+//! each side the circles are ordered by where their transitions ended up
+//! across the ranks, so that arrows cross as little as that order allows,
+//! and ports that join nothing come last, in the order they were given.
+//! [`Layout::subnet_box`] says where the box, its title, its count and its
+//! circles are; [`Layout::position_of_place`] answers for a port with the
+//! centre of its circle, and [`Layout::radius_of_place`] with
+//! [`Layout::port_radius`], so an arrow on a port ends at its circle.
+//!
+//! A net with no subnet places lays out exactly as it did before subnet
+//! places came.
+//!
 //! A renderer gets positions from [`Layout`] as [`Point`]s and frames as
 //! [`Bounds`], two small types of this crate's own, and converts them to its
 //! own vectors. The crate depends on [`petritype`] alone, and the algorithm
@@ -82,7 +120,7 @@ mod geometry;
 use std::collections::{HashMap, HashSet};
 
 pub use geometry::{Bounds, Point};
-use petritype::{EdgeInfo, Net, PlaceId, TransitionId};
+use petritype::{EdgeInfo, Net, PlaceId, PlaceInfo, TransitionId};
 
 /// How many tokens a place draws: one at the centre, a ring of 6 around it
 /// and a ring of 12 around that. Further tokens are counted, not drawn.
@@ -114,6 +152,23 @@ const GHOST_CLEARANCE: f32 = 16.0;
 const LABEL_GAP: f32 = 14.0;
 /// How wide the token count under a place's name is.
 const COUNT_WIDTH: f32 = 70.0;
+/// The room between a subnet place's box and what it holds. It is also the
+/// radius of the box's rounded corners, so nothing inside reaches them.
+const BOX_PAD: f32 = 12.0;
+/// The height of a subnet place's title, in the renderer's 15-point text.
+const BOX_TITLE: f32 = 20.0;
+/// The height of the count of tokens inside, under the title.
+const BOX_COUNT: f32 = 18.0;
+/// The room between the port circles on one side of a box and its title and
+/// count.
+const BOX_GAP: f32 = 6.0;
+/// How wide a port's count, beside its circle, is: three digits of small
+/// text.
+const PORT_COUNT_WIDTH: f32 = 24.0;
+/// The room between a port's circle and its count.
+const PORT_COUNT_GAP: f32 = 4.0;
+/// The room between one port's count and the next port's circle.
+const PORT_SPACING: f32 = 8.0;
 
 /// Which way the ranks grow.
 ///
@@ -238,6 +293,139 @@ pub enum GhostSide {
     Output,
 }
 
+/// What kind of place a [`LayoutPlace`] is, which decides how it is drawn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum PlaceKind {
+    /// A place that holds tokens, drawn as a circle: the default.
+    #[default]
+    Ordinary,
+    /// A [subnet place](petritype::NetBuilder::subnet_place): one node of the
+    /// layout, drawn closed as a box that holds the circles of its ports.
+    Subnet,
+    /// A port of the subnet place with this id, as the net around the subnet
+    /// sees it: a circle inside that place's box, where the edges on the port
+    /// end. A port whose subnet place is not among the places given is laid
+    /// out as an ordinary place.
+    Port(PlaceId),
+}
+
+/// One place handed to the layout: its id, its name and its [`PlaceKind`].
+///
+/// [`compute_named`](Layout::compute_named) and
+/// [`compute_subgraph`](Layout::compute_subgraph) take anything that turns
+/// into one, so a plain `(PlaceId, String)` is still an ordinary place, and
+/// `(PlaceId, PlaceInfo)` from [`Net::places`] carries the kind the net says.
+/// The ports of a subnet place are its places of kind [`PlaceKind::Port`], in
+/// the order they are given, which should be the order the net declares them.
+///
+/// ```
+/// use petritype::PlaceId;
+/// use petritype_layout::{LayoutPlace, PlaceKind};
+///
+/// let level = PlaceId::new(1);
+/// let places = [
+///     LayoutPlace::from((PlaceId::new(0), "Door".to_owned())),
+///     LayoutPlace::new(level, "Level 3", PlaceKind::Subnet),
+///     LayoutPlace::new(PlaceId::new(2), "Lobby", PlaceKind::Port(level)),
+/// ];
+/// assert_eq!(places[0].kind, PlaceKind::Ordinary);
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct LayoutPlace {
+    /// The place, as the edges name it.
+    pub id: PlaceId,
+    /// Its name: for a port, the port's own name, which need be unique only
+    /// among its subnet place's ports.
+    pub name: String,
+    /// What kind of place it is.
+    pub kind: PlaceKind,
+}
+
+impl LayoutPlace {
+    /// A place of this kind.
+    pub fn new(id: PlaceId, name: impl Into<String>, kind: PlaceKind) -> Self {
+        Self {
+            id,
+            name: name.into(),
+            kind,
+        }
+    }
+}
+
+/// An ordinary place.
+impl From<(PlaceId, String)> for LayoutPlace {
+    fn from((id, name): (PlaceId, String)) -> Self {
+        Self::new(id, name, PlaceKind::Ordinary)
+    }
+}
+
+/// A place as the net describes it: a subnet place, a port of one, or an
+/// ordinary place.
+impl From<(PlaceId, PlaceInfo<'_>)> for LayoutPlace {
+    fn from((id, info): (PlaceId, PlaceInfo<'_>)) -> Self {
+        let kind = match (info.subnet, info.port_of) {
+            (true, _) => PlaceKind::Subnet,
+            (false, Some(subnet)) => PlaceKind::Port(subnet),
+            (false, None) => PlaceKind::Ordinary,
+        };
+        Self::new(id, info.name, kind)
+    }
+}
+
+/// Where the layout put a closed subnet place: its box, the room it left
+/// inside for the title and the count, and the circle of each port.
+///
+/// The box is drawn with rounded corners of
+/// [`corner_radius`](SubnetBox::corner_radius); nothing inside reaches them.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SubnetBox {
+    /// The centre of the box, which is also what
+    /// [`Layout::position_of_place`] answers for the subnet place.
+    pub centre: Point,
+    /// Its width and height.
+    pub size: Point,
+    /// The radius of its rounded corners.
+    pub corner_radius: f32,
+    /// The room left for the place's name, centred across the box; its width
+    /// is estimated from the name's length, as a place's label is.
+    pub title: Bounds,
+    /// The room left for the count of tokens inside, under the title.
+    pub count: Bounds,
+    /// The circle of each port, in the order the ports were given.
+    pub ports: Vec<PortCircle>,
+}
+
+impl SubnetBox {
+    /// The box as [`Bounds`], in world coordinates.
+    pub fn bounds(&self) -> Bounds {
+        Bounds::from_center_half_size(self.centre, self.size / 2.0)
+    }
+}
+
+/// One port's circle inside its subnet place's box.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PortCircle {
+    /// The port, by the id the outer net's edges name it with.
+    pub place: PlaceId,
+    /// The centre of its circle.
+    pub centre: Point,
+    /// Its radius: [`Layout::port_radius`].
+    pub radius: f32,
+    /// The room left beside the circle for the port's count, on the side
+    /// toward the middle of the box.
+    pub count: Bounds,
+}
+
+/// Which side of a subnet place's box a port's circle is on, along the main
+/// axis.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BoxSide {
+    /// The side the ranks come from: the top, or the left.
+    Before,
+    /// The side the ranks go to: the bottom, or the right.
+    After,
+}
+
 /// One cluster the last computation made.
 #[derive(Debug, Clone, PartialEq)]
 struct Cluster {
@@ -285,6 +473,9 @@ pub struct Layout {
     /// The distance between neighbouring ghosts on one side of a
     /// transition. A transition with many ghosts gets more room in its rank.
     pub ghost_sep: f32,
+    /// The radius of a port's circle inside its subnet place's box: a
+    /// ghost's by default.
+    pub port_radius: f32,
     /// Every node the last [`compute`](Layout::compute) placed.
     nodes: HashMap<LayoutNode, Placement>,
     /// The edges the cycle-breaking pass set aside, as `(from, to)`.
@@ -302,6 +493,10 @@ pub struct Layout {
     stripped: HashMap<LayoutNode, usize>,
     /// Every ghost, in declaration order of the edges, and where it is.
     ghosts: Vec<((PlaceId, TransitionId, GhostSide), Point)>,
+    /// The box of each subnet place of the last computation.
+    subnets: HashMap<PlaceId, SubnetBox>,
+    /// The centre of each port's circle, for the ports drawn in a box.
+    ports: HashMap<PlaceId, Point>,
 }
 
 impl Default for Layout {
@@ -319,6 +514,7 @@ impl Default for Layout {
             fit_labels: false,
             ghost_radius: 14.0,
             ghost_sep: 80.0,
+            port_radius: 14.0,
             nodes: HashMap::new(),
             back_edges: HashSet::new(),
             ranks: 0,
@@ -327,6 +523,8 @@ impl Default for Layout {
             ghosted: HashSet::new(),
             stripped: HashMap::new(),
             ghosts: Vec::new(),
+            subnets: HashMap::new(),
+            ports: HashMap::new(),
         }
     }
 }
@@ -355,10 +553,11 @@ impl Layout {
     }
 
     /// Lays out every place and transition of `net`, replacing whatever was
-    /// computed before and keeping the configuration.
+    /// computed before and keeping the configuration. The net says which of
+    /// its places are subnet places and which are their ports.
     pub fn compute(&mut self, net: &Net) {
         self.compute_named(
-            net.places().map(|(id, info)| (id, info.name.to_owned())),
+            net.places().map(LayoutPlace::from),
             net.transitions()
                 .map(|(id, info)| (id, info.name.to_owned())),
             net.edges(),
@@ -372,8 +571,9 @@ impl Layout {
     /// order: ties in the layout keep it. An edge naming a node not given is
     /// left out. Without names there is nothing to cluster by or to ghost by
     /// name, so this ignores [`clustering`](Layout::clustering) and
-    /// [`Ghosting::names`] (only [`Ghosting::min_degree`] applies): use
-    /// [`compute_named`](Layout::compute_named) for those.
+    /// [`Ghosting::names`] (only [`Ghosting::min_degree`] applies), and every
+    /// place is an ordinary one: use [`compute_named`](Layout::compute_named)
+    /// for those.
     pub fn compute_from(
         &mut self,
         places: impl IntoIterator<Item = PlaceId>,
@@ -381,7 +581,10 @@ impl Layout {
         edges: impl IntoIterator<Item = EdgeInfo>,
     ) {
         self.run(
-            places.into_iter().map(|id| (id, String::new())).collect(),
+            places
+                .into_iter()
+                .map(|id| LayoutPlace::new(id, String::new(), PlaceKind::Ordinary))
+                .collect(),
             transitions
                 .into_iter()
                 .map(|id| (id, String::new()))
@@ -411,16 +614,21 @@ impl Layout {
     /// other clusters share one more block, with no frame
     /// ([`cluster_of`](Layout::cluster_of) is `None` for them). A focus of
     /// one is a plain drawing.
+    ///
+    /// The places are given as for [`compute_named`](Layout::compute_named).
+    /// A subnet place in the part is drawn with the circles of those of its
+    /// ports that the part holds, and a port without its subnet place is
+    /// drawn as an ordinary place.
     pub fn compute_subgraph(
         &mut self,
-        places: impl IntoIterator<Item = (PlaceId, String)>,
+        places: impl IntoIterator<Item = impl Into<LayoutPlace>>,
         transitions: impl IntoIterator<Item = (TransitionId, String)>,
         edges: impl IntoIterator<Item = EdgeInfo>,
         whole: impl IntoIterator<Item = EdgeInfo>,
         focus: Option<&[&str]>,
     ) {
         self.run(
-            places.into_iter().collect(),
+            places.into_iter().map(Into::into).collect(),
             transitions.into_iter().collect(),
             edges.into_iter().collect(),
             Some(whole.into_iter().collect()),
@@ -434,14 +642,19 @@ impl Layout {
     /// room for labels is estimated from. It needs no [`Net`], so a renderer
     /// can feed the layout through it from whatever source it reads the net
     /// from.
+    ///
+    /// Each place is a [`LayoutPlace`], or anything that turns into one: a
+    /// `(PlaceId, String)` is an ordinary place, and a [`LayoutPlace`] with
+    /// [`PlaceKind::Subnet`] or [`PlaceKind::Port`] tells the layout about a
+    /// subnet place and its ports.
     pub fn compute_named(
         &mut self,
-        places: impl IntoIterator<Item = (PlaceId, String)>,
+        places: impl IntoIterator<Item = impl Into<LayoutPlace>>,
         transitions: impl IntoIterator<Item = (TransitionId, String)>,
         edges: impl IntoIterator<Item = EdgeInfo>,
     ) {
         self.run(
-            places.into_iter().collect(),
+            places.into_iter().map(Into::into).collect(),
             transitions.into_iter().collect(),
             edges.into_iter().collect(),
             None,
@@ -456,25 +669,51 @@ impl Layout {
     /// given ones.
     fn run(
         &mut self,
-        places: Vec<(PlaceId, String)>,
+        places: Vec<LayoutPlace>,
         transitions: Vec<(TransitionId, String)>,
         given: Vec<EdgeInfo>,
         whole: Option<Vec<EdgeInfo>>,
         clustered: bool,
         focus: Option<&[&str]>,
     ) {
+        // A port whose subnet place is given is drawn in that place's box
+        // and is no node of its own: the box stands for it in every pass.
+        let subnets: HashSet<PlaceId> = places
+            .iter()
+            .filter(|place| place.kind == PlaceKind::Subnet)
+            .map(|place| place.id)
+            .collect();
         let mut nodes: Vec<LayoutNode> = Vec::new();
         let mut names: Vec<String> = Vec::new();
-        for (id, name) in places {
-            nodes.push(LayoutNode::Place(id));
-            names.push(name);
+        let mut boxed: Vec<bool> = Vec::new();
+        // Each port drawn in a box, in the order given: the port, its name
+        // and its subnet place.
+        let mut ports: Vec<(PlaceId, String, PlaceId)> = Vec::new();
+        for place in places {
+            match place.kind {
+                PlaceKind::Port(subnet) if subnets.contains(&subnet) => {
+                    ports.push((place.id, place.name, subnet));
+                }
+                kind => {
+                    nodes.push(LayoutNode::Place(place.id));
+                    names.push(place.name);
+                    boxed.push(kind == PlaceKind::Subnet);
+                }
+            }
         }
         for (id, name) in transitions {
             nodes.push(LayoutNode::Transition(id));
             names.push(name);
+            boxed.push(false);
         }
-        let index: HashMap<LayoutNode, usize> =
+        let mut index: HashMap<LayoutNode, usize> =
             nodes.iter().enumerate().map(|(i, &n)| (n, i)).collect();
+        // An edge on a port is an edge on its box.
+        for (port, _, subnet) in &ports {
+            if let Some(&at) = index.get(&LayoutNode::Place(*subnet)) {
+                index.insert(LayoutNode::Place(*port), at);
+            }
+        }
 
         let mut edges: Vec<Edge> = Vec::new();
         for edge in given {
@@ -513,6 +752,8 @@ impl Layout {
         self.ghosted.clear();
         self.stripped.clear();
         self.ghosts.clear();
+        self.subnets.clear();
+        self.ports.clear();
         self.ranks = 0;
 
         // Ghosted places: their edges leave the graph the layout works on
@@ -532,13 +773,24 @@ impl Layout {
                 }
             }
         }
+        // A subnet place has no edges of its own to ghost; a port in a box
+        // is ghosted as any place, and its circle is its home.
         for (i, node) in nodes.iter().enumerate() {
             if let LayoutNode::Place(id) = *node
+                && !boxed[i]
                 && self
                     .ghosting
                     .applies(&names[i], degree.get(&id).copied().unwrap_or(0))
             {
                 self.ghosted.insert(id);
+            }
+        }
+        for (port, name, _) in &ports {
+            if self
+                .ghosting
+                .applies(name, degree.get(port).copied().unwrap_or(0))
+            {
+                self.ghosted.insert(*port);
             }
         }
         // The ghosts of each transition, by node index: inputs, outputs.
@@ -626,20 +878,76 @@ impl Layout {
 
         // Each group on its own, from its own edges.
         let mut arranged: Vec<Arranged> = Vec::with_capacity(groups);
+        // The box of each subnet place, by node index.
+        let mut plans: Vec<Option<BoxPlan>> = vec![None; nodes.len()];
         for (g, group) in members.iter().enumerate() {
             let local: HashMap<usize, usize> =
                 group.iter().enumerate().map(|(l, &i)| (i, l)).collect();
-            let inside: Vec<(usize, usize)> = edges
+            // The edges inside it, by index among all edges.
+            let within: Vec<usize> = (0..edges.len())
+                .filter(|&e| {
+                    let e = &edges[e];
+                    !e.ghosted && group_of[e.a] == g && group_of[e.b] == g
+                })
+                .collect();
+            let inside: Vec<(usize, usize)> = within
                 .iter()
-                .filter(|e| !e.ghosted && group_of[e.a] == g && group_of[e.b] == g)
-                .map(|e| (local[&e.a], local[&e.b]))
+                .map(|&e| (local[&edges[e].a], local[&edges[e].b]))
                 .collect();
             let layers = layer(group.len(), &inside);
             self.ranks = self.ranks.max(layers.layers.len());
-            for (e, &(a, b)) in inside.iter().enumerate() {
-                if layers.back[e] {
-                    self.back_edges.insert((nodes[group[a]], nodes[group[b]]));
+            for (k, &e) in within.iter().enumerate() {
+                if layers.back[k] {
+                    // Named by its own ends, a port's included.
+                    self.back_edges.insert(edges[e].ends());
                 }
+            }
+            // Which side of its box each port faces, by the ranks of the
+            // transitions it is joined to inside the group.
+            let mut rank = vec![0_usize; group.len()];
+            for (r, layer) in layers.layers.iter().enumerate() {
+                for &l in layer {
+                    rank[l] = r;
+                }
+            }
+            for (l, &i) in group.iter().enumerate() {
+                let LayoutNode::Place(subnet) = nodes[i] else {
+                    continue;
+                };
+                if !boxed[i] {
+                    continue;
+                }
+                let sides: Vec<(PlaceId, Option<BoxSide>)> = ports
+                    .iter()
+                    .filter(|(_, _, of)| *of == subnet)
+                    .map(|&(port, _, _)| {
+                        let (mut before, mut after) = (0_usize, 0_usize);
+                        for &e in &within {
+                            let edge = &edges[e];
+                            if edge.place != port {
+                                continue;
+                            }
+                            let transition = match edge.side {
+                                GhostSide::Input => edge.b,
+                                GhostSide::Output => edge.a,
+                            };
+                            // Never the same rank: an edge inside a group
+                            // joins two ranks.
+                            if rank[local[&transition]] < rank[l] {
+                                before += 1;
+                            } else {
+                                after += 1;
+                            }
+                        }
+                        let side = match before.cmp(&after) {
+                            std::cmp::Ordering::Greater => Some(BoxSide::Before),
+                            std::cmp::Ordering::Less => Some(BoxSide::After),
+                            std::cmp::Ordering::Equal => None,
+                        };
+                        (port, side)
+                    })
+                    .collect();
+                plans[i] = Some(self.plan_box(&labels[i], &sides));
             }
             let input = Group {
                 members: group,
@@ -647,6 +955,7 @@ impl Layout {
                 nodes: &nodes,
                 slots: &slots,
                 inside: &inside,
+                plans: &plans,
             };
             arranged.push(self.arrange(&input, &layers));
         }
@@ -718,41 +1027,288 @@ impl Layout {
                 }
             }
         }
+
+        // The boxes of the subnet places, and the circles of their ports in
+        // the order of the transitions they are joined to, wherever those
+        // ended up.
+        for (i, plan) in plans.iter().enumerate() {
+            let (Some(plan), LayoutNode::Place(subnet)) = (plan, nodes[i]) else {
+                continue;
+            };
+            let Some(centre) = self.position_of(nodes[i]) else {
+                continue;
+            };
+            let across = |at: Point| match self.direction {
+                Direction::TopDown => at.x,
+                Direction::LeftRight => -at.y,
+            };
+            let key = |port: PlaceId| {
+                let (sum, count) = edges
+                    .iter()
+                    .filter(|e| e.place == port && !e.ghosted)
+                    .filter_map(|e| self.position_of_transition(e.transition))
+                    .fold((0.0_f32, 0_u32), |(s, c), at| (s + across(at), c + 1));
+                (count > 0).then(|| sum / count as f32)
+            };
+            // Stable, so ties keep the order given, and the ports joined to
+            // nothing come last.
+            let sorted = |list: &[PlaceId]| {
+                let mut keyed: Vec<(Option<f32>, PlaceId)> =
+                    list.iter().map(|&port| (key(port), port)).collect();
+                keyed.sort_by(|a, b| match (a.0, b.0) {
+                    (Some(x), Some(y)) => x.total_cmp(&y),
+                    (Some(_), None) => std::cmp::Ordering::Less,
+                    (None, Some(_)) => std::cmp::Ordering::Greater,
+                    (None, None) => std::cmp::Ordering::Equal,
+                });
+                keyed.into_iter().map(|(_, port)| port).collect::<Vec<_>>()
+            };
+            let (before, after) = (sorted(&plan.before), sorted(&plan.after));
+            let drawn = self.place_box(centre, &labels[i], plan, &before, &after);
+            let cluster = self.cluster_index.get(&nodes[i]).copied();
+            for circle in &drawn.ports {
+                self.ports.insert(circle.place, circle.centre);
+                if let Some(cluster) = cluster {
+                    self.cluster_index
+                        .insert(LayoutNode::Place(circle.place), cluster);
+                }
+            }
+            self.subnets.insert(subnet, drawn);
+        }
+    }
+
+    /// The plan of a subnet place's box titled `title`: which side each
+    /// port goes on, and the size that makes room for them. A port with no
+    /// side of its own joins the side with more ports, the side the ranks
+    /// come from on a tie.
+    fn plan_box(&self, title: &str, sides: &[(PlaceId, Option<BoxSide>)]) -> BoxPlan {
+        let clear = |side: BoxSide| sides.iter().filter(|(_, s)| *s == Some(side)).count();
+        let fallback = if clear(BoxSide::After) > clear(BoxSide::Before) {
+            BoxSide::After
+        } else {
+            BoxSide::Before
+        };
+        let mut plan = BoxPlan::default();
+        for &(port, side) in sides {
+            plan.order.push(port);
+            match side.unwrap_or(fallback) {
+                BoxSide::Before => plan.before.push(port),
+                BoxSide::After => plan.after.push(port),
+            }
+        }
+        plan.size = self.box_size(title, plan.before.len(), plan.after.len());
+        plan
+    }
+
+    /// The width of a port's circle and its count, side by side.
+    fn port_cell(&self) -> f32 {
+        2.0 * self.port_radius + PORT_COUNT_GAP + PORT_COUNT_WIDTH
+    }
+
+    /// The width and height of a subnet place's box titled `title`, with
+    /// `before` ports on the side the ranks come from and `after` on the
+    /// other. Top down, the ports are rows above and below the title and the
+    /// count; left to right, columns beside them.
+    fn box_size(&self, title: &str, before: usize, after: usize) -> Point {
+        let r = self.port_radius;
+        let cell = self.port_cell();
+        let text = (title.chars().count() as f32 * PLACE_CHAR_WIDTH).max(COUNT_WIDTH);
+        let run = |n: usize, each: f32| {
+            if n == 0 {
+                0.0
+            } else {
+                n as f32 * each + (n - 1) as f32 * PORT_SPACING
+            }
+        };
+        match self.direction {
+            Direction::TopDown => {
+                let side = |n: usize| if n == 0 { 0.0 } else { 2.0 * r + BOX_GAP };
+                Point::new(
+                    run(before, cell).max(run(after, cell)).max(text) + 2.0 * BOX_PAD,
+                    BOX_TITLE + BOX_COUNT + side(before) + side(after) + 2.0 * BOX_PAD,
+                )
+            }
+            Direction::LeftRight => {
+                let side = |n: usize| if n == 0 { 0.0 } else { cell + BOX_GAP };
+                Point::new(
+                    text + side(before) + side(after) + 2.0 * BOX_PAD,
+                    run(before, 2.0 * r)
+                        .max(run(after, 2.0 * r))
+                        .max(BOX_TITLE + BOX_COUNT)
+                        + 2.0 * BOX_PAD,
+                )
+            }
+        }
+    }
+
+    /// A subnet place's box at `centre`, with the ports of each side in the
+    /// order given here.
+    fn place_box(
+        &self,
+        centre: Point,
+        title: &str,
+        plan: &BoxPlan,
+        before: &[PlaceId],
+        after: &[PlaceId],
+    ) -> SubnetBox {
+        let r = self.port_radius;
+        let cell = self.port_cell();
+        let half = plan.size / 2.0;
+        let title_width = title.chars().count() as f32 * PLACE_CHAR_WIDTH;
+        // From a circle's centre to the middle of its count's room.
+        let beside = r + PORT_COUNT_GAP + PORT_COUNT_WIDTH / 2.0;
+        let mut circles: Vec<PortCircle> = Vec::with_capacity(plan.order.len());
+        let mut circle = |place: PlaceId, at: Point, count_at: Point| {
+            circles.push(PortCircle {
+                place,
+                centre: at,
+                radius: r,
+                count: Bounds::from_center_half_size(
+                    count_at,
+                    Point::new(PORT_COUNT_WIDTH / 2.0, r),
+                ),
+            });
+        };
+        let (title_at, count_at) = match self.direction {
+            Direction::TopDown => {
+                // A row of circles, each with its count to its right,
+                // centred across the box.
+                let mut row = |list: &[PlaceId], y: f32| {
+                    let n = list.len() as f32;
+                    let extent = n * cell + (n - 1.0) * PORT_SPACING;
+                    let mut x = centre.x - extent / 2.0 + r;
+                    for &place in list {
+                        circle(place, Point::new(x, y), Point::new(x + beside, y));
+                        x += cell + PORT_SPACING;
+                    }
+                };
+                let mut y = centre.y + half.y - BOX_PAD;
+                if !before.is_empty() {
+                    row(before, y - r);
+                    y -= 2.0 * r + BOX_GAP;
+                }
+                let title_at = Point::new(centre.x, y - BOX_TITLE / 2.0);
+                y -= BOX_TITLE;
+                let count_at = Point::new(centre.x, y - BOX_COUNT / 2.0);
+                y -= BOX_COUNT;
+                if !after.is_empty() {
+                    row(after, y - BOX_GAP - r);
+                }
+                (title_at, count_at)
+            }
+            Direction::LeftRight => {
+                // A column of circles at each side, each with its count on
+                // the side toward the middle, centred down the box.
+                let mut column = |list: &[PlaceId], x: f32, toward: f32| {
+                    let n = list.len() as f32;
+                    let extent = n * 2.0 * r + (n - 1.0) * PORT_SPACING;
+                    let mut y = centre.y + extent / 2.0 - r;
+                    for &place in list {
+                        circle(place, Point::new(x, y), Point::new(x + toward, y));
+                        y -= 2.0 * r + PORT_SPACING;
+                    }
+                };
+                let mut text_left = centre.x - half.x + BOX_PAD;
+                if !before.is_empty() {
+                    column(before, text_left + r, beside);
+                    text_left += cell + BOX_GAP;
+                }
+                if !after.is_empty() {
+                    column(after, centre.x + half.x - BOX_PAD - r, -beside);
+                }
+                let x = text_left + title_width.max(COUNT_WIDTH) / 2.0;
+                (
+                    Point::new(x, centre.y + BOX_COUNT / 2.0),
+                    Point::new(x, centre.y - BOX_TITLE / 2.0),
+                )
+            }
+        };
+        // In the order the ports were given.
+        circles.sort_by_key(|c| plan.order.iter().position(|&p| p == c.place));
+        SubnetBox {
+            centre,
+            size: plan.size,
+            corner_radius: BOX_PAD,
+            title: Bounds::from_center_half_size(
+                title_at,
+                Point::new(title_width / 2.0, BOX_TITLE / 2.0),
+            ),
+            count: Bounds::from_center_half_size(
+                count_at,
+                Point::new(COUNT_WIDTH / 2.0, BOX_COUNT / 2.0),
+            ),
+            ports: circles,
+        }
+    }
+
+    /// The clear room a place has between it and a transition in the next
+    /// rank, at the usual gap between ranks, which a subnet place's box is
+    /// given too.
+    fn box_clearance(&self) -> f32 {
+        let transition = match self.direction {
+            Direction::TopDown => self.transition_size.y / 2.0,
+            Direction::LeftRight => self.transition_size.x / 2.0,
+        };
+        (self.rank_sep - self.place_radius - transition).max(GHOST_CLEARANCE)
     }
 
     /// Turns one group's layers into coordinates, in a frame of its own,
     /// and works out the box around it.
     fn arrange(&self, group: &Group, layers: &Layers) -> Arranged {
+        // A subnet place's box, if the node is one.
+        let plan_of = |local: usize| group.plans[group.members[local]].as_ref();
         // How far a node reaches before and after its centre along the main
         // axis, ghosts included, and how wide its slot in a rank is.
-        let main_half = |node: LayoutNode| match (node, self.direction) {
-            (LayoutNode::Place(_), _) => self.place_radius,
-            (LayoutNode::Transition(_), Direction::TopDown) => self.transition_size.y / 2.0,
-            (LayoutNode::Transition(_), Direction::LeftRight) => self.transition_size.x / 2.0,
+        let main_half = |local: usize| match (
+            plan_of(local),
+            group.nodes[group.members[local]],
+            self.direction,
+        ) {
+            (Some(plan), _, Direction::TopDown) => plan.size.y / 2.0,
+            (Some(plan), _, Direction::LeftRight) => plan.size.x / 2.0,
+            (None, LayoutNode::Place(_), _) => self.place_radius,
+            (None, LayoutNode::Transition(_), Direction::TopDown) => self.transition_size.y / 2.0,
+            (None, LayoutNode::Transition(_), Direction::LeftRight) => self.transition_size.x / 2.0,
         };
         let slot_of = |local: usize| group.slots.get(&group.members[local]);
         let before = |local: usize| match slot_of(local) {
-            Some(s) if !s.inputs.is_empty() => {
-                main_half(group.nodes[group.members[local]]) + self.ghost_depth()
-            }
-            _ => main_half(group.nodes[group.members[local]]),
+            Some(s) if !s.inputs.is_empty() => main_half(local) + self.ghost_depth(),
+            _ => main_half(local),
         };
         let after = |local: usize| match slot_of(local) {
-            Some(s) if !s.outputs.is_empty() => {
-                main_half(group.nodes[group.members[local]]) + self.ghost_depth()
-            }
-            _ => main_half(group.nodes[group.members[local]]),
+            Some(s) if !s.outputs.is_empty() => main_half(local) + self.ghost_depth(),
+            _ => main_half(local),
         };
         let width = |local: usize| {
             let count = slot_of(local).map_or(0, |s| s.inputs.len().max(s.outputs.len()));
-            self.node_sep.max(count as f32 * self.ghost_sep)
+            let width = self.node_sep.max(count as f32 * self.ghost_sep);
+            match plan_of(local) {
+                // A box leaves its neighbours the room a place leaves them.
+                Some(plan) => {
+                    let across = match self.direction {
+                        Direction::TopDown => plan.size.x,
+                        Direction::LeftRight => plan.size.y,
+                    };
+                    width.max(across + (self.node_sep - 2.0 * self.place_radius).max(0.0))
+                }
+                None => width,
+            }
         };
         let has_ghosts = |layer: &[usize]| layer.iter().any(|&l| slot_of(l).is_some());
+        let has_box = |layer: &[usize]| layer.iter().any(|&l| plan_of(l).is_some());
+        // The box a node needs around `at`: a subnet place's box holds its
+        // title and count.
+        let reach_of = |local: usize, at: Point| {
+            let global = group.members[local];
+            match plan_of(local) {
+                Some(plan) => Bounds::from_center_half_size(at, plan.size / 2.0),
+                None => self.reach(group.nodes[global], &group.names[global], at),
+            }
+        };
         // How far a node and its label reach to either side across the rank,
         // from its centre.
         let room = |local: usize| {
-            let global = group.members[local];
-            let rect = self.reach(group.nodes[global], &group.names[global], Point::ZERO);
+            let rect = reach_of(local, Point::ZERO);
             match self.direction {
                 Direction::TopDown => (-rect.min.x, rect.max.x),
                 // Across the rank is down the screen.
@@ -769,11 +1325,17 @@ impl Layout {
             if rank > 0 {
                 let above = &layers.layers[rank - 1];
                 let mut gap = self.rank_sep;
-                if has_ghosts(above) || has_ghosts(layer) {
+                let ghosts = has_ghosts(above) || has_ghosts(layer);
+                let boxes = has_box(above) || has_box(layer);
+                if ghosts || boxes {
                     let need = above.iter().map(|&l| after(l)).fold(0.0, f32::max)
-                        + layer.iter().map(|&l| before(l)).fold(0.0, f32::max)
-                        + GHOST_CLEARANCE;
-                    gap = gap.max(need);
+                        + layer.iter().map(|&l| before(l)).fold(0.0, f32::max);
+                    if ghosts {
+                        gap = gap.max(need + GHOST_CLEARANCE);
+                    }
+                    if boxes {
+                        gap = gap.max(need + self.box_clearance());
+                    }
                 }
                 main += gap;
             }
@@ -802,7 +1364,7 @@ impl Layout {
                     Direction::LeftRight => Point::new(main, -cross),
                 };
                 let global = group.members[local];
-                let mut reach = self.reach(group.nodes[global], &group.names[global], position);
+                let mut reach = reach_of(local, position);
                 if let Some(slot) = slot_of(local) {
                     for (side, list) in [
                         (GhostSide::Input, &slot.inputs),
@@ -945,19 +1507,82 @@ impl Layout {
     }
 
     /// Where a node was placed, or `None` if the last computation did not
-    /// see it.
+    /// see it. A port drawn in its subnet place's box is no node of the
+    /// layout, so it has no rank or order of its own and this is `None` for
+    /// it: its box has them, and [`position_of`](Layout::position_of) says
+    /// where its circle is.
     pub fn placement(&self, node: LayoutNode) -> Option<Placement> {
         self.nodes.get(&node).copied()
     }
 
-    /// The centre of a node.
+    /// The centre of a node: for a subnet place, the centre of its box, and
+    /// for a port drawn in one, the centre of the port's circle.
     pub fn position_of(&self, node: LayoutNode) -> Option<Point> {
-        self.nodes.get(&node).map(|p| p.position)
+        match self.nodes.get(&node) {
+            Some(placement) => Some(placement.position),
+            None => match node {
+                LayoutNode::Place(place) => self.ports.get(&place).copied(),
+                LayoutNode::Transition(_) => None,
+            },
+        }
     }
 
-    /// The centre of a place.
+    /// The centre of a place: for a subnet place, the centre of its box, and
+    /// for a port drawn in one, the centre of the port's circle.
     pub fn position_of_place(&self, place: PlaceId) -> Option<Point> {
         self.position_of(LayoutNode::Place(place))
+    }
+
+    /// The radius of a place's circle, where an arrow on it ends:
+    /// [`place_radius`](Layout::place_radius) for an ordinary place and
+    /// [`port_radius`](Layout::port_radius) for a port drawn in its subnet
+    /// place's box. `None` for a subnet place, which is a box
+    /// ([`subnet_box`](Layout::subnet_box)), and for a place the last
+    /// computation did not place.
+    pub fn radius_of_place(&self, place: PlaceId) -> Option<f32> {
+        if self.ports.contains_key(&place) {
+            Some(self.port_radius)
+        } else if self.subnets.contains_key(&place) {
+            None
+        } else {
+            self.nodes
+                .contains_key(&LayoutNode::Place(place))
+                .then_some(self.place_radius)
+        }
+    }
+
+    /// Where the last computation drew a subnet place: its box and the
+    /// circles of its ports. `None` for any other place.
+    ///
+    /// ```
+    /// use petritype::{NetBuilder, TakeEdge};
+    /// use petritype_layout::Layout;
+    ///
+    /// // A level whose lobby is its port.
+    /// let mut b = NetBuilder::new();
+    /// let lobby = b.place::<u32>("Lobby");
+    /// b.port(lobby);
+    /// let level = b.build()?;
+    ///
+    /// let mut b = NetBuilder::new();
+    /// let door = b.place::<u32>("Door");
+    /// let level_3 = b.subnet_place("Level 3", level);
+    /// let lobby = b.port_of::<u32>(level_3, "Lobby");
+    /// b.transition("Enter", (TakeEdge(door),), (lobby,), |n: u32| (n,));
+    /// let world = b.build()?;
+    ///
+    /// let mut layout = Layout::default();
+    /// layout.compute(&world);
+    /// let drawn = layout.subnet_box(level_3.id()).expect("a subnet place");
+    /// assert_eq!(layout.position_of_place(level_3.id()), Some(drawn.centre));
+    /// // The arrow from `Enter` ends at the lobby's circle, inside the box.
+    /// let circle = layout.position_of_place(lobby.id()).unwrap();
+    /// assert!(drawn.bounds().contains(circle));
+    /// assert_eq!(layout.radius_of_place(lobby.id()), Some(layout.port_radius));
+    /// # Ok::<(), petritype::BuildError>(())
+    /// ```
+    pub fn subnet_box(&self, place: PlaceId) -> Option<&SubnetBox> {
+        self.subnets.get(&place)
     }
 
     /// The centre of a transition.
@@ -1059,7 +1684,8 @@ impl Layout {
     /// The cluster a node is in: its name, `Some("")` for the unnamed
     /// cluster, or `None` without [`Clustering`] or for a node the last
     /// computation did not see. ([`Clustering::prefix_of`] is the other way
-    /// round: `None` for the unnamed cluster.)
+    /// round: `None` for the unnamed cluster.) A port drawn in its subnet
+    /// place's box is in the box's cluster, whatever its own name.
     pub fn cluster_of(&self, node: LayoutNode) -> Option<&str> {
         let &index = self.cluster_index.get(&node)?;
         Some(self.clusters[index].name.as_str())
@@ -1071,10 +1697,19 @@ impl Layout {
         self.ranks
     }
 
-    /// Half the width and height of a node's shape.
+    /// Half the width and height of a node's shape: for a subnet place, its
+    /// box, and for a port drawn in one, the port's circle.
     pub fn half_extent(&self, node: LayoutNode) -> Point {
         match node {
-            LayoutNode::Place(_) => Point::new(self.place_radius, self.place_radius),
+            LayoutNode::Place(place) => {
+                if let Some(drawn) = self.subnets.get(&place) {
+                    drawn.size / 2.0
+                } else if self.ports.contains_key(&place) {
+                    Point::new(self.port_radius, self.port_radius)
+                } else {
+                    Point::new(self.place_radius, self.place_radius)
+                }
+            }
             LayoutNode::Transition(_) => self.transition_size / 2.0,
         }
     }
@@ -1128,6 +1763,34 @@ struct Edge {
     ghosted: bool,
 }
 
+impl Edge {
+    /// Its ends as nodes, `(from, to)`: a port's own, not its box's.
+    fn ends(&self) -> (LayoutNode, LayoutNode) {
+        let (place, transition) = (
+            LayoutNode::Place(self.place),
+            LayoutNode::Transition(self.transition),
+        );
+        match self.side {
+            GhostSide::Input => (place, transition),
+            GhostSide::Output => (transition, place),
+        }
+    }
+}
+
+/// A subnet place's box before it is placed: its size, and which ports go
+/// on which side.
+#[derive(Debug, Clone, Default)]
+struct BoxPlan {
+    /// The box's width and height.
+    size: Point,
+    /// Its ports, in the order given.
+    order: Vec<PlaceId>,
+    /// The ports on the side the ranks come from, in the order given.
+    before: Vec<PlaceId>,
+    /// The ports on the other side, in the order given.
+    after: Vec<PlaceId>,
+}
+
 /// The ghosts of one transition: the places, in edge order.
 #[derive(Default)]
 struct Slots {
@@ -1144,6 +1807,8 @@ struct Group<'a> {
     slots: &'a HashMap<usize, Slots>,
     /// The edges inside it, by index among `members`.
     inside: &'a [(usize, usize)],
+    /// The box of each subnet place, by index among all nodes.
+    plans: &'a [Option<BoxPlan>],
 }
 
 /// One group of nodes, laid out in a frame of its own.
@@ -1692,8 +2357,8 @@ mod tests {
         layout.compute(&net);
         assert_eq!(layout.cluster_names().count(), 0);
         assert!(layout.bounds().is_none());
-        layout.compute_named([], [], []);
-        layout.compute_subgraph([], [], [], [], Some(&["A"]));
+        layout.compute_named(Vec::<LayoutPlace>::new(), [], []);
+        layout.compute_subgraph(Vec::<LayoutPlace>::new(), [], [], [], Some(&["A"]));
     }
 
     #[test]
@@ -1850,5 +2515,697 @@ mod tests {
         // The left node's label sits left of the right node: room for it.
         let needed = long.len() as f32 * PLACE_CHAR_WIDTH;
         assert!(gap(&mut layout) > needed, "{}", gap(&mut layout));
+    }
+
+    /// `Queue -> Dispatch -> Staging -> Return -> Queue`: one loop, so one
+    /// back-edge, and `Lone` beside it.
+    fn a_loop() -> Net {
+        let mut b = NetBuilder::new();
+        let queue = b.place::<u32>("Queue");
+        let staging = b.place::<u32>("Staging Area");
+        let _lone = b.place::<u32>("Lone");
+        b.transition("Dispatch", (TakeEdge(queue),), (staging,), |n: u32| (n,));
+        b.transition("Return", (TakeEdge(staging),), (queue,), |n: u32| (n,));
+        b.build().expect("the net builds")
+    }
+
+    /// Every number a layout of `net` answers with, in a fixed order: each
+    /// place's and each transition's rank, order and centre, each ghost's
+    /// centre, each cluster's frame, the bounds, the number of ranks and of
+    /// back-edges. A node with no placement counts as `-1e9`.
+    fn fingerprint(layout: &Layout, net: &Net) -> Vec<f32> {
+        let mut out = Vec::new();
+        let nodes = net
+            .places()
+            .map(|(id, _)| LayoutNode::Place(id))
+            .chain(net.transitions().map(|(id, _)| LayoutNode::Transition(id)));
+        for node in nodes {
+            match layout.placement(node) {
+                Some(p) => out.extend([p.rank as f32, p.order as f32, p.position.x, p.position.y]),
+                None => out.push(-1e9),
+            }
+        }
+        for (p, t, s) in layout.ghosts().collect::<Vec<_>>() {
+            let at = layout.ghost_position(p, t, s).unwrap();
+            out.extend([at.x, at.y]);
+        }
+        for name in layout.cluster_names().collect::<Vec<_>>() {
+            let b = layout.cluster_bounds(name).unwrap();
+            out.extend([b.min.x, b.min.y, b.max.x, b.max.y]);
+        }
+        if let Some(b) = layout.bounds() {
+            out.extend([b.min.x, b.min.y, b.max.x, b.max.y]);
+        }
+        out.extend([
+            layout.rank_count() as f32,
+            layout.back_edges().count() as f32,
+        ]);
+        out
+    }
+
+    /// A handful of nets with no subnet places, each laid out one way.
+    fn pinned() -> Vec<(&'static str, Vec<f32>)> {
+        let mut out = Vec::new();
+        let mut run = |name: &'static str, net: &Net, mut layout: Layout| {
+            layout.compute(net);
+            out.push((name, fingerprint(&layout, net)));
+        };
+        run("plain", &net(), Layout::default());
+        run("clustered", &net(), clustered(&net()));
+        run(
+            "ghosted",
+            &hubs(),
+            Layout::default().with_ghosting(Ghosting::named(["H", "H2", "H3"])),
+        );
+        let mut wide = Layout::default().with_direction(Direction::LeftRight);
+        wide.fit_labels = true;
+        run("left right, fitted", &hubs(), wide);
+        run("a loop", &a_loop(), Layout::default());
+        run(
+            "a loop, left right, clustered",
+            &a_loop(),
+            Layout::default()
+                .with_direction(Direction::LeftRight)
+                .with_clustering(Clustering::NamePrefix('/')),
+        );
+        // A part for two clusters, ghosted, left to right.
+        let net = four_clusters();
+        let mut part = Layout::default()
+            .with_direction(Direction::LeftRight)
+            .with_clustering(Clustering::NamePrefix('/'))
+            .with_ghosting(Ghosting::named(["B/Hub", "C/Hub"]));
+        part.compute_subgraph(
+            net.places().map(|(id, i)| (id, i.name.to_owned())),
+            net.transitions().map(|(id, i)| (id, i.name.to_owned())),
+            net.edges(),
+            net.edges(),
+            Some(&["A", "B"]),
+        );
+        out.push(("a part", fingerprint(&part, &net)));
+        out
+    }
+
+    /// What [`pinned`] gave at the commit before subnet places came to the
+    /// layout, written down then.
+    const BEFORE: [(&str, &[f32]); 7] = [
+        (
+            "plain",
+            &[
+                0.0, 0.0, -90.0, 300.0, 2.0, 0.0, 0.0, 0.0, 4.0, 0.0, 0.0, -300.0, 0.0, 1.0, 90.0,
+                300.0, 1.0, 0.0, 0.0, 150.0, 3.0, 0.0, 0.0, -150.0, -130.0, -340.0, 130.0, 340.0,
+                5.0, 0.0,
+            ],
+        ),
+        (
+            "clustered",
+            &[
+                0.0, 0.0, -268.0, 137.0, 2.0, 0.0, -268.0, -163.0, 1.0, 0.0, 40.0, 2.0, 0.0, 0.0,
+                348.0, 137.0, 1.0, 0.0, -268.0, -13.0, 0.0, 0.0, 40.0, 152.0, -412.0, -227.0,
+                -184.0, 227.0, -104.0, -62.0, 124.0, 227.0, 204.0, 73.0, 412.0, 227.0, -328.0,
+                -203.0, 388.0, 177.0, 3.0, 0.0,
+            ],
+        ),
+        (
+            "ghosted",
+            &[
+                0.0, 0.0, -480.0, 150.0, 0.0, 1.0, -300.0, 150.0, 0.0, 2.0, -120.0, 150.0, 0.0,
+                3.0, 60.0, 150.0, 0.0, 5.0, 480.0, 150.0, 2.0, 0.0, 0.0, -150.0, 1.0, 0.0, -90.0,
+                0.0, 1.0, 1.0, 90.0, 0.0, 0.0, 4.0, 270.0, 150.0, -90.0, 63.0, 90.0, 63.0, 190.0,
+                213.0, 270.0, 213.0, 350.0, 213.0, -520.0, -190.0, 520.0, 227.0, 3.0, 0.0,
+            ],
+        ),
+        (
+            "left right, fitted",
+            &[
+                0.0, 2.0, -150.0, -0.0, 0.0, 0.0, -150.0, 360.0, 0.0, 1.0, -150.0, 180.0, 0.0, 3.0,
+                -150.0, -180.0, 0.0, 4.0, -150.0, -360.0, 2.0, 0.0, 150.0, -0.0, 1.0, 1.0, 0.0,
+                -0.0, 1.0, 2.0, 0.0, -180.0, 1.0, 0.0, 0.0, 180.0, -190.0, -400.0, 190.0, 400.0,
+                3.0, 0.0,
+            ],
+        ),
+        (
+            "a loop",
+            &[
+                0.0, 1.0, 90.0, 225.0, 2.0, 0.0, 0.0, -75.0, 0.0, 0.0, -90.0, 225.0, 1.0, 0.0, 0.0,
+                75.0, 3.0, 0.0, 0.0, -225.0, -130.0, -250.0, 130.0, 265.0, 4.0, 1.0,
+            ],
+        ),
+        (
+            "a loop, left right, clustered",
+            &[
+                0.0, 1.0, -235.0, -98.55441, 2.0, 0.0, 65.0, -8.554413, 0.0, 0.0, -235.0, 81.44559,
+                1.0, 0.0, -85.0, -8.554413, 3.0, 0.0, 215.0, -8.554413, -299.0, -195.44559, 299.0,
+                195.44559, -275.0, -138.55441, 275.0, 121.44559, 4.0, 1.0,
+            ],
+        ),
+        (
+            "a part",
+            &[
+                0.0, 0.0, -167.0, 125.0, 0.0, 0.0, -167.0, -157.0, -1e9, 0.0, 0.0, 41.0, -157.0,
+                2.0, 0.0, 167.0, 125.0, 1.0, 0.0, 17.0, 125.0, -81.0, 165.0, -81.0, 85.0, -231.0,
+                37.0, 231.0, 245.0, -231.0, -245.0, -103.0, -43.0, -207.0, -197.0, 207.0, 179.0,
+                3.0, 0.0,
+            ],
+        ),
+    ];
+
+    #[test]
+    fn a_net_with_no_subnet_places_lays_out_to_the_same_numbers_as_before() {
+        let now = pinned();
+        assert_eq!(now.len(), BEFORE.len());
+        for ((name, numbers), (was_name, was)) in now.iter().zip(BEFORE) {
+            assert_eq!(*name, was_name);
+            assert_eq!(numbers.as_slice(), was, "{name}");
+        }
+    }
+
+    // ----- subnet places -------------------------------------------------
+
+    /// A subnet whose places are these ports, of `u32`, and one more place
+    /// inside that is not a port.
+    fn ports_only(ports: &[&str]) -> Net {
+        let mut b = NetBuilder::new();
+        for name in ports {
+            let place = b.place::<u32>(*name);
+            b.port(place);
+        }
+        let _inside = b.place::<u32>("Inside");
+        b.build().expect("the subnet builds")
+    }
+
+    /// `Door -> Enter -> Level 3 [Lobby | Exit Hall] -> Leave -> Out`: the
+    /// world of the spec, a subnet place between two transitions.
+    struct World {
+        net: Net,
+        level: PlaceId,
+        lobby: PlaceId,
+        exit: PlaceId,
+        enter: TransitionId,
+        leave: TransitionId,
+    }
+
+    fn world() -> World {
+        let mut b = NetBuilder::new();
+        let door = b.place::<u32>("Door");
+        let level = b.subnet_place("Level 3", ports_only(&["Lobby", "Exit Hall"]));
+        let lobby = b.port_of::<u32>(level, "Lobby");
+        let exit = b.port_of::<u32>(level, "Exit Hall");
+        let out = b.place::<u32>("Out");
+        let enter = b
+            .transition("Enter", (TakeEdge(door),), (lobby,), |n: u32| (n,))
+            .id();
+        let leave = b
+            .transition("Leave", (TakeEdge(exit),), (out,), |n: u32| (n,))
+            .id();
+        World {
+            net: b.build().expect("the world builds"),
+            level: level.id(),
+            lobby: lobby.id(),
+            exit: exit.id(),
+            enter,
+            leave,
+        }
+    }
+
+    fn laid_out(net: &Net, layout: Layout) -> Layout {
+        let mut layout = layout;
+        layout.compute(net);
+        layout
+    }
+
+    #[test]
+    fn a_subnet_place_ranks_as_one_node_between_its_transitions() {
+        let w = world();
+        let layout = laid_out(&w.net, Layout::default());
+        let rank = |node| layout.placement(node).unwrap().rank;
+        let door = id_of(&w.net, "Door");
+        assert_eq!(rank(LayoutNode::Place(door)), 0);
+        assert_eq!(rank(LayoutNode::Transition(w.enter)), 1);
+        assert_eq!(rank(LayoutNode::Place(w.level)), 2);
+        assert_eq!(rank(LayoutNode::Transition(w.leave)), 3);
+        assert_eq!(rank(LayoutNode::Place(id_of(&w.net, "Out"))), 4);
+        // The ports are no nodes of their own, but have circles.
+        assert!(layout.placement(LayoutNode::Place(w.lobby)).is_none());
+        assert!(layout.position_of_place(w.lobby).is_some());
+        assert_eq!(layout.rank_count(), 5);
+    }
+
+    #[test]
+    fn a_port_answers_with_its_circle_and_its_own_radius() {
+        let w = world();
+        let layout = laid_out(&w.net, Layout::default());
+        let drawn = layout.subnet_box(w.level).expect("a box");
+        assert_eq!(drawn.ports.len(), 2);
+        assert_eq!(drawn.ports[0].place, w.lobby, "in the order given");
+        assert_eq!(drawn.ports[1].place, w.exit);
+        for circle in &drawn.ports {
+            assert_eq!(layout.position_of_place(circle.place), Some(circle.centre));
+            assert_eq!(circle.radius, layout.port_radius);
+            assert_eq!(
+                layout.radius_of_place(circle.place),
+                Some(layout.port_radius)
+            );
+            assert_eq!(
+                layout.half_extent(LayoutNode::Place(circle.place)),
+                Point::new(layout.port_radius, layout.port_radius)
+            );
+        }
+        assert_eq!(layout.position_of_place(w.level), Some(drawn.centre));
+        assert_eq!(layout.radius_of_place(w.level), None, "a box, not a circle");
+        assert_eq!(
+            layout.half_extent(LayoutNode::Place(w.level)),
+            drawn.size / 2.0
+        );
+        let door = id_of(&w.net, "Door");
+        assert_eq!(layout.radius_of_place(door), Some(layout.place_radius));
+        assert!(layout.subnet_box(door).is_none());
+        // The port's radius is a ghost's.
+        assert_eq!(layout.port_radius, layout.ghost_radius);
+        // The bounds hold the box.
+        let bounds = layout.bounds().unwrap();
+        assert!(bounds.contains(drawn.bounds().min) && bounds.contains(drawn.bounds().max));
+    }
+
+    #[test]
+    fn a_port_faces_the_transitions_it_joins() {
+        let w = world();
+        let down = laid_out(&w.net, Layout::default());
+        let drawn = down.subnet_box(w.level).unwrap();
+        let at = |layout: &Layout, place| layout.position_of_place(place).unwrap();
+        // Enter is above, so the lobby is on top; Leave below, the exit hall
+        // at the bottom.
+        assert!(at(&down, w.lobby).y > drawn.centre.y);
+        assert!(at(&down, w.exit).y < drawn.centre.y);
+        let right = laid_out(
+            &w.net,
+            Layout::default().with_direction(Direction::LeftRight),
+        );
+        let drawn = right.subnet_box(w.level).unwrap();
+        assert!(at(&right, w.lobby).x < drawn.centre.x);
+        assert!(at(&right, w.exit).x > drawn.centre.x);
+    }
+
+    /// `P1 -> T1 -> C`, `P2 -> T2 -> B`, `P3 -> T3 -> A`, where `A`, `B`,
+    /// `C` are the ports of `Box`, declared in that order, and `U` is a
+    /// fourth port nothing uses.
+    fn crossing() -> (Net, PlaceId, [PlaceId; 4], [TransitionId; 3]) {
+        let mut b = NetBuilder::new();
+        let p = ["P1", "P2", "P3"].map(|n| b.place::<u32>(n));
+        let subnet = b.subnet_place("Box", ports_only(&["A", "B", "C", "U"]));
+        let [a, b_, c, u] = ["A", "B", "C", "U"].map(|n| b.port_of::<u32>(subnet, n));
+        let t1 = b
+            .transition("T1", (TakeEdge(p[0]),), (c,), |n: u32| (n,))
+            .id();
+        let t2 = b
+            .transition("T2", (TakeEdge(p[1]),), (b_,), |n: u32| (n,))
+            .id();
+        let t3 = b
+            .transition("T3", (TakeEdge(p[2]),), (a,), |n: u32| (n,))
+            .id();
+        (
+            b.build().expect("the net builds"),
+            subnet.id(),
+            [a.id(), b_.id(), c.id(), u.id()],
+            [t1, t2, t3],
+        )
+    }
+
+    #[test]
+    fn port_circles_follow_the_order_of_their_transitions() {
+        let (net, subnet, [a, b, c, u], [t1, t2, t3]) = crossing();
+        for direction in [Direction::TopDown, Direction::LeftRight] {
+            let layout = laid_out(&net, Layout::default().with_direction(direction));
+            // Across the ranks: x top down, down the screen left to right.
+            let across = |p: Point| match direction {
+                Direction::TopDown => p.x,
+                Direction::LeftRight => -p.y,
+            };
+            let t = |id| across(layout.position_of_transition(id).unwrap());
+            assert!(t(t1) < t(t2) && t(t2) < t(t3), "{direction:?}");
+            let p = |id| across(layout.position_of_place(id).unwrap());
+            // C joins T1, B joins T2, A joins T3: so C, B, A; and U, which
+            // joins nothing, last, on the same side as the rest.
+            assert!(p(c) < p(b) && p(b) < p(a) && p(a) < p(u), "{direction:?}");
+            let drawn = layout.subnet_box(subnet).unwrap();
+            let ids: Vec<PlaceId> = drawn.ports.iter().map(|c| c.place).collect();
+            assert_eq!(ids, [a, b, c, u], "listed in the order given");
+            let main = |p: Point| match direction {
+                Direction::TopDown => p.y,
+                Direction::LeftRight => -p.x,
+            };
+            for port in [a, b, c, u] {
+                let at = layout.position_of_place(port).unwrap();
+                assert!(
+                    main(at) > main(drawn.centre),
+                    "{direction:?}: on the side of T1..T3"
+                );
+            }
+        }
+    }
+
+    /// A subnet place with `count` ports, each written by its own transition
+    /// above it and read by its own transition below it, as `uses` says:
+    /// `(written, read)` for each port.
+    fn many(uses: &[(bool, bool)]) -> (Net, PlaceId) {
+        let names: Vec<String> = (0..uses.len()).map(|i| format!("Port {i}")).collect();
+        let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+        let mut b = NetBuilder::new();
+        let subnet = b.subnet_place("A box with a fairly long title", ports_only(&refs));
+        for (i, &(written, read)) in uses.iter().enumerate() {
+            let port = b.port_of::<u32>(subnet, &names[i]);
+            if written {
+                let from = b.place::<u32>(format!("From {i}"));
+                b.transition(
+                    format!("Put {i}"),
+                    (TakeEdge(from),),
+                    (port,),
+                    |n: u32| (n,),
+                );
+            }
+            if read {
+                let to = b.place::<u32>(format!("To {i}"));
+                b.transition(format!("Take {i}"), (TakeEdge(port),), (to,), |n: u32| (n,));
+            }
+        }
+        (b.build().expect("the net builds"), subnet.id())
+    }
+
+    /// Whether two boxes share more than an edge.
+    fn overlap(a: Bounds, b: Bounds) -> bool {
+        a.min.x < b.max.x - 0.01
+            && b.min.x < a.max.x - 0.01
+            && a.min.y < b.max.y - 0.01
+            && b.min.y < a.max.y - 0.01
+    }
+
+    /// Nothing in a box overlaps anything else in it or its corners, and
+    /// no other node overlaps the box.
+    fn assert_clear(layout: &Layout, net: &Net, subnet: PlaceId) {
+        let drawn = layout.subnet_box(subnet).unwrap();
+        let frame = drawn.bounds();
+        let inner = frame.inflate(-drawn.corner_radius);
+        let circle = |c: &PortCircle| {
+            Bounds::from_center_half_size(c.centre, Point::new(c.radius, c.radius))
+        };
+        assert!(inner.contains(drawn.title.min) && inner.contains(drawn.title.max));
+        assert!(inner.contains(drawn.count.min) && inner.contains(drawn.count.max));
+        assert!(!overlap(drawn.title, drawn.count));
+        for (i, a) in drawn.ports.iter().enumerate() {
+            // Clear of the rounded corners: inside the box shrunk by them.
+            let shape = circle(a);
+            assert!(
+                inner.contains(shape.min) && inner.contains(shape.max),
+                "{a:?}"
+            );
+            assert!(
+                inner.contains(a.count.min) && inner.contains(a.count.max),
+                "{a:?}"
+            );
+            for text in [drawn.title, drawn.count] {
+                assert!(!overlap(shape, text) && !overlap(a.count, text), "{a:?}");
+            }
+            for b in &drawn.ports[i + 1..] {
+                assert!(
+                    a.centre.distance(b.centre) >= a.radius + b.radius,
+                    "{a:?} {b:?}"
+                );
+                for (x, y) in [
+                    (shape, circle(b)),
+                    (shape, b.count),
+                    (a.count, circle(b)),
+                    (a.count, b.count),
+                ] {
+                    assert!(!overlap(x, y), "{a:?} {b:?}");
+                }
+            }
+        }
+        let nodes = net
+            .places()
+            .map(|(id, _)| LayoutNode::Place(id))
+            .chain(net.transitions().map(|(id, _)| LayoutNode::Transition(id)));
+        for node in nodes {
+            if node == LayoutNode::Place(subnet) {
+                continue;
+            }
+            let Some(placement) = layout.placement(node) else {
+                continue;
+            };
+            let shape = Bounds::from_center_half_size(placement.position, layout.half_extent(node));
+            assert!(!overlap(frame, shape), "{node:?} overlaps the box");
+        }
+    }
+
+    #[test]
+    fn nothing_overlaps_in_or_around_a_box_of_any_shape() {
+        let shapes: [&[(bool, bool)]; 6] = [
+            &[(true, false)],
+            &[(true, true); 12],
+            &[(true, false), (true, false), (true, false)],
+            &[(false, true), (false, true)],
+            &[(true, false), (false, true), (true, true), (false, false)],
+            &[(false, false)],
+        ];
+        for uses in shapes {
+            let (net, subnet) = many(uses);
+            for direction in [Direction::TopDown, Direction::LeftRight] {
+                let mut layout = Layout::default().with_direction(direction);
+                layout.compute(&net);
+                assert_clear(&layout, &net, subnet);
+                layout.fit_labels = true;
+                layout.compute(&net);
+                assert_clear(&layout, &net, subnet);
+            }
+        }
+    }
+
+    #[test]
+    fn a_box_is_wide_enough_for_its_circles_and_its_title() {
+        let (one_net, one_subnet) = many(&[(true, false)]);
+        let one = laid_out(&one_net, Layout::default());
+        let (twelve_net, subnet) = many(&[(true, false); 12]);
+        let twelve = laid_out(&twelve_net, Layout::default());
+        let small = one.subnet_box(one_subnet).unwrap();
+        let wide = twelve.subnet_box(subnet).unwrap();
+        // Twelve circles in one row, each with its count beside it.
+        assert!(wide.size.x >= 12.0 * (2.0 * twelve.port_radius + PORT_COUNT_WIDTH));
+        assert!(wide.size.x > small.size.x);
+        // A title of 30 characters, in the place's text.
+        assert!(small.size.x >= 30.0 * PLACE_CHAR_WIDTH);
+        // Top down, one row of ports: the same height for one or twelve.
+        assert_eq!(small.size.y, wide.size.y);
+        // A port on each side makes it taller.
+        let (both, subnet) = many(&[(true, false), (false, true)]);
+        let both = laid_out(&both, Layout::default());
+        assert!(both.subnet_box(subnet).unwrap().size.y > small.size.y);
+        // Left to right the ports are columns: twelve make it tall.
+        let tall = laid_out(
+            &twelve_net,
+            Layout::default().with_direction(Direction::LeftRight),
+        );
+        let tall = tall.subnet_box(subnet).unwrap();
+        assert!(tall.size.y >= 12.0 * 2.0 * twelve.port_radius);
+    }
+
+    #[test]
+    fn a_box_keeps_its_transitions_as_far_off_as_a_place_does() {
+        let (net, subnet) = many(&[(true, true); 12]);
+        let layout = laid_out(&net, Layout::default());
+        let drawn = layout.subnet_box(subnet).unwrap();
+        // Every transition clears the box by at least what a place leaves.
+        let clearance = layout.rank_sep - layout.place_radius - layout.transition_size.y / 2.0;
+        for (id, _) in net.transitions() {
+            let at = layout.position_of_transition(id).unwrap();
+            let gap =
+                (at.y - drawn.centre.y).abs() - drawn.size.y / 2.0 - layout.transition_size.y / 2.0;
+            assert!(gap >= clearance - 0.01, "{gap}");
+        }
+    }
+
+    #[test]
+    fn the_same_net_lays_out_the_same_way_every_time() {
+        let (a, _) = many(&[(true, false), (false, true), (true, true), (false, false)]);
+        let (b, _) = many(&[(true, false), (false, true), (true, true), (false, false)]);
+        for direction in [Direction::TopDown, Direction::LeftRight] {
+            let first = laid_out(&a, Layout::default().with_direction(direction));
+            for _ in 0..8 {
+                assert_eq!(
+                    laid_out(&b, Layout::default().with_direction(direction)),
+                    first
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_port_with_no_side_of_its_own_joins_the_most_ports() {
+        // Two ports written from above, one read from below and above (a
+        // tie), one used by nothing.
+        let (net, subnet) = many(&[(true, false), (true, false), (true, true), (false, false)]);
+        let layout = laid_out(&net, Layout::default());
+        let drawn = layout.subnet_box(subnet).unwrap();
+        for circle in &drawn.ports {
+            assert!(
+                circle.centre.y > drawn.centre.y,
+                "{circle:?} on top, with the rest"
+            );
+        }
+        // With only ties, the side the ranks come from.
+        let (net, subnet) = many(&[(false, false)]);
+        let layout = laid_out(&net, Layout::default());
+        let drawn = layout.subnet_box(subnet).unwrap();
+        assert!(drawn.ports[0].centre.y > drawn.centre.y);
+    }
+
+    #[test]
+    fn a_loop_through_a_box_is_a_back_edge_named_by_its_port() {
+        // `Work` takes from the exit hall and puts back into the lobby.
+        let mut b = NetBuilder::new();
+        let level = b.subnet_place("Level", ports_only(&["Lobby", "Exit Hall"]));
+        let lobby = b.port_of::<u32>(level, "Lobby");
+        let exit = b.port_of::<u32>(level, "Exit Hall");
+        let work = b
+            .transition("Work", (TakeEdge(exit),), (lobby,), |n: u32| (n,))
+            .id();
+        let net = b.build().expect("the net builds");
+        let layout = laid_out(&net, Layout::default());
+        let (work, lobby, exit) = (
+            LayoutNode::Transition(work),
+            LayoutNode::Place(lobby.id()),
+            LayoutNode::Place(exit.id()),
+        );
+        assert_eq!(layout.back_edges().count(), 1);
+        assert!(layout.is_back_edge(work, lobby));
+        assert!(!layout.is_back_edge(exit, work));
+        assert!(!layout.is_back_edge(work, LayoutNode::Place(level.id())));
+        assert_eq!(layout.rank_count(), 2);
+    }
+
+    #[test]
+    fn a_net_laid_out_by_name_with_its_kinds_matches_the_net() {
+        let w = world();
+        let by_net = laid_out(&w.net, Layout::default());
+        let mut by_name = Layout::default();
+        by_name.compute_named(
+            w.net.places().map(|(id, info)| {
+                let kind = match (info.subnet, info.port_of) {
+                    (true, _) => PlaceKind::Subnet,
+                    (false, Some(subnet)) => PlaceKind::Port(subnet),
+                    (false, None) => PlaceKind::Ordinary,
+                };
+                LayoutPlace::new(id, info.name, kind)
+            }),
+            w.net.transitions().map(|(id, i)| (id, i.name.to_owned())),
+            w.net.edges(),
+        );
+        assert_eq!(by_name, by_net);
+        // Without the kinds, the old drawing: every port a place of its own.
+        let mut plain = Layout::default();
+        plain.compute_named(
+            w.net.places().map(|(id, i)| (id, i.name.to_owned())),
+            w.net.transitions().map(|(id, i)| (id, i.name.to_owned())),
+            w.net.edges(),
+        );
+        assert!(plain.subnet_box(w.level).is_none());
+        assert!(plain.placement(LayoutNode::Place(w.lobby)).is_some());
+    }
+
+    #[test]
+    fn a_port_without_its_subnet_place_in_a_part_is_an_ordinary_place() {
+        let w = world();
+        let places: Vec<LayoutPlace> = w
+            .net
+            .places()
+            .map(LayoutPlace::from)
+            .filter(|p| p.id != w.level)
+            .collect();
+        let mut layout = Layout::default();
+        layout.compute_subgraph(
+            places,
+            w.net.transitions().map(|(id, i)| (id, i.name.to_owned())),
+            w.net.edges(),
+            w.net.edges(),
+            None,
+        );
+        assert!(layout.subnet_box(w.level).is_none());
+        assert!(layout.placement(LayoutNode::Place(w.lobby)).is_some());
+        assert_eq!(layout.radius_of_place(w.lobby), Some(layout.place_radius));
+    }
+
+    #[test]
+    fn a_box_and_its_ports_belong_to_the_box_s_cluster() {
+        // `Def/Door -> Def/Enter -> Def/Level [Lobby]`, and beside it the
+        // cluster `Atk`, whose `Atk/Raid` also writes the lobby.
+        let mut b = NetBuilder::new();
+        let door = b.place::<u32>("Def/Door");
+        let level = b.subnet_place("Def/Level", ports_only(&["Lobby"]));
+        let lobby = b.port_of::<u32>(level, "Lobby");
+        let camp = b.place::<u32>("Atk/Camp");
+        b.transition("Def/Enter", (TakeEdge(door),), (lobby,), |n: u32| (n,));
+        b.transition("Atk/Raid", (TakeEdge(camp),), (lobby,), |n: u32| (n,));
+        let net = b.build().expect("the net builds");
+        let layout = clustered(&net);
+        assert_eq!(layout.cluster_names().collect::<Vec<_>>(), ["Def", "Atk"]);
+        let (level, lobby) = (level.id(), lobby.id());
+        assert_eq!(layout.cluster_of(LayoutNode::Place(level)), Some("Def"));
+        assert_eq!(layout.cluster_of(LayoutNode::Place(lobby)), Some("Def"));
+        let frame = layout.cluster_bounds("Def").unwrap();
+        let drawn = layout.subnet_box(level).unwrap().bounds();
+        assert!(frame.contains(drawn.min) && frame.contains(drawn.max));
+        let other = layout.cluster_bounds("Atk").unwrap();
+        assert!(!overlap(other, frame));
+        // The edge from the other cluster still ends at the lobby's circle,
+        // which faces `Def/Enter`, the transition in its own cluster.
+        assert!(layout.position_of_place(lobby).unwrap().y > drawn.center().y);
+        assert_eq!(
+            layout.display_name(LayoutNode::Place(lobby), "Lobby"),
+            "Lobby"
+        );
+        assert_clear(&layout, &net, level);
+    }
+
+    #[test]
+    fn a_ghosted_port_keeps_its_circle_and_gets_its_ghosts() {
+        let w = world();
+        let layout = laid_out(
+            &w.net,
+            Layout::default().with_ghosting(Ghosting::named(["Lobby", "Level 3"])),
+        );
+        assert!(layout.is_ghosted(w.lobby));
+        assert!(
+            !layout.is_ghosted(w.level),
+            "a subnet place has no edges to ghost"
+        );
+        assert!(
+            layout
+                .ghost_position(w.lobby, w.enter, GhostSide::Output)
+                .is_some()
+        );
+        assert!(layout.position_of_place(w.lobby).is_some());
+        // Without the lobby's edge, nothing ranks the box after Enter.
+        assert_eq!(
+            layout.placement(LayoutNode::Place(w.level)).unwrap().rank,
+            0
+        );
+    }
+
+    #[test]
+    fn a_box_leaves_its_neighbours_in_its_rank_the_room_a_place_does() {
+        let mut b = NetBuilder::new();
+        let door = b.place::<u32>("Door");
+        let level = b.subnet_place("Level 3", ports_only(&["Lobby"]));
+        let lobby = b.port_of::<u32>(level, "Lobby");
+        let side = b.place::<u32>("Side");
+        b.transition("Enter", (TakeEdge(door),), (lobby, side), |n: u32| (n, n));
+        let net = b.build().expect("the net builds");
+        let layout = laid_out(&net, Layout::default());
+        let drawn = layout.subnet_box(level.id()).unwrap();
+        let at = layout.position_of_place(side.id()).unwrap();
+        assert_eq!(at.y, drawn.centre.y, "one rank");
+        let clear = (at.x - drawn.centre.x).abs() - drawn.size.x / 2.0 - layout.place_radius;
+        assert!(
+            clear >= layout.node_sep - 2.0 * layout.place_radius - 0.01,
+            "{clear}"
+        );
+        assert_clear(&layout, &net, level.id());
     }
 }

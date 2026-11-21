@@ -188,6 +188,10 @@ pub struct Owner {
     /// The staged firings a host has launched and not yet landed, oldest
     /// first: what each took and when, for its log entry.
     host_flights: Vec<HostFlight>,
+    /// Someone reads the lines that tell of a hosted net's changes. While
+    /// nobody does, [`host_changes`](Owner::host_changes) builds no line
+    /// and keeps the rest. Always true for a net the wire loads.
+    listening: bool,
 }
 
 /// A staged firing the host program launched on a hosted net, between its
@@ -222,7 +226,7 @@ struct Loaded {
     /// One record per live inner net, by nested id (PROTOCOL.md §12.3).
     inner: HashMap<NetId, Inner>,
     /// Inner nets that have had events since their fireable set was last
-    /// compared, in the order they first had them.
+    /// compared or taken afresh, in the order they first had them.
     touched: Vec<NetId>,
     /// The connection's projection of the outer net (PROTOCOL.md §13.4),
     /// while `set_filter` has set one. A generation's own: `load` and
@@ -351,6 +355,7 @@ impl std::fmt::Debug for Owner {
             .field("generation", &self.generation)
             .field("marking_version", &self.marking_version)
             .field("loaded", &self.loaded.as_ref().map(|l| l.name))
+            .field("listening", &self.listening)
             .finish_non_exhaustive()
     }
 }
@@ -674,6 +679,26 @@ fn wire_order(events: &[Event]) -> Vec<&Event> {
         ordered.push(event);
     }
     ordered
+}
+
+/// Whether a net's own event is told as a state notification, one that
+/// raises that net's marking version: a firing's, a token's, a `toggled` or a
+/// `param_changed`. A resync, and an event this runner does not know, are
+/// told as a `reloaded`, which raises nothing. A `Nested` event raises the
+/// version of the net it happened in, which this does not answer for.
+fn is_state_event(event: &Event) -> bool {
+    matches!(
+        event,
+        Event::Fired { .. }
+            | Event::Launched { .. }
+            | Event::Distributed { .. }
+            | Event::Failed { .. }
+            | Event::Added { .. }
+            | Event::Removed { .. }
+            | Event::Mutated { .. }
+            | Event::Toggled { .. }
+            | Event::ParamChanged { .. }
+    )
 }
 
 /// A net's fireable set by name, in declaration order.
@@ -1088,9 +1113,7 @@ impl Loaded {
         let path = self.lifted_path(&lifted);
         let nested_id = lifted.nested_id();
         let running = self.running;
-        if !self.touched.contains(&nested_id) {
-            self.touched.push(nested_id);
-        }
+        self.touch(nested_id);
         let live = lifted.live(&self.net);
         let inner = self
             .inner
@@ -1101,9 +1124,6 @@ impl Loaded {
         // events are told through it, whatever the outer net's is.
         let mut projection = inner.projection.as_mut();
         let version = inner.marking_version + 1;
-        // What the inner net's log entry for a firing says, if this is one.
-        let mut firing: Option<(String, Pairs, Pairs)> = None;
-        let mut failure: Option<(String, bool)> = None;
         let notification = match lifted.event {
             // An inner firing is inline in the core (`step_deep`), so it is
             // one piece on the wire too.
@@ -1112,11 +1132,6 @@ impl Loaded {
                 consumed,
                 produced: made,
             } => {
-                firing = Some((
-                    names.transition(*transition),
-                    consumed.clone(),
-                    made.clone(),
-                ));
                 let (consumed, made) =
                     firing_tokens(projection.as_deref_mut(), live, consumed, made, true);
                 Notification::Fired {
@@ -1132,7 +1147,6 @@ impl Loaded {
                 transition,
                 consumed,
             } => {
-                launched.insert(nested_id, consumed.clone());
                 let (consumed, _) =
                     firing_tokens(projection.as_deref_mut(), live, consumed, &[], false);
                 Notification::Launched {
@@ -1146,8 +1160,6 @@ impl Loaded {
                 transition,
                 produced: made,
             } => {
-                let consumed = launched.remove(&nested_id).unwrap_or_default();
-                firing = Some((names.transition(*transition), consumed, made.clone()));
                 let (_, made) = firing_tokens(projection.as_deref_mut(), live, &[], made, true);
                 Notification::Distributed {
                     transition: names.transition(*transition),
@@ -1163,8 +1175,6 @@ impl Loaded {
                 restored,
                 error,
             } => {
-                firing = Some((names.transition(*transition), consumed.clone(), Vec::new()));
-                failure = Some((error.clone(), *restored));
                 let told = match projection.as_deref_mut() {
                     Some(projection) => projection.failed(consumed, *restored),
                     None => consumed.clone(),
@@ -1220,39 +1230,13 @@ impl Loaded {
                 running,
             },
         };
+        // The quiet path (`note_lifted`) raises versions by this rule
+        // without building the notification: the two must agree.
+        debug_assert_eq!(notification.is_state(), is_state_event(lifted.event));
         if notification.is_state() {
             inner.marking_version = version;
         }
-        if let Some((transition, consumed, made)) = firing {
-            if failure.is_none() {
-                inner.progress.fired(&transition, now);
-            }
-            let entry = LogEntry {
-                seq: 0,
-                transition: transition.clone(),
-                started_at: iso8601(now),
-                duration_ms: 0.0,
-                outcome: if failure.is_some() { "failed" } else { "fired" }.to_owned(),
-                consumed: inner.names.pairs(&consumed),
-                produced: inner.names.pairs(&made),
-                error: failure.as_ref().map(|(error, _)| error.clone()),
-                restored: failure.as_ref().map(|&(_, restored)| restored),
-                path: Some(path.clone()),
-                nested_id: Some(nested_id.to_string()),
-            };
-            self.log_seq += 1;
-            let entry = LogEntry {
-                seq: self.log_seq,
-                ..entry
-            };
-            self.push_log(entry, lifted.chain());
-            firings.push(InnerFiring {
-                transition,
-                path: path.clone(),
-                nested_id: nested_id.to_string(),
-                failed: failure.is_some(),
-            });
-        }
+        self.log_lifted(&lifted, &path, now, launched, firings);
         Notification::Nested {
             path,
             nested_id: nested_id.to_string(),
@@ -1260,6 +1244,142 @@ impl Loaded {
             marking_version: outer_version,
             running,
         }
+    }
+
+    /// What one event lifted out of an inner net changes when nobody is
+    /// listening to a hosted net: what [`lift`](Loaded::lift) keeps (the
+    /// net's record, its version, its log entry and its progress), with no
+    /// notification built.
+    fn note_lifted(
+        &mut self,
+        event: &Event,
+        now: SystemTime,
+        launched: &mut HashMap<NetId, Pairs>,
+        firings: &mut Vec<InnerFiring>,
+    ) {
+        let lifted = Lifted::of(event).expect("note_lifted is given a Nested event");
+        let path = self.lifted_path(&lifted);
+        let nested_id = lifted.nested_id();
+        self.touch(nested_id);
+        if is_state_event(lifted.event) {
+            self.inner
+                .get_mut(&nested_id)
+                .expect("lifted_path made the record")
+                .marking_version += 1;
+        }
+        self.log_lifted(&lifted, &path, now, launched, firings);
+    }
+
+    /// The log entry and the progress of an inner firing, when the lifted
+    /// event ends one (`Fired`, `Distributed` or `Failed`): the entry, a
+    /// count in its net's progress unless it failed, and a place in
+    /// `firings`. A `Launched` is kept in `launched` until the `Distributed`
+    /// that ends it, for what it took. Any other event does nothing.
+    fn log_lifted(
+        &mut self,
+        lifted: &Lifted<'_>,
+        path: &str,
+        now: SystemTime,
+        launched: &mut HashMap<NetId, Pairs>,
+        firings: &mut Vec<InnerFiring>,
+    ) {
+        let nested_id = lifted.nested_id();
+        let (transition, consumed, made, failure) = match lifted.event {
+            Event::Fired {
+                transition,
+                consumed,
+                produced,
+            } => (*transition, consumed.clone(), produced.clone(), None),
+            Event::Launched { consumed, .. } => {
+                launched.insert(nested_id, consumed.clone());
+                return;
+            }
+            Event::Distributed {
+                transition,
+                produced,
+            } => (
+                *transition,
+                launched.remove(&nested_id).unwrap_or_default(),
+                produced.clone(),
+                None,
+            ),
+            Event::Failed {
+                transition,
+                consumed,
+                restored,
+                error,
+            } => (
+                *transition,
+                consumed.clone(),
+                Vec::new(),
+                Some((error.clone(), *restored)),
+            ),
+            _ => return,
+        };
+        let inner = self
+            .inner
+            .get_mut(&nested_id)
+            .expect("lifted_path made the record");
+        let transition = inner.names.transition(transition);
+        if failure.is_none() {
+            inner.progress.fired(&transition, now);
+        }
+        self.log_seq += 1;
+        let entry = LogEntry {
+            seq: self.log_seq,
+            transition: transition.clone(),
+            started_at: iso8601(now),
+            duration_ms: 0.0,
+            outcome: if failure.is_some() { "failed" } else { "fired" }.to_owned(),
+            consumed: inner.names.pairs(&consumed),
+            produced: inner.names.pairs(&made),
+            error: failure.as_ref().map(|(error, _)| error.clone()),
+            restored: failure.as_ref().map(|&(_, restored)| restored),
+            path: Some(path.to_owned()),
+            nested_id: Some(nested_id.to_string()),
+        };
+        self.push_log(entry, lifted.chain());
+        firings.push(InnerFiring {
+            transition,
+            path: path.to_owned(),
+            nested_id: nested_id.to_string(),
+            failed: failure.is_some(),
+        });
+    }
+
+    /// Notes that the inner net `id` had an event, so that its fireable set
+    /// is compared at the next comparison.
+    fn touch(&mut self, id: NetId) {
+        if !self.touched.contains(&id) {
+            self.touched.push(id);
+        }
+    }
+
+    /// Takes the fireable sets afresh from the marking as it is now, the
+    /// outer net's and that of every inner net with a record, and tells no
+    /// one: what a hosted net does when someone starts listening, so that
+    /// what it remembers is what that reader's `get_state` reports. An inner
+    /// net whose token a body holds cannot be read: one that had events
+    /// stays touched, and is compared once its token is back.
+    fn refresh_fireable(&mut self) {
+        self.last_fireable = fireable_names(&self.net, &self.names);
+        let records = &mut self.inner;
+        let mut refreshed = HashSet::new();
+        walk(
+            &self.net,
+            &mut Vec::new(),
+            self.name,
+            &mut |_, path, _, net| {
+                if let Some(record) = records.get_mut(&net.id()) {
+                    record.see(net);
+                    path.clone_into(&mut record.last_path);
+                    record.last_fireable = fireable_names(net, &record.names);
+                    refreshed.insert(net.id());
+                }
+                None::<()>
+            },
+        );
+        self.touched.retain(|id| !refreshed.contains(id));
     }
 
     /// The `added`s and `removed`s of the tokens that came into a
@@ -1451,6 +1571,7 @@ impl Owner {
             poke: false,
             hosted: false,
             host_flights: Vec::new(),
+            listening: true,
         }
     }
 
@@ -3009,6 +3130,9 @@ impl Owner {
                     running,
                 },
             };
+            // The quiet path (`note_events`) raises the version by this
+            // rule without building the notification: the two must agree.
+            debug_assert_eq!(notification.is_state(), is_state_event(event));
             if notification.is_state() {
                 *marking_version = version;
             }
@@ -3100,6 +3224,19 @@ impl Owner {
         self.mirror_gauges();
     }
 
+    /// Whether anyone reads the lines that tell of the hosted net's
+    /// changes. While nobody does, [`host_changes`](Owner::host_changes)
+    /// builds no line. Turned on, it first takes the fireable sets afresh
+    /// and tells no one, so that the next `fireable` line goes out exactly
+    /// when a set differs from what a reader of the state now holds.
+    /// Setting it to what it already is does nothing.
+    pub(crate) fn set_listening(&mut self, listening: bool) {
+        if listening && !self.listening {
+            self.loaded.as_mut().expect(HOSTED).refresh_fireable();
+        }
+        self.listening = listening;
+    }
+
     /// Hands the hosted net to `change`, then reports whatever it did as
     /// the lines a step or an inject would have caused: one notification
     /// per event, the fireable sets that changed, and a log entry and
@@ -3108,6 +3245,10 @@ impl Owner {
     /// The fireable sets are compared once no staged firing the host
     /// launched is still in flight, as a runner compares them at a landing
     /// and never between a `launched` and its `distributed`.
+    ///
+    /// While nobody is listening ([`set_listening`](Owner::set_listening))
+    /// there are no lines: [`note_events`](Owner::note_events) keeps the
+    /// rest and compares no fireable set.
     ///
     /// A call that leaves the net's event log empty costs the closure and
     /// nothing else.
@@ -3126,11 +3267,16 @@ impl Owner {
         // A token the host put in or a firing produced may carry nets
         // nobody has seen: their fireable sets are taken silently (§7.2).
         loaded.know_new();
-        let flushed = self.tell_events(events, now, None, true, &mut out);
+        let inner_firings = if self.listening {
+            self.tell_events(events, now, None, true, &mut out)
+                .inner_firings
+        } else {
+            self.note_events(&events, now)
+        };
         let loaded = self.loaded.as_mut().expect(HOSTED);
         // The outer net counts each firing inside its tokens too, under its
         // path without the outer net's name, as a `step` that made it does.
-        for firing in flushed.inner_firings.iter().filter(|f| !f.failed) {
+        for firing in inner_firings.iter().filter(|f| !f.failed) {
             let below = firing
                 .path
                 .strip_prefix(loaded.name)
@@ -3147,6 +3293,36 @@ impl Owner {
         }
         self.mirror_gauges();
         (result, out)
+    }
+
+    /// Keeps what `events` changed, for a hosted net nobody is listening
+    /// to, and builds no notification: the marking version, raised once
+    /// for each event a state notification would have told of; the log
+    /// entry and progress of every firing, the outer net's and the inner
+    /// nets'; and the inner nets' records and versions, and which of them
+    /// had events. In the wire's order, so that the log is the one a
+    /// listener's would be. No fireable set is compared:
+    /// [`set_listening`](Owner::set_listening) takes them afresh. A hosted
+    /// net has no projection (`set_filter` is not served there), so there
+    /// is no view to reconcile either. Returns the inner firings, as
+    /// [`tell_events`](Owner::tell_events) does.
+    fn note_events(&mut self, events: &[Event], now: SystemTime) -> Vec<InnerFiring> {
+        let host_flights = &mut self.host_flights;
+        let marking_version = &mut self.marking_version;
+        let loaded = self.loaded.as_mut().expect(HOSTED);
+        let mut inner_launched = HashMap::new();
+        let mut inner_firings = Vec::new();
+        for event in wire_order(events) {
+            if matches!(event, Event::Nested { .. }) {
+                loaded.note_lifted(event, now, &mut inner_launched, &mut inner_firings);
+                continue;
+            }
+            if is_state_event(event) {
+                *marking_version += 1;
+            }
+            loaded.record_host_firing(event, now, host_flights);
+        }
+        inner_firings
     }
 }
 

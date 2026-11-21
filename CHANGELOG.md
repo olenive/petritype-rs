@@ -3,6 +3,7 @@
 ## Unreleased
 
 - `petritype-runner` serves a net the host program owns. A program that builds a net and fires it from its own code (a game, a simulation) gives it to a `HostServer`, which listens on a TCP port; any number of viewers attach and are told what the program does to the net, inner nets included. `Host` is the same without the listener, for a program with a transport of its own. The connection reads the net and nothing else: `load`, `reset`, `shutdown`, `step`, `start`, `stop`, `inject`, `enable`, `disable`, `set_param`, `press` and `set_filter` are `unsupported`.
+- A host nobody is listening to does none of the work of telling: while no viewer has made its first request, a `HostServer`'s `change` makes no lines and compares no fireable set, and keeps the log, the progress and the marking version as before. `Host::set_listening` is the same switch for a program with its own transport; it is on unless turned off.
 
 ## 0.1.0, 2026-10-23
 

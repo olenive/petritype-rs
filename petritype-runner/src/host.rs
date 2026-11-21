@@ -12,6 +12,11 @@
 //! - [`HostServer`] is a [`Host`] behind a TCP listener: any number of
 //!   viewers connect, each speaks the protocol line by line, and every one
 //!   of them is told what the program does to the net.
+//!
+//! A host that nobody is listening to makes no lines: it keeps the log, the
+//! progress and the marking version, and leaves out the work of telling.
+//! [`Host::set_listening`] says when that is; a [`HostServer`] works it out
+//! from its viewers.
 
 use std::fmt;
 use std::io::{self, BufRead, BufReader, BufWriter, Write};
@@ -52,6 +57,11 @@ const DEFAULT_HEARTBEAT: Duration = Duration::from_secs(30);
 /// `get_state`: there is nothing to `load`. `running` is `true` on every
 /// line, the program firing the net, until
 /// [`set_running`](Host::set_running) says otherwise.
+///
+/// A program with no viewer attached can say so with
+/// [`set_listening`](Host::set_listening): `change` then makes no lines and
+/// costs less, while the log, the progress and the marking version go on as
+/// before.
 ///
 /// ```
 /// use std::time::SystemTime;
@@ -95,13 +105,14 @@ impl Host {
     /// protocol lines that tell of what it did, in order, without their
     /// newlines: one notification per event, the fireable sets that
     /// changed, the outer net's and each inner net's. They are for every
-    /// viewer.
+    /// viewer. While [`set_listening`](Host::set_listening) has listening
+    /// off there are none, and making none is cheaper.
     ///
     /// Every firing `change` makes is kept in the log `get_log` reads and
     /// counted in the progress `get_state` reports, whether it was made in
     /// one piece ([`Net::step`], [`Net::step_deep`], a driver) or staged
     /// across calls ([`Net::launch`] in one, [`Net::distribute`] in a later
-    /// one).
+    /// one), and whether anyone is listening or not.
     ///
     /// A call that changes nothing returns no lines and costs the closure
     /// alone, so it is cheap to call on every tick. `now` is the time the
@@ -128,6 +139,26 @@ impl Host {
                 ]
             }
         }
+    }
+
+    /// Says whether anyone is listening: whether the lines
+    /// [`change`](Host::change) returns go anywhere. On from the start.
+    ///
+    /// While it is off, `change` returns no lines and does none of the work
+    /// of making them: it builds no notification and compares no fireable
+    /// set, which is most of what a change costs beyond the change itself.
+    /// It still keeps the marking version, the log, the progress and the
+    /// records of inner nets, so that what a viewer reads later is what it
+    /// would have read with listening on throughout.
+    ///
+    /// Turned on, it first takes every fireable set it remembers afresh
+    /// from the marking, telling no one. Turn it on before answering a
+    /// viewer's first request: from then on a `fireable` line goes out
+    /// exactly when a set differs from what that viewer's `get_state`
+    /// reported. Setting it to what it already is does nothing. A
+    /// [`HostServer`] turns it on and off itself.
+    pub fn set_listening(&mut self, listening: bool) {
+        self.owner.set_listening(listening);
     }
 
     /// Says whether the program is firing the net: the `running` of every
@@ -217,6 +248,13 @@ struct Viewer {
 /// first request is `get_state`. A viewer is told nothing until its first
 /// request, and everything from then on.
 ///
+/// While no viewer has made its first request, which is how a game spends
+/// most of its time, `change` makes no lines: it keeps the log, the
+/// progress and the marking version and leaves out the rest of the work
+/// ([`Host::set_listening`]). The first request of the first viewer to
+/// listen turns the telling on before it is answered, and the last
+/// listening viewer leaving turns it off again.
+///
 /// It is `Send` and `Sync`, so it can live wherever the program keeps its
 /// state: a Bevy resource, for one.
 ///
@@ -276,8 +314,11 @@ impl HostServer {
                 let closed = Arc::clone(&closed);
                 move || listen(&listener, &to_server, &closed)
             })?;
+        let mut host = Host::new(name, net);
+        // Nobody listens until a viewer's first request.
+        host.set_listening(false);
         Ok(HostServer {
-            host: Host::new(name, net),
+            host,
             address,
             arrivals: Mutex::new(arrivals),
             viewers: Vec::new(),
@@ -302,9 +343,10 @@ impl HostServer {
         self.viewers.len()
     }
 
-    /// Hands the net to `change`, tells every viewer what it did, and
-    /// returns what it returned; see [`Host::change`]. Never blocks on a
-    /// viewer.
+    /// Hands the net to `change`, tells every listening viewer what it did,
+    /// and returns what it returned; see [`Host::change`]. With no viewer
+    /// listening it tells nobody and makes no lines, and keeps the log and
+    /// the progress all the same. Never blocks on a viewer.
     pub fn change<R>(&mut self, change: impl FnOnce(&mut Net) -> R) -> R {
         let (result, lines) = self.host.change(SystemTime::now(), change);
         self.broadcast(lines);
@@ -321,6 +363,10 @@ impl HostServer {
     /// have arrived, forgets the viewers that have gone, and sends the
     /// heartbeat when it is due. Never blocks: call it once per frame or
     /// tick.
+    ///
+    /// A viewer's first request, when no other viewer is listening, turns
+    /// the host's telling on before the request is answered; forgetting
+    /// the last listening viewer turns it off.
     pub fn serve(&mut self) {
         loop {
             let arrival = self
@@ -331,12 +377,21 @@ impl HostServer {
             match arrival {
                 Ok(Arrival::Joined(id, stream)) => self.admit(id, stream),
                 Ok(Arrival::Line(id, line)) => {
-                    let answer = self.host.request(&line, SystemTime::now());
-                    if let Some(at) = self.viewers.iter().position(|viewer| viewer.id == id) {
+                    let at = self.viewers.iter().position(|viewer| viewer.id == id);
+                    if let Some(at) = at
+                        && !self.viewers[at].listening
+                    {
+                        // Its first request. The host tells again, if it
+                        // was quiet, before the answer is made, so that
+                        // what follows the answer starts from it.
                         self.viewers[at].listening = true;
-                        if !send(&self.viewers[at], answer) {
-                            self.drop_viewer(at);
-                        }
+                        self.host.set_listening(true);
+                    }
+                    let answer = self.host.request(&line, SystemTime::now());
+                    if let Some(at) = at
+                        && !send(&self.viewers[at], answer)
+                    {
+                        self.drop_viewer(at);
                     }
                 }
                 Ok(Arrival::Left(id)) => {
@@ -392,10 +447,14 @@ impl HostServer {
         }
     }
 
-    /// Closes the connection of the viewer at `at` and forgets it.
+    /// Closes the connection of the viewer at `at` and forgets it. When no
+    /// viewer is left listening, the host stops telling.
     fn drop_viewer(&mut self, at: usize) {
         let viewer = self.viewers.swap_remove(at);
         let _ = viewer.stream.shutdown(Shutdown::Both);
+        if !self.viewers.iter().any(|viewer| viewer.listening) {
+            self.host.set_listening(false);
+        }
     }
 }
 

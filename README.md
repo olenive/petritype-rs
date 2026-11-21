@@ -81,6 +81,10 @@ A viewer connects to the port and speaks the net protocol line by line, starting
 net, inner nets included, and is told of every change; it cannot load, fire or change anything. The Bevy viewer
 attaches with `cargo run --example remote -- --attach 127.0.0.1:7878` in `petritype-bevy`.
 
+While no viewer has asked anything, the server makes no lines and compares no fireable sets, so `change` costs
+less. It still keeps the log, the progress and the marking version, and a viewer that attaches later reads them as
+if it had been watching all along.
+
 ## Quickstart
 
 ```rust

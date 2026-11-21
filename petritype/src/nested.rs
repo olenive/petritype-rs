@@ -45,7 +45,7 @@
 use std::any::Any;
 use std::fmt;
 
-use crate::error::{FiringFailed, NetError};
+use crate::error::{FiringFailed, NetError, PathStep};
 use crate::event::Event;
 use crate::ids::{NetId, PlaceId, TokenId, TransitionId};
 use crate::net::Net;
@@ -1214,7 +1214,14 @@ impl Net {
                 step: Box::new(step),
             }),
             Err(mut failed) => {
-                failed.path.insert(0, (place, token, name));
+                failed.path.insert(
+                    0,
+                    PathStep::Token {
+                        place,
+                        token,
+                        net: name,
+                    },
+                );
                 Err(failed)
             }
         })
@@ -1222,7 +1229,8 @@ impl Net {
 
     /// A subnet's turn: a deep step of the subnet of the subnet place at
     /// `place`, what it logged lifted into this log as [`Event::Subnet`]
-    /// right after, and the step wrapped one level. `None` if it fired
+    /// right after, and the step wrapped, or the failure's
+    /// [`path`](FiringFailed::path) filled in, one level. `None` if it fired
     /// nothing.
     ///
     /// The subnet's ports are indexed by the subnet itself, so nothing of
@@ -1243,13 +1251,17 @@ impl Net {
                 event: Box::new(event),
             });
         }
-        // A failure in there keeps the path it came up with: a level that
-        // names no token has no element of `FiringFailed::path` to say it.
-        Some(result.map(|step| DeepStep::Subnet {
-            place,
-            nested_id,
-            step: Box::new(step),
-        }))
+        Some(match result {
+            Ok(step) => Ok(DeepStep::Subnet {
+                place,
+                nested_id,
+                step: Box::new(step),
+            }),
+            Err(mut failed) => {
+                failed.path.insert(0, PathStep::Subnet { place });
+                Err(failed)
+            }
+        })
     }
 
     /// The first transition anywhere in the nesting that is fireable, with

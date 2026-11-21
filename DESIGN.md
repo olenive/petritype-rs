@@ -100,9 +100,15 @@ Dropped, and why:
 - **Inner net**: a net carried by a token, in a *nested* place; the net
   holding the token is the **outer net** (§6.6, slice 15). *Quiescent deep*:
   quiescent here and in every inner net that is not in a passive place.
-- **Stepping rule**: how the inner nets of one nested place take their
-  turns beside the outer net, one of inner first (the default), take
-  turns, outer first or passive (§6.6, since 2026-11-21).
+- **Subnet place**: a place that holds one net of its own, its **subnet**,
+  for the outer net's whole life, and no tokens; a **port place**, or
+  *port*, is a place of the subnet that its definition marks, which the net
+  around it reaches by the pair of the subnet place and the port's name
+  (§6.7, since 2026-11-21). A subnet is an inner net too.
+- **Stepping rule**: how the nets in one place that holds nets, a nested
+  place or a subnet place, take their turns beside the outer net, one of
+  inner first (the default), take turns, outer first or passive (§6.6, since
+  2026-11-21).
 - **Key**: a named attribute of a token (a string, an integer or a
   boolean) that its place derives from the token's value with an extractor
   the author declared (§8.3, slice 18). A **filter** keeps the tokens whose
@@ -121,9 +127,11 @@ In the literature's terms this is a *coloured Petri net*: a token's value is
 its colour and a place's type its colour set, with a body where the textbook
 has arc expressions. A place here is a FIFO queue where the textbook has a
 multiset. An inner net is the literature's
-*nets within nets* (object nets). The hierarchical coloured nets, modules
-joined to a net through port places, have no counterpart yet. This document
-uses "colour" only for a token's display colour (`style`).
+*nets within nets* (object nets). A subnet place is nearest to the
+*substitution place* of the hierarchical coloured nets, joined to the net
+around it through port places as there, with the difference that the inside
+is a net of its own with its own stepping (§6.7). This document uses
+"colour" only for a token's display colour (`style`).
 
 ## 4. Representation
 
@@ -859,11 +867,17 @@ net.place_ref::<T>(name) -> Option<PlaceRef<T>>       // a typed handle by name,
 #[non_exhaustive] pub enum Stepping { #[default] InnerFirst, TakeTurns, OuterFirst, Passive }   // 2026-11-21
 #[non_exhaustive] pub enum StagedStep { Chosen(TransitionId), Inside(DeepStep) }  // slice 21
 
-pub enum DeepStep {
+#[non_exhaustive] pub enum DeepStep {
     Here   { transition: TransitionId },
     Inside { place: PlaceId, token: TokenId, net: String, nested_id: NetId, step: Box<DeepStep> },
+    Subnet { place: PlaceId, nested_id: NetId, step: Box<DeepStep> },   // §6.7
 }
 ```
+
+The other way to nest, a place that holds one net for the outer net's whole
+life and shares its port places with it, is the subnet place, §6.7. What
+this section says of stepping, lifting and saving holds for it as for a
+token's nets, except where §6.7 says otherwise.
 
 - **Declaring.** A token type says which nets it owns; one without
   `Nested` is a compile error (`#[diagnostic::on_unimplemented]`).
@@ -1009,6 +1023,7 @@ pub enum DeepStep {
   `FiringFailed`, its `path` filled in level by level on the way up (§7).
 - **Limits** (the proposal's R10). No shared places: the outer net reaches
   in only through the token, and no inner guard or body sees the outer net.
+  (A subnet place's ports are the one kind of shared place, §6.7.)
   Depth is unbounded; the tests go two deep (a passenger carrying luggage).
   Adding a vehicle is adding a token, never a place.
 - **On the wire** (phase 3, slice 17): the protocol runner addresses inner
@@ -1167,6 +1182,113 @@ sugar) is superseded rather than forbidden: a body may still own a net, but
 the engine sees nothing of it. A token is where an inner net lives when the
 outer net should see it.
 
+### 6.7 Subnet places and port places
+
+**Built 2026-11-21** (`dev-docs/subnet-place-spec.md`, the one definition
+for both runtimes; `dev-docs/subnet-place-concept.md` has the reasons). A
+*subnet place* holds one net, its *subnet*, for the outer net's whole life,
+and holds no tokens. The subnet is separate and isolated: the outer net
+reaches it only through its *port places*, ordinary places of the subnet
+that its definition marks as ports, and an edge of the outer net on a port
+is an ordinary edge. A game's levels are the example:
+`petritype/examples/levels.rs` is a world whose `Level 1` and `Level 2` are
+built from one template, heroes entering each by its `Lobby` and leaving by
+its `Exit Hall`.
+
+```rust
+// The subnet's definition.
+let lobby = b.place::<Hero>("Lobby");
+b.port(lobby);                                          // BuildError::PortIsSubnetPlace for a port of a subnet place
+// The outer net.
+let level = b.subnet_place("Level 1", net) -> SubnetRef // not a PlaceRef: an edge on it does not compile (EdgeOnSubnetPlace behind that)
+let lobby = b.port_of::<Hero>(level, "Lobby") -> PlaceRef<Hero>   // NoSuchPort, PortTypeMismatch
+b.stepping(level, Stepping)                             // a SubnetRef or a PlaceRef: trait PlaceHandle
+net.subnet(place) -> Option<&Net>;  net.subnet_scope(place, f) -> Result<R, NetError>
+net.port_ref::<T>(subnet: PlaceId, name) -> Option<PlaceRef<T>>
+PlaceInfo { .., subnet: bool, port: bool, port_of: Option<PlaceId> }   // and TopologyPlace
+Event::Subnet { place, nested_id, event: Box<Event> }
+DeepStep::Subnet { place, nested_id, step: Box<DeepStep> }
+pub enum PathStep { Token { place, token, net }, Subnet { place } }    // FiringFailed::path
+snapshot.subnet(place) -> Option<&Snapshot>
+```
+
+- **How a port is resolved.** The outer net has a real place for each port
+  of each of its subnet places, a *window*: its own `PlaceId`, the port's
+  name and a copy of the port's metadata, pushed right after the subnet
+  place in the subnet's declaration order, so that edges, guards, the read
+  API and external input name it as any place. Its own queue stays empty.
+  Every function that touches a place's tokens finds a window's port in the
+  subnet and works on the port's queue, the subnet's key index and the
+  subnet's token counter: `slot_of` for readers, `holder_mut` for writers,
+  and `resolve_mut` and the lending in `firing.rs` for a firing. The queue
+  never moves. A window is kept out of the duplicate-name check and out of
+  `place_named`: it is named by its subnet place and the port's name, and
+  `port_ref` finds it so. What a port is beyond its tokens (its keys, style,
+  serialiser and stepping rule) is the subnet's to declare, so the per-place
+  options of the builder panic for a window.
+- **Ids and keys.** A port has one queue and one set of token ids, minted by
+  the subnet, whichever net puts a token there, so every id minted into a
+  port is larger than those already in the subnet. A port's tokens are
+  indexed by the subnet alone; a query of the outer net asks the subnet's
+  index about the port and answers under the window's id. A token crosses
+  the border only by a firing of an outer transition, so it gets a new id,
+  as in any firing.
+- **Events.** A change is told once, by the net whose transition made it.
+  An outer firing on a port reports it in its own `Fired` or `Launched` and
+  `Distributed`, under the window's id; a firing of the subnet is in the
+  subnet's log, lifted into the outer one as `Event::Subnet` right after it
+  fires in a deep step, or when `subnet_scope`'s closure returns.
+- **Stepping.** In a deep step a subnet is one net at its place's position
+  in walk order, under its place's rule (§6.6), and `DeepStep::Subnet` says
+  a firing was in there. A port's tokens that carry nets are the subnet's to
+  step, under the rule the subnet gives the port, so a window has no rule.
+- **The in-flight rule.** While a transition of the outer net with an edge
+  on one of a subnet's ports is in flight, launched and not yet landed, that
+  subnet takes no turn (it keeps its place in the ring), and `subnet_scope`
+  refuses it with `NetError::InFlight`. The builder records, per subnet,
+  which transitions reach it. One firing happens at a time across the tree,
+  except that an outer body may still run on its own thread.
+- **Failure.** A failed outer firing restores what it took from a port as
+  from any place, into the port. A failure inside a subnet comes up with
+  `PathStep::Subnet { place }` at that level of `FiringFailed::path`, so a
+  path names every level, a subnet's or a token's. `OnFailure::Disable`
+  follows it through `subnet_scope`. A run's `RunSummary::fired_count`
+  counts a subnet's firings, as it does a token's net's.
+- **Reading.** `PlaceInfo` (and so `TopologyPlace`, with `serde` written
+  only when set) says `subnet` for a subnet place, `port_of` for a window,
+  naming its subnet place, and `port` for a place its own net marked a port,
+  which is how the subnet's own topology shows it. A subnet place's
+  `type_name` is `"<subnet>"`; its template, with `serde`, is
+  `net.subnet(place)?.template()`. That is every fact the protocol's
+  topology needs (PROTOCOL.md §12.7): a subnet place with its ports in
+  declaration order, `port: true` inside, an edge naming a port by its
+  window.
+- **Saving.** A subnet built through a template is stamped, and is saved,
+  restored and forked with the outer net. In a marking, a subnet place's
+  entry is a list of one, the subnet in its saved form (`template`,
+  `marking`, `params`, `enabled`), and a port's tokens are written once, in
+  the subnet's marking, so the outer net writes nothing for a window. An
+  import puts an entry into the subnet the net already holds, which keeps
+  its id, after checking that the entry was saved from the template that
+  built it; everything at every level is decoded before anything changes,
+  and each subnet lifts a `Resynced` of its own before the outer net's. A
+  restore rebuilds the subnets as the outer template's factory builds them,
+  from the saved parameters, and fills them so. A fork copies each subnet as
+  it copies the net, everything a save cannot carry included, and a
+  snapshot holds a snapshot of each subnet, with the port's tokens copied
+  into the outer snapshot's window too, under the same live ids. A subnet
+  built without a template runs, and the outer net then has no saved form:
+  `NetError::CannotSaveSubnet` and `CommandError::CannotLoadSubnet` name the
+  place and carry why, `NoTemplate` for that case, the same error again for
+  a deeper level. The stepping rules and the ring's cursor are not saved. A
+  net without subnet places saves to the bytes it always did
+  (`tests/subnet_saving.rs` checks one against what the commit before wrote).
+- **Considered and set aside: moving the queue.** The spec first had a
+  firing borrow a port's queue into the window for the length of the firing.
+  A spike showed it does not hold: the two nets' counts differ while a
+  firing is in flight, ids collide, and two firings in flight on one port
+  lose a token. The window that resolves to the port was built instead.
+
 ## 7. Failure semantics
 
 - **Expected outcomes are data.** Route a token to an error place via a
@@ -1216,24 +1338,34 @@ Error types (`thiserror`, all `#[non_exhaustive]`):
   template built), `InFlight { transition, name }` (a fork or a save while a
   firing is airborne), `NotForkable { type_name }` (the default
   `Nested::fork`), `CannotFork { place, name, token, source: Box<NetError> }`
-  (a snapshot that could not fork a nested token) and `RebuildFailed {
+  (a snapshot that could not fork a nested token), `RebuildFailed {
   template, source }` (a fork whose factory failed or whose marking did not
-  load back).
+  load back) and, since subnet places (§6.7), `CannotSaveSubnet { place,
+  name, source }` (an export, a save or a fork of a net whose subnet has no
+  saved form, `source` saying why: `NoTemplate` for one no template built).
+  Also `NotSubnet` (a `subnet_scope` of a place that holds no subnet), and
+  `InFlight` without the feature too, for a `subnet_scope` while a firing on
+  one of the subnet's ports is airborne.
 - `TemplateError` (`serde`, slice 16): from `Templates::build`:
   `NoSuchTemplate { name }`, `Factory { name, source }`.
 - `FiringFailed`: a body returned `Err` or panicked; carries the transition,
   the boxed error, and whether inputs were restored. Since slice 15 also
-  `path: Vec<(PlaceId, TokenId, String)>`: where the transition is when it is
-  inside a token's inner net, one `(place, token, net name)` per level, outer
-  to inner, empty for the net's own. `step_deep` fills it in on the way up,
-  and the message names it (`transition "Sit" (TransitionId(0)) inside
-  PlaceId(0) #5 "cabin" failed: ..`).
+  `path`: where the transition is when it is in a net below the one that was
+  stepped, one step per level, outer to inner, empty for the net's own. Each
+  step is a `PathStep` (§6.7): `Token { place, token, net }` for a token's
+  inner net, `Subnet { place }` for a subnet place's subnet, which names no
+  token. `step_deep` fills it in on the way up, and the message names it
+  (`transition "Sit" (TransitionId(0)) inside PlaceId(1) / PlaceId(0) #5
+  "cabin" failed: ..`). It was a `(place, token, net name)` per level until
+  subnet places, which a level with no token could not use.
 - `CommandError`: external input rejected. Wraps `NetError` transparently
   (unknown place, transition or token; type mismatch); with `serde`, also
   `NotSerializable`, `InvalidToken`, `NoSuchPlaceName`,
   `NoSuchTransitionName`, `NoSuchParamName`, `InvalidParam` and
-  `ParamNotSerializable` from the JSON route. A rejected command changes
-  nothing and emits nothing.
+  `ParamNotSerializable` from the JSON route, and `CannotLoadSubnet { place,
+  name, source }` for a subnet place's entry in an imported marking that
+  does not load into its subnet (§6.7). A rejected command changes nothing
+  and emits nothing.
 - `TooManyFirings`: the driver fuse, carrying a `RunSummary`.
 
 **Names in errors (decided 2026-09-20).** An error escapes the scope where
@@ -1300,7 +1432,7 @@ slice 17 maps it so by name, inside an inner net as `nested` around it.
 ### 8.2 Read API
 
 ```rust
-net.places()      -> impl Iterator<Item = (PlaceId, PlaceInfo<'_>)>    // by value: name, type_name, serializable, nested, stepping (Some iff nested, 2026-11-21), key_names (slice 18), count (count is live, never stored)
+net.places()      -> impl Iterator<Item = (PlaceId, PlaceInfo<'_>)>    // by value: name, type_name, serializable, nested, stepping (Some iff the place holds nets, 2026-11-21), key_names (slice 18), subnet, port, port_of (§6.7), count (count is live, never stored)
 net.transitions() -> impl Iterator<Item = (TransitionId, TransitionInfo<'_>)>  // by value: name, inputs, filters (slice 19), outputs, positional (slice 17), enabled, in_flight, detachable
 net.edges()       -> impl Iterator<Item = EdgeInfo>   // Input { place, transition, kind, filter (slice 19) } | Output { transition, place, slot }; transition order, inputs then outputs
 net.topology()    -> Topology   // places, transitions, edges and topology_counter as owned values; shape only, no counts or switches (slice 14)
@@ -1308,6 +1440,8 @@ net.place_named(&str) -> Option<PlaceId>;  net.transition_named(&str) -> Option<
 net.place_ref::<T>(&str) -> Option<PlaceRef<T>>   // slice 15: a typed handle by name, checked by TypeId
 net.nested(place, token) -> Option<Vec<(&str, &Net)>>   // slice 15: a nested token's inner nets (§6.6)
 net.nested_scope(place, token, f) -> Option<R>    // slice 15: the same, mutably, lifting on return
+net.subnet(place) -> Option<&Net>;  net.subnet_scope(place, f) -> Result<R, NetError>   // §6.7: a subnet place's subnet, to read, and to step or change
+net.port_ref::<T>(subnet, &str) -> Option<PlaceRef<T>>   // §6.7: this net's handle for a port, by its subnet place and its name
 net.is_quiescent_deep() -> bool                   // slice 15: quiescent here and in every inner net not in a passive place
 net.step_inside() -> Result<Option<DeepStep>, FiringFailed>   // slice 17: step_deep without this net's own turn, for a driver that asked select() itself (§6.6)
 net.step_deep_staged() -> Result<Option<StagedStep>, FiringFailed>   // slice 21: step_deep with this net's own choice handed back, in the stepping rules' order (§6.6)
@@ -1352,7 +1486,8 @@ state at one moment to compare with another. The fireable set is not stored
 no counter. Without `serde` a net with a nested place cannot be snapshotted;
 with it (slice 16) the nested place's tokens are forked from their templates
 (§6.6), and `snapshot.nested(place, token)` reads their inner nets, under the
-live token ids.
+live token ids. A subnet place's subnet is snapshotted as a `Snapshot` of
+its own, which `snapshot.subnet(place)` reads (§6.7).
 
 There is no observer callback. The driver holds `&mut Net` between steps and
 is the observer.
@@ -2021,6 +2156,11 @@ conformance net `traffic-light`, split and built the same way
 (`examples/traffic_light.rs`, `examples/traffic_light/net.rs`): cars
 waiting at a light that cycles red, green and amber, all going when it
 turns green.
+Levels (2026-11-21, §6.7) is the subnet places example, in one file
+(`examples/levels.rs`): a world whose `Level 1` and `Level 2` are subnet
+places built from one template, heroes entering each by its `Lobby` port
+and leaving by its `Exit Hall` port. It saves the world part of the way and
+restores it, so it needs `serde`.
 
 **Done, slice 12.**
 

@@ -1,4 +1,4 @@
-//! Integration tests for subnet places and port places, the mechanism alone.
+//! Integration tests for subnet places and port places.
 //!
 //! A subnet place holds a net of its own, a subnet, which the net around it
 //! reaches only through the places the subnet's definition marks as ports.
@@ -12,15 +12,18 @@
 //! port, ids and keys across the border both ways, failure, the staged path
 //! and the rule that holds a subnet still while a firing on one of its
 //! ports is in flight, external input, the events, stepping under each rule
-//! and at two depths, tokens that carry nets in a port, and the build
-//! errors.
+//! and at two depths, tokens that carry nets in a port, reading a subnet
+//! place and its ports (`port_ref`, `PlaceInfo`, the topology, snapshots),
+//! where a failure says it happened, subnets and nets carried by tokens
+//! inside each other, and the build errors. Saving, restoring and forking
+//! are in `subnet_saving.rs`, behind the `serde` feature.
 
 use petritype::drivers::{self, Limits, Mode, OnFailure};
 use petritype::{
-    BuildError, Command, DeepStep, Distribution, DrainEdge, Either, Event, Filter, KeyValue,
-    MutateEdge, MutateWhereEdge, Net, NetBuilder, NetError, NetId, PlaceId, PlaceRef, Routed,
-    SnapshotEdge, StagedStep, Stepping, SubnetRef, SurveyEdge, TakeAllEdge, TakeEdge,
-    TakeWhereEdge, TokenId,
+    BuildError, Command, DeepStep, Distribution, DrainEdge, EdgeInfo, EdgeKind, Either, Event,
+    Filter, KeyValue, MutateEdge, MutateWhereEdge, Net, NetBuilder, NetError, NetId, PathStep,
+    PlaceId, PlaceInfo, PlaceRef, Routed, SnapshotEdge, StagedStep, Stepping, SubnetRef,
+    SurveyEdge, TakeAllEdge, TakeEdge, TakeWhereEdge, TokenId, TransitionId,
 };
 
 // ----- heroes, levels and worlds --------------------------------------------------
@@ -1340,20 +1343,480 @@ fn a_port_is_named_by_its_subnet_place_and_its_name() {
 }
 
 #[test]
-fn a_net_with_a_subnet_place_is_not_copied_or_saved() {
-    let w = world(false, &[]);
+fn port_ref_finds_a_port_by_its_subnet_place_and_its_name() {
+    let first = level(false, &[]);
+    let second = level(false, &[]);
+    let mut b = NetBuilder::new();
+    let own = b.place::<Hero>("Lobby");
+    let one = b.subnet_place("Level 1", first.net);
+    let two = b.subnet_place("Level 2", second.net);
+    let lobby_one = b.port_of::<Hero>(one, "Lobby");
+    let lobby_two = b.port_of::<Hero>(two, "Lobby");
+    let hall_two = b.port_of::<Hero>(two, "Exit Hall");
+    let net = b.build().expect("a world");
+
+    assert_eq!(net.port_ref::<Hero>(one.id(), "Lobby"), Some(lobby_one));
+    assert_eq!(net.port_ref::<Hero>(two.id(), "Lobby"), Some(lobby_two));
+    assert_eq!(net.port_ref::<Hero>(two.id(), "Exit Hall"), Some(hall_two));
+    assert_eq!(net.port_ref::<Hero>(two.id(), "Arena"), None, "not a port");
+    assert_eq!(
+        net.port_ref::<Note>(two.id(), "Lobby"),
+        None,
+        "the wrong type"
+    );
+    assert_eq!(
+        net.port_ref::<Hero>(own.id(), "Lobby"),
+        None,
+        "not a subnet place"
+    );
+    assert_eq!(net.port_ref::<Hero>(PlaceId::new(99), "Lobby"), None);
+    assert_eq!(
+        net.place_ref::<Hero>("Lobby"),
+        Some(own),
+        "a name alone finds the net's own place"
+    );
+}
+
+#[test]
+fn place_info_says_what_a_subnet_place_and_a_port_are_from_each_side() {
+    let mut w = world(false, &[hero("Ada", "Knight")]);
+    w.b.seed(w.door, [hero("Bo", "Mage")]);
     let net = w.b.build().expect("a world");
-    assert!(matches!(
-        net.snapshot(),
-        Err(NetError::HoldsSubnet { place, .. }) if place == w.level.id()
-    ));
+    let places: Vec<(PlaceId, PlaceInfo<'_>)> = net.places().collect();
+    let names: Vec<&str> = places.iter().map(|(_, info)| info.name).collect();
+    assert_eq!(names, ["Door", "Level 3", "Lobby", "Exit Hall", "Gone"]);
+
+    let door = places[0].1;
+    assert!(!door.subnet && !door.port && door.port_of.is_none());
+
+    let level = places[1].1;
+    assert_eq!(places[1].0, w.level.id());
+    assert!(level.subnet);
+    assert!(!level.port && !level.nested);
+    assert_eq!(level.port_of, None);
+    assert_eq!(level.type_name, "<subnet>");
+    assert_eq!(level.count, 0, "a subnet place holds no tokens of its own");
+    assert_eq!(level.stepping, Some(Stepping::InnerFirst));
+
+    // The port seen from outside: the port's own name, type and keys, its
+    // count, and the subnet place it belongs to.
+    let lobby = places[2].1;
+    assert_eq!(places[2].0, w.lobby.id());
+    assert_eq!(lobby.port_of, Some(w.level.id()));
+    assert!(!lobby.subnet && !lobby.port);
+    assert_eq!(lobby.type_name, std::any::type_name::<Hero>());
+    assert_eq!(lobby.key_names, ["name", "class", "hp"]);
+    assert_eq!(lobby.count, 1);
+    assert_eq!(lobby.stepping, None, "a port's rule is its subnet's");
+    assert_eq!(places[3].1.port_of, Some(w.level.id()));
+
+    // The port seen from inside: an ordinary place, marked a port.
+    let inside: Vec<(&str, bool, Option<PlaceId>)> = subnet(&net, w.level)
+        .places()
+        .map(|(_, info)| (info.name, info.port, info.port_of))
+        .collect();
+    assert_eq!(
+        inside,
+        [
+            ("Lobby", true, None),
+            ("Arena", false, None),
+            ("Exit Hall", true, None)
+        ]
+    );
+}
+
+#[test]
+fn the_topology_lists_a_subnet_place_its_ports_and_the_edges_on_them() {
+    let mut w = world(false, &[]);
+    let enter =
+        w.b.transition("Enter", (TakeEdge(w.door),), (w.lobby,), |h: Hero| (h,))
+            .id();
+    let leave =
+        w.b.transition("Leave", (TakeEdge(w.hall),), (w.gone,), |h: Hero| (h,))
+            .id();
+    let net = w.b.build().expect("a world");
+    let topology = net.topology();
+
+    let level = &topology.places[w.level.id().index() as usize];
+    assert!(level.subnet && !level.port && level.port_of.is_none());
+    assert_eq!(level.type_name, "<subnet>");
+    assert_eq!(level.stepping, Some(Stepping::InnerFirst));
+    // Its ports, in the subnet's declaration order, each with its own name.
+    let ports: Vec<(PlaceId, &str)> = topology
+        .places
+        .iter()
+        .filter(|place| place.port_of == Some(w.level.id()))
+        .map(|place| (place.id, place.name.as_str()))
+        .collect();
+    assert_eq!(ports, [(w.lobby.id(), "Lobby"), (w.hall.id(), "Exit Hall")]);
+    assert_eq!(
+        topology.places[w.lobby.id().index() as usize].key_names,
+        ["name", "class", "hp"]
+    );
+    // An edge on a port names this net's place for it.
+    assert!(topology.edges.contains(&EdgeInfo::Output {
+        transition: enter,
+        place: w.lobby.id(),
+        slot: 0
+    }));
+    assert!(topology.edges.contains(&EdgeInfo::Input {
+        place: w.hall.id(),
+        transition: leave,
+        kind: EdgeKind::Take,
+        filter: None
+    }));
+    // In the subnet's own topology the ports are marked, and nothing is a
+    // port of anything.
+    let inside = subnet(&net, w.level).topology();
+    let marked: Vec<(&str, bool)> = inside
+        .places
+        .iter()
+        .map(|place| (place.name.as_str(), place.port))
+        .collect();
+    assert_eq!(
+        marked,
+        [("Lobby", true), ("Arena", false), ("Exit Hall", true)]
+    );
+    assert!(inside.places.iter().all(|place| place.port_of.is_none()));
+
     #[cfg(feature = "serde")]
     {
-        assert!(matches!(
-            net.export_marking(),
-            Err(NetError::HoldsSubnet { .. })
-        ));
+        use petritype::serde_json::{json, to_value};
+        let places = to_value(&topology).unwrap()["places"].clone();
+        assert_eq!(places[1]["subnet"], json!(true));
+        assert_eq!(places[2]["port_of"], json!(w.level.id().index()));
+        assert_eq!(
+            places[0]
+                .as_object()
+                .unwrap()
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            ["id", "name", "serializable", "type_name"],
+            "a place of a net's own is written as it always was"
+        );
+        let inside = to_value(&inside).unwrap()["places"].clone();
+        assert_eq!(inside[0]["port"], json!(true));
+        assert!(inside[1].get("port").is_none());
     }
+}
+
+#[test]
+fn a_snapshot_holds_a_snapshot_of_each_subnet_and_a_port_reads_the_same_from_both() {
+    let mut w = world(true, &[hero("Ada", "Knight")]);
+    w.b.seed(w.door, [hero("Bo", "Mage")]);
+    w.b.transition("Enter", (TakeEdge(w.door),), (w.lobby,), |h: Hero| (h,));
+    let mut net = w.b.build().expect("a world");
+    let cy = net.put(w.hall, hero("Cy", "Rogue"));
+    let lobby = ids(&net, w.lobby.id());
+
+    let taken = net.snapshot().expect("every place clones");
+    let inside = taken.subnet(w.level.id()).expect("a subnet place");
+    assert_eq!(inside.id(), subnet(&net, w.level).id());
+    let in_snapshot = |snapshot: &petritype::Snapshot, place: PlaceId| -> Vec<TokenId> {
+        snapshot.tokens(place).map(|(id, _)| id).collect()
+    };
+    assert_eq!(
+        in_snapshot(&taken, w.lobby.id()),
+        lobby,
+        "the live ids, from outside"
+    );
+    assert_eq!(
+        in_snapshot(inside, w.inner.0.id()),
+        lobby,
+        "and from inside"
+    );
+    assert_eq!(in_snapshot(&taken, w.hall.id()), [cy]);
+    assert_eq!(taken.topology(), net.topology());
+    assert_eq!(inside.topology(), subnet(&net, w.level).topology());
+    assert_eq!(
+        taken
+            .query_ids(&Filter::new().key_in("name", ["Ada"]))
+            .unwrap(),
+        [(w.lobby.id(), lobby[0])]
+    );
+    assert!(
+        taken
+            .label(w.hall.id(), cy)
+            .expect("a label")
+            .contains("Cy")
+    );
+    assert!(taken.subnet(w.door.id()).is_none());
+
+    // A moment: the net moves on, the snapshot and its clone do not.
+    let clone = taken.clone();
+    while net.step_deep().expect("nothing fails").is_some() {}
+    assert_eq!(net.count(w.lobby.id()), 0);
+    for snapshot in [&taken, &clone] {
+        assert_eq!(snapshot.count(w.lobby.id()), 1);
+        let inside = snapshot.subnet(w.level.id()).unwrap();
+        assert_eq!(inside.count(w.inner.0.id()), 1);
+        assert_eq!(inside.fired_count(), 0);
+    }
+}
+
+#[cfg(not(feature = "serde"))]
+#[test]
+fn without_serde_a_snapshot_refuses_a_subnet_that_holds_nets_as_any_nested_place() {
+    let mut b = NetBuilder::new();
+    let bench = b.place_nested::<Net>("Bench");
+    b.port(bench);
+    let shop = b.build().unwrap();
+    let mut b = NetBuilder::new();
+    let shop_ref = b.subnet_place("Workshop", shop);
+    let w_bench = b.port_of::<Net>(shop_ref, "Bench");
+    let net = b.build().unwrap();
+    assert!(matches!(
+        net.snapshot(),
+        Err(NetError::NoClonePlace { place, name }) if place == w_bench.id() && name == "Bench"
+    ));
+}
+
+// ----- where a failure says it happened ---------------------------------------------
+
+/// A room whose one transition, `Sit`, refuses: a `Den` that is a port and
+/// holds one hero, and a `Seat`.
+fn broken_room() -> (Net, TransitionId) {
+    let mut b = NetBuilder::new();
+    let den = b.place::<Hero>("Den");
+    let seat = b.place::<Hero>("Seat");
+    b.port(den);
+    b.seed(den, [hero("Ada", "Knight")]);
+    let sit = b
+        .transition(
+            "Sit",
+            (TakeEdge(den),),
+            (seat,),
+            |_: Hero| -> Result<(Hero,), Broken> { Err(Broken) },
+        )
+        .id();
+    (b.build().expect("a room"), sit)
+}
+
+/// A net holding `inner` in a subnet place called `name`, and nothing else.
+fn holding(name: &str, inner: Net) -> (Net, SubnetRef) {
+    let mut b = NetBuilder::new();
+    let place = b.subnet_place(name, inner);
+    (b.build().expect("a holder"), place)
+}
+
+#[test]
+fn a_failure_three_subnets_down_names_every_level() {
+    let (room, sit) = broken_room();
+    let (floor, room_ref) = holding("Room", room);
+    let (tower, floor_ref) = holding("Floor", floor);
+    let (mut city, tower_ref) = holding("Tower", tower);
+
+    let failed = city.step_deep().expect_err("Sit refuses");
+    assert_eq!(failed.transition, sit);
+    assert_eq!(
+        failed.path,
+        [
+            PathStep::Subnet {
+                place: tower_ref.id()
+            },
+            PathStep::Subnet {
+                place: floor_ref.id()
+            },
+            PathStep::Subnet {
+                place: room_ref.id()
+            },
+        ]
+    );
+    assert!(
+        failed
+            .path
+            .iter()
+            .all(|step| step.place() == PlaceId::new(0))
+    );
+    assert_eq!(
+        failed.to_string(),
+        "transition \"Sit\" (TransitionId(0)) inside PlaceId(0) / PlaceId(0) / PlaceId(0) failed: broken"
+    );
+    // The `Failed` came up three levels, lifted at each.
+    let events: Vec<Event> = city.drain_events().collect();
+    assert!(
+        matches!(
+            &events[..],
+            [Event::Subnet { event, .. }]
+                if matches!(&**event, Event::Subnet { event, .. }
+                    if matches!(&**event, Event::Subnet { event, .. }
+                        if matches!(**event, Event::Failed { .. })))
+        ),
+        "{events:?}"
+    );
+}
+
+#[test]
+fn a_failure_through_a_tokens_net_and_a_subnet_names_both_kinds_of_level() {
+    // A token's net that holds the room in a subnet place.
+    let (room, _) = broken_room();
+    let (house, room_ref) = holding("Room", room);
+    let mut b = NetBuilder::new();
+    let street = b.place_nested::<Net>("Street");
+    b.seed(street, [house]);
+    let mut town = b.build().expect("a town");
+    let house_token = ids(&town, street.id())[0];
+    let failed = town.step_deep().expect_err("Sit refuses");
+    assert_eq!(
+        failed.path,
+        [
+            PathStep::Token {
+                place: street.id(),
+                token: house_token,
+                net: String::new()
+            },
+            PathStep::Subnet {
+                place: room_ref.id()
+            },
+        ]
+    );
+
+    // And the other way round: a subnet whose own place holds a net that
+    // fails, a worker on a bench that is no port.
+    let (worker, work) = {
+        let mut b = NetBuilder::new();
+        let todo = b.place::<u32>("Todo");
+        let done = b.place::<u32>("Done");
+        b.seed(todo, [1]);
+        let work = b
+            .transition(
+                "Work",
+                (TakeEdge(todo),),
+                (done,),
+                |_: u32| -> Result<(u32,), Broken> { Err(Broken) },
+            )
+            .id();
+        (b.build().unwrap(), work)
+    };
+    let mut b = NetBuilder::new();
+    let bench = b.place_nested::<Net>("Bench");
+    b.seed(bench, [worker]);
+    let shop = b.build().unwrap();
+    let worker_token = ids(&shop, bench.id())[0];
+    let (mut world, shop_ref) = holding("Workshop", shop);
+    let failed = world.step_deep().expect_err("Work refuses");
+    assert_eq!(failed.transition, work);
+    assert_eq!(
+        failed.path,
+        [
+            PathStep::Subnet {
+                place: shop_ref.id()
+            },
+            PathStep::Token {
+                place: bench.id(),
+                token: worker_token,
+                net: String::new()
+            },
+        ]
+    );
+    assert!(
+        failed
+            .to_string()
+            .contains("inside PlaceId(0) / PlaceId(0) #")
+    );
+}
+
+#[test]
+fn the_drivers_switch_off_a_failing_transition_inside_a_subnet_and_count_its_firings() {
+    let (room, sit) = broken_room();
+    let (floor, room_ref) = holding("Room", room);
+    let (mut tower, floor_ref) = holding("Floor", floor);
+    let summary = drivers::run(
+        &mut tower,
+        Mode::Sequential,
+        Limits::default(),
+        OnFailure::Disable,
+    )
+    .expect("a failure switches its transition off");
+    assert!(summary.quiesced);
+    assert_eq!(summary.failed_count, 1);
+    let room = tower
+        .subnet(floor_ref.id())
+        .and_then(|floor| floor.subnet(room_ref.id()))
+        .expect("two levels down");
+    assert!(!room.is_enabled(sit), "switched off where it is");
+    assert!(
+        tower.drain_events().any(|e| matches!(
+            &e,
+            Event::Subnet { event, .. }
+                if matches!(&**event, Event::Subnet { event, .. }
+                    if matches!(**event, Event::Toggled { enabled: false, .. }))
+        )),
+        "its `Toggled` lifted twice"
+    );
+
+    // A subnet's firings count in a run's summary, as a token's net's do.
+    for mode in [Mode::Sequential, Mode::Concurrent] {
+        let (mut net, _, _) = guild(None);
+        let summary =
+            drivers::run(&mut net, mode, Limits::default(), OnFailure::Stop).expect("no failure");
+        assert_eq!(
+            summary.fired_count, 4,
+            "two in the level, two out here: {mode:?}"
+        );
+    }
+}
+
+// ----- subnets and nets carried by tokens, inside each other ---------------------
+
+#[test]
+fn nets_carried_by_tokens_and_subnets_step_inside_each_other() {
+    // A worker, as a bare net, with one job.
+    let worker = || {
+        let mut b = NetBuilder::new();
+        let todo = b.place::<u32>("Todo");
+        let done = b.place::<u32>("Done");
+        b.seed(todo, [1]);
+        b.transition("Work", (TakeEdge(todo),), (done,), |n: u32| (n,));
+        b.build().expect("a worker")
+    };
+    // A shop whose own bench holds a worker, and a house whose room is a
+    // subnet holding the shop.
+    let mut b = NetBuilder::new();
+    let bench = b.place_nested::<Net>("Bench");
+    b.seed(bench, [worker()]);
+    let shop = b.build().unwrap();
+    let (house, shop_ref) = holding("Shop", shop);
+    // A street of such houses, as tokens.
+    let mut b = NetBuilder::new();
+    let street = b.place_nested::<Net>("Street");
+    b.seed(street, [house]);
+    let mut town = b.build().unwrap();
+    let house_token = ids(&town, street.id())[0];
+
+    let step = town
+        .step_deep()
+        .expect("nothing fails")
+        .expect("the worker works");
+    let DeepStep::Inside {
+        place,
+        token,
+        step: in_house,
+        ..
+    } = &step
+    else {
+        panic!("a firing in the house: {step:?}");
+    };
+    assert_eq!((*place, *token), (street.id(), house_token));
+    assert!(
+        matches!(&**in_house, DeepStep::Subnet { place, step, .. }
+            if *place == shop_ref.id() && matches!(&**step, DeepStep::Inside { place, .. } if *place == bench.id())),
+        "{step:?}"
+    );
+    assert_eq!(town.step_deep().expect("nothing fails"), None);
+    assert!(town.is_quiescent_deep());
+    let events: Vec<Event> = town.drain_events().collect();
+    assert!(
+        matches!(
+            &events[..],
+            [Event::Nested { event, .. }]
+                if matches!(&**event, Event::Subnet { event, .. }
+                    if matches!(&**event, Event::Nested { event, .. }
+                        if matches!(**event, Event::Fired { .. })))
+        ),
+        "lifted through every level: {events:?}"
+    );
 }
 
 #[test]

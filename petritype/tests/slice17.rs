@@ -9,7 +9,8 @@
 //! whether an output edge's slot is a position in what the body returns.
 
 use petritype::{
-    DeepStep, Distribution, Event, Net, NetBuilder, OutputDistribution, Routed, Stepping, TakeEdge,
+    DeepStep, Distribution, Event, Net, NetBuilder, OutputDistribution, PathStep, Routed, Stepping,
+    TakeEdge,
 };
 
 // ----- step_inside ------------------------------------------------------------
@@ -88,9 +89,11 @@ fn step_inside_reports_an_inner_failure_with_its_path() {
     let mut net = b.build().unwrap();
     let failed = net.step_inside().unwrap_err();
     assert_eq!(failed.name, "Move");
-    assert_eq!(failed.path.len(), 1);
-    assert_eq!(failed.path[0].0, shelf.id());
-    assert_eq!(failed.path[0].2, "");
+    assert!(
+        matches!(&failed.path[..], [PathStep::Token { place, net, .. }] if *place == shelf.id() && net.is_empty()),
+        "{:?}",
+        failed.path
+    );
     let events: Vec<Event> = net.drain_events().collect();
     assert!(
         matches!(&events[..], [Event::Nested { event, .. }] if matches!(**event, Event::Failed { .. }))

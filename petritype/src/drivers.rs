@@ -165,9 +165,9 @@ use std::sync::mpsc::{self, RecvTimeoutError};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::error::{FiringFailed, NetError};
+use crate::error::{FiringFailed, NetError, PathStep};
 use crate::firing::Completed;
-use crate::ids::{PlaceId, TokenId, TransitionId};
+use crate::ids::TransitionId;
 use crate::nested::{DeepStep, Part};
 use crate::net::Net;
 
@@ -998,25 +998,39 @@ fn absorb(
 ///
 /// A transition of an inner net is switched off where it is, found by the
 /// failure's [`path`](FiringFailed::path); its `Toggled` comes out here as an
-/// [`Event::Nested`](crate::Event::Nested), like anything else an inner net
+/// [`Event::Nested`](crate::Event::Nested) or an
+/// [`Event::Subnet`](crate::Event::Subnet), like anything else an inner net
 /// logs.
 fn disable(net: &mut Net, failure: &FiringFailed) {
     disable_at(net, &failure.path, failure.transition);
 }
 
 /// [`disable`] one level at a time, outer to inner.
-fn disable_at(net: &mut Net, path: &[(PlaceId, TokenId, String)], transition: TransitionId) {
-    let Some(((place, token, name), rest)) = path.split_first() else {
+fn disable_at(net: &mut Net, path: &[PathStep], transition: TransitionId) {
+    let Some((step, rest)) = path.split_first() else {
         net.disable(transition)
             .expect("the transition that just failed is a transition of this net");
         return;
     };
-    // The token has not moved: an inner failure changes nothing out here.
-    net.nested_scope(*place, *token, |nets| {
-        if let Some(entry) = nets.iter_mut().find(|entry| entry.0 == name.as_str()) {
-            disable_at(&mut *entry.1, rest, transition);
+    match step {
+        // The token has not moved: an inner failure changes nothing out
+        // here.
+        PathStep::Token {
+            place,
+            token,
+            net: name,
+        } => {
+            net.nested_scope(*place, *token, |nets| {
+                if let Some(entry) = nets.iter_mut().find(|entry| entry.0 == name.as_str()) {
+                    disable_at(&mut *entry.1, rest, transition);
+                }
+            });
         }
-    });
+        PathStep::Subnet { place } => {
+            net.subnet_scope(*place, |subnet| disable_at(subnet, rest, transition))
+                .expect("a subnet that has just taken its turn is not held still");
+        }
+    }
 }
 
 /// The per-call bookkeeping every loop keeps: where [`Net::fired_count`]
@@ -1048,10 +1062,11 @@ impl Tally {
     }
 
     /// One successful [`step_deep`](Net::step_deep) or inner step: a launch,
-    /// and an inner success if it happened inside.
+    /// and an inner success if it happened inside, in a token's net or in a
+    /// subnet.
     fn landed(&mut self, step: &DeepStep) {
         self.launched += 1;
-        if matches!(step, DeepStep::Inside { .. }) {
+        if !matches!(step, DeepStep::Here { .. }) {
             self.inner_fired += 1;
         }
     }

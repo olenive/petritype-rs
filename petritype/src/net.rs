@@ -111,13 +111,30 @@ pub(crate) const UNKNOWN_NAME: &str = "<unknown>";
 /// a type name, a queue) and this struct is assembled on demand rather than
 /// kept alongside them, so the count can never go stale. The name is borrowed
 /// from the net, so nothing is allocated.
+///
+/// # Subnet places and ports
+///
+/// A [subnet place](crate::NetBuilder::subnet_place) is listed as a place
+/// with [`subnet`](PlaceInfo::subnet) set, a count of zero and the type name
+/// `"<subnet>"`: it holds a net, which [`Net::subnet`] reads, and no tokens.
+/// Right after it come the places this net has for the subnet's ports, one
+/// each, in the subnet's declaration order, each with
+/// [`port_of`](PlaceInfo::port_of) naming the subnet place. A port's entry
+/// has the port's own name, type, keys and style, and its count is the
+/// port's, the same seen from either net. Names are unique among a net's
+/// own places and among the ports of one subnet place, so a port is named
+/// by the pair, its subnet place and its name. In the subnet's own
+/// [`places`](Net::places) the port is an ordinary place with
+/// [`port`](PlaceInfo::port) set.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct PlaceInfo<'a> {
-    /// The place's name, unique within the net.
+    /// The place's name: unique among the net's own places, or, for a port
+    /// of a subnet place, the port's name, unique among that subnet place's
+    /// ports.
     pub name: &'a str,
     /// The Rust type of the tokens this place holds,
-    /// `std::any::type_name::<T>()`.
+    /// `std::any::type_name::<T>()`; `"<subnet>"` for a subnet place.
     pub type_name: &'static str,
     /// How many tokens the place holds right now.
     pub count: usize,
@@ -156,6 +173,20 @@ pub struct PlaceInfo<'a> {
     /// for a place drawn as any other. A rule the viewer evaluates (see the
     /// [`style`](crate::style) module).
     pub style: Option<PlaceStyle>,
+    /// Whether the place is a subnet place
+    /// ([`NetBuilder::subnet_place`](crate::NetBuilder::subnet_place)): it
+    /// holds a net of its own, which [`Net::subnet`] reads, and no tokens.
+    pub subnet: bool,
+    /// Whether this net's definition marked the place a port
+    /// ([`NetBuilder::port`](crate::NetBuilder::port)), for a net around
+    /// this one to reach through a subnet place: the place seen from
+    /// inside.
+    pub port: bool,
+    /// For the place this net has for a port of one of its subnet places,
+    /// that subnet place: the port seen from outside. `None` for every
+    /// other place. Its tokens are the port's, and what it is beyond them
+    /// is said by the subnet's definition.
+    pub port_of: Option<PlaceId>,
 }
 
 impl Net {
@@ -340,6 +371,49 @@ impl Net {
         let place = self.place_named(name)?;
         (self.places[place.0 as usize].meta.type_id == TypeId::of::<T>())
             .then(|| PlaceRef::new(self.id, place))
+    }
+
+    /// A typed handle to the port called `name` of the subnet place
+    /// `subnet`, if this net has that subnet place, the subnet has that
+    /// port and it holds `T`: the handle
+    /// [`port_of`](crate::NetBuilder::port_of) gave out, stamped with this
+    /// net's id.
+    ///
+    /// [`place_ref`](Net::place_ref) for a port, which a name alone cannot
+    /// find: a port is named by its subnet place and its own name, and
+    /// several subnet places may each have a port of the same name. The
+    /// handle names this net's place for the port, whose tokens are the
+    /// port's.
+    ///
+    /// ```
+    /// use petritype::NetBuilder;
+    ///
+    /// let mut b = NetBuilder::new();
+    /// let lobby = b.place::<String>("Lobby");
+    /// b.port(lobby);
+    /// let level = b.build()?;
+    ///
+    /// let mut b = NetBuilder::new();
+    /// let level_3 = b.subnet_place("Level 3", level);
+    /// let door = b.port_of::<String>(level_3, "Lobby");
+    /// let net = b.build()?;
+    ///
+    /// let subnet = net.place_named("Level 3").expect("a subnet place");
+    /// assert_eq!(net.port_ref::<String>(subnet, "Lobby"), Some(door));
+    /// assert_eq!(net.port_ref::<u32>(subnet, "Lobby"), None, "the wrong type");
+    /// assert_eq!(net.port_ref::<String>(subnet, "Arena"), None, "no such port");
+    /// assert_eq!(net.place_named("Lobby"), None, "a port is not named by its name alone");
+    /// # Ok::<(), petritype::BuildError>(())
+    /// ```
+    pub fn port_ref<T: 'static>(&self, subnet: PlaceId, name: &str) -> Option<PlaceRef<T>> {
+        let index = self.places.iter().position(|slot| {
+            slot.meta
+                .window
+                .is_some_and(|window| window.subnet == subnet)
+                && slot.meta.name == name
+        })?;
+        (self.places[index].meta.type_id == TypeId::of::<T>())
+            .then(|| PlaceRef::new(self.id, PlaceId(index as u32)))
     }
 
     /// How many tokens a place holds. An unknown place counts zero, so this is
@@ -761,20 +835,6 @@ impl Net {
         self.state_counter += 1;
     }
 
-    /// [`NetError::HoldsSubnet`] for the first subnet place, in id order:
-    /// what a copy or a save of the whole net (a snapshot, an export or an
-    /// import of the marking, and so a save and a fork) is refused with,
-    /// since none of them copies a subnet.
-    pub(crate) fn no_subnets(&self) -> Result<(), NetError> {
-        match self.places.iter().position(|slot| slot.meta.subnet) {
-            Some(index) => Err(NetError::HoldsSubnet {
-                place: PlaceId(index as u32),
-                name: self.places[index].meta.name.clone(),
-            }),
-            None => Ok(()),
-        }
-    }
-
     /// The name of one of this net's places, for the message of an error
     /// that also carries its id.
     ///
@@ -1161,19 +1221,23 @@ impl fmt::Debug for Net {
 /// is not there.
 ///
 /// Every reader of a place's tokens asks this rather than indexing the
-/// places itself, so that a port reads the same from either net.
+/// places itself, so that a port reads the same from either net. A window
+/// whose subnet place holds no subnet holds the port's tokens itself: a
+/// [`Snapshot`](crate::Snapshot)'s windows do, since a snapshot keeps a
+/// snapshot of each subnet beside its places rather than the subnet.
 #[inline]
 pub(crate) fn slot_of(places: &[impl Borrow<PlaceSlot>], place: PlaceId) -> Option<&PlaceSlot> {
     let slot = places.get(place.0 as usize)?.borrow();
     match slot.meta.window {
         None => Some(slot),
-        Some(window) => port_slot(places, window),
+        Some(window) => Some(port_slot(places, window).unwrap_or(slot)),
     }
 }
 
 /// The port's slot in the subnet behind a window: [`slot_of`]'s other
 /// branch, kept out of line so that a net without subnet places reads its
-/// places as it always has.
+/// places as it always has. `None` where the subnet place holds no subnet,
+/// as in a snapshot.
 #[cold]
 fn port_slot(places: &[impl Borrow<PlaceSlot>], window: Window) -> Option<&PlaceSlot> {
     let subnet = places
@@ -1204,6 +1268,9 @@ pub(crate) fn places_of(
             stepping: slot.meta.holds_nets().then_some(slot.meta.stepping),
             key_names: slot.meta.keys.as_ref().map_or(&[], |keys| &keys.names[..]),
             style: slot.meta.place_style,
+            subnet: slot.meta.subnet,
+            port: slot.meta.port,
+            port_of: slot.meta.window.map(|window| window.subnet),
         };
         (id, info)
     })

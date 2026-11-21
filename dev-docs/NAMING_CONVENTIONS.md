@@ -93,13 +93,14 @@ rename backlog.
 | a net carried by a token / the net holding that token | **inner net** / **outer net** (DESIGN §6.6) | | same words (nets-as-tokens Python track) |
 | a token type that owns nets | trait `Nested` (`nets`, `nets_mut`: each net with a name, `""` for a bare `Net`) | | `__petritype_nets__` (proposal) |
 | place whose tokens carry nets | **nested place**, `b.place_nested::<T>(name)`, `PlaceInfo::nested` | | `nested=True` on the place (proposal) |
+| a place that holds one net for its net's whole life / the places of that net the net around it reaches | **subnet place**, `b.subnet_place(name, net) -> SubnetRef`, its **subnet** (`net.subnet(place)`, `net.subnet_scope(place, f)`, `Event::Subnet`, `DeepStep::Subnet`, `PlaceInfo::subnet`) / **port place**, `b.port(place)`, `PlaceInfo::port`; seen from outside by the pair, `b.port_of::<T>(subnet, name)`, `net.port_ref::<T>(subnet, name)`, `PlaceInfo::port_of` | | `SubnetPlaceNode(name, graph)`, `ListPlaceNode(..., port=True)`, `Port("Level 3", "Lobby")` (`dev-docs/subnet-place-spec.md` §5) |
 | how a nested place's inner nets take their turns beside the outer net | **stepping rule**, `Stepping::{InnerFirst, TakeTurns, OuterFirst, Passive}`, `b.stepping(place, rule)`, `net.set_stepping(place, rule)`, `net.stepping(place)`, `PlaceInfo::stepping` → `BuildError::NotNested` on a plain place | `deep_policy=` per net, `passive=True` per place | `stepping="inner_first"` and the rest, the same four names (`dev-docs/subnet-place-spec.md` §5) |
 | the take-turns band of one net: the net and the nets of its take-turns places, round from the last to fire | **ring**, its **cursor** | | |
 | one firing here or in an inner net, in the order the stepping rules give | **deep step**, `net.step_deep()` → `DeepStep::{Here, Inside}`; `net.is_quiescent_deep()` | | |
 | moving an inner net's events into the outer log | **lift** (the net does it, at six fixed moments) | | |
 | an inner net's event in the outer log | `Event::Nested { place, token, net, nested_id, event }` | | wrapping `Nested` record (proposal) |
 | the id that follows a token's inner net across moves | `nested_id`: the inner net's own `NetId` (`Display` and `Serialize` as a bare number) | | |
-| where an inner failure happened | `FiringFailed::path`: `(place, token, net name)` per level, outer to inner | | |
+| where an inner failure happened | `FiringFailed::path`: one `PathStep` per level, outer to inner, `Token { place, token, net }` or `Subnet { place }` | | |
 | mutable reach into a token's nets from outside a body | `net.nested_scope(place, token, f)` (lifts when `f` returns); read-only `net.nested(place, token)` | | |
 | every place's tokens as JSON, by place name, oldest first | `Marking` (`serde`; transparent over a name-ordered map) | `dict[str, list]` | |
 | write / replace a whole marking | `net.export_marking()` → `NetError::NotSerializable`; `net.import_marking(&marking)` (wholesale, fresh token ids, atomic) | `graph.export_marking()`, `graph.import_marking(...)` (`NetJson`) | |

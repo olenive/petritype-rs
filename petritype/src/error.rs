@@ -547,16 +547,28 @@ pub enum NetError {
         /// on.
         name: String,
     },
-    /// A [`snapshot`](crate::Net::snapshot), an export or import of the
-    /// marking, a save or a fork, of a net with a subnet place: in this
-    /// version none of them copies a subnet, and half a state is no state.
-    #[error("place {name:?} ({place:?}) holds a subnet, which is not copied or saved")]
-    HoldsSubnet {
-        /// The first subnet place, in id order.
+    /// An [`export_marking`](crate::Net::export_marking), a save or a
+    /// [`fork`](crate::Net::fork) of a net whose subnet place holds a subnet
+    /// that cannot be saved, and so a net that cannot be either: the
+    /// marking writes each subnet in its saved form, under its place.
+    ///
+    /// `source` says why, as it would for the subnet saved on its own. Most
+    /// often the subnet was built without a template
+    /// ([`NoTemplate`](NetError::NoTemplate)): such a subnet runs, but
+    /// nothing knows how to build it again. A subnet of the subnet that
+    /// cannot be saved is this error again in `source`, so the message
+    /// names every level.
+    #[cfg(feature = "serde")]
+    #[error("place {name:?} ({place:?}) holds a subnet that cannot be saved: {source}")]
+    CannotSaveSubnet {
+        /// The subnet place, the first such one in id order.
         place: PlaceId,
         /// The place's name, for the message; the id is the field to match
         /// on.
         name: String,
+        /// Why the subnet has no saved form.
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync>,
     },
     /// [`Net::export_marking`](crate::Net::export_marking), a save or a
     /// [`fork`](crate::Net::fork) met a place that was not marked
@@ -767,6 +779,29 @@ pub enum CommandError {
         /// The name that matched no parameter.
         name: String,
     },
+    /// A marking's entry for a subnet place did not load into its subnet
+    /// ([`Net::import_marking`](crate::Net::import_marking), and so a
+    /// restore): it is not a list of one subnet in its saved form, the
+    /// subnet it holds was saved from another template than the one that
+    /// built this net's subnet, this net's subnet was built without a
+    /// template, or the saved subnet's marking, parameters or switches do
+    /// not fit it.
+    ///
+    /// `source` says which, in the subnet's own words: a [`CommandError`]
+    /// of the subnet's import, this error again for a subnet of the subnet,
+    /// so that the message names every level.
+    #[cfg(feature = "serde")]
+    #[error("place {name:?} ({place:?}): the saved subnet does not load: {source}")]
+    CannotLoadSubnet {
+        /// The subnet place.
+        place: PlaceId,
+        /// The place's name, for the message; the id is the field to match
+        /// on.
+        name: String,
+        /// Why the entry did not load.
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync>,
+    },
     /// [`Command::to_json`](crate::Command::to_json) was given a
     /// [`SetParam`](crate::Command::SetParam) whose type has no wire name.
     ///
@@ -872,26 +907,70 @@ pub struct FiringFailed {
     /// them before it failed.
     pub restored: bool,
     /// Where the transition is, when it is not in the net that was stepped:
-    /// one `(place, token, net name)` per level, outer to inner, each naming
-    /// the nested place, the token in it and the inner net of that token, as
-    /// [`Event::Nested`](crate::Event::Nested) does. Empty for a firing of
+    /// one [`PathStep`] per level, outer to inner, each naming the net one
+    /// level down from the one before it: the inner net of a token
+    /// ([`PathStep::Token`], as [`Event::Nested`](crate::Event::Nested)
+    /// names it) or the subnet of a subnet place ([`PathStep::Subnet`], as
+    /// [`Event::Subnet`](crate::Event::Subnet) does). Empty for a firing of
     /// the net's own.
     ///
     /// Filled in by [`step_deep`](crate::Net::step_deep) as the failure comes
     /// up through each level, and printed in the message as
-    /// `inside PlaceId(0) #5 "cabin"`. A level inside the subnet of a
-    /// [subnet place](crate::NetBuilder::subnet_place) names no token, and
-    /// adds no element here: the path is the one the failure had in there.
-    pub path: Vec<(PlaceId, TokenId, String)>,
+    /// `inside PlaceId(1) / PlaceId(0) #5 "cabin"`: a subnet place's level
+    /// by its place, a token's by its place, its token and its net.
+    pub path: Vec<PathStep>,
+}
+
+/// One level of a [`FiringFailed::path`]: which net, one level down, the
+/// failure came up from.
+///
+/// A path names a net by the places that lead to it, from the net that was
+/// stepped down. Each step names a place of the net the steps before it
+/// reach, and no step is text joined with a separator, so a place may be
+/// called anything.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum PathStep {
+    /// One of the inner nets of a token in a nested place
+    /// ([`place_nested`](crate::NetBuilder::place_nested)).
+    Token {
+        /// The nested place.
+        place: PlaceId,
+        /// The token, by the id it has in that place.
+        token: TokenId,
+        /// The inner net's name, as [`Nested::nets`](crate::Nested::nets)
+        /// gave it.
+        net: String,
+    },
+    /// The subnet of a subnet place
+    /// ([`subnet_place`](crate::NetBuilder::subnet_place)), which has no
+    /// token to name.
+    Subnet {
+        /// The subnet place.
+        place: PlaceId,
+    },
+}
+
+impl PathStep {
+    /// The place this step goes through: the nested place or the subnet
+    /// place.
+    pub fn place(&self) -> PlaceId {
+        match self {
+            PathStep::Token { place, .. } | PathStep::Subnet { place } => *place,
+        }
+    }
 }
 
 /// The part of a [`FiringFailed`] message that says which inner net the
 /// transition is in, or nothing for a transition of the net itself.
-fn inside(path: &[(PlaceId, TokenId, String)]) -> String {
+fn inside(path: &[PathStep]) -> String {
     let mut text = String::new();
-    for (level, (place, token, net)) in path.iter().enumerate() {
+    for (level, step) in path.iter().enumerate() {
         text.push_str(if level == 0 { " inside " } else { " / " });
-        let _ = write!(text, "{place:?} #{token} {net:?}");
+        let _ = match step {
+            PathStep::Token { place, token, net } => write!(text, "{place:?} #{token} {net:?}"),
+            PathStep::Subnet { place } => write!(text, "{place:?}"),
+        };
     }
     text
 }

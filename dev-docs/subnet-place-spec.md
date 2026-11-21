@@ -133,9 +133,9 @@ net down. An empty list is the loaded net.
 
 | Level | Step |
 |---|---|
-| a net carried by a token | `{"place": "Depot", "token": 17, "net": "cabin"}` |
+| a net carried by a token | `{"place": "Depot", "token": "17", "net": "cabin"}` |
 | a subnet | `{"place": "Level 3"}` |
-| a token's net in a subnet's port | `[{"place": "Level 3"}, {"place": "Lobby", "token": 4, "net": "metabolism"}]` |
+| a token's net in a subnet's port | `[{"place": "Level 3"}, {"place": "Lobby", "token": "4", "net": "metabolism"}]` |
 
 - This holds wherever a path appears today: the addressed requests, their
   results, a token's `nets[]`, the `nested` notification, a `step` result and
@@ -233,32 +233,29 @@ b.stepping(level3, Stepping::TakeTurns);                     // the default is I
   becomes a type that can name a level with no token.
 - The cursor of the ring is kept per net, in memory only, as now.
 
-### 3.3 How a port place works, to be proven first
+### 3.3 How a port place works
 
 The engine indexes one net's places everywhere, mints token ids per net, and
-keeps a key index per net. The intended mechanism leaves all of that alone:
+keeps a key index per net. A port place leaves all of that alone:
 
 - A `PlaceSlot` can own a subnet. The outer net also has a real slot and
-  `PlaceId` for each port, a **window**, whose tokens live in the subnet.
-- **Reading through a window** (counts, fireability, guards, queries, the
-  read API, export) resolves to the subnet's slot and the subnet's key index,
-  by reference.
-- **An outer firing that touches a window** borrows the port's queue for the
-  length of the firing: it is moved into the window's slot at launch and back
-  at the landing or the failure. In between, `consume`, the mutate borrow,
-  `insert_erased` and `restore_consumed` work on the outer net's own slots as
-  they do now.
-- The two nets' token counters are brought level when a queue moves, so that
-  every id minted into a port place is larger than those already there. The
-  key index of the receiving net is brought up to date for that place.
-- External input through the outer handle (`put`, a `Command`) is carried out
-  by the subnet's own insert.
+  `PlaceId` for each port, a **window**, with the port's name and a copy of
+  its metadata, whose tokens live in the subnet. Its own queue stays empty.
+- **Every function that touches a place's tokens** resolves a window to the
+  port: reading (counts, fireability, guards, queries, the read API, export)
+  finds the subnet's slot and key index by reference, and writing (a
+  firing's `consume`, the mutate borrow, `insert_erased`,
+  `restore_consumed`, external input) works on the port's queue, the
+  subnet's key index and the subnet's token counter. The queue never moves,
+  so every id minted into a port place is the subnet's, and larger than
+  those already there.
+- A window is kept out of the duplicate-name check and out of
+  `place_named`: it is named by its subnet place and its port.
 
-This is the part most likely to meet a surprise. Its commit builds only this,
-with tests of every edge kind on a port, and reports before anything else is
-built on it. If it does not hold, the fallback is to resolve a window in each
-engine function that touches a place's tokens, which is more code and no
-change of behaviour.
+A first design had an outer firing borrow the port's queue into the window
+for the length of the firing; a spike dropped it, since the two nets' counts
+then differ during a flight, ids collide, and two firings in flight on one
+port lose a token.
 
 ### 3.4 Stepping
 

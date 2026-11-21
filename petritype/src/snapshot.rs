@@ -1,6 +1,7 @@
 //! [`Net::snapshot`]: a consistent, owned copy of everything a reader can see.
 
 use std::any::Any;
+use std::collections::VecDeque;
 use std::fmt;
 use std::sync::Arc;
 
@@ -14,11 +15,11 @@ use crate::nested::nested_in;
 #[cfg(feature = "serde")]
 use crate::net::json_in;
 use crate::net::{
-    Net, PlaceInfo, count_in, debug_in, edges_of, label_in, place_named_in, places_of, token_in,
-    tokens_in,
+    Net, PlaceInfo, count_in, debug_in, edges_of, label_in, place_named_in, places_of, slot_of,
+    token_in, tokens_in,
 };
 use crate::param::{ParamSlot, param_of};
-use crate::place::PlaceSlot;
+use crate::place::{ErasedToken, PlaceSlot};
 use crate::topology::Topology;
 use crate::transition::TransitionInfo;
 
@@ -60,27 +61,36 @@ impl Net {
     /// copies keep the live token ids, and [`Snapshot::nested`] reads their
     /// inner nets.
     ///
+    /// # Subnet places
+    ///
+    /// A [subnet place](crate::NetBuilder::subnet_place)'s subnet is
+    /// copied as a snapshot of its own, at every depth, which
+    /// [`Snapshot::subnet`] reads; it needs no template, and a subnet's
+    /// places are copied by these same rules. A port's tokens are copied
+    /// into this snapshot's place for the port too, under the same live ids,
+    /// so a port reads the same from either snapshot, as it does from either
+    /// net.
+    ///
     /// # Errors
     ///
-    /// [`NetError::HoldsSubnet`] for a net with a
-    /// [subnet place](crate::NetBuilder::subnet_place), whose subnet this
-    /// does not copy. [`NetError::NoClonePlace`] if any place was declared with
+    /// [`NetError::NoClonePlace`] if any place was declared with
     /// [`place_no_clone`](crate::NetBuilder::place_no_clone) (or, without
     /// `serde`, with `place_nested`), since its tokens cannot be copied, and
     /// half a state is no state. Nothing is cloned before every place has
     /// been checked, so that refusal costs nothing. With `serde`,
     /// `NetError::CannotFork` naming the place and the first token whose
     /// fork failed, and why: a token type that keeps the default `fork`, an
-    /// inner net that no template built.
+    /// inner net that no template built. A subnet's own refusal is either
+    /// of these, naming the subnet's place.
     pub fn snapshot(&self) -> Result<Snapshot, NetError> {
-        self.no_subnets()?;
         // Checked first, all of it, so that a net with a `no_clone` place in
-        // the middle does not pay for copying the places before it.
+        // the middle does not pay for copying the places before it. A subnet
+        // place holds no tokens: its subnet is checked by its own snapshot.
         if let Some((index, slot)) = self
             .places
             .iter()
             .enumerate()
-            .find(|(_, slot)| slot.meta.clone.is_none() && !forks(slot))
+            .find(|(_, slot)| slot.meta.clone.is_none() && !forks(slot) && !slot.meta.subnet)
         {
             return Err(NetError::NoClonePlace {
                 place: PlaceId(index as u32),
@@ -88,7 +98,14 @@ impl Net {
             });
         }
 
-        let places = self.copy_places()?;
+        // A nested token is forked under this net's templates, in a subnet
+        // as well as here, so that a template is found as an import finds it.
+        #[cfg(feature = "serde")]
+        let (places, subnets) = self
+            .templates
+            .scope(|| -> Result<_, NetError> { Ok((self.copy_places()?, self.copy_subnets()?)) })?;
+        #[cfg(not(feature = "serde"))]
+        let (places, subnets) = (self.copy_places()?, self.copy_subnets()?);
         let transitions = self
             .transitions
             .iter()
@@ -111,6 +128,7 @@ impl Net {
         Ok(Snapshot {
             id: self.id,
             places,
+            subnets,
             transitions,
             params: self.params.clone(),
             label_limit: self.label_limit,
@@ -125,61 +143,97 @@ impl Net {
     /// Every place copied for a snapshot, each in an `Arc` so that a clone
     /// of the snapshot can share what it cannot copy again.
     ///
-    /// Every place has already been checked for a way to copy it.
-    #[cfg(not(feature = "serde"))]
+    /// Every place has already been checked for a way to copy it. A subnet
+    /// place is copied with no subnet, and a port's place with the port's
+    /// tokens, which [`slot_of`](crate::net::slot_of) then reads there.
     fn copy_places(&self) -> Result<Vec<Arc<PlaceSlot>>, NetError> {
-        Ok(self
-            .places
+        self.places
             .iter()
-            .map(|slot| {
-                Arc::new(
-                    slot.try_clone()
-                        .expect("every place was just checked for a cloner"),
-                )
+            .enumerate()
+            .map(|(index, slot)| {
+                let place = PlaceId(index as u32);
+                let tokens = if slot.meta.subnet {
+                    VecDeque::new()
+                } else {
+                    // The port's slot, in the subnet, for a window.
+                    let holder = slot_of(&self.places, place).expect("a place of this net");
+                    copy_tokens(holder, place, &slot.meta.name)?
+                };
+                Ok(Arc::new(PlaceSlot {
+                    meta: Clone::clone(&slot.meta),
+                    tokens,
+                    subnet: None,
+                }))
             })
-            .collect())
+            .collect()
     }
 
-    /// Every place copied for a snapshot: cloned, or, for a nested place,
-    /// each token forked under this net's templates.
-    #[cfg(feature = "serde")]
-    fn copy_places(&self) -> Result<Vec<Arc<PlaceSlot>>, NetError> {
-        self.templates.scope(|| {
-            self.places
-                .iter()
-                .enumerate()
-                .map(|(index, slot)| {
-                    if let Some(copy) = slot.try_clone() {
-                        return Ok(Arc::new(copy));
-                    }
-                    let fork = slot
-                        .meta
-                        .nested
-                        .expect("every place was just checked for a cloner or a fork")
-                        .fork;
-                    let tokens = slot
-                        .tokens
-                        .iter()
-                        .map(|(token, value)| {
-                            fork(&**value).map(|copy| (*token, copy)).map_err(|source| {
-                                NetError::CannotFork {
-                                    place: PlaceId(index as u32),
-                                    name: slot.meta.name.clone(),
-                                    token: *token,
-                                    source: Box::new(source),
-                                }
-                            })
-                        })
-                        .collect::<Result<_, _>>()?;
-                    Ok(Arc::new(PlaceSlot {
-                        meta: Clone::clone(&slot.meta),
-                        tokens,
-                        subnet: None,
-                    }))
-                })
-                .collect()
-        })
+    /// A snapshot of every subnet, by its subnet place, in place order.
+    fn copy_subnets(&self) -> Result<Vec<(PlaceId, Snapshot)>, NetError> {
+        self.places
+            .iter()
+            .enumerate()
+            .filter_map(|(index, slot)| {
+                let subnet = slot.subnet.as_deref()?;
+                Some(
+                    subnet
+                        .net
+                        .snapshot()
+                        .map(|copy| (PlaceId(index as u32), copy)),
+                )
+            })
+            .collect()
     }
+}
+
+/// The tokens of one place copied, keeping their ids: cloned, or, for a
+/// nested place, each forked.
+///
+/// The place has already been checked for a way to copy it.
+#[cfg(not(feature = "serde"))]
+fn copy_tokens(
+    slot: &PlaceSlot,
+    _place: PlaceId,
+    _name: &str,
+) -> Result<VecDeque<(TokenId, ErasedToken)>, NetError> {
+    Ok(slot
+        .try_clone()
+        .expect("every place was just checked for a cloner")
+        .tokens)
+}
+
+/// The tokens of one place copied, keeping their ids: cloned, or, for a
+/// nested place, each forked, under the templates in scope. `place` and
+/// `name` are what a failed fork is reported under.
+///
+/// The place has already been checked for a way to copy it.
+#[cfg(feature = "serde")]
+fn copy_tokens(
+    slot: &PlaceSlot,
+    place: PlaceId,
+    name: &str,
+) -> Result<VecDeque<(TokenId, ErasedToken)>, NetError> {
+    if let Some(copy) = slot.try_clone() {
+        return Ok(copy.tokens);
+    }
+    let fork = slot
+        .meta
+        .nested
+        .expect("every place was just checked for a cloner or a fork")
+        .fork;
+    slot.tokens
+        .iter()
+        .map(|(token, value)| {
+            fork(&**value)
+                .map(|copy| (*token, copy))
+                .map_err(|source| NetError::CannotFork {
+                    place,
+                    name: name.to_owned(),
+                    token: *token,
+                    source: Box::new(source),
+                })
+        })
+        .collect()
 }
 
 /// Whether a place without a cloner can still be copied, by forking its
@@ -252,8 +306,12 @@ pub struct Snapshot {
     id: NetId,
     /// Each place in an `Arc`: a nested place's tokens were forked once,
     /// fallibly, and a clone of the snapshot shares them rather than fork
-    /// again. Nothing reads a snapshot mutably, so sharing is copying.
+    /// again. Nothing reads a snapshot mutably, so sharing is copying. A
+    /// subnet place's slot holds no subnet, and a port's place holds the
+    /// port's tokens itself.
     places: Vec<Arc<PlaceSlot>>,
+    /// A snapshot of each subnet, by its subnet place, in place order.
+    subnets: Vec<(PlaceId, Snapshot)>,
     transitions: Vec<SnapshotTransition>,
     params: Vec<ParamSlot>,
     label_limit: usize,
@@ -380,6 +438,42 @@ impl Snapshot {
         nested_in(&self.places, place, token)
     }
 
+    /// The subnet of a subnet place, as it was: [`Net::subnet`], as a
+    /// snapshot of its own, taken at the same moment. `None` for a place
+    /// that held no subnet, or that the net does not have.
+    ///
+    /// Its id, ids and counters are the live subnet's, so a port reads the
+    /// same tokens under the same ids from it as from this snapshot's place
+    /// for the port.
+    ///
+    /// ```
+    /// use petritype::NetBuilder;
+    ///
+    /// let mut b = NetBuilder::new();
+    /// let lobby = b.place::<String>("Lobby");
+    /// b.port(lobby);
+    /// let level = b.build()?;
+    ///
+    /// let mut b = NetBuilder::new();
+    /// let level_3 = b.subnet_place("Level 3", level);
+    /// let door = b.port_of::<String>(level_3, "Lobby");
+    /// let mut world = b.build()?;
+    /// let ada = world.put(door, "Ada".to_owned());
+    ///
+    /// let taken = world.snapshot()?;
+    /// world.put(door, "Bram".to_owned());
+    /// let inside = taken.subnet(level_3.id()).expect("a subnet place");
+    /// assert_eq!(inside.tokens(lobby.id()).map(|(id, _)| id).collect::<Vec<_>>(), [ada]);
+    /// assert_eq!(taken.count(door.id()), 1, "the same moment, from outside");
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn subnet(&self, place: PlaceId) -> Option<&Snapshot> {
+        self.subnets
+            .iter()
+            .find(|(at, _)| *at == place)
+            .map(|(_, subnet)| subnet)
+    }
+
     /// One token's keys, as they were: [`Net::keys`].
     pub fn keys(&self, place: PlaceId, token: TokenId) -> Option<Keys> {
         keys_in(&self.places, place, token)
@@ -499,6 +593,7 @@ impl Clone for Snapshot {
                     None => Arc::clone(slot),
                 })
                 .collect(),
+            subnets: self.subnets.clone(),
             transitions: self
                 .transitions
                 .iter()
@@ -538,6 +633,7 @@ impl fmt::Debug for Snapshot {
                     .map(|slot| (slot.meta.name.as_str(), slot.tokens.len()))
                     .collect::<Vec<_>>(),
             )
+            .field("subnets", &self.subnets)
             .field(
                 "transitions",
                 &self

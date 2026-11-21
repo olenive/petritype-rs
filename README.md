@@ -154,6 +154,28 @@ Each level follows the rules of its own places, and one `step_deep` fires one tr
 Served by `petritype-runner`, an inner net is addressed by its path (`transit/Depot/#0/cabin`) or its
 stable nested id, and its events arrive wrapped in `nested` notifications (PROTOCOL.md §12, `DESIGN.md` §19.3.11).
 
+## Subnet places
+
+A place can hold one net of its own for the whole life of the net around it: a *subnet place*. The net around
+it reaches the subnet only through the places the subnet's definition marks as ports, and its edges on a port
+are ordinary edges.
+
+```rust
+let lobby = level.place::<Hero>("Lobby");
+level.port(lobby);                                          // in the subnet's definition
+
+let level_1 = b.subnet_place("Level 1", templates.build("Level", &Params::new())?);
+let lobby_1 = b.port_of::<Hero>(level_1, "Lobby");          // a PlaceRef<Hero>, named by the pair
+b.transition("Enter", (TakeEdge(door),), (lobby_1,), |hero: Hero| (hero,));
+```
+
+A port has one queue and one set of token ids, the subnet's, whichever net looks. A subnet steps under its
+place's stepping rule like a token's net, its events arrive as `Event::Subnet`, `net.subnet(place)` reads it and
+`net.subnet_scope(place, f)` steps or changes it. A subnet built by a template is saved, restored and forked with
+the net around it, written in the marking as a list of one under its place. `petritype/examples/levels.rs` is a
+world of two levels built from one template (`cargo run -p petritype --example levels --features serde`);
+`DESIGN.md` §6.7 has the rules.
+
 ## Keys and queries
 
 A place can declare *keys*: named values, each a string, an integer or a boolean, that it derives from every
@@ -305,8 +327,10 @@ the textbook form: a place is a first-in, first-out queue where the textbook
 has an unordered bag, and the net is run as the program itself, with no
 state-space analysis. A token that carries a net of its own
 ([Nets as tokens](#nets-as-tokens)) is what the literature calls *nets within
-nets*, or object nets. Modules with ports, the hierarchical coloured nets, are
-not here.
+nets*, or object nets. A place that holds a net of its own
+([Subnet places](#subnet-places)) is nearest to the *substitution place* of the
+hierarchical coloured nets, joined to the net around it through port places as
+there, with a net of its own inside that steps by its own rule.
 
 Colour in that sense has nothing to do with the display colour a token may be
 given ([Controls and token styles](#controls-and-token-styles)); outside this

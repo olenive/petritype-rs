@@ -71,15 +71,31 @@ pub struct Topology {
 
 /// One place of a [`Topology`]: what [`PlaceInfo`] reports, owned, minus the
 /// count.
+///
+/// A [subnet place](crate::NetBuilder::subnet_place) is one entry with
+/// [`subnet`](TopologyPlace::subnet) set, and its ports follow it, one entry
+/// each in the subnet's declaration order, with
+/// [`port_of`](TopologyPlace::port_of) naming it: a port's entry has the
+/// port's own name, type, serializability, keys and style, as the subnet's
+/// definition gave them, and an edge of this net on a port names that
+/// entry. The subnet's own topology
+/// ([`Net::subnet`](crate::Net::subnet)`(place)?.topology()`) has every
+/// place of the subnet, the ports marked [`port`](TopologyPlace::port), and
+/// says the stepping rule of a port whose tokens carry nets, which is the
+/// subnet's to apply; the subnet's template, with the `serde` feature, is
+/// the subnet's `Net::template` (not linked here: the link would dangle
+/// without the feature).
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[non_exhaustive]
 pub struct TopologyPlace {
     /// The place's id, equal to its index in [`Topology::places`].
     pub id: PlaceId,
-    /// The place's name, unique within the net.
+    /// The place's name, unique among the net's own places; for a port of a
+    /// subnet place, unique among that subnet place's ports.
     pub name: String,
-    /// The Rust type of its tokens, `std::any::type_name::<T>()`.
+    /// The Rust type of its tokens, `std::any::type_name::<T>()`;
+    /// `"<subnet>"` for a subnet place, which holds none.
     pub type_name: &'static str,
     /// [`PlaceInfo::serializable`]: whether the place was marked
     /// serializable, and so has a JSON view of its tokens.
@@ -104,6 +120,19 @@ pub struct TopologyPlace {
     /// written only when there is one, as `{"fill": "token"}`.
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub style: Option<PlaceStyle>,
+    /// [`PlaceInfo::subnet`]: whether the place is a subnet place. With
+    /// `serde`, written only when true, like `nested`.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "std::ops::Not::not"))]
+    pub subnet: bool,
+    /// [`PlaceInfo::port`]: whether this net's definition marked the place
+    /// a port. With `serde`, written only when true.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "std::ops::Not::not"))]
+    pub port: bool,
+    /// [`PlaceInfo::port_of`]: for this net's place for a port of one of
+    /// its subnet places, that subnet place. With `serde`, written only for
+    /// such a place.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub port_of: Option<PlaceId>,
 }
 
 /// One transition of a [`Topology`]: what [`TransitionInfo`] reports, owned,
@@ -165,6 +194,9 @@ impl Topology {
                     stepping: info.stepping,
                     key_names: info.key_names.to_vec(),
                     style: info.style,
+                    subnet: info.subnet,
+                    port: info.port,
+                    port_of: info.port_of,
                 })
                 .collect(),
             transitions: transitions

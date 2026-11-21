@@ -186,9 +186,12 @@ impl Templates {
     ///
     /// The net is rebuilt by its template's factory, given the saved
     /// parameters; then its marking is imported, every saved parameter set
-    /// and every saved switch thrown. Its log is empty and its counters are
-    /// at zero, as a freshly built net's are: restoring is setup. Its tokens
-    /// have fresh ids, and it is a new net, with a new [`NetId`](crate::NetId).
+    /// and every saved switch thrown. A subnet the factory builds is filled
+    /// from its entry in the marking, checked against the template that
+    /// built it ([`Net::import_marking`]). Its log is empty and its counters
+    /// are at zero, as a freshly built net's are, and so are every
+    /// subnet's: restoring is setup. Its tokens have fresh ids, and it is a
+    /// new net, with a new [`NetId`](crate::NetId).
     ///
     /// # Errors
     ///
@@ -297,15 +300,17 @@ struct Saved<'a> {
     enabled: BTreeMap<&'a str, bool>,
 }
 
-/// A net as it is read back, before anything is built.
+/// A net as it is read back, before anything is built: a saved net, or a
+/// subnet's entry in a saved marking, which goes into the subnet already
+/// there ([`Net::import_marking`]).
 #[derive(serde::Deserialize)]
-struct Loaded {
-    template: String,
-    marking: Marking,
+pub(crate) struct Loaded {
+    pub(crate) template: String,
+    pub(crate) marking: Marking,
     #[serde(default)]
-    params: Params,
+    pub(crate) params: Params,
     #[serde(default)]
-    enabled: BTreeMap<String, bool>,
+    pub(crate) enabled: BTreeMap<String, bool>,
 }
 
 impl Net {
@@ -314,7 +319,11 @@ impl Net {
     ///
     /// Set by [`Templates::build`] and by restoring a saved net. A stamped
     /// net can be saved (`Serialize`) and [forked](Net::fork); an unstamped
-    /// one can do neither, because nothing knows how to build it again.
+    /// one can do neither, because nothing knows how to build it again. A
+    /// [subnet](crate::NetBuilder::subnet_place) is saved and forked with
+    /// the net around it, so that net can be saved and forked only if every
+    /// subnet in it is stamped too: build a subnet through a template, as
+    /// the outer net's own factory does when it is a template too.
     pub fn template(&self) -> Option<&str> {
         self.stamp.as_ref().map(|stamp| stamp.name.as_str())
     }
@@ -361,9 +370,17 @@ impl Net {
     /// [`templates`](Net::templates) or of any registry in
     /// [scope](Templates::scope), as an import would.
     ///
+    /// A [subnet place](crate::NetBuilder::subnet_place)'s subnet is part
+    /// of the net, and is copied with it, at every depth: the factory builds
+    /// the copy's subnets, the marking fills them, and each is then given
+    /// what this one's subnet has beyond its saved form, as this net is
+    /// (every parameter value, every switch, the label limit, the tie-break
+    /// and the stepping rules). So every subnet must have been built through
+    /// a template, as a saved one must.
+    ///
     /// The copy is a new net: a new [`NetId`](crate::NetId), fresh token
-    /// ids, an empty log and its counters at zero. Changing one changes
-    /// nothing in the other. It is what
+    /// ids, an empty log and its counters at zero, at every level. Changing
+    /// one changes nothing in the other. It is what
     /// [`Nested::fork`](crate::Nested::fork) is for a `Net`, and what a
     /// token type's own `fork` calls for each net it owns.
     ///
@@ -411,34 +428,54 @@ impl Net {
         let mut fork = build_stamped(&stamp.name, &stamp.factory, &given).map_err(rebuild)?;
         fork.import_marking(&marking)
             .map_err(|error| rebuild(error.into()))?;
-        // Both nets came from one factory, so they have the same parameter
-        // types and the same transitions; a fork of a factory that built
-        // something else this time keeps what still fits.
-        for slot in &self.params {
-            if let Some(index) = param_slot_index(&fork.params, slot.type_id) {
-                fork.params[index].value = slot.clone_value();
-            }
-        }
-        for slot in &self.transitions {
-            if let Some(transition) = fork.transition_named(&slot.name) {
-                fork.transitions[transition.0 as usize].enabled = slot.enabled;
-            }
-        }
-        for slot in self.places.iter().filter(|slot| slot.meta.holds_nets()) {
-            if let Some(place) = fork.place_named(&slot.meta.name) {
-                let meta = &mut fork.places[place.0 as usize].meta;
-                if meta.holds_nets() {
-                    meta.stepping = slot.meta.stepping;
-                }
-            }
-        }
-        fork.label_limit = self.label_limit;
-        fork.tie_break = self.tie_break;
+        fork.copy_settings(self);
         fork.forget_setup();
         Ok(fork)
     }
 
     // ----- internals ------------------------------------------------------
+
+    /// What a fork takes from the net it copies beyond the marking, here
+    /// and in every subnet: every parameter value, every switch, every
+    /// stepping rule, the label limit and the tie-break.
+    ///
+    /// Both nets came from one factory, so they have the same parameter
+    /// types, transitions and places; a fork of a factory that built
+    /// something else this time keeps what still fits.
+    fn copy_settings(&mut self, original: &Net) {
+        for slot in &original.params {
+            if let Some(index) = param_slot_index(&self.params, slot.type_id) {
+                self.params[index].value = slot.clone_value();
+            }
+        }
+        for slot in &original.transitions {
+            if let Some(transition) = self.transition_named(&slot.name) {
+                self.transitions[transition.0 as usize].enabled = slot.enabled;
+            }
+        }
+        for slot in original.places.iter().filter(|slot| slot.meta.holds_nets()) {
+            if let Some(place) = self.place_named(&slot.meta.name) {
+                let meta = &mut self.places[place.0 as usize].meta;
+                if meta.holds_nets() {
+                    meta.stepping = slot.meta.stepping;
+                }
+            }
+        }
+        self.label_limit = original.label_limit;
+        self.tie_break = original.tie_break;
+        // A subnet is part of its net, and is copied as the net is.
+        for slot in &original.places {
+            let Some(subnet) = slot.subnet.as_deref() else {
+                continue;
+            };
+            let Some(place) = self.place_named(&slot.meta.name) else {
+                continue;
+            };
+            if let Some(copy) = self.places[place.0 as usize].subnet.as_deref_mut() {
+                copy.net.copy_settings(&subnet.net);
+            }
+        }
+    }
 
     /// [`NetError::InFlight`] for the first transition in flight, if any: a
     /// copy made now would lose the tokens that firing took.
@@ -464,12 +501,24 @@ impl Net {
     }
 
     /// Empties the log and zeroes the counters of a net that was just made
-    /// (rebuilt, restored or forked), so that it starts, as a freshly
-    /// built net does, with nothing to report.
+    /// (rebuilt, restored or forked), and of every subnet in it, so that it
+    /// starts, as a freshly built net does, with nothing to report.
     fn forget_setup(&mut self) {
         self.events.clear();
         self.state_counter = 0;
         self.fired_count = 0;
+        for slot in &mut self.places {
+            if let Some(subnet) = slot.subnet.as_deref_mut() {
+                subnet.net.forget_setup();
+            }
+        }
+    }
+
+    /// This net in its saved form, as a JSON value, or why it has none: a
+    /// subnet's entry in the marking of the net around it
+    /// ([`export_marking`](Net::export_marking)).
+    pub(crate) fn saved_value(&self) -> Result<serde_json::Value, BoxedError> {
+        Ok(serde_json::to_value(self.saved()?)?)
     }
 
     /// What `Serialize` writes, or why it cannot.
@@ -503,7 +552,10 @@ impl Net {
 ///
 /// It is an error, not a quiet loss, to serialise a net that could not be
 /// restored: one that no template built ([`NetError::NoTemplate`]), one with
-/// a place that is not serializable, or one with a transition in flight.
+/// a place that is not serializable, one with a transition in flight, or
+/// one with a [subnet place](crate::NetBuilder::subnet_place) whose subnet
+/// could not be restored ([`NetError::CannotSaveSubnet`]). A subnet is
+/// written inside `marking`, under its place, in this same form.
 /// A token type that owns a net derives `Serialize` as usual and gets the
 /// net in this form under the field's name.
 impl serde::Serialize for Net {

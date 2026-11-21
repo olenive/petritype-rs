@@ -12,8 +12,8 @@ use std::fmt;
 
 use petritype::drivers::{self, DriverError, Limits, Mode, OnFailure};
 use petritype::{
-    BuildError, DeepStep, Event, FiringFailed, MutateEdge, Nested, Net, NetBuilder, PlaceId,
-    PlaceRef, SnapshotEdge, Stepping, TakeEdge, TokenId, TransitionId,
+    BuildError, DeepStep, Event, FiringFailed, MutateEdge, Nested, Net, NetBuilder, PathStep,
+    PlaceId, PlaceRef, SnapshotEdge, Stepping, TakeEdge, TokenId, TransitionId,
 };
 
 /// An inner net with work to do: `Todo -> Work -> Done`.
@@ -1145,7 +1145,14 @@ fn an_inner_failure_says_where_it_happened() {
     let failure = net.step_deep().expect_err("the inner body refuses");
     assert_eq!(failure.transition, fail);
     assert_eq!(failure.name, "Break");
-    assert_eq!(failure.path, [(depot.id(), bus, "cabin".to_owned())]);
+    assert_eq!(
+        failure.path,
+        [PathStep::Token {
+            place: depot.id(),
+            token: bus,
+            net: "cabin".to_owned()
+        }]
+    );
     assert_eq!(
         failure.to_string(),
         format!(

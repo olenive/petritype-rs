@@ -405,7 +405,9 @@ pub use edge::{
 };
 #[cfg(feature = "serde")]
 pub use error::TemplateError;
-pub use error::{BodyPanicked, BuildError, CommandError, FiringFailed, NetError, PressError};
+pub use error::{
+    BodyPanicked, BuildError, CommandError, FiringFailed, NetError, PathStep, PressError,
+};
 pub use event::Event;
 pub use firing::{Completed, Firing, Selector, TieBreak};
 pub use ids::{NetId, PlaceHandle, PlaceId, PlaceRef, SubnetRef, TokenId, TransitionId};

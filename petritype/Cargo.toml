@@ -107,5 +107,14 @@ required-features = ["serde"]
 name = "pricing"
 test = true
 
+# Subnet places (DESIGN §6.7): a world of two levels built from one template,
+# heroes entering each level through one port and leaving through another.
+# The world is saved part of the way and restored with its levels inside it,
+# as JSON: hence the feature.
+[[example]]
+name = "levels"
+test = true
+required-features = ["serde"]
+
 [package.metadata.docs.rs]
 all-features = true

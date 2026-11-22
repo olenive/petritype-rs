@@ -1388,8 +1388,9 @@ Topology { .., groups: Vec<String> };  TopologyPlace, TopologyTransition { .., g
   subnet place with its box, and then its transitions. The nodes in no
   group come first, at the top level, so a net with no groups draws to the
   text it drew before, and every node keeps its `p<i>` or `t<i>` id.
-  Closing a group is the viewer's, and is not drawn here. The layout crate
-  and the wire take groups up in later steps of the spec.
+  Closing a group is the viewer's, and is not drawn here. The runner writes
+  groups in each net's topology (§19.3.18), and the layout crate takes them
+  up in a later step of the spec.
 
 ## 7. Failure semantics
 
@@ -2771,6 +2772,7 @@ The decisions that shape it, all of 2026-10-03:
 | `path`, `nested_id` (§12.1) | a path is a list of steps (`protocol::PathStep`, since protocol version 2), read by `protocol::parse_path` and resolved one step at a time through `net.nested(place, token)`; a nested id is the inner net's `NetId` printed with its `Display`, found by walking every nested place at every depth; mutable reach (`inject`) through `nested_scope` at each level (§19.3.15) |
 | a token's `nets` (§12.2) | `net.nested(place, token)`: each net's name, `id()`, its path (the path of the net the token is in and one step more), `template()`, and the sum of its own places' counts, ports included and the places it has for its subnets' ports not (`translate::own_count`, §19.3.17) |
 | a subnet place, its `ports`, `subnet` and `port` (§5.1, §12.7) | `TopologyPlace::subnet`; its `type_name` is `net.subnet(place)?.template()`, or `""`; its `ports` are the subnet's own places with `TopologyPlace::port`; the places the net has for them (`TopologyPlace::port_of`, its windows) are not listed, and an edge on one names `place` and `port`; `port: true` only in a subnet's own topology (§19.3.17) |
+| `topology.groups`, a place's, subnet place's and transition's `group` (§5.1) | `Topology::groups`, `TopologyPlace::group` and `TopologyTransition::group` of the net read, each written only when set; a port in a subnet place's `ports` carries none (§6.8, §19.3.18) |
 | a port named by the pair (§7.1, §8, §12.7, §13.2) | `protocol::PlaceName`, from a window's `port_of` |
 | a subnet place's entry `{subnet, ports}` (§12.7) | `net.subnet(place)`: its id, path, template and own count, and each port read in the subnet, under the subnet's projection |
 | `subnet_marking_versions`, `outer_marking_version` (§12.7) | the runner's, from the places a core event took, put or restored, or a token event's place (§19.3.17) |
@@ -2842,7 +2844,7 @@ a wire format they do not own. `Snapshot` stays unserialisable; tokens are
 
 ### 19.3 The `petritype-runner` crate
 
-**Designed and built 2026-10-03**; as-built notes in §19.3.10, nested nets in §19.3.11, keys in §19.3.12, the protocol's wording gaps and the engine policies in §19.3.13, protocol version 2 in §19.3.15 and §19.3.16, subnet places in §19.3.17. A library crate in this
+**Designed and built 2026-10-03**; as-built notes in §19.3.10, nested nets in §19.3.11, keys in §19.3.12, the protocol's wording gaps and the engine policies in §19.3.13, protocol version 2 in §19.3.15 and §19.3.16, subnet places in §19.3.17, groups in §19.3.18. A library crate in this
 workspace plus an example binary. A net's bodies are the user's code, so the
 binary is always the user's own: it lists its nets and hands over to the
 crate. Dependencies: `petritype` with `serde`, `serde`, `serde_json`, and
@@ -3791,6 +3793,43 @@ to the core.
   `LogEntry` and `Filter::places`; `Marking::places` holds `PlaceEntry`s;
   `Place` gained `subnet`, `ports` and `port`, and its `serializable` is an
   `Option`.
+
+#### 19.3.18 Groups on the wire, 2026-11-22
+
+The runner's half of step 3 of the groups change (`dev-docs/group-spec.md`
+§3), on PROTOCOL.md §5.1 and the conformance net `groups` of §11, which the
+Python track wrote, built and recorded first. The core's groups are §6.8;
+the runner serves them with no addition to the core, and the protocol stays
+version 2.
+
+- **Topology** (§5.1). `translate::topology` writes the core topology's
+  `groups` as `protocol::Topology::groups`, and each place's, subnet
+  place's and transition's group as `protocol::Place::group` and
+  `protocol::Transition::group`, each written only when set. Every net's
+  topology, the loaded net's and each inner net's, a subnet's and a token's
+  net's, is written from that net's own core topology, so each shows its
+  own groups and none of the net around it. A port listed in a subnet
+  place's `ports` is given no `group`: its group is the subnet's, shown in
+  the subnet's own topology. A window is not listed, and the core puts it
+  in no group.
+- **The rest of the wire is unchanged.** Requests, notifications, marking
+  entries and log entries carry no group, and the engine reads none, so
+  firing, stepping, ids and versions are those of the same net with no
+  groups.
+- **The conformance net `groups`** (§11) is written in the example's
+  `nets.rs`, as `levels` is, its subnet built through a `Templates` that
+  registers `Box`, so that the subnet is stamped with that name.
+  `nets::groups_registry` carries it alone for the transcript over it, and
+  `nets::registry()`, what the example binary carries, lists it after
+  `levels`; a process test loads it over real pipes.
+- **Transcripts.** `11_groups.json` is copied verbatim from the Python
+  track's recording and replays with no change to the harness; `05` to
+  `10` did not change, and our own `01_describe_load_state.json` lists
+  `groups` in `describe`. `tests/groups.rs` has the rest: the fields of the
+  loaded net and of its subnet by path and by nested id, a token's net with
+  groups of its own in a net with none, nets with none at any depth
+  (`levels`, `transit`), and firings, a page of tokens and the log, which
+  name no group.
 
 ### 19.4 Who spawns it
 

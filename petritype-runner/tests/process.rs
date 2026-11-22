@@ -219,6 +219,44 @@ fn a_net_with_subnet_places_over_real_pipes() {
     assert_eq!(shutdown["result"]["status"], "ok");
 }
 
+/// The binary serves the `groups` net: its topology lists its groups and
+/// each member's, and the subnet's topology, read by its path, its own.
+#[test]
+fn a_net_with_groups_over_real_pipes() {
+    let mut s = Session::spawn();
+
+    let describe = s.call("1", "describe", json!({}));
+    let nets = describe["result"]["nets"].as_array().unwrap();
+    assert!(nets.iter().any(|net| net["name"] == "groups"));
+
+    let load = s.call("2", "load", json!({"net": "groups"}));
+    assert_eq!(load["result"]["status"], "loaded");
+
+    let state = s.call("3", "get_state", json!({}));
+    let topology = &state["result"]["topology"];
+    assert_eq!(topology["groups"], json!(["Sorting", "Packing"]));
+    let places: Vec<&Value> = topology["places"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|place| &place["group"])
+        .collect();
+    assert_eq!(places, [&Value::Null, &json!("Sorting"), &json!("Packing")]);
+    let transitions: Vec<&Value> = topology["transitions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|transition| &transition["group"])
+        .collect();
+    assert_eq!(transitions, [&json!("Sorting"), &json!("Packing")]);
+
+    let inside = s.call("4", "get_state", json!({"path": [{"place": "Box"}]}));
+    assert_eq!(inside["result"]["topology"]["groups"], json!(["Sealing"]));
+
+    let shutdown = s.call("5", "shutdown", json!({}));
+    assert_eq!(shutdown["result"]["status"], "ok");
+}
+
 #[test]
 fn a_malformed_line_gets_an_invalid_params_answer() {
     let mut s = Session::spawn();

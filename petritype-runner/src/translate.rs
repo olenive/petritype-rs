@@ -330,6 +330,13 @@ pub(crate) fn place_id(name: &protocol::PlaceName, net: &Net) -> Result<PlaceId,
 /// the port. `subnet` says that `net` is itself a subnet, whose topology
 /// marks its ports `port: true`; a net that is no subnet has no net around
 /// it to reach them, and marks none (§5.1).
+///
+/// The net's own groups are `groups`, in declared order, and each place,
+/// subnet place and transition in one carries its `group`, each written
+/// only when set (§5.1). A port listed in a subnet place's `ports` carries
+/// none: its group is the subnet's, shown in the subnet's own topology.
+/// Every net's topology is written from its own core topology, so an inner
+/// net shows its own groups and none of the net around it.
 pub(crate) fn topology(
     net: &Net,
     topology: &Topology,
@@ -352,6 +359,7 @@ pub(crate) fn topology(
         stepping: p.stepping.and_then(stepping),
         key_names: p.key_names.iter().map(|name| (*name).to_owned()).collect(),
         style: p.style.and_then(place_style),
+        group: p.group.clone(),
     };
     protocol::Topology {
         places: topology
@@ -370,7 +378,10 @@ pub(crate) fn topology(
                             .places
                             .iter()
                             .filter(|port| port.port)
-                            .map(|port| place(port, false))
+                            .map(|port| protocol::Place {
+                                group: None,
+                                ..place(port, false)
+                            })
                             .collect(),
                     ),
                     key_names: Vec::new(),
@@ -388,6 +399,7 @@ pub(crate) fn topology(
                     params: t.params.iter().map(|p| (*p).to_owned()).collect(),
                     detachable: t.detachable,
                 },
+                group: t.group.clone(),
             })
             .collect(),
         edges: topology
@@ -433,6 +445,7 @@ pub(crate) fn topology(
                 _ => None,
             })
             .collect(),
+        groups: topology.groups.clone(),
         // From the net, not its topology: see `controls`.
         controls: Vec::new(),
     }

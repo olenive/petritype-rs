@@ -25,6 +25,8 @@
             {"name": "stepping-rules", "description": "Nets under each stepping rule take their turns", "mode": "manual",
              "params": []},
             {"name": "levels", "description": "Heroes enter two levels through one port and leave through another", "mode": "manual",
+             "params": []},
+            {"name": "groups", "description": "Letters are sorted in one group and packed in another, into a box that seals them in a group of its own", "mode": "manual",
              "params": []}
           ]
         }}

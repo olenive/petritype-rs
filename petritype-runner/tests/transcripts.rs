@@ -88,13 +88,14 @@
 //! `protocol_version` 2, and `05_nested_nets.json` spells its paths as lists
 //! of steps, and was recorded once more the same day with the `stepping` of
 //! `transit`'s places. `10_stepping_rules.json` over `stepping-rules`
-//! (2026-11-21, a place of nets under each stepping rule) and
+//! (2026-11-21, a place of nets under each stepping rule),
 //! `09_subnet_places.json` over `levels` (2026-11-21, subnet places and
-//! their ports) are verbatim copies too. The shared set of §11, over the
-//! conformance nets `parcel-distribution`, `transit`, `wildlife`, `shop`,
-//! `traffic-light`, `stepping-rules` and `levels`, lives in the Python
-//! repository and is replayed here from a sibling checkout by
-//! `the_shared_transcripts_hold`.
+//! their ports) and `11_groups.json` over `groups` (2026-11-21, the groups
+//! of a net and of its subnet in their topologies) are verbatim copies too.
+//! The shared set of §11, over the conformance nets `parcel-distribution`,
+//! `transit`, `wildlife`, `shop`, `traffic-light`, `stepping-rules`,
+//! `levels` and `groups`, lives in the Python repository and is replayed
+//! here from a sibling checkout by `the_shared_transcripts_hold`.
 //! A transcript over a conformance net is replayed against a runner carrying
 //! that net alone (§11), whichever directory it is in, so that it may pin
 //! `describe` in full; any other against everything the example carries.
@@ -388,6 +389,7 @@ fn registry_for(net: &str) -> Vec<petritype_runner::NetEntry> {
         "traffic-light" => nets::traffic_light_registry(),
         "stepping-rules" => nets::stepping_rules_registry(),
         "levels" => nets::levels_registry(),
+        "groups" => nets::groups_registry(),
         _ => nets::registry(),
     }
 }
@@ -506,7 +508,7 @@ fn shared_dir() -> PathBuf {
 
 /// The shared transcripts of PROTOCOL.md §11, over the conformance nets
 /// `parcel-distribution`, `transit`, `wildlife`, `shop`, `traffic-light`,
-/// `stepping-rules` and `levels`, replayed exactly as ours are, each against a registry
+/// `stepping-rules`, `levels` and `groups`, replayed exactly as ours are, each against a registry
 /// carrying its own net alone, which §11 makes the rule so that a shared
 /// transcript may pin `describe` in full. A shared transcript over a net this runner does not
 /// carry fails at its `load`.

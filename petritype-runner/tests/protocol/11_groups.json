@@ -1,0 +1,381 @@
+{
+ "net": "groups",
+ "params": {},
+ "exchanges": [
+  {
+   "send": {
+    "method": "describe"
+   },
+   "expect": [
+    {
+     "id": "1",
+     "result": {
+      "protocol_version": 2,
+      "runtime": "<label>",
+      "runtime_version": "<label>",
+      "nets": [
+       {
+        "name": "groups",
+        "description": "Letters are sorted in one group and packed in another, into a box that seals them in a group of its own",
+        "mode": "manual",
+        "params": []
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "load",
+    "params": {
+     "net": "groups"
+    }
+   },
+   "expect": [
+    {
+     "method": "load_progress",
+     "params": {
+      "step": "build",
+      "message": "<label>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "reloaded",
+     "params": {
+      "generation": 1,
+      "reason": "load",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "2",
+     "result": {
+      "status": "loaded",
+      "generation": 1,
+      "marking_version": "<version>"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "get_state"
+   },
+   "expect": [
+    {
+     "id": "3",
+     "result": {
+      "protocol_version": 2,
+      "runtime": "<label>",
+      "net": "groups",
+      "generation": 1,
+      "marking_version": "<version>",
+      "running": false,
+      "topology": {
+       "places": [
+        {
+         "name": "Inbox",
+         "type_name": "<label>",
+         "serializable": true
+        },
+        {
+         "name": "Sorted",
+         "type_name": "<label>",
+         "serializable": true,
+         "group": "Sorting"
+        },
+        {
+         "name": "Box",
+         "type_name": "<label>",
+         "subnet": true,
+         "ports": [
+          {
+           "name": "Tray",
+           "type_name": "<label>",
+           "serializable": true
+          }
+         ],
+         "stepping": "inner_first",
+         "group": "Packing"
+        }
+       ],
+       "transitions": [
+        {
+         "name": "Sort",
+         "detail": "<any>",
+         "group": "Sorting"
+        },
+        {
+         "name": "Pack",
+         "detail": "<any>",
+         "group": "Packing"
+        }
+       ],
+       "edges": {
+        "<unordered>": [
+         {
+          "place": "Inbox",
+          "transition": "Sort",
+          "direction": "in",
+          "kind": "take"
+         },
+         {
+          "place": "Sorted",
+          "transition": "Pack",
+          "direction": "in",
+          "kind": "take"
+         },
+         {
+          "place": "Sorted",
+          "transition": "Sort",
+          "direction": "out"
+         },
+         {
+          "place": "Box",
+          "port": "Tray",
+          "transition": "Pack",
+          "direction": "out"
+         }
+        ]
+       },
+       "groups": [
+        "Sorting",
+        "Packing"
+       ]
+      },
+      "transitions": {
+       "Sort": {
+        "enabled": true,
+        "fireable": true,
+        "in_flight": false,
+        "priority": 0.0
+       },
+       "Pack": {
+        "enabled": true,
+        "fireable": false,
+        "in_flight": false,
+        "priority": 0.0
+       }
+      },
+      "marking": {
+       "places": {
+        "Inbox": {
+         "count": 1,
+         "tokens": [
+          {
+           "id": "<id:letter>",
+           "label": "<label>"
+          }
+         ]
+        },
+        "Sorted": {
+         "count": 0,
+         "tokens": []
+        },
+        "Box": {
+         "subnet": {
+          "nested_id": "<id:box>",
+          "path": [
+           {
+            "place": "Box"
+           }
+          ],
+          "template": "Box",
+          "count": 0
+         },
+         "ports": {
+          "Tray": {
+           "count": 0,
+           "tokens": []
+          }
+         }
+        }
+       }
+      },
+      "progress": {
+       "step_count": 0,
+       "last_fired": null,
+       "fired_counts": {},
+       "last_progress_at": null
+      }
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "get_state",
+    "params": {
+     "path": [
+      {
+       "place": "Box"
+      }
+     ]
+    }
+   },
+   "expect": [
+    {
+     "id": "4",
+     "result": {
+      "protocol_version": 2,
+      "runtime": "<label>",
+      "net": "Box",
+      "generation": 1,
+      "marking_version": "<version>",
+      "running": false,
+      "topology": {
+       "places": [
+        {
+         "name": "Tray",
+         "type_name": "<label>",
+         "serializable": true,
+         "port": true,
+         "group": "Sealing"
+        },
+        {
+         "name": "Sealed",
+         "type_name": "<label>",
+         "serializable": true
+        }
+       ],
+       "transitions": [
+        {
+         "name": "Seal",
+         "detail": "<any>",
+         "group": "Sealing"
+        }
+       ],
+       "edges": {
+        "<unordered>": [
+         {
+          "place": "Tray",
+          "transition": "Seal",
+          "direction": "in",
+          "kind": "take"
+         },
+         {
+          "place": "Sealed",
+          "transition": "Seal",
+          "direction": "out"
+         }
+        ]
+       },
+       "groups": [
+        "Sealing"
+       ]
+      },
+      "transitions": {
+       "Seal": {
+        "enabled": true,
+        "fireable": false,
+        "in_flight": false,
+        "priority": 0.0
+       }
+      },
+      "marking": {
+       "places": {
+        "Tray": {
+         "count": 0,
+         "tokens": []
+        },
+        "Sealed": {
+         "count": 0,
+         "tokens": []
+        }
+       }
+      },
+      "progress": {
+       "step_count": 0,
+       "last_fired": null,
+       "fired_counts": {},
+       "last_progress_at": null
+      },
+      "path": [
+       {
+        "place": "Box"
+       }
+      ],
+      "nested_id": "<id:box>",
+      "template": "Box"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "step"
+   },
+   "expect": [
+    {
+     "method": "fired",
+     "params": {
+      "transition": "Sort",
+      "consumed": [
+       [
+        "Inbox",
+        "<id:letter>"
+       ]
+      ],
+      "produced": [
+       [
+        "Sorted",
+        "<id:letter_sorted>",
+        "<label>"
+       ]
+      ],
+      "duration_ms": "<ms>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "fireable",
+     "params": {
+      "transitions": [
+       "Pack"
+      ],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "5",
+     "result": {
+      "fired": true,
+      "transition": "Sort",
+      "marking_version": "<version>",
+      "running": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "reset"
+   },
+   "expect": [
+    {
+     "method": "reloaded",
+     "params": {
+      "generation": 2,
+      "reason": "reset",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "6",
+     "result": {
+      "status": "reset",
+      "generation": 2,
+      "marking_version": "<version>"
+     }
+    }
+   ]
+  }
+ ]
+}

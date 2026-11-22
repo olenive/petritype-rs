@@ -101,6 +101,13 @@
 //!   the subnet's filter, and are told once, by the net that changed them;
 //!   that notification carries the other net's new version too, as
 //!   `subnet_marking_versions` or `outer_marking_version`.
+//! - A net's groups (`NetBuilder::group`), a label on parts of one net that
+//!   only drawings read, are in its topology: `groups` lists them in
+//!   declared order, and each place, subnet place and transition in one
+//!   carries its `group` (PROTOCOL.md §5.1). Each inner net's topology
+//!   carries its own groups, and a port listed in a subnet place's `ports`
+//!   carries none, its group being the subnet's. No notification, marking
+//!   entry or log entry names a group.
 //! - A place that declares keys (`NetBuilder::keys`) lists them as
 //!   `key_names`, and its tokens carry theirs as `keys` wherever a token is
 //!   given, `produced` entries included (PROTOCOL.md §13). `query` asks for

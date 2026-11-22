@@ -9,9 +9,10 @@
 //! `petritype/examples/shop/net.rs` and
 //! `petritype/examples/traffic_light/net.rs` as they are, not copied; and
 //! `stepping-rules` (§11, §12.3), which has no example of its own and is
-//! written here. The conformance net `levels` (§11, §12.7) is written here
-//! too, carried alone by [`levels_registry`] for the transcripts over it and
-//! by the example binary with the rest.
+//! written here. The conformance nets `levels` (§11, §12.7) and `groups`
+//! (§11, §5.1) are written here too, each carried alone by its own registry
+//! ([`levels_registry`], [`groups_registry`]) for the transcripts over it
+//! and by the example binary with the rest.
 
 use std::fmt;
 
@@ -597,6 +598,94 @@ pub fn levels_registry() -> Vec<NetEntry> {
     vec![levels_entry()]
 }
 
+/// The protocol's conformance net `groups` (PROTOCOL.md §11, §5.1): letters
+/// sorted in the group `Sorting` and packed in the group `Packing` into the
+/// port `Tray` of the subnet place `Box`, whose subnet seals them in a
+/// group of its own, `Sealing`, so that a transcript shows `groups` and
+/// `group` in the topology of a net and of an inner net. Its names, places,
+/// transitions, groups, template and seed are fixed by §11; the Python twin
+/// is `tests/protocol_nets/groups.py`. Every body hands its letter on
+/// unchanged, and none fails.
+pub mod groups {
+    use petritype::{Net, NetBuilder, Params, TakeEdge, Templates};
+    use petritype_runner::LoadError;
+
+    /// The template `Box`: `Tray -Seal-> Sealed`, both of strings and
+    /// serializable, `Tray` its port, and `Tray` and `Seal` in its one
+    /// group, `Sealing`. No parameters, no tokens.
+    fn sealing_box(_: &Params) -> Result<Net, petritype::BuildError> {
+        let mut b = NetBuilder::new();
+        let sealing = b.group("Sealing");
+        let tray = b.place::<String>("Tray");
+        let sealed = b.place::<String>("Sealed");
+        b.serializable(tray);
+        b.serializable(sealed);
+        b.port(tray);
+        b.in_group(sealing, tray);
+        b.transition("Seal", (TakeEdge(tray),), (sealed,), |letter: String| {
+            (letter,)
+        })
+        .group(sealing);
+        b.build()
+    }
+
+    /// `Box`, under its name, which builds the box's net and stamps it.
+    pub fn templates() -> Templates {
+        let mut templates = Templates::new();
+        templates.register("Box", sealing_box);
+        templates
+    }
+
+    /// The net as §11 seeds it: `Inbox` holding `"Letter"`, in no group;
+    /// `Sorted`, empty, in `Sorting`; and `Box`, a subnet place in
+    /// `Packing` holding a `Box`, inner first. `Sort`, in `Sorting`, takes
+    /// the letter from `Inbox` into `Sorted`, and `Pack`, in `Packing`, from
+    /// `Sorted` into the box's `Tray`.
+    pub fn groups(_: &petritype_runner::Params) -> Result<Net, LoadError> {
+        let templates = templates();
+        let the_box = templates
+            .build("Box", &Params::new())
+            .map_err(|error| LoadError::Other(error.to_string()))?;
+        let mut b = NetBuilder::new();
+        b.templates(&templates);
+        let sorting = b.group("Sorting");
+        let packing = b.group("Packing");
+        let inbox = b.place::<String>("Inbox");
+        let sorted = b.place::<String>("Sorted");
+        let box_place = b.subnet_place("Box", the_box);
+        b.serializable(inbox);
+        b.serializable(sorted);
+        b.in_group(sorting, sorted);
+        b.in_group(packing, box_place);
+        let tray = b.port_of::<String>(box_place, "Tray");
+        b.seed(inbox, ["Letter".to_owned()]);
+        b.transition("Sort", (TakeEdge(inbox),), (sorted,), |letter: String| {
+            (letter,)
+        })
+        .group(sorting);
+        b.transition("Pack", (TakeEdge(sorted),), (tray,), |letter: String| {
+            (letter,)
+        })
+        .group(packing);
+        Ok(b.build()?)
+    }
+}
+
+/// The `groups` entry, as PROTOCOL.md §11 names and describes it.
+fn groups_entry() -> NetEntry {
+    NetEntry::new("groups", groups::groups)
+        .description(
+            "Letters are sorted in one group and packed in another, into a box that seals them in a group of its own",
+        )
+        .hosting(Hosting::Manual)
+}
+
+/// The `groups` net alone, for the transcripts over it (PROTOCOL.md §11).
+#[allow(dead_code)]
+pub fn groups_registry() -> Vec<NetEntry> {
+    vec![groups_entry()]
+}
+
 /// The conformance net's entry, as PROTOCOL.md §11 names and describes it.
 fn conformance_entry() -> NetEntry {
     NetEntry::new("parcel-distribution", conformance::parcel_distribution)
@@ -629,5 +718,6 @@ pub fn registry() -> Vec<NetEntry> {
         traffic_light_entry(),
         stepping_rules_entry(),
         levels_entry(),
+        groups_entry(),
     ]
 }

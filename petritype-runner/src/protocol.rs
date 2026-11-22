@@ -1041,6 +1041,11 @@ pub struct Topology {
     pub transitions: Vec<Transition>,
     /// Every edge, transition by transition, inputs then outputs.
     pub edges: Vec<Edge>,
+    /// The net's own groups, in declared order (§5.1); written only when
+    /// there are some. An inner net's topology carries its own groups and
+    /// none of the net around it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub groups: Vec<String>,
     /// The controls the net declares, in declaration order (§5.1); written
     /// only when there are some.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -1104,10 +1109,11 @@ impl ControlConfig {
 /// A place in [`Topology`].
 ///
 /// A subnet place (PROTOCOL.md §12.7) is `{name, type_name, subnet: true,
-/// ports, stepping}`: its `type_name` the template that built its subnet,
-/// or `""`, and `ports` its subnet's port places in the subnet's
+/// ports, stepping, group?}`: its `type_name` the template that built its
+/// subnet, or `""`, and `ports` its subnet's port places in the subnet's
 /// declaration order, each as the subnet's own topology has it but without
-/// `port`. It is not serializable, holding no tokens of its own.
+/// `port` and `group`. It is not serializable, holding no tokens of its
+/// own.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Place {
     /// Unique within the net.
@@ -1146,6 +1152,11 @@ pub struct Place {
     /// style.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub style: Option<PlaceStyle>,
+    /// The name of the group the place is in, one of [`Topology::groups`]
+    /// (§5.1); written only for a place in a group, and never for a port
+    /// listed in its subnet place's `ports`, whose group is the subnet's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
 }
 
 /// A [`Place`]'s `stepping` (PROTOCOL.md §12.3): when the nets in the place
@@ -1192,6 +1203,11 @@ pub struct Transition {
     pub name: String,
     /// Rust's introspection: parameter type names and `detachable`.
     pub detail: TransitionDetail,
+    /// The name of the group the transition is in, one of
+    /// [`Topology::groups`] (§5.1); written only for a transition in a
+    /// group.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
 }
 
 /// The Rust runtime's `detail` object.
@@ -1789,6 +1805,7 @@ mod tests {
             stepping: None,
             key_names: Vec::new(),
             style: None,
+            group: None,
         };
         assert_eq!(
             to_value(&place),
@@ -2037,6 +2054,7 @@ mod tests {
             stepping: None,
             key_names: Vec::new(),
             style: Some(PlaceStyle { fill: Fill::Token }),
+            group: None,
         };
         assert_eq!(
             to_value(&place),
@@ -2075,6 +2093,7 @@ mod tests {
             places: vec![place],
             transitions: Vec::new(),
             edges: Vec::new(),
+            groups: Vec::new(),
             controls: Vec::new(),
         };
         assert!(
@@ -2195,6 +2214,7 @@ mod tests {
             stepping: None,
             key_names: Vec::new(),
             style: None,
+            group: None,
         };
         let level = Place {
             name: "Level 3".into(),
@@ -2245,6 +2265,68 @@ mod tests {
         assert_eq!(back, entry);
         let place: PlaceEntry = serde_json::from_value(json!({"count": 0, "tokens": []})).unwrap();
         assert!(matches!(place, PlaceEntry::Tokens(_)));
+    }
+
+    #[test]
+    fn a_group_is_written_only_when_set() {
+        let sorted = Place {
+            name: "Sorted".into(),
+            type_name: "String".into(),
+            serializable: Some(true),
+            nested: false,
+            subnet: false,
+            ports: None,
+            port: false,
+            stepping: None,
+            key_names: Vec::new(),
+            style: None,
+            group: Some("Sorting".into()),
+        };
+        let sort = Transition {
+            name: "Sort".into(),
+            detail: TransitionDetail {
+                params: Vec::new(),
+                detachable: true,
+            },
+            group: Some("Sorting".into()),
+        };
+        let topology = Topology {
+            places: vec![sorted.clone()],
+            transitions: vec![sort.clone()],
+            edges: Vec::new(),
+            groups: vec!["Sorting".into(), "Packing".into()],
+            controls: Vec::new(),
+        };
+        let value = to_value(&topology);
+        assert_eq!(
+            value,
+            json!({"places": [{"name": "Sorted", "type_name": "String", "serializable": true,
+                               "group": "Sorting"}],
+                   "transitions": [{"name": "Sort", "detail": {"params": [], "detachable": true},
+                                    "group": "Sorting"}],
+                   "edges": [], "groups": ["Sorting", "Packing"]})
+        );
+        let back: Topology = serde_json::from_value(value).unwrap();
+        assert_eq!(back, topology);
+
+        let plain = Topology {
+            places: vec![Place {
+                group: None,
+                ..sorted
+            }],
+            transitions: vec![Transition {
+                group: None,
+                ..sort
+            }],
+            groups: Vec::new(),
+            ..topology
+        };
+        let value = to_value(&plain);
+        assert!(value.get("groups").is_none(), "a net with no groups");
+        assert!(value["places"][0].get("group").is_none());
+        assert!(value["transitions"][0].get("group").is_none());
+        let back: Topology = serde_json::from_value(value).unwrap();
+        assert_eq!(back, plain, "a reader takes a topology without them");
     }
 
     #[test]

@@ -202,6 +202,8 @@ A node is in one group or in none, and the net fires, steps, saves and logs exac
 a node is in, and a subnet has groups of its own. `petritype-dot` draws each group as a dashed frame.
 `petritype/examples/hike.rs` is a walker whose walking and eating both change its `Energy`, each concern a group
 and the energy in none (`cargo run -p petritype --example hike`); `DESIGN.md` §6.8 has the rules.
+Served by `petritype-runner`, each net's topology lists its own groups as `groups` and the `group` of each member,
+for a viewer to draw (PROTOCOL.md §5.1, `DESIGN.md` §19.3.18).
 
 ## Keys and queries
 

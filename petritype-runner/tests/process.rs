@@ -28,9 +28,19 @@ impl Session {
 
     /// The binary started with `args`.
     fn spawn_with(args: &[&str]) -> Session {
-        let mut child = Command::new(binary())
+        Session::start(binary(), args, "100")
+    }
+
+    /// The `slow_bodies` example, its heartbeat every [`HEARTBEAT_MS`].
+    fn slow() -> Session {
+        Session::start(common::example_named("slow_bodies"), &[], HEARTBEAT_MS)
+    }
+
+    /// `program` started with `args`, its heartbeat every `heartbeat_ms`.
+    fn start(program: std::path::PathBuf, args: &[&str], heartbeat_ms: &str) -> Session {
+        let mut child = Command::new(program)
             .args(args)
-            .env("PETRITYPE_RUNNER_HEARTBEAT_MS", "100")
+            .env("PETRITYPE_RUNNER_HEARTBEAT_MS", heartbeat_ms)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -57,23 +67,116 @@ impl Session {
     /// Sends a request and reads lines until its response; returns the
     /// response.
     fn call(&mut self, id: &str, method: &str, params: Value) -> Value {
+        self.send(id, method, params);
+        self.response(id)
+    }
+
+    /// Sends a request and reads nothing.
+    fn send(&mut self, id: &str, method: &str, params: Value) {
         let request = json!({"id": id, "method": method, "params": params});
         writeln!(self.stdin, "{request}").unwrap();
         self.stdin.flush().unwrap();
+    }
+
+    /// The next line, kept in `seen`.
+    fn next_line(&mut self) -> Value {
+        let line = self
+            .lines
+            .recv_timeout(Duration::from_secs(20))
+            .expect("a line within 20 seconds");
+        let value: Value = serde_json::from_str(&line)
+            .unwrap_or_else(|e| panic!("stdout carried a non-JSON line {line:?}: {e}"));
+        self.seen.push(value.clone());
+        value
+    }
+
+    /// Reads lines until the response to `id`, and returns it.
+    fn response(&mut self, id: &str) -> Value {
         loop {
-            let line = self
-                .lines
-                .recv_timeout(Duration::from_secs(20))
-                .unwrap_or_else(|_| panic!("no response to {method}"));
-            let value: Value = serde_json::from_str(&line)
-                .unwrap_or_else(|e| panic!("stdout carried a non-JSON line {line:?}: {e}"));
-            self.seen.push(value.clone());
+            let value = self.next_line();
             if value.get("method").is_none() {
                 assert_eq!(value["id"], id, "responses arrive in order");
                 return value;
             }
         }
     }
+
+    /// Reads lines until a heartbeat that `wanted` picks, and returns its
+    /// params.
+    fn heartbeat_where(&mut self, wanted: impl Fn(&Value) -> bool) -> Value {
+        loop {
+            let value = self.next_line();
+            if value["method"] == "heartbeat" && wanted(&value["params"]) {
+                return value["params"].clone();
+            }
+        }
+    }
+}
+
+/// The heartbeat period the tests of a body in flight run with: short
+/// beside [`BODY_MS`], so that every body is beaten through many times.
+const HEARTBEAT_MS: &str = "20";
+
+/// How long each body of `slow-office` takes in those tests: long beside
+/// the heartbeat, and beside a busy machine's pauses.
+const BODY_MS: u64 = 500;
+
+/// The params of every heartbeat among `lines` that names `transition`.
+fn heartbeats_naming<'a>(lines: &'a [Value], transition: &str) -> Vec<&'a Value> {
+    lines
+        .iter()
+        .filter(|line| line["method"] == "heartbeat")
+        .map(|line| &line["params"])
+        .filter(|params| params["executing_transition"] == transition)
+        .collect()
+}
+
+/// A heartbeat written while a body runs inline names it: one inside the
+/// clerk's net with the net's `path` and `nested_id`, the same two a read
+/// of the desk gives, and one with a mutate edge in the loaded net with
+/// neither. Every heartbeat naming a body is checked, those the writer let
+/// out after the body's own lines included, so none needs to come at a
+/// given moment; the bodies are many heartbeats long, so some come.
+#[test]
+fn a_heartbeat_names_an_inline_body_and_the_inner_net_it_runs_in() {
+    let mut s = Session::slow();
+    let load = s.call(
+        "1",
+        "load",
+        json!({"net": "slow-office", "params": {"ms": BODY_MS, "jobs": 1, "tallies": 1}}),
+    );
+    assert_eq!(load["result"]["status"], "loaded");
+    let state = s.call("2", "get_state", json!({}));
+    let clerk = state["result"]["marking"]["places"]["Desk"]["tokens"][0]["nets"][0].clone();
+    assert!(clerk["nested_id"].is_string(), "{clerk}");
+
+    let step = s.call("3", "step", json!({}));
+    assert_eq!(step["result"]["transition"], "File");
+    assert_eq!(step["result"]["path"], clerk["path"]);
+    let step = s.call("4", "step", json!({}));
+    assert_eq!(step["result"]["transition"], "Tally");
+    // A heartbeat that names nothing, once nothing runs.
+    let after = s.heartbeat_where(|params| params["executing_transition"].is_null());
+    assert!(after["step_started_at"].is_null());
+    assert!(after.get("path").is_none() && after.get("nested_id").is_none());
+
+    let filing = heartbeats_naming(&s.seen, "File");
+    assert!(!filing.is_empty(), "a heartbeat while File ran");
+    for params in filing {
+        assert!(params["step_started_at"].is_string());
+        assert_eq!(params["path"], clerk["path"]);
+        assert_eq!(params["nested_id"], clerk["nested_id"]);
+    }
+    let tallying = heartbeats_naming(&s.seen, "Tally");
+    assert!(!tallying.is_empty(), "a heartbeat while Tally ran");
+    for params in tallying {
+        assert!(params["step_started_at"].is_string());
+        assert!(params.get("path").is_none(), "{params}");
+        assert!(params.get("nested_id").is_none(), "{params}");
+    }
+
+    let shutdown = s.call("5", "shutdown", json!({}));
+    assert_eq!(shutdown["result"]["status"], "ok");
 }
 
 #[test]

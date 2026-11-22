@@ -34,9 +34,29 @@ use crate::registry::{Hosting, LoadError, NetEntry, Params};
 use crate::time::iso8601;
 use crate::translate::{self, FilterError, Names};
 
-/// What the heartbeat thread reads: the transition whose body is running and
-/// when it started, or `None` when no body runs.
-pub type StatusCell = Arc<Mutex<Option<(String, SystemTime)>>>;
+/// What the heartbeat thread reads: the transition whose body is running,
+/// when it started, and, for a body that runs inside an inner net, where
+/// that net is; `None` when no body runs.
+///
+/// The owner writes it ([`Owner::new`] says when) and a heartbeat reads it:
+/// [`main`](crate::main)'s writes the name as `executing_transition`, the
+/// time as `step_started_at`, and the [`InnerAddress`], when there is one,
+/// as `path` and `nested_id`. The third element is `None` for a body of the
+/// loaded net.
+pub type StatusCell = Arc<Mutex<Option<(String, SystemTime, Option<InnerAddress>)>>>;
+
+/// Where an inner net is, as the wire names it (PROTOCOL.md §12.1): its
+/// `path` from the loaded net and its `nested_id`, the two fields that a
+/// `step` result and a log entry carry for a firing inside an inner net.
+/// The [`StatusCell`] holds one while a body runs in an inner net.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct InnerAddress {
+    /// The net's path, one step per level from the loaded net down.
+    pub path: Vec<PathStep>,
+    /// The net's nested id, as the wire writes it.
+    pub nested_id: String,
+}
 
 /// How many entries `get_log` keeps (PROTOCOL.md §8).
 const LOG_CAPACITY: usize = 1000;
@@ -653,6 +673,40 @@ fn around_of(outer: &Net, levels: &[Level]) -> Option<Around> {
         Around::Loaded
     } else {
         Around::Inner(descend(outer, above)?.id())
+    })
+}
+
+/// The address of the net an inner body is about to run in, as the core's
+/// deep step tells of it: the path and the nested id its firing's `step`
+/// result and log entry will carry, the places named as
+/// [`lifted_path`](Loaded::lifted_path) names them, from `names`, the loaded
+/// net's, and the records `inner` keeps of the nets on the way. It reads no
+/// net, since the deep step has the loaded net while the body runs. `None`
+/// for a level of a kind this runner does not know.
+fn inner_address(
+    names: &Names,
+    inner: &HashMap<NetId, Inner>,
+    body: &petritype::InnerBody<'_>,
+) -> Option<InnerAddress> {
+    let mut path = Vec::with_capacity(body.path.len());
+    for (depth, step) in body.path.iter().enumerate() {
+        let place_name = |place: PlaceId| match depth {
+            0 => names.place(place),
+            _ => inner
+                .get(&body.nested_ids[depth - 1])
+                .map_or_else(|| place.to_string(), |above| above.names.place(place)),
+        };
+        path.push(match step {
+            petritype::PathStep::Token { place, token, net } => {
+                translate::step(&place_name(*place), *token, net)
+            }
+            petritype::PathStep::Subnet { place } => translate::subnet_step(&place_name(*place)),
+            _ => return None,
+        });
+    }
+    Some(InnerAddress {
+        path,
+        nested_id: body.nested_id().to_string(),
     })
 }
 
@@ -2266,8 +2320,12 @@ impl Owner {
     /// An owner serving `nets`, with nothing loaded.
     ///
     /// `status` is the heartbeat thread's view: the owner sets it to the
-    /// transition and the `now` of each launch, before the body can start,
-    /// and clears it when the firing lands. `heartbeat` is the period the
+    /// transition and the `now` of each launch of the loaded net's own,
+    /// before the body can start, and clears it when the firing lands. For a
+    /// firing inside an inner net, which a deep step makes inline, it sets
+    /// it to the transition, the `now` of the step and the net's
+    /// [`InnerAddress`] just before the body starts, and clears it when the
+    /// step returns, the body having fired or failed. `heartbeat` is the period the
     /// caller should run its heartbeat and ticker at; see
     /// [`heartbeat`](Owner::heartbeat).
     pub fn new(nets: Vec<NetEntry>, status: StatusCell, heartbeat: Duration) -> Self {
@@ -3399,7 +3457,7 @@ impl Owner {
         now: SystemTime,
         out: &mut Vec<Outgoing>,
     ) -> Result<(), (ErrorCode, String)> {
-        let (stepped, took) = self.step_deep_timed();
+        let (stepped, took) = self.step_deep_timed(now);
         match stepped {
             Ok(Some(StagedStep::Chosen(transition))) => {
                 return self.launch(transition, Some(id.to_owned()), now, out);
@@ -3425,13 +3483,32 @@ impl Owner {
         Ok(())
     }
 
-    /// One deep step of the loaded net (`Net::step_deep_staged`), and how
-    /// long it took. When it fired inside, that firing's body ran inline in
-    /// this call, so this is how long the body took.
-    fn step_deep_timed(&mut self) -> (Result<Option<StagedStep>, FiringFailed>, Duration) {
+    /// One deep step of the loaded net (`Net::step_deep_staged_with`), and
+    /// how long it took. When it fired inside, that firing's body ran inline
+    /// in this call, so this is how long the body took.
+    ///
+    /// Just before such a body starts, the status cell is set to name it:
+    /// its transition, `now`, and the address of the net it is in. It is
+    /// cleared when the step returns, the body having fired or failed.
+    fn step_deep_timed(
+        &mut self,
+        now: SystemTime,
+    ) -> (Result<Option<StagedStep>, FiringFailed>, Duration) {
+        let status = &self.status;
+        let loaded = self.loaded.as_mut().expect("a deep step needs a net");
+        let (names, inner) = (&loaded.names, &loaded.inner);
+        let mut told = false;
         let started = Instant::now();
-        let stepped = self.loaded_mut().net.step_deep_staged();
-        (stepped, started.elapsed())
+        let stepped = loaded.net.step_deep_staged_with(|body| {
+            told = true;
+            let address = inner_address(names, inner, body);
+            *lock(status) = Some((body.name.to_owned(), now, address));
+        });
+        let took = started.elapsed();
+        if told {
+            *lock(status) = None;
+        }
+        (stepped, took)
     }
 
     /// Reports the inner firing a deep step just made inline: its events,
@@ -3512,7 +3589,7 @@ impl Owner {
     ) -> Result<(), (ErrorCode, String)> {
         let loaded = self.loaded_mut();
         let name = loaded.names.transition(transition);
-        *lock(&self.status) = Some((name.clone(), now));
+        *lock(&self.status) = Some((name.clone(), now, None));
         let loaded = self.loaded_mut();
         let started = Instant::now();
         let launched = loaded.net.launch(transition);
@@ -3669,7 +3746,7 @@ impl Owner {
             return;
         }
         let continuous = self.nets[loaded.entry].hosting == Hosting::Continuous;
-        let (stepped, took) = self.step_deep_timed();
+        let (stepped, took) = self.step_deep_timed(now);
         match stepped {
             Ok(Some(StagedStep::Chosen(transition))) => {
                 if let Err((code, message)) = self.launch(transition, None, now, out) {

@@ -12,7 +12,8 @@ use petritype::{
 };
 use petritype_runner::protocol::Request;
 use petritype_runner::{
-    Hosting, Input, LoadError, NetEntry, Outgoing, Owner, ParamSpec, Params, StatusCell,
+    Hosting, InnerAddress, Input, LoadError, NetEntry, Outgoing, Owner, ParamSpec, Params,
+    StatusCell,
 };
 use serde_json::{Value, json};
 
@@ -167,7 +168,12 @@ impl H {
 
     /// An owner over other nets than [`registry`]'s.
     fn over(nets: Vec<NetEntry>) -> H {
-        let status: StatusCell = Arc::new(Mutex::new(None));
+        H::watched(nets, Arc::new(Mutex::new(None)))
+    }
+
+    /// An owner over `nets` that writes its status in `status`, which the
+    /// nets' bodies may hold a copy of.
+    fn watched(nets: Vec<NetEntry>, status: StatusCell) -> H {
         H {
             owner: Owner::new(nets, Arc::clone(&status), Duration::from_secs(30)),
             status,
@@ -753,6 +759,159 @@ fn an_inline_firing_is_answered_in_one_handle_as_fired() {
     assert_eq!(lines[2]["result"]["fired"], true);
 }
 
+/// What the status cell held each time a body looked at it, in order.
+type Sightings = Arc<Mutex<Vec<Option<(String, SystemTime, Option<InnerAddress>)>>>>;
+
+/// A body's look at the status cell, written in `seen`.
+fn look(status: &StatusCell, seen: &Sightings) -> impl Fn() + Clone + Send + Sync + 'static {
+    let (status, seen) = (Arc::clone(status), Arc::clone(seen));
+    move || seen.lock().unwrap().push(status.lock().unwrap().clone())
+}
+
+/// One thing to do, `Todo -<transition>-> Done`, whose body looks at the
+/// status cell and, when `fails`, then fails.
+fn chore(transition: &str, look: impl Fn() + Send + Sync + 'static, fails: bool) -> Net {
+    let mut b = NetBuilder::new();
+    let todo = b.place::<u32>("Todo");
+    let done = b.place::<u32>("Done");
+    b.seed(todo, [1]);
+    b.transition(
+        transition,
+        (TakeEdge(todo),),
+        (done,),
+        move |n: u32| -> Result<(u32,), Refused> {
+            look();
+            if fails { Err(Refused) } else { Ok((n,)) }
+        },
+    );
+    b.build().expect("a chore")
+}
+
+/// The `watched` net, whose every body looks at the status cell: `Work` in
+/// the net on the `Desk`, `Climb` in the subnet `Level`, `Stow` in the
+/// subnet `Hold` of the ship on the `Quay`, all inner first, and the outer
+/// `Tally`, with a mutate edge. With `fails`, `Work` fails.
+fn watched(status: &StatusCell, seen: &Sightings, fails: bool) -> NetEntry {
+    let look = look(status, seen);
+    NetEntry::new("watched", move |_: &Params| {
+        let mut b = NetBuilder::new();
+        b.subnet_place("Hold", chore("Stow", look.clone(), false));
+        let ship = b.build()?;
+        let mut b = NetBuilder::new();
+        let desk = b.place_nested::<Net>("Desk");
+        b.subnet_place("Level", chore("Climb", look.clone(), false));
+        let quay = b.place_nested::<Net>("Quay");
+        let inbox = b.place::<u32>("Inbox");
+        let count = b.place::<u64>("Count");
+        b.seed(desk, [chore("Work", look.clone(), fails)]);
+        b.seed(quay, [ship]);
+        b.seed(inbox, [1]);
+        b.seed(count, [0]);
+        let look = look.clone();
+        b.transition(
+            "Tally",
+            (TakeEdge(inbox), MutateEdge(count)),
+            (),
+            move |_: u32, count: &mut u64| {
+                look();
+                *count += 1;
+            },
+        );
+        Ok(b.build()?)
+    })
+}
+
+#[test]
+fn the_status_names_a_body_in_an_inner_net_with_its_address_while_it_runs() {
+    let status = StatusCell::default();
+    let seen = Sightings::default();
+    let mut h = H::watched(vec![watched(&status, &seen, false)], Arc::clone(&status));
+    h.result("load", json!({"net": "watched"}));
+
+    for (n, transition) in ["Work", "Climb", "Stow", "Tally"].into_iter().enumerate() {
+        let step = h.result("step", json!({}));
+        assert_eq!(step["transition"], transition);
+        let sightings = seen.lock().unwrap().clone();
+        assert_eq!(sightings.len(), n + 1, "one look per body");
+        let (name, started_at, address) = sightings[n].clone().expect("a body runs");
+        assert_eq!(name, transition);
+        assert_eq!(started_at, now(), "the time the step was handed");
+        match address {
+            // The address the step's result gives the same firing.
+            Some(address) => {
+                assert_eq!(serde_json::to_value(&address.path).unwrap(), step["path"]);
+                assert_eq!(address.nested_id, step["nested_id"]);
+            }
+            None => {
+                assert_eq!(
+                    transition, "Tally",
+                    "a body of the loaded net has no address"
+                );
+                assert!(step.get("path").is_none());
+            }
+        }
+        assert_eq!(
+            *h.status.lock().unwrap(),
+            None,
+            "cleared once {transition} landed"
+        );
+    }
+    let paths: Vec<Value> = h.result("get_log", json!({}))["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| entry["path"].clone())
+        .collect();
+    assert_eq!(paths[1], json!([{"place": "Level"}]));
+    assert_eq!(paths[2][1], json!({"place": "Hold"}));
+    assert_eq!(paths[2][0]["place"], "Quay");
+}
+
+#[test]
+fn the_status_names_each_inner_body_of_a_run_and_is_clear_after_a_failure() {
+    let status = StatusCell::default();
+    let seen = Sightings::default();
+    let mut h = H::watched(vec![watched(&status, &seen, false)], Arc::clone(&status));
+    h.result("load", json!({"net": "watched"}));
+    h.send("start", json!({}));
+    while h.owner.wants_tick() {
+        h.tick();
+    }
+    let names: Vec<(String, bool)> = seen
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|sighting| {
+            let (name, _, address) = sighting.clone().expect("a body runs");
+            (name, address.is_some())
+        })
+        .collect();
+    let inside = |name: &str| (name.to_owned(), true);
+    assert_eq!(
+        names,
+        [
+            inside("Work"),
+            inside("Climb"),
+            inside("Stow"),
+            ("Tally".into(), false)
+        ]
+    );
+    assert_eq!(*h.status.lock().unwrap(), None);
+
+    // A body that fails lands too, and the status is cleared.
+    let status = StatusCell::default();
+    let seen = Sightings::default();
+    let mut h = H::watched(vec![watched(&status, &seen, true)], Arc::clone(&status));
+    h.result("load", json!({"net": "watched"}));
+    let step = h.result("step", json!({}));
+    assert_eq!(step["failed"], true);
+    let sighting = seen.lock().unwrap()[0].clone().expect("Work runs");
+    assert_eq!(sighting.0, "Work");
+    let address = sighting.2.expect("in the desk's net");
+    assert_eq!(serde_json::to_value(&address.path).unwrap(), step["path"]);
+    assert_eq!(*h.status.lock().unwrap(), None, "cleared once Work failed");
+}
+
 #[test]
 fn reads_are_answered_while_a_body_runs_and_the_rest_wait() {
     let mut h = H::loaded("pipeline");
@@ -763,6 +922,11 @@ fn reads_are_answered_while_a_body_runs_and_the_rest_wait() {
     assert_eq!(
         h.status.lock().unwrap().as_ref().map(|s| s.0.clone()),
         Some("Double".into())
+    );
+    assert_eq!(
+        h.status.lock().unwrap().as_ref().map(|s| s.2.clone()),
+        Some(None),
+        "a body of the loaded net has no inner address"
     );
 
     let s = h.result("get_state", json!({})); // #3, at once

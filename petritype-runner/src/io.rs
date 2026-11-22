@@ -181,10 +181,18 @@ fn serve(nets: Vec<NetEntry>) -> ExitCode {
         move || loop {
             thread::sleep(period);
             if gauges.loaded.load(Ordering::Relaxed) {
-                let running = lock(&status).clone();
+                let (step_started_at, executing_transition, address) = match lock(&status).clone() {
+                    Some((name, at, address)) => (Some(iso8601(at)), Some(name), address),
+                    None => (None, None, None),
+                };
+                let (path, nested_id) = address.map_or((None, None), |address| {
+                    (Some(address.path), Some(address.nested_id))
+                });
                 let line = Notification::Heartbeat {
-                    step_started_at: running.as_ref().map(|(_, at)| iso8601(*at)),
-                    executing_transition: running.map(|(name, _)| name),
+                    step_started_at,
+                    executing_transition,
+                    path,
+                    nested_id,
                     marking_version: gauges.marking_version.load(Ordering::Relaxed),
                     running: gauges.running.load(Ordering::Relaxed),
                 }

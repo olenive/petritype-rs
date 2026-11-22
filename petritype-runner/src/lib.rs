@@ -84,7 +84,15 @@
 //!   gives that firing the time the press took. A firing a body makes
 //!   inside the nets of the tokens it holds is part of that body's time,
 //!   and carries 0. The process answers no request until an inline body
-//!   ends; the heartbeat still goes out.
+//!   ends; the heartbeat still goes out, and names the body. Every
+//!   `heartbeat` names the body that runs, if one does, by its transition's
+//!   name in its own net (`executing_transition`) and when it started
+//!   (`step_started_at`), and a body inside an inner net by that net's
+//!   `path` and `nested_id` too, as the firing's `step` result names it; the
+//!   two are absent for a body of the loaded net and when no body runs
+//!   ([`StatusCell`]). A firing that a body makes inside the nets of its own
+//!   tokens is named by no heartbeat, which names the body that made it,
+//!   and a press's firings by none at all.
 //! - `get_state`, `get_place_tokens`, `get_token`, `get_log` and `stop` are
 //!   answered while a detachable body runs; other requests wait for it to
 //!   land, in arrival order.
@@ -149,5 +157,5 @@ mod translate;
 
 pub use host::{Host, HostServer};
 pub use io::main;
-pub use owner::{Input, Outgoing, Owner, StatusCell};
+pub use owner::{InnerAddress, Input, Outgoing, Owner, StatusCell};
 pub use registry::{Factory, Hosting, LoadError, NetEntry, ParamSpec, Params};

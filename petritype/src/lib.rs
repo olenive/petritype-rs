@@ -279,7 +279,9 @@
 //!   default, take turns, outer first, or passive, which leaves a place's
 //!   inner nets to the outer bodies that reach into them),
 //!   [`Net::step_deep_staged`] is the same step for a driver that fires the
-//!   net's own transitions in stages ([`StagedStep`]), and
+//!   net's own transitions in stages ([`StagedStep`]),
+//!   [`Net::step_deep_staged_with`] is that step telling an observer of the
+//!   inner body it runs just before the body starts ([`InnerBody`]), and
 //!   [`Net::is_quiescent_deep`] asks whether anything can happen at any
 //!   depth. [`Net::nested_scope`] is the reach inside for a
 //!   caller that is not a body. Whatever an inner net logs comes out in the
@@ -421,7 +423,7 @@ pub use ids::{GroupRef, NetId, PlaceHandle, PlaceId, PlaceRef, SubnetRef, TokenI
 pub use keys::{Clause, Filter, KeyValue, Keys, Match};
 #[cfg(feature = "serde")]
 pub use marking::Marking;
-pub use nested::{DeepStep, Nested, StagedStep, Stepping};
+pub use nested::{DeepStep, InnerBody, Nested, StagedStep, Stepping};
 pub use net::{Net, PlaceInfo};
 pub use param::Param;
 pub use routing::{Either, RoutedOutput};

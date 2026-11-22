@@ -8,8 +8,9 @@
 //!
 //! Optional fields are omitted, never `null`, unless the protocol says
 //! otherwise (`progress.last_fired`, `progress.last_progress_at` and the
-//! heartbeat's two fields are `null` by design, and so is the colour of a
-//! `produced` entry that carries keys, [`Produced`]).
+//! heartbeat's `step_started_at` and `executing_transition` are `null` by
+//! design, and so is the colour of a `produced` entry that carries keys,
+//! [`Produced`]).
 //!
 //! A key's value is the core's [`KeyValue`]: a string, an integer or a
 //! boolean, written as the bare JSON value (PROTOCOL.md §13.1).
@@ -674,12 +675,22 @@ pub enum Notification {
         /// See the type's documentation.
         running: bool,
     },
-    /// Periodic while loaded; both fields `null` when no body runs.
+    /// Periodic while loaded: the body that runs and when it started, both
+    /// `null` when no body runs, and the inner net it runs in when it runs
+    /// in one.
     Heartbeat {
         /// When the running body started.
         step_started_at: Option<String>,
-        /// The transition whose body is running.
+        /// The transition whose body is running, by its name in its own net.
         executing_transition: Option<String>,
+        /// The path of the inner net the body runs in (PROTOCOL.md §12.1),
+        /// as a `step` result names the net of its firing; absent for a body
+        /// of the loaded net and when no body runs.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        path: Option<Vec<PathStep>>,
+        /// That inner net's nested id, present and absent with `path`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        nested_id: Option<String>,
         /// See the type's documentation.
         marking_version: u64,
         /// See the type's documentation.

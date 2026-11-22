@@ -173,6 +173,8 @@ impl Host {
         Notification::Heartbeat {
             step_started_at: None,
             executing_transition: None,
+            path: None,
+            nested_id: None,
             marking_version: self.owner.marking_version(),
             running: self.owner.running(),
         }

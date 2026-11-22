@@ -973,6 +973,24 @@ token's nets, except where §6.7 says otherwise.
   `stepping`, which the runner writes on every place that holds nets since
   protocol version 2 (§19.3.16); version 1 had `passive`, which the runner
   wrote for a place whose rule is `Passive`.
+- **Watching a deep step** (2026-11-22). An inner firing runs its body
+  inside the deep step, before the step returns, so a driver that reports
+  what is running (the protocol runner's heartbeat, §19.3.5) cannot name
+  such a body from outside. `step_deep_staged_with(before_body)` is
+  `step_deep_staged` with an observer, a closure passed as a value, which
+  the core calls once just before it runs an inner body inline, with an
+  `InnerBody`: the transition's id and name, and the way down from the net
+  that was stepped, one `PathStep` per level (the path a failure of that
+  body carries) beside the nested id of the net each step leads to. It is
+  called for no firing of the net that was stepped (that is the caller's
+  `Chosen`), for no firing a body makes inside the nets of its own tokens
+  (the body's own doing), and for nothing a control's press fires, since
+  `press` takes no observer. The core reads no clock for it; the observer
+  does, if it wants one. Inside the crate the watch goes down beside the
+  turn: `member_turn` and `subnet_turn` add a level around the inner deep
+  step and take it off after, and a step without a watch passes `None`, so
+  `step_deep`, `step_deep_staged`, `step_inside` and the drivers step as
+  before, at the cost of one branch per turn.
 - **Passive places.** `step_deep` never enters a place whose rule is
   `Passive`, and its inner nets do not count against `is_quiescent_deep`.
   An outer body steps them itself: `vehicle.inner.step()`, or
@@ -3066,10 +3084,23 @@ Input::Completed:    distribute(done) -> Distributed or Failed written;
   by `Owner`, so it keeps going while an inline body has the owner blocked,
   which is exactly when a host most wants it. The owner records the
   airborne or inline transition and its start time in a shared status cell
-  before any launch and clears it on landing; the heartbeat thread reads
-  the cell and sends `{step_started_at, executing_transition}` or two
-  nulls. `Tick` is the ticker's input to `Owner` (same period) and only
-  drives the run loop: a `Continuous` net re-checks `select()` on it.
+  before any launch and clears it on landing. A firing inside an inner net
+  runs inside the deep step, so the owner steps with
+  `step_deep_staged_with` (§6.6) and records that firing from the observer,
+  just before its body starts: the transition's name in its own net, the
+  handle's `now`, and the inner net's address, its wire `path` and
+  `nested_id`, built from the `InnerBody` and the records of the nets on
+  the way (`inner_address`) as a `step` result's are, without reading the
+  net the step holds; it clears the cell when the step returns, the body
+  having fired or failed (since 2026-11-22; before, the cell named no inner
+  body). The cell is `Option<(String, SystemTime, Option<InnerAddress>)>`.
+  The heartbeat thread reads it and sends `{step_started_at,
+  executing_transition}`, with `path` and `nested_id` for a body in an
+  inner net, or two nulls; hosted mode sends two nulls always. No
+  heartbeat names a firing a body makes inside its own tokens' nets (it
+  names that body), nor one a press makes. `Tick` is the ticker's input
+  to `Owner` (same period) and only drives the run loop: a `Continuous`
+  net re-checks `select()` on it.
 
 #### 19.3.6 Load, reset, shutdown
 

@@ -18,6 +18,10 @@
 //!   place never, since only an outer body steps them.
 //!   [`drivers::run`](crate::drivers::run) steps that way, so running a net
 //!   to quiescence runs its inner nets too.
+//! - **Watched.** An inner firing runs its body inside the deep step, so
+//!   [`Net::step_deep_staged_with`] takes an observer that is told of each
+//!   such body, as an [`InnerBody`], just before it runs: how a driver that
+//!   reports what is running names a body below the net it stepped.
 //! - **Reached.** A [`MutateEdge`](crate::MutateEdge) body is handed the
 //!   token itself, and so the inner net, with its whole API; a guard reads
 //!   inner markings with [`Net::nested`]; a caller that is not a body uses
@@ -467,6 +471,89 @@ pub enum StagedStep {
     Inside(DeepStep),
 }
 
+/// An inner body that a deep step is about to run inline: what
+/// [`Net::step_deep_staged_with`] tells its observer, once for each such
+/// body, just before it runs.
+///
+/// It names the firing as the step names it once the body has run: the
+/// transition, in the net it is in, and the way down to that net from the
+/// net that was stepped, one level per [`PathStep`], each with the nested id
+/// of the net it leads to. `path` is the [`FiringFailed::path`] a failure of
+/// this body comes back with, and the last of `nested_ids` is the nested id
+/// of the innermost [`DeepStep::Inside`] or [`DeepStep::Subnet`] of the
+/// step's result. A firing of the net that was stepped is never an inner
+/// body, so `path` is never empty.
+///
+/// The struct is `#[non_exhaustive]`: read its fields, and build none.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct InnerBody<'a> {
+    /// The transition whose body is about to run, by its id in the net it
+    /// is in.
+    pub transition: TransitionId,
+    /// That transition's name in its net.
+    pub name: &'a str,
+    /// The way down from the net that was stepped, outer to inner.
+    pub path: &'a [PathStep],
+    /// The nested id of the net each step of `path` leads to, in the same
+    /// order.
+    pub nested_ids: &'a [NetId],
+}
+
+impl InnerBody<'_> {
+    /// The nested id of the net the transition is in: the last of
+    /// [`nested_ids`](InnerBody::nested_ids).
+    pub fn nested_id(&self) -> NetId {
+        *self
+            .nested_ids
+            .last()
+            .expect("an inner body is at least one level down")
+    }
+}
+
+/// What a watched deep step carries down the levels: the observer, and the
+/// way down to the net whose turn it is, a level added as a member's turn
+/// goes in and taken off as it comes out.
+struct Watch<'w> {
+    before_body: &'w mut dyn FnMut(&InnerBody<'_>),
+    path: Vec<PathStep>,
+    nested_ids: Vec<NetId>,
+}
+
+impl Watch<'_> {
+    /// Tells the observer that `transition`, called `name`, of the net this
+    /// watch is down at, is about to run its body.
+    fn before_body(&mut self, transition: TransitionId, name: &str) {
+        debug_assert!(
+            !self.path.is_empty(),
+            "only an inner body is told of, and an inner body is at least one level down"
+        );
+        (self.before_body)(&InnerBody {
+            transition,
+            name,
+            path: &self.path,
+            nested_ids: &self.nested_ids,
+        });
+    }
+
+    /// The turn of the net one level down, through `step` to the net
+    /// `nested_id`: `turn` with that level on the way down for as long as
+    /// it runs.
+    fn down<R>(
+        &mut self,
+        step: PathStep,
+        nested_id: NetId,
+        turn: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        self.path.push(step);
+        self.nested_ids.push(nested_id);
+        let result = turn(self);
+        self.path.pop();
+        self.nested_ids.pop();
+        result
+    }
+}
+
 /// One of the two parts of a net's round on either side of its own turn
 /// ([`Stepping`]): what the staged step, the drivers and the fuse take in
 /// turn around the net's own choice.
@@ -803,10 +890,23 @@ impl Net {
     /// inner; its transition id is the inner net's. The failure's own
     /// [`Failed`](Event::Failed) event is lifted, like any other.
     pub fn step_deep(&mut self) -> Result<Option<DeepStep>, FiringFailed> {
-        Ok(match self.step_deep_staged()? {
+        self.step_deep_watched(None)
+    }
+
+    /// [`step_deep`](Net::step_deep), telling `watch`, when there is one, of
+    /// this net's own firing just before its body runs: a net that is
+    /// stepped with a watch is always one level down or more.
+    fn step_deep_watched(
+        &mut self,
+        mut watch: Option<&mut Watch<'_>>,
+    ) -> Result<Option<DeepStep>, FiringFailed> {
+        Ok(match self.staged(watch.as_deref_mut())? {
             None => None,
             Some(StagedStep::Inside(step)) => Some(step),
             Some(StagedStep::Chosen(transition)) => {
+                if let Some(watch) = watch {
+                    watch.before_body(transition, &self.transitions[transition.0 as usize].name);
+                }
                 self.fire_now(transition)?;
                 Some(DeepStep::Here { transition })
             }
@@ -857,14 +957,93 @@ impl Net {
     /// [`path`](FiringFailed::path) saying where. Nothing of this net's own
     /// fires here, so nothing of its own fails.
     pub fn step_deep_staged(&mut self) -> Result<Option<StagedStep>, FiringFailed> {
-        if let Some(step) = self.take_turn(Part::Ahead)? {
+        self.staged(None)
+    }
+
+    /// [`step_deep_staged`](Net::step_deep_staged), with `before_body`
+    /// called just before an inner body runs, to say which: for a driver
+    /// that reports what is running while it runs.
+    ///
+    /// The step is `step_deep_staged`'s in every way: the same choice, the
+    /// same firing, the same result and the same events, whatever
+    /// `before_body` does. When the step fires inside an inner net, which
+    /// runs the body inline before this returns, `before_body` is called
+    /// once, before that body starts, with an [`InnerBody`] naming the
+    /// transition and the way down to its net; when the body has run, the
+    /// step comes back as `StagedStep::Inside`, or as the body's failure,
+    /// as it would have. It is not called when the turn falls to this net
+    /// (`StagedStep::Chosen`: nothing of this net's own fires here) or when
+    /// nothing fires, so it is called once or not at all.
+    ///
+    /// It is told of the bodies the deep step runs and of no others. A body
+    /// that steps the nets inside the tokens it holds (a
+    /// [`MutateEdge`](crate::MutateEdge) body calling `vehicle.inner.step()`)
+    /// fires those as part of its own run, and they are not told of, nor is
+    /// anything a control's handler fires during
+    /// [`Net::press`](crate::Net::press), which takes no observer. The step
+    /// reads no clock for it: a caller that wants to know when the body
+    /// started reads its own clock in `before_body`.
+    ///
+    /// ```
+    /// use petritype::{NetBuilder, PathStep, StagedStep, TakeEdge};
+    ///
+    /// let mut inner = NetBuilder::new();
+    /// let todo = inner.place::<u32>("Todo");
+    /// let done = inner.place::<u32>("Done");
+    /// inner.seed(todo, [1]);
+    /// let work = inner.transition("Work", (TakeEdge(todo),), (done,), |n: u32| (n,)).id();
+    /// let inner = inner.build()?;
+    ///
+    /// let mut b = NetBuilder::new();
+    /// let desk = b.place_nested::<petritype::Net>("Desk");
+    /// b.seed(desk, [inner]);
+    /// let mut net = b.build()?;
+    /// let (token, _) = net.tokens(desk.id()).next().unwrap();
+    /// let cabin = net.nested(desk.id(), token).unwrap()[0].1.id();
+    ///
+    /// let mut told = Vec::new();
+    /// let step = net.step_deep_staged_with(|body| {
+    ///     told.push((body.name.to_owned(), body.path.to_vec(), body.nested_id()));
+    /// })?;
+    /// assert!(matches!(step, Some(StagedStep::Inside(ref s)) if s.transition() == work));
+    /// let way_down = vec![PathStep::Token { place: desk.id(), token, net: String::new() }];
+    /// assert_eq!(told, [("Work".to_owned(), way_down, cabin)], "told once, before Work ran");
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// As [`step_deep_staged`](Net::step_deep_staged)'s: an inner failure's
+    /// [`FiringFailed`], its [`path`](FiringFailed::path) the `path` that
+    /// `before_body` was given for the body that failed.
+    pub fn step_deep_staged_with(
+        &mut self,
+        mut before_body: impl FnMut(&InnerBody<'_>),
+    ) -> Result<Option<StagedStep>, FiringFailed> {
+        let mut watch = Watch {
+            before_body: &mut before_body,
+            path: Vec::new(),
+            nested_ids: Vec::new(),
+        };
+        self.staged(Some(&mut watch))
+    }
+
+    /// The three parts of a staged deep step, with the watch, when there is
+    /// one, carried into every member's turn.
+    fn staged(
+        &mut self,
+        mut watch: Option<&mut Watch<'_>>,
+    ) -> Result<Option<StagedStep>, FiringFailed> {
+        if let Some(step) = self.take_turn_watched(Part::Ahead, watch.as_deref_mut())? {
             return Ok(Some(StagedStep::Inside(step)));
         }
         if let Some(transition) = self.choose() {
             self.took_own_turn();
             return Ok(Some(StagedStep::Chosen(transition)));
         }
-        Ok(self.take_turn(Part::Behind)?.map(StagedStep::Inside))
+        Ok(self
+            .take_turn_watched(Part::Behind, watch)?
+            .map(StagedStep::Inside))
     }
 
     /// Changes the [`Stepping`] rule of a place that holds nets. Takes effect
@@ -1010,8 +1189,18 @@ impl Net {
     /// and a member of the ring that does becomes the cursor. `None` when
     /// none of them has anything to fire.
     pub(crate) fn take_turn(&mut self, part: Part) -> Result<Option<DeepStep>, FiringFailed> {
+        self.take_turn_watched(part, None)
+    }
+
+    /// [`take_turn`](Net::take_turn), with the watch, when there is one,
+    /// carried into the member's turn.
+    fn take_turn_watched(
+        &mut self,
+        part: Part,
+        mut watch: Option<&mut Watch<'_>>,
+    ) -> Result<Option<DeepStep>, FiringFailed> {
         for member in self.turns(part) {
-            let Some(result) = self.member_turn(member) else {
+            let Some(result) = self.member_turn(member, watch.as_deref_mut()) else {
                 continue;
             };
             if member.stepping == Stepping::TakeTurns {
@@ -1159,11 +1348,15 @@ impl Net {
     /// what the net logged is lifted under the place and token it sits in
     /// (rule 1), and the step is wrapped, or the failure's
     /// [`path`](FiringFailed::path) filled in, one level. `None` if it fired
-    /// nothing.
-    fn member_turn(&mut self, member: Member) -> Option<Result<DeepStep, FiringFailed>> {
+    /// nothing. A watch goes down with the turn, one level further.
+    fn member_turn(
+        &mut self,
+        member: Member,
+        watch: Option<&mut Watch<'_>>,
+    ) -> Option<Result<DeepStep, FiringFailed>> {
         let place = PlaceId(member.place as u32);
         let At::Token { position, net } = member.at else {
-            return self.subnet_turn(place);
+            return self.subnet_turn(place, watch);
         };
         let slot = &mut self.places[member.place];
         let nested = slot.meta.nested?;
@@ -1179,7 +1372,20 @@ impl Net {
                 member.id,
                 "a member stays put within a deep step"
             );
-            let result = match inner.step_deep() {
+            let stepped = match watch {
+                None => inner.step_deep_watched(None),
+                Some(watch) => {
+                    let step = PathStep::Token {
+                        place,
+                        token,
+                        net: name.to_owned(),
+                    };
+                    watch.down(step, member.id, |watch| {
+                        inner.step_deep_watched(Some(watch))
+                    })
+                }
+            };
+            let result = match stepped {
                 Ok(None) => return None,
                 Ok(Some(step)) => Ok(step),
                 Err(failed) => Err(failed),
@@ -1234,10 +1440,24 @@ impl Net {
     /// nothing.
     ///
     /// The subnet's ports are indexed by the subnet itself, so nothing of
-    /// this net's index follows what fired in there.
-    fn subnet_turn(&mut self, place: PlaceId) -> Option<Result<DeepStep, FiringFailed>> {
+    /// this net's index follows what fired in there. A watch goes down with
+    /// the turn, one level further.
+    fn subnet_turn(
+        &mut self,
+        place: PlaceId,
+        watch: Option<&mut Watch<'_>>,
+    ) -> Option<Result<DeepStep, FiringFailed>> {
         let subnet = &mut self.places[place.0 as usize].subnet.as_deref_mut()?.net;
-        let result = match subnet.step_deep() {
+        let stepped = match watch {
+            None => subnet.step_deep_watched(None),
+            Some(watch) => {
+                let id = subnet.id();
+                watch.down(PathStep::Subnet { place }, id, |watch| {
+                    subnet.step_deep_watched(Some(watch))
+                })
+            }
+        };
+        let result = match stepped {
             Ok(None) => return None,
             Ok(Some(step)) => Ok(step),
             Err(failed) => Err(failed),

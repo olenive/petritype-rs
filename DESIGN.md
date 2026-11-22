@@ -2952,7 +2952,9 @@ fn build(params: &Params) -> Result<petritype::Net, LoadError>;
    `Line` is a notification or a response, already serialised, in the order
    it must be written. `Launch` is a detachable firing the caller must run
    on some thread and feed back as `Input::Completed`. `Owner` creates no
-   threads, reads no clock it is not handed, and writes nothing, which is
+   threads, takes the time of day only from the `now` it is handed (its one
+   other clock is a stopwatch round a body it runs inline), and writes
+   nothing, which is
    what makes every behaviour below testable by feeding inputs and reading
    lines, and what the transcript tests (§19.3.8) drive.
 3. **`main`**: the stdout guard, a reader thread that parses stdin into
@@ -3145,8 +3147,10 @@ Where the implementation settled something the design left open, or chose
 differently, with the reason:
 
 - **Inline firings** still log `Launched` then `Distributed` in the core;
-  the runner folds the pair into one `fired`, `duration_ms: 0`, since the
-  owner has one `now` for the whole `handle`.
+  the runner folds the pair into one `fired`, whose `duration_ms` is the
+  time the body took, measured by the owner round the call that ran it
+  (it was `0` before 0.2.0, since the owner has one `now` for the whole
+  `handle`).
 - **`fireable` is not compared after a detached launch**, only after the
   landing, so no `fireable` line falls between `launched` and
   `distributed`. At `load` and `reset` the set is recorded silently; the
@@ -3311,7 +3315,8 @@ runner change.
   during one.
 - **The log** (§8) is one ring. An inner firing's entry, written when its
   `Fired`, `Distributed` or `Failed` is flushed (`started_at` the handle's
-  `now`, `duration_ms` 0, since it ran inline), carries `path` and
+  `now`, `duration_ms` the time its body took when the runner ran it inline
+  and 0 when a body or the host program made the firing), carries `path` and
   `nested_id` and the inner net's place names and ids; `seq` is shared.
   Each entry keeps, off the wire, the chain of nested ids from the outer
   net down, and `get_log` with an address keeps the entries whose chain

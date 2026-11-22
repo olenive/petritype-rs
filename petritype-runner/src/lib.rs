@@ -42,8 +42,12 @@
 //! ```
 //!
 //! `binary --describe` prints what it carries as one JSON line; `binary`
-//! with no arguments serves the protocol. While serving, a `println!` in a
-//! body goes to stderr, never into the protocol stream (Unix).
+//! with no arguments serves the protocol. `--net <name>`, with either,
+//! carries the one net registered as `<name>` and no other, so that
+//! `describe` lists it alone: a host replays a shared transcript of
+//! PROTOCOL.md §11, which may pin `describe` in full, against the binary
+//! started that way. While serving, a `println!` in a body goes to stderr,
+//! never into the protocol stream (Unix).
 //!
 //! A program that builds a net and fires it from its own code (a game, a
 //! simulation) can be watched too: it gives the net to a [`HostServer`],

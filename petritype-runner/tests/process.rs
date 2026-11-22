@@ -3,7 +3,6 @@
 //! protocol stream.
 
 use std::io::{BufRead, BufReader, Read, Write};
-use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
@@ -11,36 +10,9 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 
-/// Builds the example and returns the path of its binary.
-fn binary() -> PathBuf {
-    let status = Command::new(env!("CARGO"))
-        .args([
-            "build",
-            "--example",
-            "parcel_runner",
-            "-p",
-            "petritype-runner",
-            "-q",
-        ])
-        .status()
-        .expect("cargo runs");
-    assert!(status.success(), "the example builds");
-    let target = std::env::var_os("CARGO_TARGET_DIR").map_or_else(
-        || {
-            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .parent()
-                .expect("the crate is in a workspace")
-                .join("target")
-        },
-        PathBuf::from,
-    );
-    let path = target
-        .join("debug")
-        .join("examples")
-        .join(format!("parcel_runner{}", std::env::consts::EXE_SUFFIX));
-    assert!(path.exists(), "no binary at {path:?}");
-    path
-}
+mod common;
+
+use common::example_binary as binary;
 
 struct Session {
     child: Child,
@@ -51,7 +23,13 @@ struct Session {
 
 impl Session {
     fn spawn() -> Session {
+        Session::spawn_with(&[])
+    }
+
+    /// The binary started with `args`.
+    fn spawn_with(args: &[&str]) -> Session {
         let mut child = Command::new(binary())
+            .args(args)
             .env("PETRITYPE_RUNNER_HEARTBEAT_MS", "100")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -450,6 +428,65 @@ fn describe_flag_prints_one_line() {
     assert_eq!(describe["nets"][2]["mode"], "24/7");
 }
 
+/// `--net <name>` carries that net alone, before or after `--describe`.
+#[test]
+fn the_net_option_carries_one_net() {
+    for args in [
+        ["--net", "workshop", "--describe"],
+        ["--describe", "--net", "workshop"],
+    ] {
+        let output = Command::new(binary())
+            .args(args)
+            .output()
+            .expect("the example runs");
+        assert!(output.status.success(), "{args:?}");
+        let describe: Value = serde_json::from_slice(&output.stdout).unwrap();
+        let names: Vec<&Value> = describe["nets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|net| &net["name"])
+            .collect();
+        assert_eq!(names, ["workshop"], "{args:?}");
+    }
+
+    // Served, it loads that net and no other.
+    let mut s = Session::spawn_with(&["--net", "odd-names"]);
+    let describe = s.call("1", "describe", json!({}));
+    assert_eq!(describe["result"]["nets"].as_array().unwrap().len(), 1);
+    let load = s.call("2", "load", json!({"net": "odd-names"}));
+    assert_eq!(load["result"]["status"], "loaded");
+    let other = s.call("3", "load", json!({"net": "parcel-fleet"}));
+    assert_eq!(other["error"]["code"], "unknown_net");
+    let shutdown = s.call("4", "shutdown", json!({}));
+    assert_eq!(shutdown["result"]["status"], "ok");
+}
+
+/// A name the binary does not carry is refused, with the names it does.
+#[test]
+fn the_net_option_refuses_an_unknown_name() {
+    let output = Command::new(binary())
+        .args(["--net", "nowhere"])
+        .output()
+        .expect("the example runs");
+    assert_eq!(output.status.code(), Some(2));
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains(r#"unknown net "nowhere" for --net"#)
+            && stderr.contains("parcel-fleet, parcel-distribution,")
+            && stderr.contains("odd-names"),
+        "{stderr}"
+    );
+
+    let output = Command::new(binary())
+        .arg("--net")
+        .output()
+        .expect("the example runs");
+    assert_eq!(output.status.code(), Some(2), "a name is needed");
+    assert!(String::from_utf8_lossy(&output.stderr).contains("usage"));
+}
+
 #[test]
 fn other_arguments_are_a_usage_error() {
     let output = Command::new(binary())
@@ -458,5 +495,6 @@ fn other_arguments_are_a_usage_error() {
         .expect("the example runs");
     assert_eq!(output.status.code(), Some(2));
     assert!(output.stdout.is_empty());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("usage"));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("usage") && stderr.contains("--net <name>"));
 }

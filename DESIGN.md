@@ -2870,7 +2870,7 @@ a wire format they do not own. `Snapshot` stays unserialisable; tokens are
 
 ### 19.3 The `petritype-runner` crate
 
-**Designed and built 2026-10-03**; as-built notes in §19.3.10, nested nets in §19.3.11, keys in §19.3.12, the protocol's wording gaps and the engine policies in §19.3.13, protocol version 2 in §19.3.15 and §19.3.16, subnet places in §19.3.17, groups in §19.3.18, four more shared transcripts in §19.3.19. A library crate in this
+**Designed and built 2026-10-03**; as-built notes in §19.3.10, nested nets in §19.3.11, keys in §19.3.12, the protocol's wording gaps and the engine policies in §19.3.13, protocol version 2 in §19.3.15 and §19.3.16, subnet places in §19.3.17, groups in §19.3.18, four more shared transcripts and `--net` in §19.3.19. A library crate in this
 workspace plus an example binary. A net's bodies are the user's code, so the
 binary is always the user's own: it lists its nets and hands over to the
 crate. Dependencies: `petritype` with `serde`, `serde`, `serde_json`, and
@@ -3901,6 +3901,23 @@ changed and no new rule in the harness.
   net with no mutate edge, which both runners report as `launched` then
   `failed`. `cellar`'s `Age` has a mutate edge, which this runner reports
   in one piece and the Python runner in two; the fold gives the same lines.
+- **One net alone over pipes.** Twelve of the fifteen shared transcripts
+  pin `describe` in full, and the example binary carries every net, so a
+  host replaying a shared transcript against it over pipes could not match
+  `describe`. `main` takes `--net <name>`, with `--describe` or without,
+  in either order: it keeps the entry registered as `<name>`, the first if
+  several are, as `load` finds one, and drops the rest before anything
+  else, so that `describe` is that of the net's own registry, the one the
+  replay without a process uses. A name the binary does not carry exits 2
+  with `unknown net "<name>" for --net` and the names it carries, on
+  stderr; `--net` with no name, or an option given twice, is the usage
+  error. Every binary built on `main` takes it, the example's included.
+  `the_shared_transcripts_hold_over_real_pipes` replays every shared
+  transcript in `tests/protocol/` against the binary started with `--net`,
+  with the harness's own rules, reading each exchange's lines up to its
+  response and then, while fewer lines have come than it expects or a
+  `launched` waits for its other piece, what follows, as a running net's
+  firings follow the answer to `start`.
 
 ### 19.4 Who spawns it
 

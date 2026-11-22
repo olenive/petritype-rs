@@ -65,6 +65,16 @@ protocol: it reads one JSON request per line on stdin, such as
 `{"id":"1","method":"load","params":{"net":"parcel-fleet","params":{"trucks":3}}}`, and
 writes its answers and notifications on stdout.
 
+`--net <name>`, with either, carries the one net of that name alone, so that `describe` lists it only:
+
+```sh
+cargo run -p petritype-runner --example parcel_runner -- --net workshop
+```
+
+A shared protocol transcript is recorded against a runner carrying its own net alone, so this is how a host
+replays one against the binary over pipes. A name the binary does not carry is refused with the names it does.
+Every runner binary built on `petritype_runner::main` takes the option.
+
 ## A net inside your own program
 
 A program that builds a net and fires it from its own code, a game or a simulation, can let a viewer watch it

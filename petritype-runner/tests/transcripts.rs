@@ -111,10 +111,19 @@
 //! A transcript over a conformance net is replayed against a runner carrying
 //! that net alone (§11), whichever directory it is in, so that it may pin
 //! `describe` in full; any other against everything the example carries.
+//! `the_shared_transcripts_hold_over_real_pipes` replays the shared ones in
+//! `tests/protocol/` over real pipes too, against the example binary started
+//! with `--net`, which carries the transcript's net alone, with the same
+//! rules: a host replaying the shared set against this binary gets the same
+//! answers.
 
 use std::collections::BTreeMap;
+use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
+use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex};
+use std::thread;
 use std::time::{Duration, UNIX_EPOCH};
 
 use petritype_runner::protocol::Request;
@@ -124,6 +133,8 @@ use serde_json::{Map, Value, json};
 #[path = "../examples/parcel_runner/nets.rs"]
 #[allow(dead_code)]
 mod nets;
+
+mod common;
 
 /// Every line one input causes, firings fed back and ticks given.
 fn run(owner: &mut Owner, input: Input) -> Vec<Value> {
@@ -389,11 +400,11 @@ struct Mismatch {
     message: String,
 }
 
-/// What a transcript over `net` is replayed against: a conformance net of
-/// PROTOCOL.md §11 alone, so that its transcripts may pin `describe` in full,
-/// and everything the example carries for any other net.
-fn registry_for(net: &str) -> Vec<petritype_runner::NetEntry> {
-    match net {
+/// The registry that carries a conformance net of PROTOCOL.md §11 alone, so
+/// that its transcripts may pin `describe` in full, or `None` for any other
+/// net.
+fn conformance_registry(net: &str) -> Option<Vec<petritype_runner::NetEntry>> {
+    Some(match net {
         "parcel-distribution" => nets::conformance_registry(),
         "transit" => nets::transit_registry(),
         "wildlife" => nets::wildlife_registry(),
@@ -406,43 +417,82 @@ fn registry_for(net: &str) -> Vec<petritype_runner::NetEntry> {
         "cellar" => nets::cellar_registry(),
         "harbour" => nets::harbour_registry(),
         "odd-names" => nets::odd_names_registry(),
-        _ => nets::registry(),
+        _ => return None,
+    })
+}
+
+/// What a transcript over `net` is replayed against: a conformance net
+/// alone ([`conformance_registry`]), and everything the example carries for
+/// any other net.
+fn registry_for(net: &str) -> Vec<petritype_runner::NetEntry> {
+    conformance_registry(net).unwrap_or_else(nets::registry)
+}
+
+/// One transcript file, read and checked to load its own net.
+struct Transcript {
+    file: String,
+    net: String,
+    exchanges: Vec<Value>,
+}
+
+impl Transcript {
+    fn read(path: &Path) -> Result<Transcript, Mismatch> {
+        let file = path.file_name().unwrap().to_string_lossy().into_owned();
+        let whole = |message: String| Mismatch { message };
+        let text =
+            std::fs::read_to_string(path).map_err(|e| whole(format!("{file}: unreadable: {e}")))?;
+        let transcript: Value = serde_json::from_str(&text)
+            .map_err(|e| whole(format!("{file}: not a transcript: {e}")))?;
+        let net = transcript["net"].as_str().expect("a net name").to_owned();
+        let exchanges = transcript["exchanges"]
+            .as_array()
+            .expect("exchanges")
+            .clone();
+        if !exchanges
+            .iter()
+            .any(|x| x["send"]["method"] == "load" && x["send"]["params"]["net"] == net)
+        {
+            return Err(whole(format!("{file}: never loads its own net {net:?}")));
+        }
+        Ok(Transcript {
+            file,
+            net,
+            exchanges,
+        })
     }
 }
 
 /// Replays one transcript through a fresh `Owner` over the registry its net
-/// calls for ([`registry_for`]) and returns every mismatch: the first line
-/// that differs in each exchange, or the line count. An exchange that goes
-/// wrong binds nothing, and the replay goes on to the next, so that one
-/// difference does not hide the rest.
+/// calls for ([`registry_for`]) and returns every mismatch ([`compare`]).
 fn replay(path: &Path) -> Vec<Mismatch> {
-    let file = path.file_name().unwrap().to_string_lossy().into_owned();
-    let whole = |message: String| vec![Mismatch { message }];
-    let text = match std::fs::read_to_string(path) {
-        Ok(text) => text,
-        Err(e) => return whole(format!("{file}: unreadable: {e}")),
-    };
-    let transcript: Value = match serde_json::from_str(&text) {
+    let transcript = match Transcript::read(path) {
         Ok(transcript) => transcript,
-        Err(e) => return whole(format!("{file}: not a transcript: {e}")),
+        Err(mismatch) => return vec![mismatch],
     };
-    let net = transcript["net"].as_str().expect("a net name");
-    let exchanges = transcript["exchanges"].as_array().expect("exchanges");
-    if !exchanges
-        .iter()
-        .any(|x| x["send"]["method"] == "load" && x["send"]["params"]["net"] == net)
-    {
-        return whole(format!("{file}: never loads its own net {net:?}"));
-    }
-
     let mut owner = Owner::new(
-        registry_for(net),
+        registry_for(&transcript.net),
         Arc::new(Mutex::new(None)),
         Duration::from_secs(30),
     );
+    compare(&transcript, |request, _| {
+        run(&mut owner, Input::Request(request))
+    })
+}
+
+/// Sends each exchange's request through `deliver`, which returns every
+/// line it causes and is told how many lines the exchange expects once folded,
+/// and returns every mismatch: the first line that differs in each
+/// exchange, or the line count. An exchange that goes wrong binds nothing,
+/// and the replay goes on to the next, so that one difference does not
+/// hide the rest.
+fn compare(
+    transcript: &Transcript,
+    mut deliver: impl FnMut(Request, usize) -> Vec<Value>,
+) -> Vec<Mismatch> {
+    let file = &transcript.file;
     let mut bindings = Bindings::new();
     let mut mismatches = Vec::new();
-    for (index, exchange) in exchanges.iter().enumerate() {
+    for (index, exchange) in transcript.exchanges.iter().enumerate() {
         let send = &exchange["send"];
         let method = send["method"].as_str().expect("a method").to_owned();
         let where_ = format!("{file}, exchange {index} ({method})");
@@ -452,11 +502,11 @@ fn replay(path: &Path) -> Vec<Mismatch> {
             method,
             params: substitute(&params, &bindings, &where_),
         };
-        let actual: Vec<Value> = fold(run(&mut owner, Input::Request(request)))
+        let expected = fold(exchange["expect"].as_array().expect("expect").clone());
+        let actual: Vec<Value> = fold(deliver(request, expected.len()))
             .into_iter()
             .map(normalise)
             .collect();
-        let expected = fold(exchange["expect"].as_array().expect("expect").clone());
         let mut trial = bindings.clone();
         let differs = expected
             .iter()
@@ -558,6 +608,133 @@ fn the_shared_transcripts_hold() {
         "{} mismatches over {} shared transcripts in {dir:?}:\n\n{}",
         mismatches.len(),
         paths.len(),
+        mismatches.join("\n\n")
+    );
+}
+
+/// The example binary started with `--net`, carrying one net alone, and
+/// spoken to over real pipes.
+struct Pipes {
+    child: Child,
+    stdin: Option<ChildStdin>,
+    lines: Receiver<String>,
+}
+
+impl Pipes {
+    fn spawn(binary: &Path, net: &str) -> Pipes {
+        let mut child = Command::new(binary)
+            .args(["--net", net])
+            // An hour between heartbeats, so that none comes while a
+            // transcript replays: a heartbeat belongs to no exchange.
+            .env("PETRITYPE_RUNNER_HEARTBEAT_MS", "3600000")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .expect("the example starts");
+        let stdin = child.stdin.take();
+        let stdout = child.stdout.take().unwrap();
+        let (tx, lines) = mpsc::channel();
+        thread::spawn(move || {
+            for line in BufReader::new(stdout).lines() {
+                if tx.send(line.expect("stdout is UTF-8")).is_err() {
+                    return;
+                }
+            }
+        });
+        Pipes {
+            child,
+            stdin,
+            lines,
+        }
+    }
+
+    /// Sends `request` and gathers the lines it causes: every line up to its
+    /// response, and after it, while fewer than `expected` lines have come
+    /// once folded or the last is a `launched` whose other piece is still
+    /// to come, whatever follows within a short wait, as the firings of a
+    /// running net follow the answer to `start`.
+    fn exchange(&mut self, request: Request, expected: usize) -> Vec<Value> {
+        let line = json!({"id": request.id, "method": request.method, "params": request.params});
+        let stdin = self.stdin.as_mut().expect("stdin is open");
+        writeln!(stdin, "{line}").unwrap();
+        stdin.flush().unwrap();
+        let mut lines: Vec<Value> = Vec::new();
+        let mut answered = false;
+        loop {
+            let half_told = lines.last().is_some_and(|line: &Value| {
+                line["method"] == "launched"
+                    || (line["method"] == "nested"
+                        && line["params"]["event"]["method"] == "launched")
+            });
+            if answered && !half_told && fold(lines.clone()).len() >= expected {
+                break;
+            }
+            let wait = Duration::from_secs(if answered { 2 } else { 20 });
+            let Ok(text) = self.lines.recv_timeout(wait) else {
+                break;
+            };
+            let value: Value = serde_json::from_str(&text)
+                .unwrap_or_else(|e| panic!("stdout carried a non-JSON line {text:?}: {e}"));
+            if value["method"] == "heartbeat" {
+                continue;
+            }
+            answered |= value.get("method").is_none() && value["id"] == request.id.as_str();
+            lines.push(value);
+        }
+        lines
+    }
+
+    /// Closes stdin, which ends the process, and waits for it to exit.
+    fn finish(mut self) {
+        drop(self.stdin.take());
+        let status = self.child.wait().unwrap();
+        assert!(status.success(), "exit {status:?}");
+    }
+}
+
+/// The shared transcripts in `tests/protocol/`, those over a conformance
+/// net, replayed over real pipes against the example binary started with
+/// `--net <net>`, so that it carries the transcript's net alone and its
+/// `describe` is the one the transcript pins in full (PROTOCOL.md §11). The
+/// rules are those of the replay without a process; only the lines come
+/// from the binary.
+#[test]
+fn the_shared_transcripts_hold_over_real_pipes() {
+    let binary = common::example_binary();
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/protocol");
+    let mut replayed = Vec::new();
+    let mut mismatches = Vec::new();
+    for path in transcripts_in(&dir) {
+        let transcript = match Transcript::read(&path) {
+            Ok(transcript) => transcript,
+            Err(mismatch) => {
+                mismatches.push(mismatch.message);
+                continue;
+            }
+        };
+        if conformance_registry(&transcript.net).is_none() {
+            continue;
+        }
+        let mut pipes = Pipes::spawn(&binary, &transcript.net);
+        mismatches.extend(
+            compare(&transcript, |request, expected| {
+                pipes.exchange(request, expected)
+            })
+            .into_iter()
+            .map(|m| m.message),
+        );
+        pipes.finish();
+        replayed.push(transcript.file);
+    }
+    assert!(
+        replayed.iter().any(|file| file == "12_failures.json"),
+        "the shared transcripts are missing from {dir:?}: {replayed:?}"
+    );
+    assert!(
+        mismatches.is_empty(),
+        "{} mismatches over real pipes in {replayed:?}:\n\n{}",
+        mismatches.len(),
         mismatches.join("\n\n")
     );
 }

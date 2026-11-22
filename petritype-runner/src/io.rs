@@ -22,8 +22,9 @@ const DEFAULT_HEARTBEAT: Duration = Duration::from_secs(30);
 /// milliseconds. Meant for tests, which cannot wait 30 seconds.
 pub(crate) const HEARTBEAT_ENV: &str = "PETRITYPE_RUNNER_HEARTBEAT_MS";
 
-const USAGE: &str = "usage: <binary>              serve the net protocol on stdin and stdout\n       \
-                     <binary> --describe   print the nets this binary carries as one JSON line";
+const USAGE: &str = "usage: <binary> [--net <name>]              serve the net protocol on stdin and stdout\n       \
+                     <binary> [--net <name>] --describe   print the nets this binary carries as one JSON line\n\n  \
+                     --net <name>   carry the net registered as <name> alone, so that describe lists it only";
 
 /// Runs a net process: the whole of a runner binary's `main`.
 ///
@@ -31,6 +32,14 @@ const USAGE: &str = "usage: <binary>              serve the net protocol on stdi
 ///   `shutdown` or end of file, and exits 0.
 /// - With `--describe`, prints the `describe` answer as one JSON line and
 ///   exits 0; this is how a build step learns what the binary carries.
+/// - With `--net <name>`, before or after `--describe` or alone, carries
+///   the one net registered as `<name>` and no other, so that `describe`
+///   lists that net alone and `load` knows no other. This is how a host
+///   replays a shared transcript of PROTOCOL.md §11 against the binary
+///   over pipes, since a shared transcript is recorded against a runner
+///   carrying its own net alone and may pin `describe` in full. A name the
+///   binary does not carry is refused on stderr, with the names it does
+///   carry, and the binary exits 2.
 /// - With anything else, prints usage on stderr and exits 2.
 ///
 /// While serving, file descriptor 1 is moved: the protocol keeps a private
@@ -52,20 +61,72 @@ const USAGE: &str = "usage: <binary>              serve the net protocol on stdi
 /// }
 /// ```
 pub fn main(nets: impl IntoIterator<Item = NetEntry>) -> ExitCode {
-    let nets: Vec<NetEntry> = nets.into_iter().collect();
     let args: Vec<OsString> = std::env::args_os().skip(1).collect();
-    match args.as_slice() {
-        [] => serve(nets),
-        [flag] if flag == "--describe" => {
-            let owner = Owner::new(nets, StatusCell::default(), DEFAULT_HEARTBEAT);
-            println!("{}", protocol::to_line(owner.describe()));
-            ExitCode::SUCCESS
-        }
-        _ => {
-            eprintln!("{USAGE}");
-            ExitCode::from(2)
+    let Some(command) = parse_args(&args) else {
+        eprintln!("{USAGE}");
+        return ExitCode::from(2);
+    };
+    let mut nets: Vec<NetEntry> = nets.into_iter().collect();
+    if let Some(name) = &command.net {
+        match one_net(nets, name) {
+            Ok(net) => nets = vec![net],
+            Err(message) => {
+                eprintln!("{message}");
+                return ExitCode::from(2);
+            }
         }
     }
+    if command.describe {
+        let owner = Owner::new(nets, StatusCell::default(), DEFAULT_HEARTBEAT);
+        println!("{}", protocol::to_line(owner.describe()));
+        ExitCode::SUCCESS
+    } else {
+        serve(nets)
+    }
+}
+
+/// What the command line asks for: `--describe`, and `--net <name>`, each
+/// at most once and in either order.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct Command {
+    describe: bool,
+    net: Option<OsString>,
+}
+
+/// The command the arguments spell, or `None` for anything else: an
+/// unknown argument, one given twice, or `--net` with no name after it.
+fn parse_args(args: &[OsString]) -> Option<Command> {
+    let mut command = Command::default();
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
+        if arg == "--describe" && !command.describe {
+            command.describe = true;
+        } else if arg == "--net" && command.net.is_none() {
+            command.net = Some(args.next()?.clone());
+        } else {
+            return None;
+        }
+    }
+    Some(command)
+}
+
+/// The entry registered as `name`, the first if several are, as `load`
+/// would find it; or the message that refuses the name, listing the nets
+/// there are.
+fn one_net(nets: Vec<NetEntry>, name: &OsString) -> Result<NetEntry, String> {
+    let carried: Vec<&str> = nets.iter().map(NetEntry::name).collect();
+    let carried = if carried.is_empty() {
+        "no nets".to_owned()
+    } else {
+        carried.join(", ")
+    };
+    let message = format!(
+        "petritype-runner: unknown net {:?} for --net; this binary carries {carried}",
+        name.to_string_lossy(),
+    );
+    nets.into_iter()
+        .find(|entry| name == entry.name())
+        .ok_or(message)
 }
 
 /// What the owner loop receives.
@@ -257,4 +318,79 @@ fn guard_stdout() -> io::Result<Box<dyn Write + Send>> {
 
 fn lock<T>(cell: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     cell.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(words: &[&str]) -> Vec<OsString> {
+        words.iter().map(OsString::from).collect()
+    }
+
+    fn net(name: &str) -> Option<OsString> {
+        Some(OsString::from(name))
+    }
+
+    #[test]
+    fn the_arguments() {
+        assert_eq!(parse_args(&args(&[])), Some(Command::default()));
+        let describe = Command {
+            describe: true,
+            net: None,
+        };
+        assert_eq!(parse_args(&args(&["--describe"])), Some(describe));
+        let one = Command {
+            describe: false,
+            net: net("odd-names"),
+        };
+        assert_eq!(parse_args(&args(&["--net", "odd-names"])), Some(one));
+        let both = Command {
+            describe: true,
+            net: net("workshop"),
+        };
+        for words in [
+            ["--net", "workshop", "--describe"],
+            ["--describe", "--net", "workshop"],
+        ] {
+            assert_eq!(parse_args(&args(&words)), Some(both.clone()));
+        }
+        // A name may be anything, a flag's spelling included.
+        let odd = Command {
+            describe: false,
+            net: net("--describe"),
+        };
+        assert_eq!(parse_args(&args(&["--net", "--describe"])), Some(odd));
+        for words in [
+            &["--net"][..],
+            &["--describe", "--describe"],
+            &["--net", "a", "--net", "b"],
+            &["--frobnicate"],
+            &["workshop"],
+        ] {
+            assert_eq!(parse_args(&args(words)), None, "{words:?}");
+        }
+    }
+
+    #[test]
+    fn one_net_of_several() {
+        let build = |_: &crate::Params| -> Result<petritype::Net, crate::LoadError> {
+            Ok(petritype::NetBuilder::new().build()?)
+        };
+        let nets = || {
+            vec![
+                NetEntry::new("first", build),
+                NetEntry::new("second", build),
+            ]
+        };
+        let found = one_net(nets(), &OsString::from("second")).unwrap();
+        assert_eq!(found.name(), "second");
+        let refused = one_net(nets(), &OsString::from("third")).err().unwrap();
+        assert_eq!(
+            refused,
+            "petritype-runner: unknown net \"third\" for --net; this binary carries first, second"
+        );
+        let none = one_net(Vec::new(), &OsString::from("x")).err().unwrap();
+        assert!(none.ends_with("this binary carries no nets"), "{none}");
+    }
 }

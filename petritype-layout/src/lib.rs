@@ -92,8 +92,8 @@
 //! straight, and take no part in the layout, as a ghosted place's edges
 //! never do.
 //!
-//! [`Layout::fit_labels`] can make the gaps within a rank wide enough for
-//! the names.
+//! The gaps within a rank are wide enough for the names drawn beside the
+//! nodes. [`Layout::fit_labels`] turns that off.
 //!
 //! A part of a net, such as what a viewer's filter shows, is laid out on its
 //! own with [`Layout::compute_subgraph`]: one drawing, with no frame but
@@ -669,8 +669,9 @@ pub struct Layout {
     pub ghosting: Ghosting,
     /// Whether to space the nodes of a rank so that the name drawn beside
     /// each fits between it and its neighbour: the width of a name is
-    /// estimated from its length. Off by default, which spaces nodes
-    /// [`node_sep`](Layout::node_sep) apart whatever their names.
+    /// estimated from its length. On by default. Off spaces nodes
+    /// [`node_sep`](Layout::node_sep) apart whatever their names, so long
+    /// names overlap.
     pub fit_labels: bool,
     /// The radius of a ghost: smaller than a place's.
     pub ghost_radius: f32,
@@ -721,7 +722,7 @@ impl Default for Layout {
             closed: BTreeSet::new(),
             group_gap: 80.0,
             ghosting: Ghosting::default(),
-            fit_labels: false,
+            fit_labels: true,
             ghost_radius: 14.0,
             ghost_sep: 80.0,
             port_radius: 14.0,
@@ -3210,6 +3211,8 @@ mod tests {
             (a.x - b.x).abs()
         };
         let mut layout = Layout::default();
+        assert!(layout.fit_labels, "names fit by default");
+        layout.fit_labels = false;
         assert_eq!(gap(&mut layout), layout.node_sep);
         layout.fit_labels = true;
         // The left node's label sits left of the right node: room for it.

@@ -248,6 +248,12 @@ by sibling subnets. Unfolding a subnet place inside the outer drawing.
   `--open-groups`. A closed box counts every token in the group's places,
   and for a subnet place the tokens its ports hold. A reset, a reload, and
   going into or out of an inner net start a view closed again.
-- **Not done.** The history player shows a closed box's count but does not
-  animate a past token to a box. A firing inside a subnet place that is
-  hidden in a closed group does not flash the box.
+- **The history player** moves a past token into and out of a closed box as
+  the live drawing does: along the box's arrow, vanishing at its edge or
+  starting from it, and a firing wholly inside one box moves nothing and
+  changes the count. While the history is shown, a box on the canvas takes
+  the mark of the transitions it hides: lit when one fires, the running
+  colour while one is in flight, the failed colour after a failure.
+- **A firing inside a subnet place** that is hidden in a closed group
+  flashes the group's box, as a firing of one of the group's own transitions
+  does.

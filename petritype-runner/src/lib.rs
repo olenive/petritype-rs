@@ -95,7 +95,12 @@
 //!   and a press's firings by none at all.
 //! - `get_state`, `get_place_tokens`, `get_token`, `get_log` and `stop` are
 //!   answered while a detachable body runs; other requests wait for it to
-//!   land, in arrival order.
+//!   land, in arrival order. A request that arrives while a body runs
+//!   inline is read when that body lands, before a running net fires
+//!   again, so a `stop` sent then is answered after that one body and the
+//!   net fires nothing more first. `start` is answered when the first body
+//!   of the run has landed, if that body runs inline, and a process whose
+//!   input closes during an inline body ends when the body lands.
 //! - Token labels are the token's `Debug`, cut at 1000 characters; a token
 //!   on a place marked `serializable` also has a JSON form, which is what
 //!   `inject` and `get_token`'s `kind: "json"` need.

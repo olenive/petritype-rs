@@ -5,7 +5,7 @@ use std::ffi::OsString;
 use std::io::{self, BufRead, Write};
 use std::process::ExitCode;
 use std::sync::atomic::Ordering;
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
 use std::time::{Duration, SystemTime};
@@ -49,7 +49,10 @@ const USAGE: &str = "usage: <binary> [--net <name>]              serve the net p
 ///
 /// The heartbeat (and the ticker that drives a running net) fires every 30
 /// seconds, or every `PETRITYPE_RUNNER_HEARTBEAT_MS` milliseconds when that
-/// variable is set.
+/// variable is set. A tick waits behind every request that has come in, so
+/// a request that arrives while a body runs inline is handled when that
+/// body lands, before the net fires again: a `stop` sent then is answered
+/// after that one body.
 ///
 /// `nets` is any list of entries, for example an array:
 ///
@@ -207,7 +210,8 @@ fn serve(nets: Vec<NetEntry>) -> ExitCode {
         }
     });
 
-    while let Ok(message) = inbox.recv() {
+    let mut tick_waiting = false;
+    while let Some(message) = next_message(&inbox, &mut tick_waiting) {
         let input = match message {
             Message::Input(input) => input,
             Message::Line(line) => {
@@ -244,13 +248,41 @@ fn serve(nets: Vec<NetEntry>) -> ExitCode {
             break;
         }
         if owner.wants_tick() {
-            let _ = to_owner.send(Message::Input(Input::Tick));
+            tick_waiting = true;
         }
     }
 
     let _ = to_writer.send(WriterMessage::Done);
     let _ = writer.join();
     ExitCode::SUCCESS
+}
+
+/// The next message for the owner loop, with every tick held back until
+/// nothing else waits: `None` once every sender is gone.
+///
+/// A tick that comes in is not handed out at once. It sets `tick_waiting`,
+/// and the loop gets [`Input::Tick`] only when the channel is empty, so the
+/// ticks that came in while the owner was busy count as one, and a request
+/// that arrived during an inline body is handled when that body lands,
+/// before any tick fires the net again. The loop sets `tick_waiting` itself
+/// when the owner [wants a tick](Owner::wants_tick).
+fn next_message(inbox: &Receiver<Message>, tick_waiting: &mut bool) -> Option<Message> {
+    loop {
+        let message = match inbox.try_recv() {
+            Ok(message) => message,
+            Err(TryRecvError::Empty) if *tick_waiting => {
+                *tick_waiting = false;
+                return Some(Message::Input(Input::Tick));
+            }
+            Err(TryRecvError::Empty) => inbox.recv().ok()?,
+            Err(TryRecvError::Disconnected) => return None,
+        };
+        if let Message::Input(Input::Tick) = message {
+            *tick_waiting = true;
+            continue;
+        }
+        return Some(message);
+    }
 }
 
 /// Stdin, line by line, into the owner's channel.

@@ -177,7 +177,8 @@ pub enum Outgoing {
 }
 
 /// What the heartbeat thread needs besides the status cell, mirrored after
-/// every [`Owner::handle`].
+/// every [`Owner::handle`], and `running` also just before a body runs
+/// inline.
 #[derive(Debug, Default)]
 pub(crate) struct Gauges {
     pub(crate) marking_version: AtomicU64,
@@ -2366,9 +2367,12 @@ impl Owner {
     ///
     /// An inline body lands inside `handle`, so no [`Input::Completed`] will
     /// come to prompt the next firing. A caller that sees `true` should feed
-    /// an [`Input::Tick`] behind whatever input is already queued, rather
-    /// than wait for the ticker; queueing it, instead of looping inside
-    /// `handle`, is what lets a `stop` that arrived meanwhile be heard.
+    /// an [`Input::Tick`] once every input already waiting has been handled,
+    /// rather than wait for the ticker. Feeding it after them, instead of
+    /// looping inside `handle`, is what lets a `stop` that arrived meanwhile
+    /// be heard before the net fires again; [`main`](crate::main) holds the
+    /// ticker's ticks back in the same way, taking one only when nothing
+    /// else waits.
     pub fn wants_tick(&self) -> bool {
         self.poke
             && self
@@ -2392,6 +2396,19 @@ impl Owner {
         }
         self.mirror_gauges();
         out
+    }
+
+    /// Copies whether the net runs into its gauge, just before a body runs
+    /// inline: the heartbeat thread reads it while the body runs, and the
+    /// first body of a run runs in the `handle` that started it, before
+    /// [`mirror_gauges`](Owner::mirror_gauges) would copy it. The version is
+    /// left as the last `handle` mirrored it, the version of the lines
+    /// written so far.
+    fn mirror_running(&self) {
+        self.gauges.running.store(
+            self.loaded.as_ref().is_some_and(|l| l.running),
+            Ordering::Relaxed,
+        );
     }
 
     /// Copies what the heartbeat thread reads into the gauges.
@@ -3489,11 +3506,15 @@ impl Owner {
     ///
     /// Just before such a body starts, the status cell is set to name it:
     /// its transition, `now`, and the address of the net it is in. It is
-    /// cleared when the step returns, the body having fired or failed.
+    /// cleared when the step returns, the body having fired or failed. The
+    /// `running` gauge is mirrored first, for the heartbeats during that
+    /// body, or during the body of the choice it hands back, which is
+    /// launched next.
     fn step_deep_timed(
         &mut self,
         now: SystemTime,
     ) -> (Result<Option<StagedStep>, FiringFailed>, Duration) {
+        self.mirror_running();
         let status = &self.status;
         let loaded = self.loaded.as_mut().expect("a deep step needs a net");
         let (names, inner) = (&loaded.names, &loaded.inner);

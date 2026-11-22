@@ -2984,7 +2984,8 @@ fn build(params: &Params) -> Result<petritype::Net, LoadError>;
    reader, the body threads and a ticker feed; and the loop: `recv`,
    `handle`, hand the batch to the writer, spawn a thread for each `Launch`
    whose body sends `Completed` back, stop on `Exit` or when the reader
-   reports end of file.
+   reports end of file. The loop holds a tick back until nothing else
+   waits in the channel (§19.3.5).
 
 #### 19.3.3 What `Loaded` holds besides the net
 
@@ -3079,7 +3080,10 @@ Input::Completed:    distribute(done) -> Distributed or Failed written;
   as the Python runner does. One firing at a time, so a run never has two
   bodies airborne.
 - `stop` clears `running` and answers at once; the airborne body lands
-  normally and is reported normally.
+  normally and is reported normally. A `stop` that comes in while a body
+  runs inline is read when that body lands, before the next tick, so it is
+  answered after that one body and the net fires nothing more first (since
+  2026-11-22, below).
 - `heartbeat` (default every 30 s) is written by a thread of its own, not
   by `Owner`, so it keeps going while an inline body has the owner blocked,
   which is exactly when a host most wants it. The owner records the
@@ -3098,9 +3102,25 @@ Input::Completed:    distribute(done) -> Distributed or Failed written;
   executing_transition}`, with `path` and `nested_id` for a body in an
   inner net, or two nulls; hosted mode sends two nulls always. No
   heartbeat names a firing a body makes inside its own tokens' nets (it
-  names that body), nor one a press makes. `Tick` is the ticker's input
-  to `Owner` (same period) and only drives the run loop: a `Continuous`
-  net re-checks `select()` on it.
+  names that body), nor one a press makes. The heartbeat's `running` is
+  read from a gauge the owner mirrors after every `handle` and, since
+  2026-11-22, just before a body runs inline (`mirror_running`), so it is
+  true during the first body of a run, which runs inside the `start` that
+  began it; the version gauge is left as the last `handle` mirrored it,
+  the version of the lines written so far.
+- `Tick` is the ticker's input to `Owner` (same period) and only drives
+  the run loop: a `Continuous` net re-checks `select()` on it. The
+  heartbeat thread sends one every period, busy owner or not, so the loop
+  does not hand ticks to the owner as they come (`next_message`): a tick
+  sets a flag, and the owner gets `Tick` only when the channel is empty.
+  The ticks that came in while the owner was busy count as one, and a
+  request, a landing or end of file that came in during an inline body is
+  handled when that body lands, before any tick fires the net again. The
+  tick `wants_tick` asks for sets the same flag. A run with nothing waiting
+  fires one inline body per `handle` back to back, as it did when each tick
+  was handed over in turn. Before 2026-11-22 each tick queued ahead of a
+  `stop` started another inline firing, and a `stop` sent during a
+  one-second body with a 200 ms period was answered after three firings.
 
 #### 19.3.6 Load, reset, shutdown
 
@@ -3187,13 +3207,14 @@ differently, with the reason:
   `distributed`. At `load` and `reset` the set is recorded silently; the
   `reloaded` already means "refetch".
 - **Inline runs stay interruptible.** A running net whose next firing is
-  inline fires one per `handle` and `Owner::wants_tick()` asks the loop to
-  queue a `Tick`, so a `stop` between firings is heard.
+  inline fires one per `handle` and `Owner::wants_tick()` asks the loop for
+  a `Tick`, which it hands over once nothing else waits, so a `stop` between
+  firings is heard before the next one (§19.3.5).
 - **Answered during a body**: the five reads and `stop`, plus `describe`
   and `shutdown`.
 - **Heartbeat** carries `marking_version` and `running` like every
-  notification, read from atomics the owner mirrors; sent only while a net
-  is loaded. Period from `PETRITYPE_RUNNER_HEARTBEAT_MS` when set, for
+  notification, read from atomics the owner mirrors (`running` also before
+  an inline body, §19.3.5); sent only while a net is loaded. Period from `PETRITYPE_RUNNER_HEARTBEAT_MS` when set, for
   tests.
 - **Load parameters**: `ParamSpec` defaults are filled in before the
   factory runs; a missing required parameter is `invalid_params`.

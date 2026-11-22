@@ -179,6 +179,81 @@ fn a_heartbeat_names_an_inline_body_and_the_inner_net_it_runs_in() {
     assert_eq!(shutdown["result"]["status"], "ok");
 }
 
+/// The heartbeat's `running` is true while the first body of a run runs,
+/// which it does inside the `start` that began the run, before `start` is
+/// answered. The heartbeats that come before that answer and name the body
+/// are of the first body alone: the second starts only after the answer
+/// has gone to the writer.
+#[test]
+fn running_is_true_during_the_first_body_of_a_run() {
+    let mut s = Session::slow();
+    s.call(
+        "1",
+        "load",
+        json!({"net": "slow-office", "params": {"ms": BODY_MS, "jobs": 2, "tallies": 0}}),
+    );
+    let mark = s.seen.len();
+    let start = s.call("2", "start", json!({}));
+    assert_eq!(start["result"]["running"], true);
+    let first = heartbeats_naming(&s.seen[mark..], "File");
+    assert!(!first.is_empty(), "a heartbeat while the first File ran");
+    for params in first {
+        assert_eq!(params["running"], true, "{params}");
+    }
+
+    while s.next_line()["method"] != "execution_stopped" {}
+    let shutdown = s.call("3", "shutdown", json!({}));
+    assert_eq!(shutdown["result"]["status"], "ok");
+}
+
+/// A `stop` sent while an inline body of a running net runs is answered
+/// once that body lands, and the net fires nothing more first. The test
+/// sends the `stop` on seeing a heartbeat that names the run's second body,
+/// told apart from the first by its `step_started_at`, so the stop comes in
+/// while that body has most of its time still to run.
+#[test]
+fn a_stop_during_an_inline_body_is_answered_after_that_body() {
+    let mut s = Session::slow();
+    s.call(
+        "1",
+        "load",
+        json!({"net": "slow-office", "params": {"ms": BODY_MS, "jobs": 4, "tallies": 0}}),
+    );
+    let mark = s.seen.len();
+    s.call("2", "start", json!({}));
+    let first: Vec<Value> = heartbeats_naming(&s.seen[mark..], "File")
+        .into_iter()
+        .map(|params| params["step_started_at"].clone())
+        .collect();
+    assert!(!first.is_empty(), "a heartbeat while the first File ran");
+
+    // The first body's own lines came with `start`'s answer, before any
+    // heartbeat that names the second.
+    s.heartbeat_where(|params| {
+        params["executing_transition"] == "File" && !first.contains(&params["step_started_at"])
+    });
+    let mark = s.seen.len();
+    s.send("3", "stop", json!({}));
+    let stop = s.response("3");
+    assert_eq!(stop["result"]["status"], "stopped");
+    let fired: Vec<&Value> = s.seen[mark..]
+        .iter()
+        .filter(|line| line["method"] == "nested" && line["params"]["event"]["method"] == "fired")
+        .collect();
+    assert_eq!(
+        fired.len(),
+        1,
+        "the second body, and no other, before the stop's answer"
+    );
+
+    // Nothing fires after it either: the two bodies are all the log holds.
+    thread::sleep(Duration::from_millis(2 * BODY_MS));
+    let log = s.call("4", "get_log", json!({}));
+    assert_eq!(log["result"]["entries"].as_array().unwrap().len(), 2);
+    let shutdown = s.call("5", "shutdown", json!({}));
+    assert_eq!(shutdown["result"]["status"], "ok");
+}
+
 #[test]
 fn a_session_over_real_pipes() {
     let mut s = Session::spawn();

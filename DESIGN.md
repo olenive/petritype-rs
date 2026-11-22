@@ -1389,8 +1389,34 @@ Topology { .., groups: Vec<String> };  TopologyPlace, TopologyTransition { .., g
   group come first, at the top level, so a net with no groups draws to the
   text it drew before, and every node keeps its `p<i>` or `t<i>` id.
   Closing a group is the viewer's, and is not drawn here. The runner writes
-  groups in each net's topology (§19.3.18), and the layout crate takes them
-  up in a later step of the spec.
+  groups in each net's topology (§19.3.18).
+- **Layout.** `petritype-layout` takes the groups in place of the clusters
+  by name prefix it had, which are removed (`Clustering`, `prefix_of`,
+  `Layout::display_name`): no name is split or shortened, and a node is
+  laid out under its whole name. Each `LayoutPlace` and the new
+  `LayoutTransition` carry the node's group, `compute` reads them and the
+  declared order off the net, and
+  `compute_named` and `compute_subgraph` take the order as a list of names,
+  a group no node names coming after the listed ones in the order of its
+  first node. An open group is laid out on its own, by the passes over its
+  own edges, in a frame with room for its title, as a cluster was. The nodes
+  in no group are one block with no frame, packed first, before the groups
+  in declared order, as Graphviz draws them first. A group named in
+  `Layout::closed` is one box among the nodes in no group, sized from its
+  name as a subnet place's box is and with no ports, which ranks and orders
+  as a node: an edge between a member and a node of the block is an edge of
+  the box, an edge inside the group is not drawn, and the edges in one
+  direction between the box and one node, or two boxes, are one merged
+  arrow; one into an open group crosses its frame and takes no part. Its
+  members have no position while it is closed, and `hidden_in` names the
+  box that stands for them. A ghosted place gets one ghost beside a closed
+  box on each side it needs, whatever the number of members it joins, and
+  a ghosted place hidden in a box has no home and no ghosts, its edges out
+  being the box's arrows. A part of a net keeps its meaning with group names
+  in its focus, a focused group drawn open whatever is closed. A net with no
+  groups lays out to the same numbers as before, and open groups to the
+  numbers of the clusters they replace (`tests/groups.rs` pins both against
+  what the commit before computed).
 
 ## 7. Failure semantics
 
@@ -2227,7 +2253,7 @@ Cargo workspace, edition 2024, MSRV = current stable minus two (must be
 | `petritype` | builder, `Net`, events, checks, `drivers` | `thiserror`; feature `serde` adds `serde`, `serde_json` |
 | `petritype-derive` | `#[derive(Routed)]` on enums (variants) and structs (leaf); `#[derive(Inputs)]` and `#[derive(Outputs)]` on structs (slice 23, §4.4) | `syn` 2, `quote`, `proc-macro2`; re-exported by `petritype` unconditionally as `petritype::Routed`, `petritype::Inputs` and `petritype::Outputs` |
 | `petritype-dot` | Graphviz DOT text of a net and its marking (**done, slice 12**) | `petritype` only |
-| `petritype-layout` | the layered layout: ranks, orders, clusters by name prefix, ghosted hubs, and subnet places as one box each holding its ports' circles (§6.7), in its own `Point` and `Bounds` (moved out of `petritype-bevy` 2026-10-19, so a renderer that is not Bevy can share it) | `petritype` only |
+| `petritype-layout` | the layered layout: ranks, orders, groups open in frames or closed as one box each (§6.8), ghosted hubs, and subnet places as one box each holding its ports' circles (§6.7), in its own `Point` and `Bounds` (moved out of `petritype-bevy` 2026-10-19, so a renderer that is not Bevy can share it) | `petritype` only |
 | `petritype-activity` | the activity model behind the viewer's thumbnail: a pulse and an ember per place and transition, decaying on wall time or on firings, with flow, failure and a base glow from the token count; `ActivitySettings`; the `Grid` of cells from a whole-net layout; the `Thumbnail`'s colour per cell and its SVG (2026-10-19; a record of activity over time comes later) | `petritype`, `petritype-layout`; feature `serde` adds `serde`, `serde_json` |
 | `petritype-bevy` | `NetRes`, mirror systems, token entities, in-flight highlighting, task-pool driver | pins one Bevy version |
 | `petritype-tokio` | only if a need appears | |

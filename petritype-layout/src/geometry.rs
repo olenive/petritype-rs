@@ -99,7 +99,7 @@ impl Div<f32> for Point {
     }
 }
 
-/// A box with sides along the axes: the frame of a cluster, or what a whole
+/// A box with sides along the axes: the frame of a group, or what a whole
 /// drawing covers.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Bounds {

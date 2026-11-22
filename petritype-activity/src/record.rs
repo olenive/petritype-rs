@@ -1251,59 +1251,68 @@ mod tests {
         player.follow(&recorder);
         assert_eq!((player.first(), player.len()), (0, 1));
     }
-    /// Two clusters and a hub, as the grid's tests have them, with tokens
-    /// to move.
+    /// Two groups and a hub, as the grid's tests have them, with tokens to
+    /// move.
     #[cfg(feature = "serde")]
-    fn clustered() -> Net {
+    fn grouped() -> Net {
         let mut b = NetBuilder::new();
-        let a_in = b.place::<u32>("A/In");
-        let a_out = b.place::<u32>("A/Out");
-        let b_in = b.place::<u32>("B/In");
-        let b_mid = b.place::<u32>("B/Mid");
-        let b_out = b.place::<u32>("B/Out");
+        let a = b.group("A");
+        let group_b = b.group("B");
+        let a_in = b.place::<u32>("In A");
+        let a_out = b.place::<u32>("Out A");
+        let b_in = b.place::<u32>("In B");
+        let b_mid = b.place::<u32>("Mid B");
+        let b_out = b.place::<u32>("Out B");
         let hub = b.place::<u32>("Hub");
+        for p in [a_in, a_out] {
+            b.in_group(a, p);
+        }
+        for p in [b_in, b_mid, b_out] {
+            b.in_group(group_b, p);
+        }
         b.seed(a_in, [1]);
         b.seed(b_in, [2]);
         b.seed(hub, [3, 4]);
         b.transition(
-            "A/Go",
+            "Go A",
             (TakeEdge(a_in), TakeEdge(hub)),
             (a_out,),
             |n: u32, _: u32| (n,),
-        );
+        )
+        .group(a);
         b.transition(
-            "B/Go",
+            "Go B",
             (TakeEdge(b_in), TakeEdge(hub)),
             (b_mid,),
             |n: u32, _: u32| (n,),
-        );
-        b.transition("B/Next", (TakeEdge(b_mid),), (b_out,), |n: u32| (n,));
+        )
+        .group(group_b);
+        b.transition("Next B", (TakeEdge(b_mid),), (b_out,), |n: u32| (n,))
+            .group(group_b);
         b.build().expect("the net builds")
     }
 
     #[cfg(feature = "serde")]
     #[test]
-    fn a_record_with_a_clustered_grid_round_trips_as_json() {
-        use petritype_layout::{Clustering, Ghosting};
+    fn a_record_with_a_grid_of_groups_round_trips_as_json() {
+        use petritype_layout::Ghosting;
 
-        let mut net = clustered();
+        let mut net = grouped();
         let grid = grid_of(
             &net,
-            Layout::default()
-                .with_clustering(Clustering::NamePrefix('/'))
-                .with_ghosting(Ghosting::named(["Hub"])),
+            Layout::default().with_ghosting(Ghosting::named(["Hub"])),
         );
         let settings = ActivitySettings::default();
         let mut live = Activity::from_net(&net, settings.clone());
         let start = UNIX_EPOCH + Duration::from_millis(1_792_499_696_789);
         let mut recorder = Recorder::new(ms(100), Some(100), Some(start));
-        let next = net.transition_named("B/Next").unwrap();
+        let next = net.transition_named("Next B").unwrap();
         for frame in 0..6 {
             if frame == 0 {
                 // A staged firing, in flight over a frame and a third.
                 let firing = net
-                    .launch(net.transition_named("B/Go").unwrap())
-                    .expect("B/Go launches");
+                    .launch(net.transition_named("Go B").unwrap())
+                    .expect("Go B launches");
                 drain(&mut net, &mut live);
                 live.tick(ms(130));
                 net.distribute(firing.run()).expect("it lands");

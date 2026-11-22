@@ -24,22 +24,23 @@ pub struct Cell {
 /// Where the cells of a thumbnail go: one per place and transition, from
 /// the ranks and orders of a [`Layout`], never from its coordinates.
 ///
-/// Within a cluster, or the whole net when there are no clusters, a node's
-/// cell is its rank along the main axis and its order along the cross axis,
-/// in the layout's [`Direction`]: for [`TopDown`](Direction::TopDown) the
-/// rank is the row and the order the column, and for
-/// [`LeftRight`](Direction::LeftRight) the other way round, so the thumbnail
-/// keeps the drawing's orientation. A rank shorter than the longest in its
-/// cluster is centred across it in whole cells, rounding toward the start,
-/// as the drawing centres it. Clusters are packed in rows, in the
-/// order the layout gives them, with a gap of one cell, by the rule the
-/// layout packs them with ([`pack`]) in cell units. Ghosts are drawing aids
-/// and get no cell.
+/// Within a group, or among the nodes in no group (the whole net when it
+/// has no groups), a node's cell is its rank along the main axis and its
+/// order along the cross axis, in the layout's [`Direction`]: for
+/// [`TopDown`](Direction::TopDown) the rank is the row and the order the
+/// column, and for [`LeftRight`](Direction::LeftRight) the other way round,
+/// so the thumbnail keeps the drawing's orientation. A rank shorter than the
+/// longest in its group is centred across it in whole cells, rounding toward
+/// the start, as the drawing centres it. The nodes in no group come first
+/// and the groups follow in the order the layout gives them, packed in rows
+/// with a gap of one cell, by the rule the layout packs them with
+/// ([`pack`]) in cell units. Ghosts are drawing aids and get no cell.
 ///
-/// The grid is meant for a layout of the whole net, which is the overview
-/// whatever a view's filter shows. It is deterministic because the layout
-/// is. Positions with no node are empty: a thumbnail draws them in the page
-/// colour.
+/// The grid is meant for a layout of the whole net with every group open,
+/// which is the overview whatever a view's filter shows or closes: a node
+/// hidden in a closed group has no placement, and so no cell. It is
+/// deterministic because the layout is. Positions with no node are empty: a
+/// thumbnail draws them in the page colour.
 ///
 /// With the `serde` feature it is written as its columns, its rows and its
 /// cells, and reading it back refuses a cell outside the grid or on another
@@ -98,15 +99,15 @@ impl Grid {
                     .map(|(id, name)| (LayoutNode::Transition(id), name)),
             );
 
-        // The groups packed: each cluster in the layout's order, then one
-        // for any node in no cluster, which is every node of an unclustered
-        // layout.
-        let clusters: Vec<&str> = layout.cluster_names().collect();
+        // The blocks packed: first the nodes in no group, which is every
+        // node of a net with no groups, then each group in the layout's
+        // order, as the layout packs them.
+        let groups: Vec<&str> = layout.group_names().collect();
         let group_of = |node: LayoutNode| {
             layout
-                .cluster_of(node)
-                .and_then(|name| clusters.iter().position(|c| *c == name))
-                .unwrap_or(clusters.len())
+                .group_of(node)
+                .and_then(|name| groups.iter().position(|g| *g == name))
+                .map_or(0, |at| at + 1)
         };
         // Each node's group, rank and order, and each rank's length across:
         // its largest order plus one.
@@ -122,7 +123,7 @@ impl Grid {
             placed.push((group, placement.rank, placement.order, node, name));
         }
         // Each group's extent across: its longest rank.
-        let mut across = vec![0_usize; clusters.len() + 1];
+        let mut across = vec![0_usize; groups.len() + 1];
         for (&(group, _), &length) in &rank_length {
             across[group] = across[group].max(length);
         }
@@ -130,7 +131,7 @@ impl Grid {
         // Within its group, a node's cell is its rank along the main axis and
         // its order along the cross axis, each rank centred in whole cells
         // within the group's longest, as the drawing centres it.
-        let mut sizes = vec![(0_usize, 0_usize); clusters.len() + 1];
+        let mut sizes = vec![(0_usize, 0_usize); groups.len() + 1];
         let mut local: Vec<(usize, usize, usize, LayoutNode, String)> = Vec::new();
         for (group, rank, order, node, name) in placed {
             let order = order + (across[group] - rank_length[&(group, rank)]) / 2;
@@ -271,33 +272,45 @@ mod tests {
     use std::collections::HashSet;
 
     use petritype::{Net, NetBuilder, PlaceId, TakeEdge, TransitionId};
-    use petritype_layout::{Clustering, Ghosting};
+    use petritype_layout::Ghosting;
 
     use super::*;
 
-    /// Two clusters and a hub: `A/In -> A/Go -> A/Out`, `B/In -> B/Go ->
-    /// B/Mid -> B/Next -> B/Out`, and `Hub`, read by both `Go`s.
-    fn clustered() -> Net {
+    /// Two groups and a hub: `In A -> Go A -> Out A` in `A`, `In B -> Go B
+    /// -> Mid B -> Next B -> Out B` in `B`, and `Hub`, in no group, read by
+    /// both `Go`s.
+    fn grouped() -> Net {
         let mut b = NetBuilder::new();
-        let a_in = b.place::<u32>("A/In");
-        let a_out = b.place::<u32>("A/Out");
-        let b_in = b.place::<u32>("B/In");
-        let b_mid = b.place::<u32>("B/Mid");
-        let b_out = b.place::<u32>("B/Out");
+        let a = b.group("A");
+        let group_b = b.group("B");
+        let a_in = b.place::<u32>("In A");
+        let a_out = b.place::<u32>("Out A");
+        let b_in = b.place::<u32>("In B");
+        let b_mid = b.place::<u32>("Mid B");
+        let b_out = b.place::<u32>("Out B");
         let hub = b.place::<u32>("Hub");
+        for p in [a_in, a_out] {
+            b.in_group(a, p);
+        }
+        for p in [b_in, b_mid, b_out] {
+            b.in_group(group_b, p);
+        }
         b.transition(
-            "A/Go",
+            "Go A",
             (TakeEdge(a_in), TakeEdge(hub)),
             (a_out,),
             |n: u32, _: u32| (n,),
-        );
+        )
+        .group(a);
         b.transition(
-            "B/Go",
+            "Go B",
             (TakeEdge(b_in), TakeEdge(hub)),
             (b_mid,),
             |n: u32, _: u32| (n,),
-        );
-        b.transition("B/Next", (TakeEdge(b_mid),), (b_out,), |n: u32| (n,));
+        )
+        .group(group_b);
+        b.transition("Next B", (TakeEdge(b_mid),), (b_out,), |n: u32| (n,))
+            .group(group_b);
         b.build().expect("the net builds")
     }
 
@@ -307,24 +320,22 @@ mod tests {
         Grid::from_layout(&layout, &net.topology())
     }
 
-    fn clustered_layout() -> Layout {
-        Layout::default()
-            .with_clustering(Clustering::NamePrefix('/'))
-            .with_ghosting(Ghosting::named(["Hub"]))
+    fn grouped_layout() -> Layout {
+        Layout::default().with_ghosting(Ghosting::named(["Hub"]))
     }
 
     #[test]
-    fn a_clustered_net_gives_the_same_grid_every_time() {
-        let net = clustered();
-        let first = grid(&net, clustered_layout());
-        assert_eq!(first, grid(&net, clustered_layout()));
-        assert_eq!(first, grid(&clustered(), clustered_layout()));
+    fn a_net_with_groups_gives_the_same_grid_every_time() {
+        let net = grouped();
+        let first = grid(&net, grouped_layout());
+        assert_eq!(first, grid(&net, grouped_layout()));
+        assert_eq!(first, grid(&grouped(), grouped_layout()));
     }
 
     #[test]
     fn every_node_has_one_cell_and_no_two_share_one() {
-        let net = clustered();
-        let grid = grid(&net, clustered_layout());
+        let net = grouped();
+        let grid = grid(&net, grouped_layout());
         let nodes = net.places().count() + net.transitions().count();
         assert_eq!(grid.cells().len(), nodes);
         let positions: HashSet<(usize, usize)> =
@@ -345,8 +356,8 @@ mod tests {
 
     #[test]
     fn a_grid_from_names_is_the_grid_from_the_topology() {
-        let net = clustered();
-        let mut layout = clustered_layout();
+        let net = grouped();
+        let mut layout = grouped_layout();
         layout.compute(&net);
         let named = Grid::from_layout_named(
             &layout,
@@ -359,8 +370,8 @@ mod tests {
 
     #[test]
     fn ghosts_get_no_cell_and_their_home_keeps_one() {
-        let net = clustered();
-        let mut layout = clustered_layout();
+        let net = grouped();
+        let mut layout = grouped_layout();
         layout.compute(&net);
         assert!(layout.ghosts().count() > 0, "the hub is ghosted");
         let grid = Grid::from_layout(&layout, &net.topology());
@@ -377,15 +388,34 @@ mod tests {
     }
 
     #[test]
-    fn clusters_are_packed_apart_by_a_gap_of_one_cell() {
-        let net = clustered();
-        let grid = grid(&net, clustered_layout());
-        let mut boxes: HashMap<&str, (usize, usize, usize, usize)> = HashMap::new();
+    fn groups_are_packed_apart_by_a_gap_of_one_cell_after_the_nodes_in_none() {
+        let net = grouped();
+        let grid = grid(&net, grouped_layout());
+        let topology = net.topology();
+        let group_of = |cell: &Cell| match cell.node {
+            LayoutNode::Place(id) => topology
+                .places
+                .iter()
+                .find(|p| p.id == id)
+                .unwrap()
+                .group
+                .clone(),
+            LayoutNode::Transition(id) => topology
+                .transitions
+                .iter()
+                .find(|t| t.id == id)
+                .unwrap()
+                .group
+                .clone(),
+        };
+        let mut boxes: HashMap<Option<String>, (usize, usize, usize, usize)> = HashMap::new();
         for cell in grid.cells() {
-            let cluster = cell.name.split_once('/').map_or("", |(c, _)| c);
-            let b = boxes
-                .entry(cluster)
-                .or_insert((cell.column, cell.row, cell.column, cell.row));
+            let b = boxes.entry(group_of(cell)).or_insert((
+                cell.column,
+                cell.row,
+                cell.column,
+                cell.row,
+            ));
             *b = (
                 b.0.min(cell.column),
                 b.1.min(cell.row),
@@ -393,7 +423,7 @@ mod tests {
                 b.3.max(cell.row),
             );
         }
-        assert_eq!(boxes.len(), 3, "A, B and the unnamed");
+        assert_eq!(boxes.len(), 3, "A, B and the nodes in none");
         let list: Vec<_> = boxes.values().collect();
         for (i, a) in list.iter().enumerate() {
             for b in &list[i + 1..] {
@@ -402,6 +432,11 @@ mod tests {
                 assert!(apart_x || apart_y, "{a:?} {b:?}");
             }
         }
+        // The hub, in no group, is packed first: at the top left.
+        let hub = grid
+            .cell_of(LayoutNode::Place(net.place_named("Hub").unwrap()))
+            .unwrap();
+        assert_eq!((hub.column, hub.row), (0, 0));
     }
 
     /// `P0 -> T0 -> P1 -> T1 -> P2`.
@@ -535,9 +570,18 @@ mod tests {
     }
 
     #[test]
+    fn a_node_hidden_in_a_closed_group_has_no_cell() {
+        let net = grouped();
+        let grid = grid(&net, grouped_layout().with_closed(["B"]));
+        let in_b = |cell: &Cell| cell.name.ends_with(" B");
+        assert!(grid.cells().iter().all(|c| !in_b(c)), "{:?}", grid.cells());
+        assert_eq!(grid.cells().len(), 4, "In A, Out A, Hub and Go A");
+    }
+
+    #[test]
     fn an_empty_net_has_an_empty_grid() {
         let net = NetBuilder::new().build().expect("an empty net builds");
-        let grid = grid(&net, clustered_layout());
+        let grid = grid(&net, grouped_layout());
         assert!(grid.is_empty());
         assert_eq!((grid.columns(), grid.rows()), (0, 0));
         assert_eq!(grid.at(0, 0), None);

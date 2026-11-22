@@ -1,7 +1,7 @@
 [package]
 name = "petritype-layout"
 version.workspace = true
-description = "A layered layout of a petritype net: ranks, orders and clusters, for any renderer."
+description = "A layered layout of a petritype net: ranks, orders and groups, for any renderer."
 readme = "../README.md"
 keywords = ["petri-net", "layout", "graph-drawing", "visualization"]
 categories = ["data-structures", "simulation", "visualization"]

@@ -4,20 +4,22 @@
 //!
 //! [`Owner`] owns the registry and the loaded net and turns each [`Input`]
 //! into the [`Outgoing`] lines and firings it causes. It creates no threads,
-//! reads no clock but the `now` it is handed, and writes nothing, so every
-//! behaviour of the protocol can be tested by feeding it inputs and reading
-//! what comes out.
+//! takes the time of day only from the `now` it is handed, and writes
+//! nothing, so every behaviour of the protocol can be tested by feeding it
+//! inputs and reading what comes out. The one clock it reads itself is a
+//! stopwatch ([`Instant`]) round a core call that runs a body inline, on the
+//! owner's thread, whose time is that firing's `duration_ms`.
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use petritype::control::Pressed;
 use petritype::{
-    BodyPanicked, Command, Completed, Event, Filter, Firing, FiringFailed, JsonCommand, Net,
-    NetError, NetId, PlaceId, StagedStep, TokenId, Topology, TransitionId,
+    BodyPanicked, Command, Completed, DeepStep, Event, Filter, Firing, FiringFailed, JsonCommand,
+    Net, NetError, NetId, PlaceId, StagedStep, TokenId, Topology, TransitionId,
 };
 use serde_json::{Map, Value, json};
 
@@ -378,9 +380,111 @@ struct InFlight {
     /// What the launch took, read off its `Launched` event: a detachable
     /// firing's launch is drained before it lands.
     consumed: Vec<(PlaceId, TokenId)>,
-    /// The body runs inside `launch`, so `launched` and `distributed` are
-    /// reported as one `fired`.
-    inline: bool,
+    /// For a body that ran inside `launch`, how long that call took: its
+    /// `launched` and `distributed` are reported as one `fired`, which
+    /// carries this time. `None` for a detachable body, which runs
+    /// elsewhere and is timed from `started_at` to its landing.
+    inline: Option<Duration>,
+}
+
+impl InFlight {
+    /// How long the body took, for a landing at `now`.
+    fn duration_ms(&self, now: SystemTime) -> f64 {
+        self.inline
+            .map_or_else(|| duration_ms(self.started_at, now), millis)
+    }
+}
+
+/// A firing whose body ran inline inside one core call, a deep step's or a
+/// press's, and how long that call took: the `duration_ms` its `fired`
+/// and its log entry carry. It is named as its events name it: the way
+/// down to the net it was in, one place per level with the token that
+/// holds the net (none for a subnet), empty for the loaded net, and its
+/// transition there. A firing that a body made inside the tokens it holds
+/// is in a net further down, so it is never this one.
+struct Timed {
+    levels: Vec<(PlaceId, Option<TokenId>)>,
+    transition: TransitionId,
+    took: Duration,
+}
+
+impl Timed {
+    /// The inner firing a deep step made, `step`, which took `took`.
+    fn inside(mut step: &DeepStep, took: Duration) -> Timed {
+        let transition = step.transition();
+        let mut levels = Vec::new();
+        loop {
+            step = match step {
+                DeepStep::Inside {
+                    place, token, step, ..
+                } => {
+                    levels.push((*place, Some(*token)));
+                    step
+                }
+                DeepStep::Subnet { place, step, .. } => {
+                    levels.push((*place, None));
+                    step
+                }
+                _ => break,
+            };
+        }
+        Timed {
+            levels,
+            transition,
+            took,
+        }
+    }
+
+    /// The inner firing a deep step made that failed, which took `took`.
+    /// `None` for a path with a step this runner does not know.
+    fn failed(failed: &FiringFailed, took: Duration) -> Option<Timed> {
+        let levels = failed
+            .path
+            .iter()
+            .map(|step| match step {
+                petritype::PathStep::Token { place, token, .. } => Some((*place, Some(*token))),
+                petritype::PathStep::Subnet { place } => Some((*place, None)),
+                _ => None,
+            })
+            .collect::<Option<_>>()?;
+        Some(Timed {
+            levels,
+            transition: failed.transition,
+            took,
+        })
+    }
+
+    /// The firing of the loaded net among `events`, which a call that took
+    /// `took` made, when it made exactly one; `None` when it made none, or
+    /// more than one, whose times the one call does not tell apart.
+    fn only(events: &[Event], took: Duration) -> Option<Timed> {
+        let mut firings = events.iter().filter_map(|event| match event {
+            Event::Fired { transition, .. } | Event::Failed { transition, .. } => Some(*transition),
+            _ => None,
+        });
+        let transition = firings.next()?;
+        firings.next().is_none().then_some(Timed {
+            levels: Vec::new(),
+            transition,
+            took,
+        })
+    }
+
+    /// How long this firing took, if `event` is the one that ends it, its
+    /// `Fired` or its `Failed`, outer or lifted; `None` for any other.
+    fn of(&self, event: &Event) -> Option<Duration> {
+        let (levels, ended): (Vec<_>, _) = match Lifted::of(event) {
+            Some(lifted) => (
+                lifted.levels.iter().map(|l| (l.place, l.token)).collect(),
+                lifted.event,
+            ),
+            None => (Vec::new(), event),
+        };
+        let (Event::Fired { transition, .. } | Event::Failed { transition, .. }) = ended else {
+            return None;
+        };
+        (*transition == self.transition && levels == self.levels).then_some(self.took)
+    }
 }
 
 /// One net's progress (PROTOCOL.md §5.4) besides its `step_count`, which is
@@ -1458,7 +1562,11 @@ impl Loaded {
     /// carries (PROTOCOL.md §12.4): the notification the inner net would
     /// send on its own, with its own names and version, inside one wrapper
     /// with the full path and the loaded net's version. An inner firing also
-    /// gets its log entry and its net's progress here.
+    /// gets its log entry and its net's progress here. `took` is how long
+    /// the firing this event ends took, when the owner timed it (a deep
+    /// step's own firing, [`Timed`]); a firing it did not time, one a body
+    /// made inside the tokens it holds or one of the host program's,
+    /// carries 0.
     ///
     /// A change of a port place (§12.7) moves the versions on its far side
     /// too ([`cross`](Loaded::cross)), which the inner notification
@@ -1469,6 +1577,7 @@ impl Loaded {
         event: &Event,
         loaded_version: &mut u64,
         now: SystemTime,
+        took: Option<Duration>,
         launched: &mut HashMap<NetId, Pairs>,
         firings: &mut Vec<InnerFiring>,
     ) -> Notification {
@@ -1501,7 +1610,7 @@ impl Loaded {
                     transition: names.transition(*transition),
                     consumed: names.pairs(&consumed),
                     produced: produced(names, live, &made),
-                    duration_ms: 0.0,
+                    duration_ms: took.map_or(0.0, millis),
                     subnet_marking_versions: None,
                     outer_marking_version: None,
                     marking_version: version,
@@ -1522,6 +1631,8 @@ impl Loaded {
                     running,
                 }
             }
+            // A staged firing inside, which a body or the host program made
+            // in stages: the owner ran neither stage, and timed nothing.
             Event::Distributed {
                 transition,
                 produced: made,
@@ -1613,7 +1724,7 @@ impl Loaded {
             );
             notification.across(subnets, outer);
         }
-        self.log_lifted(&lifted, &path, now, launched, firings);
+        self.log_lifted(&lifted, &path, now, took, launched, firings);
         Notification::Nested {
             path,
             nested_id: nested_id.to_string(),
@@ -1650,19 +1761,23 @@ impl Loaded {
                 loaded_version,
             );
         }
-        self.log_lifted(&lifted, &path, now, launched, firings);
+        // The host program fired it, and the owner timed nothing.
+        self.log_lifted(&lifted, &path, now, None, launched, firings);
     }
 
     /// The log entry and the progress of an inner firing, when the lifted
     /// event ends one (`Fired`, `Distributed` or `Failed`): the entry, a
     /// count in its net's progress unless it failed, and a place in
     /// `firings`. A `Launched` is kept in `launched` until the `Distributed`
-    /// that ends it, for what it took. Any other event does nothing.
+    /// that ends it, for what it took. Any other event does nothing. The
+    /// entry starts at `now` and lasts `took`, or 0 for a firing the owner
+    /// did not time.
     fn log_lifted(
         &mut self,
         lifted: &Lifted<'_>,
         path: &[PathStep],
         now: SystemTime,
+        took: Option<Duration>,
         launched: &mut HashMap<NetId, Pairs>,
         firings: &mut Vec<InnerFiring>,
     ) {
@@ -1712,7 +1827,7 @@ impl Loaded {
             seq: self.log_seq,
             transition: transition.clone(),
             started_at: iso8601(now),
-            duration_ms: 0.0,
+            duration_ms: took.map_or(0.0, millis),
             outcome: if failure.is_some() { "failed" } else { "fired" }.to_owned(),
             consumed: inner.names.pairs(&consumed),
             produced: inner.names.pairs(&made),
@@ -2665,11 +2780,13 @@ impl Owner {
     /// core's ([`translate::press_value`]), the control run by
     /// [`Net::press`], which checks the value against its kind, and its
     /// events flushed as `inject`'s are. Each firing it made is logged and
-    /// counted as a step's is. The answer is `pressed`, or `nothing` with
-    /// the control's reason, and the version after the events; an unknown
-    /// control is `unknown_control`, a value its kind cannot take
-    /// `invalid_params`, and a handler that refuses or panics `internal`.
-    /// Outer-level only, as `OUTER_ONLY` has it.
+    /// counted as a step's is. A handler runs on the owner's thread, so a
+    /// press that fired one transition of the loaded net gives that firing
+    /// the time the press took ([`Timed::only`]). The answer is `pressed`,
+    /// or `nothing` with the control's reason, and the version after the
+    /// events; an unknown control is `unknown_control`, a value its kind
+    /// cannot take `invalid_params`, and a handler that refuses or panics
+    /// `internal`. Outer-level only, as `OUTER_ONLY` has it.
     fn press(
         &mut self,
         id: &str,
@@ -2681,12 +2798,16 @@ impl Owner {
         let value = translate::press_value(optional(args, "value"))
             .map_err(|message| (ErrorCode::InvalidParams, message))?;
         let loaded = self.loaded_mut();
+        let started = Instant::now();
         let pressed = catch_unwind(AssertUnwindSafe(|| loaded.net.press(&control, value)));
+        let took = started.elapsed();
         // A token the control put into a nested place may carry nets nobody
         // has seen: their fireable sets are taken now, silently (§7.2).
         loaded.know_new();
-        let flushed = self.flush_events(now, None, true, out);
-        self.log_pressed(&flushed.events, now);
+        let events: Vec<Event> = loaded.net.drain_events().collect();
+        let timed = Timed::only(&events, took);
+        let flushed = self.tell_events(events, now, None, timed.as_ref(), true, out);
+        self.log_pressed(&flushed.events, timed.as_ref(), now);
         let pressed = pressed
             .map_err(|panic| {
                 (
@@ -2713,10 +2834,12 @@ impl Owner {
     }
 
     /// Logs and counts the firings a press made, as a step's landing does:
-    /// each `fired` and `failed` of the outer net, at `now`, taking no time.
-    fn log_pressed(&mut self, events: &[Event], now: SystemTime) {
+    /// each `fired` and `failed` of the outer net, at `now`, lasting the
+    /// time `timed` gives the one it names, and 0 for any other.
+    fn log_pressed(&mut self, events: &[Event], timed: Option<&Timed>, now: SystemTime) {
         let loaded = self.loaded_mut();
         for event in events {
+            let took = timed.and_then(|timed| timed.of(event));
             let (transition, consumed, produced, error, restored) = match event {
                 Event::Fired {
                     transition,
@@ -2744,7 +2867,7 @@ impl Owner {
                 seq: loaded.log_seq,
                 transition: name.clone(),
                 started_at: iso8601(now),
-                duration_ms: 0.0,
+                duration_ms: took.map_or(0.0, millis),
                 outcome: if failed { "failed" } else { "fired" }.to_owned(),
                 consumed: loaded.names.pairs(consumed),
                 produced: loaded.names.pairs(produced),
@@ -3276,12 +3399,20 @@ impl Owner {
         now: SystemTime,
         out: &mut Vec<Outgoing>,
     ) -> Result<(), (ErrorCode, String)> {
-        match self.loaded_mut().net.step_deep_staged() {
+        let (stepped, took) = self.step_deep_timed();
+        match stepped {
             Ok(Some(StagedStep::Chosen(transition))) => {
                 return self.launch(transition, Some(id.to_owned()), now, out);
             }
-            Ok(Some(_)) => self.report_inside(None, Some(id), now, out),
-            Err(failed) => self.report_inside(Some(Failure::of(&failed)), Some(id), now, out),
+            Ok(Some(StagedStep::Inside(step))) => {
+                let timed = Timed::inside(&step, took);
+                self.report_inside(None, Some(timed), Some(id), now, out);
+            }
+            Ok(Some(_)) => self.report_inside(None, None, Some(id), now, out),
+            Err(failed) => {
+                let timed = Timed::failed(&failed, took);
+                self.report_inside(Some(Failure::of(&failed)), timed, Some(id), now, out);
+            }
             Ok(None) => {
                 let running = self.loaded_ref().running;
                 respond(
@@ -3294,13 +3425,25 @@ impl Owner {
         Ok(())
     }
 
+    /// One deep step of the loaded net (`Net::step_deep_staged`), and how
+    /// long it took. When it fired inside, that firing's body ran inline in
+    /// this call, so this is how long the body took.
+    fn step_deep_timed(&mut self) -> (Result<Option<StagedStep>, FiringFailed>, Duration) {
+        let started = Instant::now();
+        let stepped = self.loaded_mut().net.step_deep_staged();
+        (stepped, started.elapsed())
+    }
+
     /// Reports the inner firing a deep step just made inline: its events,
     /// `nested`, the `step` that asked for it if one did, and a stop of a
-    /// run on a failure (`failure`). The inner net's progress counted it
-    /// when the flush lifted it, and no net around it counts it (§5.4).
+    /// run on a failure (`failure`). `timed` names the firing and how long
+    /// it took, for its `fired` and its log entry. The inner net's progress
+    /// counted it when the flush lifted it, and no net around it counts it
+    /// (§5.4).
     fn report_inside(
         &mut self,
         failure: Option<Failure>,
+        timed: Option<Timed>,
         step_id: Option<&str>,
         now: SystemTime,
         out: &mut Vec<Outgoing>,
@@ -3310,7 +3453,8 @@ impl Owner {
         // A token the firing put into a nested place may carry nets nobody
         // has seen: their fireable sets are taken now, silently (§7.2).
         loaded.know_new();
-        let flushed = self.flush_events(now, None, true, out);
+        let events: Vec<Event> = loaded.net.drain_events().collect();
+        let flushed = self.tell_events(events, now, None, timed.as_ref(), true, out);
         let loaded = self.loaded_mut();
         loaded.prune();
         if let Some(failure) = &failure
@@ -3357,7 +3501,8 @@ impl Owner {
     }
 
     /// Launches `transition`. A detachable body goes out as
-    /// [`Outgoing::Launch`]; an inline one has already run, and lands here.
+    /// [`Outgoing::Launch`]; an inline one has already run, timed round
+    /// the launch, and lands here.
     fn launch(
         &mut self,
         transition: TransitionId,
@@ -3369,7 +3514,10 @@ impl Owner {
         let name = loaded.names.transition(transition);
         *lock(&self.status) = Some((name.clone(), now));
         let loaded = self.loaded_mut();
-        let firing = match loaded.net.launch(transition) {
+        let started = Instant::now();
+        let launched = loaded.net.launch(transition);
+        let took = started.elapsed();
+        let firing = match launched {
             Ok(firing) => firing,
             Err(error) => {
                 *lock(&self.status) = None;
@@ -3377,7 +3525,7 @@ impl Owner {
             }
         };
         loaded.idle = false;
-        let inline = !firing.is_pending();
+        let inline = (!firing.is_pending()).then_some(took);
         loaded.in_flight = Some(InFlight {
             transition,
             name,
@@ -3386,7 +3534,7 @@ impl Owner {
             consumed: Vec::new(),
             inline,
         });
-        if inline {
+        if inline.is_some() {
             // `launch` ran the body; `run` only unwraps the outcome.
             self.land(firing.run(), now, out);
         } else {
@@ -3444,7 +3592,7 @@ impl Owner {
             }),
         };
 
-        let duration_ms = duration_ms(flight.started_at, now);
+        let duration_ms = flight.duration_ms(now);
         let loaded = self.loaded_mut();
         loaded.log_seq += 1;
         let consumed = consumed.unwrap_or(flight.consumed);
@@ -3521,7 +3669,8 @@ impl Owner {
             return;
         }
         let continuous = self.nets[loaded.entry].hosting == Hosting::Continuous;
-        match self.loaded_mut().net.step_deep_staged() {
+        let (stepped, took) = self.step_deep_timed();
+        match stepped {
             Ok(Some(StagedStep::Chosen(transition))) => {
                 if let Err((code, message)) = self.launch(transition, None, now, out) {
                     // The selector chose it, so `launch` cannot refuse it;
@@ -3542,8 +3691,15 @@ impl Owner {
             }
             // Inline, like a mutate-edge body: one per `handle`, and a tick
             // asked for so that a `stop` in between is heard.
-            Ok(Some(_)) => self.report_inside(None, None, now, out),
-            Err(failed) => self.report_inside(Some(Failure::of(&failed)), None, now, out),
+            Ok(Some(StagedStep::Inside(step))) => {
+                let timed = Timed::inside(&step, took);
+                self.report_inside(None, Some(timed), None, now, out);
+            }
+            Ok(Some(_)) => self.report_inside(None, None, None, now, out),
+            Err(failed) => {
+                let timed = Timed::failed(&failed, took);
+                self.report_inside(Some(Failure::of(&failed)), timed, None, now, out);
+            }
             Ok(None) => {
                 self.quiescent(continuous, now, out);
                 return;
@@ -3602,16 +3758,22 @@ impl Owner {
     ) -> Flushed {
         let loaded = self.loaded.as_mut().expect("events need a net");
         let events: Vec<Event> = loaded.net.drain_events().collect();
-        self.tell_events(events, now, flight, compare_fireable, out)
+        self.tell_events(events, now, flight, None, compare_fireable, out)
     }
 
     /// Writes one notification per event of `events`, a batch drained from
     /// the net's log, as [`flush_events`](Owner::flush_events) says.
+    ///
+    /// A firing's `duration_ms` is the landing `flight`'s, or `timed`'s for
+    /// the one firing it names, a deep step's or a press's; any other
+    /// firing in the batch was made by a body or by the host program, and
+    /// carries 0, since the owner timed nothing of it.
     fn tell_events(
         &mut self,
         events: Vec<Event>,
         now: SystemTime,
         flight: Option<&InFlight>,
+        timed: Option<&Timed>,
         compare_fireable: bool,
         out: &mut Vec<Outgoing>,
     ) -> Flushed {
@@ -3621,8 +3783,8 @@ impl Owner {
         let marking_version = &mut self.marking_version;
         let loaded = self.loaded.as_mut().expect("events need a net");
         let running = loaded.running;
-        let inline = flight.is_some_and(|f| f.inline);
-        let duration = flight.map_or(0.0, |f| duration_ms(f.started_at, now));
+        let inline = flight.is_some_and(|f| f.inline.is_some());
+        let duration = flight.map_or(0.0, |f| f.duration_ms(now));
         let mut inline_consumed: Vec<(PlaceId, TokenId)> = Vec::new();
         // What an inline firing's `launched` took, as it happened, for the
         // port places its one `fired` changed (§12.7).
@@ -3636,6 +3798,7 @@ impl Owner {
         let mut params_changed: Vec<Option<NetId>> = Vec::new();
         let mut lifted_through: Vec<(Option<NetId>, PlaceId, TokenId)> = Vec::new();
         for event in wire_order(&events) {
+            let took = timed.and_then(|timed| timed.of(event));
             if let Some(lifted) = Lifted::of(event) {
                 let mut above = None;
                 for level in &lifted.levels {
@@ -3652,6 +3815,7 @@ impl Owner {
                     event,
                     marking_version,
                     now,
+                    took,
                     &mut inner_launched,
                     &mut inner_firings,
                 );
@@ -3678,7 +3842,7 @@ impl Owner {
                         transition: names.transition(*transition),
                         consumed: names.pairs(&consumed),
                         produced: names.produced(net, &produced),
-                        duration_ms: duration,
+                        duration_ms: took.map_or(duration, millis),
                         subnet_marking_versions: None,
                         outer_marking_version: None,
                         marking_version: version,
@@ -3947,7 +4111,7 @@ impl Owner {
         // Each firing is counted in the progress of the net it was in alone
         // (PROTOCOL.md §5.4), as the events are told or noted.
         if self.listening {
-            self.tell_events(events, now, None, true, &mut out);
+            self.tell_events(events, now, None, None, true, &mut out);
         } else {
             self.note_events(&events, now);
         }
@@ -4084,7 +4248,12 @@ fn lock<T>(cell: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 }
 
 fn duration_ms(from: SystemTime, to: SystemTime) -> f64 {
-    to.duration_since(from).unwrap_or_default().as_secs_f64() * 1000.0
+    millis(to.duration_since(from).unwrap_or_default())
+}
+
+/// A span as the wire's `duration_ms`: milliseconds, fractions kept.
+fn millis(span: Duration) -> f64 {
+    span.as_secs_f64() * 1000.0
 }
 
 fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {

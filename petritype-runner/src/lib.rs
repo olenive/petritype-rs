@@ -55,8 +55,9 @@
 //! - [`protocol`]: the wire shapes as serde types, keyed by names, with
 //!   string token ids. Nothing there knows about a [`Net`](petritype::Net).
 //! - [`Owner`]: the state machine. It turns an [`Input`] into the
-//!   [`Outgoing`] lines and firings it causes, creates no threads, reads no
-//!   clock but the one it is handed, and writes nothing, so a host or a
+//!   [`Outgoing`] lines and firings it causes, creates no threads, takes
+//!   the time of day only from the `now` it is handed, times a body it runs
+//!   inline with a stopwatch of its own, and writes nothing, so a host or a
 //!   test can embed it without a process.
 //! - [`main`]: the stdout guard, a reader, a writer, a heartbeat, a thread
 //!   per detachable body, and the loop around the owner.
@@ -66,10 +67,20 @@
 //! # How a Rust net looks on the wire
 //!
 //! - A firing is reported as `launched` then `distributed`, because every
-//!   detachable body runs off the owner's thread. A transition with a
-//!   mutate edge runs inline, inside `launch`, and is reported as one
-//!   `fired`; while it runs, the owner answers nothing (the heartbeat still
-//!   goes out).
+//!   detachable body runs off the owner's thread. Two kinds of body run
+//!   inline, on the owner's thread, inside the request or tick that fires
+//!   them, and each such firing is reported in one piece: a transition with
+//!   a mutate edge runs inside `launch`, and is reported as its `mutated`
+//!   lines then one `fired`; a firing inside an inner net runs inside the
+//!   deep step, and is reported as one `nested` around its `fired`. Their
+//!   `duration_ms`, in the notification and in the log entry, is the time
+//!   the body took, measured round the call that ran it, and a body that
+//!   failed has that time in its log entry. A `press` runs its control
+//!   inline too, and a press that fires one transition of the loaded net
+//!   gives that firing the time the press took. A firing a body makes
+//!   inside the nets of the tokens it holds is part of that body's time,
+//!   and carries 0. The process answers no request until an inline body
+//!   ends; the heartbeat still goes out.
 //! - `get_state`, `get_place_tokens`, `get_token`, `get_log` and `stop` are
 //!   answered while a detachable body runs; other requests wait for it to
 //!   land, in arrival order.
@@ -86,12 +97,14 @@
 //!   [`protocol::PathStep`]), or a `nested_id` to act on one of them
 //!   (PROTOCOL.md §12). What happens inside arrives as one `nested`
 //!   notification around the inner net's own, with that net's own
-//!   `marking_version`; the outer one does not move. `step` and a running
-//!   net fire one transition in the order the nested places' stepping
-//!   rules give (`petritype::Stepping`, which the topology writes as each
-//!   such place's `stepping`): the outer net's choice, launched, or one
-//!   inner firing, inline. Progress is per net: an inner firing is
-//!   counted in the progress of the net it was in, and no other.
+//!   `marking_version`, and the wrapper carries the outer net's, which
+//!   moves when the inner event changes a port place of one of the outer
+//!   net's subnets (below). `step` and a running net fire one transition
+//!   in the order the nested places' stepping rules give
+//!   (`petritype::Stepping`, which the topology writes as each such place's
+//!   `stepping`): the outer net's choice, launched, or one inner firing,
+//!   inline. Progress is per net: an inner firing is counted in the
+//!   progress of the net it was in, and no other.
 //! - A subnet place (`NetBuilder::subnet_place`) holds a net of its own,
 //!   its subnet, addressed by the step `{"place": "Level 1"}` and served as
 //!   one more inner net (PROTOCOL.md §12.7). The net around it names a port

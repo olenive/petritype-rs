@@ -38,8 +38,8 @@
 //!   Numbers compare by value (`0` matches `0.0`); objects must have exactly
 //!   the expected keys; arrays the expected length, element by element.
 //!   These are PROTOCOL.md §11's rules, and the Python harness's
-//!   (`petritype/tests/test_protocol_transcripts.py`), but for one thing:
-//!   `<unordered>` searches for a pairing where Python takes the first fit.
+//!   (`petritype/tests/test_protocol_transcripts.py`): both search for an
+//!   `<unordered>` pairing, backtracking.
 //! - A `launched` immediately followed by its `distributed` is folded into one
 //!   `fired {transition, consumed, produced, duration_ms}` (stamped with the
 //!   `distributed`'s `marking_version` and `running`) before comparing, so
@@ -309,7 +309,7 @@ fn match_value(expected: &Value, actual: &Value, bindings: &mut Bindings) -> boo
 /// expected element the first unused actual one it matches: with masks the
 /// first fit can take an element a later expectation needed (`["<id>", "a"]`
 /// against `["a", "b"]`), and PROTOCOL.md §11 asks only that the elements be
-/// the same in some order. (The Python harness takes the first fit.)
+/// the same in some order. The Python harness backtracks in the same way.
 fn match_unordered(expected: &Value, actual: &Value, bindings: &mut Bindings) -> bool {
     let (Some(expected), Some(actual)) = (expected.as_array(), actual.as_array()) else {
         return false;

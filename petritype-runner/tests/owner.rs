@@ -273,6 +273,17 @@ fn versions(lines: &[Value]) -> Vec<u64> {
         .collect()
 }
 
+/// Takes the `duration_ms` out of a notification's params or a log entry
+/// and returns it: the time a body that ran inline took, read off a real
+/// clock, which a test bounds from below and never pins.
+fn took(params: &mut Value) -> f64 {
+    params
+        .as_object_mut()
+        .and_then(|params| params.remove("duration_ms"))
+        .and_then(|ms| ms.as_f64())
+        .unwrap_or_else(|| panic!("no duration_ms in {params}"))
+}
+
 // ----- describe and the errors before load -----------------------------------
 
 #[test]
@@ -732,10 +743,12 @@ fn an_inline_firing_is_answered_in_one_handle_as_fired() {
         lines[0]["params"],
         json!({"place": "Counter", "id": "3", "label": "1", "marking_version": 1, "running": false})
     );
+    let mut fired = lines[1]["params"].clone();
+    assert!(took(&mut fired) >= 0.0, "the time the body took");
     assert_eq!(
-        lines[1]["params"],
+        fired,
         json!({"transition": "Bump", "consumed": [["Ticks", "0"]], "produced": [],
-               "duration_ms": 0.0, "marking_version": 2, "running": false})
+               "marking_version": 2, "running": false})
     );
     assert_eq!(lines[2]["result"]["fired"], true);
 }
@@ -1760,12 +1773,17 @@ fn a_step_fires_inside_when_the_outer_net_has_nothing() {
 
     let lines = h.send("step", json!({}));
     assert_eq!(tags(&lines), ["nested", "#4"]);
+    let mut nested = lines[0]["params"].clone();
+    assert!(
+        took(&mut nested["event"]["params"]) >= 0.0,
+        "the time the body took"
+    );
     assert_eq!(
-        lines[0]["params"],
+        nested,
         json!({"path": truck["path"], "nested_id": truck["nested_id"],
                "event": {"method": "fired", "params": {
                    "transition": "Move", "consumed": [["In", "0"]], "produced": [["Out", "2", "1"]],
-                   "duration_ms": 0.0, "marking_version": 1, "running": false}},
+                   "marking_version": 1, "running": false}},
                "marking_version": outer, "running": false})
     );
     assert_eq!(
@@ -3450,4 +3468,172 @@ fn a_refused_press_says_what_the_handler_said() {
         h.result("press", json!({"control": "flip"}))["status"],
         "pressed"
     );
+}
+
+// ----- how long an inline body took --------------------------------------------
+
+/// How long each body below takes, at least.
+const NAP: Duration = Duration::from_millis(30);
+
+/// [`NAP`] as the wire's `duration_ms`.
+fn nap_ms() -> f64 {
+    NAP.as_secs_f64() * 1000.0
+}
+
+/// `In -Nap-> Out`, with `items` in `In`: `Nap` sleeps for [`NAP`], then
+/// passes its number on, or refuses 13.
+fn napping(items: &[u32]) -> Net {
+    let mut b = NetBuilder::new();
+    let input = b.place::<u32>("In");
+    let output = b.place::<u32>("Out");
+    b.seed(input, items.iter().copied());
+    b.transition(
+        "Nap",
+        (TakeEdge(input),),
+        (output,),
+        |n: u32| -> Result<(u32,), Refused> {
+            std::thread::sleep(NAP);
+            if n == 13 { Err(Refused) } else { Ok((n,)) }
+        },
+    );
+    b.build().expect("the napping net builds")
+}
+
+/// Every kind of body the runner runs inline, each taking [`NAP`]: `cot`, a
+/// napping net in a token of `Cots`, with 1 then 13 in it; `den`, the same
+/// net as the subnet of the subnet place `Den`; and `tender`, whose `Tend`
+/// takes a number from `Ticks` (1, then 13) and mutates `Counter`, sleeping,
+/// and refuses 13, with the control `tend` that fires it.
+fn sleepy_registry() -> Vec<NetEntry> {
+    vec![
+        NetEntry::new("cot", |_: &Params| {
+            let mut b = NetBuilder::new();
+            let cots = b.place_nested::<Net>("Cots");
+            b.seed(cots, [napping(&[1, 13])]);
+            Ok(b.build()?)
+        }),
+        NetEntry::new("den", |_: &Params| {
+            let mut b = NetBuilder::new();
+            b.subnet_place("Den", napping(&[1, 13]));
+            Ok(b.build()?)
+        }),
+        NetEntry::new("tender", |_: &Params| {
+            let mut b = NetBuilder::new();
+            let ticks = b.place::<u32>("Ticks");
+            let counter = b.place::<u64>("Counter");
+            let done = b.place::<u32>("Done");
+            b.seed(ticks, [1, 13]);
+            b.seed(counter, [0]);
+            let tend = b
+                .transition(
+                    "Tend",
+                    (TakeEdge(ticks), MutateEdge(counter)),
+                    (done,),
+                    |n: u32, counter: &mut u64| -> Result<(u32,), Refused> {
+                        std::thread::sleep(NAP);
+                        if n == 13 {
+                            return Err(Refused);
+                        }
+                        *counter += 1;
+                        Ok((n,))
+                    },
+                )
+                .id();
+            b.control(Control::fire("tend", "Tend", tend));
+            Ok(b.build()?)
+        }),
+    ]
+}
+
+fn sleepy(net: &str) -> H {
+    let mut h = H::over(sleepy_registry());
+    h.result("load", json!({ "net": net }));
+    h
+}
+
+/// The params of the event inside the `nested` line whose event is
+/// `method`.
+fn nested_event<'a>(lines: &'a [Value], method: &str) -> &'a Value {
+    &lines
+        .iter()
+        .find(|line| line["method"] == "nested" && line["params"]["event"]["method"] == method)
+        .unwrap_or_else(|| panic!("no nested {method} in {lines:#?}"))["params"]["event"]["params"]
+}
+
+/// The `duration_ms` of a line's params or a log entry.
+fn ms(value: &Value) -> f64 {
+    value["duration_ms"]
+        .as_f64()
+        .unwrap_or_else(|| panic!("no duration_ms in {value}"))
+}
+
+/// A firing inside a token's net and one inside a subnet run inline, inside
+/// the step or the tick that fired them: each `fired` and log entry carries
+/// the time the body took, and so does the log entry of one that failed.
+#[test]
+fn a_firing_inside_carries_the_time_its_body_took() {
+    for net in ["cot", "den"] {
+        let mut h = sleepy(net);
+        let lines = h.send("step", json!({}));
+        let fired = nested_event(&lines, "fired");
+        assert!(ms(fired) >= nap_ms(), "{net}: {fired}");
+        let lines = h.send("step", json!({}));
+        nested_event(&lines, "failed");
+        let log = h.result("get_log", json!({}));
+        let entries = log["entries"].as_array().unwrap();
+        assert_eq!(entries.len(), 2, "{net}: {log}");
+        assert_eq!(
+            (&entries[0]["outcome"], &entries[1]["outcome"]),
+            (&json!("fired"), &json!("failed")),
+            "{net}"
+        );
+        for entry in entries {
+            assert!(ms(entry) >= nap_ms(), "{net}: {entry}");
+        }
+
+        // A run fires inside the same way, one firing a tick.
+        let mut h = sleepy(net);
+        let started = h.send("start", json!({}));
+        let lines = run_out(&mut h, started);
+        assert!(ms(nested_event(&lines, "fired")) >= nap_ms(), "{net}");
+        let log = h.result("get_log", json!({}));
+        let entries = log["entries"].as_array().unwrap();
+        assert_eq!(entries.len(), 2, "{net}: {log}");
+        for entry in entries {
+            assert!(ms(entry) >= nap_ms(), "{net}: {entry}");
+        }
+    }
+}
+
+/// An outer body with a mutate edge runs inside `launch`: its one `fired`
+/// and its log entry carry the time it took, and so does the log entry of
+/// one that failed.
+#[test]
+fn an_outer_body_with_a_mutate_edge_carries_the_time_it_took() {
+    let mut h = sleepy("tender");
+    let lines = h.send("step", json!({}));
+    assert_eq!(tags(&lines), ["mutated", "fired", "#2"]);
+    assert!(ms(find(&lines, "fired")) >= nap_ms(), "{lines:#?}");
+    let lines = h.send("step", json!({}));
+    assert!(tags(&lines).contains(&"failed".to_owned()), "{lines:#?}");
+    let log = h.result("get_log", json!({}));
+    let entries = log["entries"].as_array().unwrap();
+    assert_eq!(
+        (&entries[0]["outcome"], &entries[1]["outcome"]),
+        (&json!("fired"), &json!("failed"))
+    );
+    for entry in entries {
+        assert!(ms(entry) >= nap_ms(), "{entry}");
+    }
+}
+
+/// A press runs its handler inline: the one firing it made carries the
+/// time the press took.
+#[test]
+fn a_pressed_firing_carries_the_time_its_body_took() {
+    let mut h = sleepy("tender");
+    let lines = h.send("press", json!({"control": "tend"}));
+    assert!(ms(find(&lines, "fired")) >= nap_ms(), "{lines:#?}");
+    let log = h.result("get_log", json!({}));
+    assert!(ms(&log["entries"][0]) >= nap_ms(), "{log}");
 }

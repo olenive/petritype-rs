@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.2.1, 2026-11-22
+
+The [`v0.2.1` tag](https://github.com/olenive/petritype-rs/tree/v0.2.1).
 
 - `Net::step_deep_staged_with(before_body)` is `Net::step_deep_staged` with an observer, a closure the step calls once just before it runs an inner body inline, with an `InnerBody`: the transition's id and name, and the way down from the net that was stepped, its `path` of `PathStep`s (the path a failure of that body carries) and the `nested_ids` of the nets each step leads to. It is not called for a firing of the net that was stepped, for one a body makes inside the nets of its own tokens, or for anything a control's press fires. The step's result and events are the same with an observer as without one, and `step_deep`, `step_deep_staged`, `step_inside` and the drivers are unchanged.
 - `petritype-runner`'s `heartbeat` names a body that runs inside an inner net, a net a token carries or a subnet: `executing_transition` and `step_started_at` as for any body, and two new optional fields, `path` and `nested_id`, the inner net's address as the firing's `step` result and log entry give it. They are absent for a body of the loaded net, which the heartbeat named already, and when no body runs. It named no inner body before. The protocol stays version 2. `protocol::Notification::Heartbeat` gains `path` and `nested_id`, so a program that builds one adds both, `None` for a body of the loaded net. `StatusCell` is now `Arc<Mutex<Option<(String, SystemTime, Option<InnerAddress>)>>>`, its third element the inner net's address, a new `InnerAddress {path, nested_id}`: a program that makes the cell, or reads its name and time as `.0` and `.1`, changes nothing, and one that matches it as `(name, at)` matches `(name, at, _)`. Hosted mode's heartbeat is unchanged. The new example `slow_bodies` carries `slow-office`, whose bodies sleep for a load parameter's time, and the runner's tests over real pipes read its heartbeats.

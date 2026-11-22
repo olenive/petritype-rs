@@ -12,8 +12,8 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-petritype = { path = "../petritype", version = "0.2.0" }
-petritype-layout = { path = "../petritype-layout", version = "0.2.0" }
+petritype = { path = "../petritype", version = "0.2.1" }
+petritype-layout = { path = "../petritype-layout", version = "0.2.1" }
 serde = { version = "1", features = ["derive"], optional = true }
 serde_json = { version = "1", optional = true }
 

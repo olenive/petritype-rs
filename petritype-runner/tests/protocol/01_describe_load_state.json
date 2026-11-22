@@ -6,7 +6,7 @@
       "send": {"method": "describe", "params": {}},
       "expect": [
         {"id": "1", "result": {
-          "protocol_version": 2, "runtime": "rust", "runtime_version": "0.2.0",
+          "protocol_version": 2, "runtime": "rust", "runtime_version": "0.2.1",
           "nets": [
             {"name": "parcel-fleet", "description": "Sort and dispatch parcels", "mode": "manual",
              "params": [{"name": "trucks", "type_name": "u32", "required": false, "default": 2}]},

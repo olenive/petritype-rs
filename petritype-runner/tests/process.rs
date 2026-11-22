@@ -257,6 +257,161 @@ fn a_net_with_groups_over_real_pipes() {
     assert_eq!(shutdown["result"]["status"], "ok");
 }
 
+/// The binary serves the `workshop` net: a cracked pot fails the firing
+/// that holds it, which loses the pot, and gives it back once the net is
+/// loaded with `restore`.
+#[test]
+fn a_failed_firing_over_real_pipes() {
+    let mut s = Session::spawn();
+
+    let describe = s.call("1", "describe", json!({}));
+    let nets = describe["result"]["nets"].as_array().unwrap();
+    let workshop = nets
+        .iter()
+        .find(|net| net["name"] == "workshop")
+        .expect("the binary serves workshop");
+    assert_eq!(
+        workshop["params"],
+        json!([{"name": "restore", "type_name": "bool", "required": false, "default": false}])
+    );
+
+    // Loaded with no parameters, a failed firing loses its pot.
+    let load = s.call("2", "load", json!({"net": "workshop"}));
+    assert_eq!(load["result"]["status"], "loaded");
+    s.call(
+        "3",
+        "inject",
+        json!({"place": "Bench", "token": "Cracked bowl"}),
+    );
+    let mark = s.seen.len();
+    let step = s.call("4", "step", json!({}));
+    assert_eq!(step["result"]["transition"], "Glaze");
+    assert_eq!(step["result"]["failed"], true);
+    let failed = s.seen[mark..]
+        .iter()
+        .find(|line| line["method"] == "failed")
+        .expect("a failed notification");
+    assert_eq!(failed["params"]["restored"], false);
+    assert_eq!(failed["params"]["error"], "Cracked bowl broke");
+    let state = s.call("5", "get_state", json!({}));
+    assert_eq!(state["result"]["marking"]["places"]["Bench"]["count"], 0);
+
+    // Loaded with `restore`, it puts the pot back, with its id.
+    let load = s.call(
+        "6",
+        "load",
+        json!({"net": "workshop", "params": {"restore": true}}),
+    );
+    assert_eq!(load["result"]["generation"], 2);
+    let inject = s.call(
+        "7",
+        "inject",
+        json!({"place": "Bench", "token": "Cracked cup"}),
+    );
+    let cup = inject["result"]["id"].clone();
+    let mark = s.seen.len();
+    let step = s.call("8", "step", json!({}));
+    assert_eq!(step["result"]["failed"], true);
+    let failed = s.seen[mark..]
+        .iter()
+        .find(|line| line["method"] == "failed")
+        .expect("a failed notification");
+    assert_eq!(failed["params"]["restored"], true);
+    let state = s.call("9", "get_state", json!({}));
+    let bench = &state["result"]["marking"]["places"]["Bench"];
+    assert_eq!(bench["count"], 1);
+    assert_eq!(bench["tokens"][0]["id"], cup);
+
+    let log = s.call("10", "get_log", json!({}));
+    let entries = log["result"]["entries"].as_array().unwrap();
+    assert_eq!(entries.len(), 1, "the log starts again at the second load");
+    assert_eq!(entries[0]["outcome"], "failed");
+    assert_eq!(entries[0]["restored"], true);
+
+    let shutdown = s.call("11", "shutdown", json!({}));
+    assert_eq!(shutdown["result"]["status"], "ok");
+}
+
+/// The binary serves the `odd-names` net: names that hold a slash, a hash,
+/// a space and a double quote go out and come back exactly as given, and a
+/// path step that names a near miss is refused.
+#[test]
+fn names_with_any_character_over_real_pipes() {
+    const INBOX: &str = r#"Inbox #1 / "new""#;
+    const CABINET: &str = r#"Cabinet "C" #2/3"#;
+    const TRAY: &str = r#"Clerk's tray #4 / "in""#;
+    const FOLDER: &str = r#"Folder "D" #5/6"#;
+    const FILE_IT: &str = r#"File it #1 / "now""#;
+    const SORT: &str = r#"Sort #2 / "A-Z""#;
+    const TEMPLATE: &str = r#"Cabinet #9 / "steel""#;
+    let mut s = Session::spawn();
+
+    let load = s.call("1", "load", json!({"net": "odd-names"}));
+    assert_eq!(load["result"]["status"], "loaded");
+
+    let state = s.call("2", "get_state", json!({}));
+    let places: Vec<&Value> = state["result"]["topology"]["places"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|place| &place["name"])
+        .collect();
+    assert_eq!(places, [INBOX, CABINET]);
+    let cabinet = &state["result"]["marking"]["places"][CABINET];
+    assert_eq!(cabinet["subnet"]["template"], TEMPLATE);
+    assert_eq!(cabinet["ports"][TRAY]["count"], 0);
+
+    let inside = s.call("3", "get_state", json!({"path": [{"place": CABINET}]}));
+    assert_eq!(inside["result"]["net"], CABINET);
+    assert_eq!(inside["result"]["template"], TEMPLATE);
+    let cut = s.call(
+        "4",
+        "get_state",
+        json!({"path": [{"place": r#"Cabinet "C" #2"#}]}),
+    );
+    assert_eq!(cut["error"]["code"], "unknown_net");
+
+    let step = s.call("5", "step", json!({}));
+    assert_eq!(step["result"]["transition"], FILE_IT);
+    let tray = s.call(
+        "6",
+        "get_place_tokens",
+        json!({"place": CABINET, "port": TRAY}),
+    );
+    assert_eq!(tray["result"]["port"], TRAY);
+    assert_eq!(tray["result"]["count"], 1);
+
+    let step = s.call("7", "step", json!({}));
+    assert_eq!(step["result"]["transition"], SORT);
+    assert_eq!(step["result"]["path"], json!([{"place": CABINET}]));
+    let folder = s.call(
+        "8",
+        "get_place_tokens",
+        json!({"place": FOLDER, "path": [{"place": CABINET}]}),
+    );
+    assert_eq!(folder["result"]["count"], 1);
+    let memo = folder["result"]["tokens"][0]["id"].clone();
+    let token = s.call(
+        "9",
+        "get_token",
+        json!({"id": memo, "path": [{"place": CABINET}]}),
+    );
+    assert_eq!(token["result"]["place"], FOLDER);
+    assert_eq!(token["result"]["value"], "Memo");
+
+    let log = s.call("10", "get_log", json!({}));
+    let transitions: Vec<&Value> = log["result"]["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| &entry["transition"])
+        .collect();
+    assert_eq!(transitions, [FILE_IT, SORT]);
+
+    let shutdown = s.call("11", "shutdown", json!({}));
+    assert_eq!(shutdown["result"]["status"], "ok");
+}
+
 #[test]
 fn a_malformed_line_gets_an_invalid_params_answer() {
     let mut s = Session::spawn();

@@ -18,7 +18,11 @@
 //! `survey` edge, and `traffic-light`, whose `Go` takes every car waiting
 //! while the light is green through a `drain` edge, and whose own controls
 //! add a car and change the light (`press {"control": "car", "value":
-//! "Taxi"}`). This file is the whole of what an author writes besides them.
+//! "Taxi"}`). It carries the rest of PROTOCOL.md §11's conformance nets too:
+//! `stepping-rules`, `levels`, `groups`, `workshop` (whose cracked pots
+//! fail their firings, and whose load parameter `restore` gives them back),
+//! `cellar`, `harbour` and `odd-names`. This file is the whole of what an
+//! author writes besides them.
 
 use std::process::ExitCode;
 

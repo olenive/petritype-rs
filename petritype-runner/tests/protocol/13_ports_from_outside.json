@@ -1,0 +1,837 @@
+{
+ "net": "cellar",
+ "params": {},
+ "exchanges": [
+  {
+   "send": {
+    "method": "describe"
+   },
+   "expect": [
+    {
+     "id": "1",
+     "result": {
+      "protocol_version": 2,
+      "runtime": "<label>",
+      "runtime_version": "<label>",
+      "nets": [
+       {
+        "name": "cellar",
+        "description": "Bottles age on a rack in a cellar that the house reaches through its port",
+        "mode": "manual",
+        "params": []
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "load",
+    "params": {
+     "net": "cellar"
+    }
+   },
+   "expect": [
+    {
+     "method": "load_progress",
+     "params": {
+      "step": "build",
+      "message": "<label>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "reloaded",
+     "params": {
+      "generation": 1,
+      "reason": "load",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "2",
+     "result": {
+      "status": "loaded",
+      "generation": 1,
+      "marking_version": "<version>"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "get_state"
+   },
+   "expect": [
+    {
+     "id": "3",
+     "result": {
+      "protocol_version": 2,
+      "runtime": "<label>",
+      "net": "cellar",
+      "generation": 1,
+      "marking_version": "<version>",
+      "running": false,
+      "topology": {
+       "places": [
+        {
+         "name": "Table",
+         "type_name": "<label>",
+         "serializable": true,
+         "key_names": [
+          "years"
+         ]
+        },
+        {
+         "name": "Cellar",
+         "type_name": "<label>",
+         "subnet": true,
+         "ports": [
+          {
+           "name": "Rack",
+           "type_name": "<label>",
+           "serializable": true,
+           "key_names": [
+            "years"
+           ]
+          }
+         ],
+         "stepping": "inner_first"
+        }
+       ],
+       "transitions": [
+        {
+         "name": "Age",
+         "detail": "<any>"
+        }
+       ],
+       "edges": {
+        "<unordered>": [
+         {
+          "place": "Cellar",
+          "port": "Rack",
+          "transition": "Age",
+          "direction": "in",
+          "kind": "mutate"
+         }
+        ]
+       }
+      },
+      "transitions": {
+       "Age": {
+        "enabled": true,
+        "fireable": true,
+        "in_flight": false,
+        "priority": 0.0
+       }
+      },
+      "marking": {
+       "places": {
+        "Table": {
+         "count": 1,
+         "tokens": [
+          {
+           "id": "<id:claret>",
+           "label": "<label>",
+           "keys": {
+            "years": 4
+           }
+          }
+         ]
+        },
+        "Cellar": {
+         "subnet": {
+          "nested_id": "<id:cellar>",
+          "path": [
+           {
+            "place": "Cellar"
+           }
+          ],
+          "template": "Cellar",
+          "count": 1
+         },
+         "ports": {
+          "Rack": {
+           "count": 1,
+           "tokens": [
+            {
+             "id": "<id:cellar_rioja>",
+             "label": "<label>",
+             "keys": {
+              "years": 0
+             }
+            }
+           ]
+          }
+         }
+        }
+       }
+      },
+      "progress": {
+       "step_count": 0,
+       "last_fired": null,
+       "fired_counts": {},
+       "last_progress_at": null
+      }
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "step"
+   },
+   "expect": [
+    {
+     "method": "mutated",
+     "params": {
+      "place": "Cellar",
+      "port": "Rack",
+      "id": "<id:cellar_rioja>",
+      "label": "<label>",
+      "keys": {
+       "years": 1
+      },
+      "subnet_marking_versions": {
+       "Cellar": "<version>"
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "fired",
+     "params": {
+      "transition": "Age",
+      "consumed": [],
+      "produced": [],
+      "duration_ms": "<ms>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "4",
+     "result": {
+      "fired": true,
+      "transition": "Age",
+      "marking_version": "<version>",
+      "running": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "set_filter",
+    "params": {
+     "filter": {
+      "clauses": [
+       {
+        "key": "years",
+        "values": [
+         1
+        ]
+       }
+      ]
+     },
+     "path": [
+      {
+       "place": "Cellar"
+      }
+     ]
+    }
+   },
+   "expect": [
+    {
+     "id": "5",
+     "result": {
+      "marking_version": "<version>"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "inject",
+    "params": {
+     "place": "Cellar",
+     "port": "Rack",
+     "token": {
+      "name": "Merlot",
+      "years": 0
+     }
+    }
+   },
+   "expect": [
+    {
+     "method": "hidden",
+     "params": {
+      "kind": "added",
+      "place": "Cellar",
+      "port": "Rack",
+      "subnet_marking_versions": {
+       "Cellar": "<version>"
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "6",
+     "result": {
+      "status": "injected",
+      "id": "<id:cellar_merlot>",
+      "marking_version": "<version>"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "get_state"
+   },
+   "expect": [
+    {
+     "id": "7",
+     "result": {
+      "protocol_version": 2,
+      "runtime": "<label>",
+      "net": "cellar",
+      "generation": 1,
+      "marking_version": "<version>",
+      "running": false,
+      "topology": {
+       "places": [
+        {
+         "name": "Table",
+         "type_name": "<label>",
+         "serializable": true,
+         "key_names": [
+          "years"
+         ]
+        },
+        {
+         "name": "Cellar",
+         "type_name": "<label>",
+         "subnet": true,
+         "ports": [
+          {
+           "name": "Rack",
+           "type_name": "<label>",
+           "serializable": true,
+           "key_names": [
+            "years"
+           ]
+          }
+         ],
+         "stepping": "inner_first"
+        }
+       ],
+       "transitions": [
+        {
+         "name": "Age",
+         "detail": "<any>"
+        }
+       ],
+       "edges": {
+        "<unordered>": [
+         {
+          "place": "Cellar",
+          "port": "Rack",
+          "transition": "Age",
+          "direction": "in",
+          "kind": "mutate"
+         }
+        ]
+       }
+      },
+      "transitions": {
+       "Age": {
+        "enabled": true,
+        "fireable": true,
+        "in_flight": false,
+        "priority": 0.0
+       }
+      },
+      "marking": {
+       "places": {
+        "Table": {
+         "count": 1,
+         "tokens": [
+          {
+           "id": "<id:claret>",
+           "label": "<label>",
+           "keys": {
+            "years": 4
+           }
+          }
+         ]
+        },
+        "Cellar": {
+         "subnet": {
+          "nested_id": "<id:cellar>",
+          "path": [
+           {
+            "place": "Cellar"
+           }
+          ],
+          "template": "Cellar",
+          "count": 2
+         },
+         "ports": {
+          "Rack": {
+           "count": 2,
+           "matching": 1,
+           "tokens": [
+            {
+             "id": "<id:cellar_rioja>",
+             "label": "<label>",
+             "keys": {
+              "years": 1
+             }
+            }
+           ]
+          }
+         }
+        }
+       }
+      },
+      "progress": {
+       "step_count": 1,
+       "last_fired": "Age",
+       "fired_counts": {
+        "Age": 1
+       },
+       "last_progress_at": "<time>"
+      }
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "get_place_tokens",
+    "params": {
+     "place": "Cellar",
+     "port": "Rack"
+    }
+   },
+   "expect": [
+    {
+     "id": "8",
+     "result": {
+      "place": "Cellar",
+      "port": "Rack",
+      "marking_version": "<version>",
+      "count": 2,
+      "matching": 1,
+      "offset": 0,
+      "limit": 200,
+      "tokens": [
+       {
+        "id": "<id:cellar_rioja>",
+        "label": "<label>",
+        "keys": {
+         "years": 1
+        }
+       }
+      ],
+      "has_more": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "get_token",
+    "params": {
+     "id": "<id:cellar_rioja>",
+     "path": [
+      {
+       "place": "Cellar"
+      }
+     ]
+    }
+   },
+   "expect": [
+    {
+     "id": "9",
+     "result": {
+      "id": "<id:cellar_rioja>",
+      "place": "Rack",
+      "type_name": "<label>",
+      "kind": "json",
+      "value": {
+       "name": "Rioja",
+       "years": 1
+      },
+      "path": [
+       {
+        "place": "Cellar"
+       }
+      ],
+      "nested_id": "<id:cellar>"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "get_token",
+    "params": {
+     "id": "<id:cellar_merlot>",
+     "path": [
+      {
+       "place": "Cellar"
+      }
+     ]
+    }
+   },
+   "expect": [
+    {
+     "id": "10",
+     "error": {
+      "message": "<label>",
+      "code": "unknown_token"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "query"
+   },
+   "expect": [
+    {
+     "id": "11",
+     "result": {
+      "marking_version": "<version>",
+      "count": 2,
+      "matches": [
+       {
+        "place": "Table",
+        "token": {
+         "id": "<id:claret>",
+         "label": "<label>",
+         "keys": {
+          "years": 4
+         }
+        },
+        "json": {
+         "name": "Claret",
+         "years": 4
+        }
+       },
+       {
+        "place": "Cellar",
+        "port": "Rack",
+        "token": {
+         "id": "<id:cellar_rioja>",
+         "label": "<label>",
+         "keys": {
+          "years": 1
+         }
+        },
+        "json": {
+         "name": "Rioja",
+         "years": 1
+        }
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "query",
+    "params": {
+     "filter": {
+      "places": [
+       {
+        "place": "Cellar",
+        "port": "Rack"
+       }
+      ]
+     }
+    }
+   },
+   "expect": [
+    {
+     "id": "12",
+     "result": {
+      "marking_version": "<version>",
+      "count": 2,
+      "matches": [
+       {
+        "place": "Cellar",
+        "port": "Rack",
+        "token": {
+         "id": "<id:cellar_rioja>",
+         "label": "<label>",
+         "keys": {
+          "years": 1
+         }
+        },
+        "json": {
+         "name": "Rioja",
+         "years": 1
+        }
+       },
+       {
+        "place": "Cellar",
+        "port": "Rack",
+        "token": {
+         "id": "<id:cellar_merlot>",
+         "label": "<label>",
+         "keys": {
+          "years": 0
+         }
+        },
+        "json": {
+         "name": "Merlot",
+         "years": 0
+        }
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "distinct",
+    "params": {
+     "key": "years",
+     "places": [
+      {
+       "place": "Cellar",
+       "port": "Rack"
+      }
+     ]
+    }
+   },
+   "expect": [
+    {
+     "id": "13",
+     "result": {
+      "marking_version": "<version>",
+      "key": "years",
+      "values": [
+       1,
+       0
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "step"
+   },
+   "expect": [
+    {
+     "method": "removed",
+     "params": {
+      "place": "Cellar",
+      "port": "Rack",
+      "id": "<id:cellar_rioja>",
+      "subnet_marking_versions": {
+       "Cellar": "<version>"
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "fired",
+     "params": {
+      "transition": "Age",
+      "consumed": [],
+      "produced": [],
+      "duration_ms": "<ms>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "14",
+     "result": {
+      "fired": true,
+      "transition": "Age",
+      "marking_version": "<version>",
+      "running": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "step"
+   },
+   "expect": [
+    {
+     "method": "hidden",
+     "params": {
+      "kind": "mutated",
+      "place": "Cellar",
+      "port": "Rack",
+      "subnet_marking_versions": {
+       "Cellar": "<version>"
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "fired",
+     "params": {
+      "transition": "Age",
+      "consumed": [],
+      "produced": [],
+      "duration_ms": "<ms>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "15",
+     "result": {
+      "fired": true,
+      "transition": "Age",
+      "marking_version": "<version>",
+      "running": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "get_state",
+    "params": {
+     "path": [
+      {
+       "place": "Cellar"
+      }
+     ]
+    }
+   },
+   "expect": [
+    {
+     "id": "16",
+     "result": {
+      "protocol_version": 2,
+      "runtime": "<label>",
+      "net": "Cellar",
+      "generation": 1,
+      "marking_version": "<version>",
+      "running": false,
+      "topology": {
+       "places": [
+        {
+         "name": "Rack",
+         "type_name": "<label>",
+         "serializable": true,
+         "port": true,
+         "key_names": [
+          "years"
+         ]
+        }
+       ],
+       "transitions": [],
+       "edges": {
+        "<unordered>": []
+       }
+      },
+      "transitions": {},
+      "marking": {
+       "places": {
+        "Rack": {
+         "count": 2,
+         "matching": 0,
+         "tokens": []
+        }
+       }
+      },
+      "progress": {
+       "step_count": 0,
+       "last_fired": null,
+       "fired_counts": {},
+       "last_progress_at": null
+      },
+      "path": [
+       {
+        "place": "Cellar"
+       }
+      ],
+      "nested_id": "<id:cellar>",
+      "template": "Cellar"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "set_filter",
+    "params": {
+     "path": [
+      {
+       "place": "Cellar"
+      }
+     ]
+    }
+   },
+   "expect": [
+    {
+     "id": "17",
+     "result": {
+      "marking_version": "<version>"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "get_place_tokens",
+    "params": {
+     "place": "Cellar",
+     "port": "Rack"
+    }
+   },
+   "expect": [
+    {
+     "id": "18",
+     "result": {
+      "place": "Cellar",
+      "port": "Rack",
+      "marking_version": "<version>",
+      "count": 2,
+      "offset": 0,
+      "limit": 200,
+      "tokens": [
+       {
+        "id": "<id:cellar_rioja>",
+        "label": "<label>",
+        "keys": {
+         "years": 3
+        }
+       },
+       {
+        "id": "<id:cellar_merlot>",
+        "label": "<label>",
+        "keys": {
+         "years": 0
+        }
+       }
+      ],
+      "has_more": false
+     }
+    }
+   ]
+  }
+ ]
+}

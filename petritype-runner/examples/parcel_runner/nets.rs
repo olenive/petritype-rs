@@ -9,9 +9,12 @@
 //! `petritype/examples/shop/net.rs` and
 //! `petritype/examples/traffic_light/net.rs` as they are, not copied; and
 //! `stepping-rules` (§11, §12.3), which has no example of its own and is
-//! written here. The conformance nets `levels` (§11, §12.7) and `groups`
-//! (§11, §5.1) are written here too, each carried alone by its own registry
-//! ([`levels_registry`], [`groups_registry`]) for the transcripts over it
+//! written here. The conformance nets `levels` (§11, §12.7), `groups` (§11,
+//! §5.1), `workshop` (§11, §6.3), `cellar` (§11, §12.7, §13), `harbour`
+//! (§11, §12.1, §12.6) and `odd-names` (§11, §2) are written here too, each
+//! carried alone by its own registry ([`levels_registry`],
+//! [`groups_registry`], [`workshop_registry`], [`cellar_registry`],
+//! [`harbour_registry`], [`odd_names_registry`]) for the transcripts over it
 //! and by the example binary with the rest.
 
 use std::fmt;
@@ -686,6 +689,391 @@ pub fn groups_registry() -> Vec<NetEntry> {
     vec![groups_entry()]
 }
 
+/// The protocol's conformance net `workshop` (PROTOCOL.md §11, §6.3,
+/// §12.7): pots glazed on a bench and unloaded from a kiln through its
+/// port, where a cracked pot fails the firing that holds it, so that a
+/// transcript shows a failed firing that loses its token and one that gives
+/// it back, each also for a firing that took its token from a port place.
+/// Its names, places, transitions, template, load parameter and seed are
+/// fixed by §11; the Python twin is `tests/protocol_nets/workshop.py`.
+pub mod workshop {
+    use std::fmt;
+
+    use petritype::{Net, NetBuilder, Params, TakeEdge, Templates};
+    use petritype_runner::LoadError;
+    use serde::Deserialize;
+
+    /// Why a firing failed: the pot it held, whose text begins with
+    /// `"Cracked"`, broke.
+    #[derive(Debug)]
+    pub struct Cracked(pub String);
+
+    impl fmt::Display for Cracked {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            write!(f, "{} broke", self.0)
+        }
+    }
+
+    impl std::error::Error for Cracked {}
+
+    /// Both transitions' body: a cracked pot fails the firing, and any
+    /// other moves on unchanged.
+    fn handle(pot: String) -> Result<(String,), Cracked> {
+        if pot.starts_with("Cracked") {
+            Err(Cracked(pot))
+        } else {
+            Ok((pot,))
+        }
+    }
+
+    /// The template `Kiln`: one place, `Hatch`, its port, of strings and
+    /// serializable, and no transition. No parameters, no tokens.
+    fn kiln(_: &Params) -> Result<Net, petritype::BuildError> {
+        let mut b = NetBuilder::new();
+        let hatch = b.place::<String>("Hatch");
+        b.serializable(hatch);
+        b.port(hatch);
+        b.build()
+    }
+
+    /// `Kiln`, under its name, which builds the kiln's net and stamps it.
+    pub fn templates() -> Templates {
+        let mut templates = Templates::new();
+        templates.register("Kiln", kiln);
+        templates
+    }
+
+    /// `workshop`'s load parameter: `restore`, whether a failed firing puts
+    /// back what it took, `false` unless given.
+    #[derive(Deserialize)]
+    pub struct WorkshopParams {
+        #[serde(default)]
+        pub restore: bool,
+    }
+
+    /// The net as §11 seeds it: `Bench`, `Kiln` (a subnet place holding a
+    /// `Kiln`, inner first) and `Shelf`, every place empty. `Glaze` takes a
+    /// pot from the bench and `Unload` one from the kiln's `Hatch`, each
+    /// putting it on the shelf. The Python library restores tokens on
+    /// failure for a whole net and the core for each transition, so both
+    /// transitions take `restore`'s value.
+    pub fn workshop(params: WorkshopParams) -> Result<Net, LoadError> {
+        let templates = templates();
+        let the_kiln = templates
+            .build("Kiln", &Params::new())
+            .map_err(|error| LoadError::Other(error.to_string()))?;
+        let mut b = NetBuilder::new();
+        b.templates(&templates);
+        let bench = b.place::<String>("Bench");
+        let kiln_place = b.subnet_place("Kiln", the_kiln);
+        let shelf = b.place::<String>("Shelf");
+        b.serializable(bench);
+        b.serializable(shelf);
+        let hatch = b.port_of::<String>(kiln_place, "Hatch");
+        for (name, from) in [("Glaze", bench), ("Unload", hatch)] {
+            let mut transition = b.transition(name, (TakeEdge(from),), (shelf,), handle);
+            if params.restore {
+                transition.restore_tokens_on_failure();
+            }
+        }
+        Ok(b.build()?)
+    }
+}
+
+/// The `workshop` entry, as PROTOCOL.md §11 names and describes it, with
+/// its one load parameter, `restore`.
+fn workshop_entry() -> NetEntry {
+    NetEntry::typed("workshop", workshop::workshop)
+        .description(
+            "Pots are glazed on a bench and unloaded from a kiln, and a cracked pot fails the firing that holds it",
+        )
+        .param(ParamSpec::new("restore", "bool").default(false))
+        .hosting(Hosting::Manual)
+}
+
+/// The `workshop` net alone, for the transcripts over it (PROTOCOL.md §11).
+#[allow(dead_code)]
+pub fn workshop_registry() -> Vec<NetEntry> {
+    vec![workshop_entry()]
+}
+
+/// The protocol's conformance net `cellar` (PROTOCOL.md §11, §12.7, §13):
+/// bottles on a rack in a cellar, a subnet place whose one port the net
+/// around it reaches from outside, so that a transcript shows a port's
+/// tokens read, changed and filtered by that net. Its names, places,
+/// transition, key, template and seed are fixed by §11; the Python twin is
+/// `tests/protocol_nets/cellar.py`.
+pub mod cellar {
+    use petritype::{KeyValue, MutateEdge, Net, NetBuilder, Params, Templates};
+    use petritype_runner::LoadError;
+    use serde::{Deserialize, Serialize};
+
+    /// A bottle, and how many years it has aged.
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+    pub struct Bottle {
+        pub name: String,
+        pub years: i64,
+    }
+
+    /// The one key every place of bottles declares.
+    const KEY_NAMES: [&str; 1] = ["years"];
+
+    /// A bottle's key: its `years`.
+    fn keys_of(bottle: &Bottle) -> [KeyValue; 1] {
+        [KeyValue::Int(bottle.years)]
+    }
+
+    /// The template `Cellar`: one place, `Rack`, its port, holding Rioja at
+    /// 0 years, and no transition. No parameters.
+    fn cellar_net(_: &Params) -> Result<Net, petritype::BuildError> {
+        let mut b = NetBuilder::new();
+        let rack = b.place::<Bottle>("Rack");
+        b.serializable(rack);
+        b.keys(rack, KEY_NAMES, keys_of);
+        b.port(rack);
+        b.seed(
+            rack,
+            [Bottle {
+                name: "Rioja".to_owned(),
+                years: 0,
+            }],
+        );
+        b.build()
+    }
+
+    /// `Cellar`, under its name, which builds the cellar's net and stamps
+    /// it.
+    pub fn templates() -> Templates {
+        let mut templates = Templates::new();
+        templates.register("Cellar", cellar_net);
+        templates
+    }
+
+    /// The net as §11 seeds it: `Table`, holding Claret at 4 years, and
+    /// `Cellar`, a subnet place holding a `Cellar`, inner first. `Age`
+    /// mutates the bottle at the front of the cellar's `Rack`, one year
+    /// older, and has no output, so it is fireable whenever the rack holds
+    /// a bottle.
+    pub fn cellar(_: &petritype_runner::Params) -> Result<Net, LoadError> {
+        let templates = templates();
+        let the_cellar = templates
+            .build("Cellar", &Params::new())
+            .map_err(|error| LoadError::Other(error.to_string()))?;
+        let mut b = NetBuilder::new();
+        b.templates(&templates);
+        let table = b.place::<Bottle>("Table");
+        let cellar_place = b.subnet_place("Cellar", the_cellar);
+        b.serializable(table);
+        b.keys(table, KEY_NAMES, keys_of);
+        let rack = b.port_of::<Bottle>(cellar_place, "Rack");
+        b.seed(
+            table,
+            [Bottle {
+                name: "Claret".to_owned(),
+                years: 4,
+            }],
+        );
+        b.transition("Age", (MutateEdge(rack),), (), |bottle: &mut Bottle| {
+            bottle.years += 1;
+        });
+        Ok(b.build()?)
+    }
+}
+
+/// The `cellar` entry, as PROTOCOL.md §11 names and describes it.
+fn cellar_entry() -> NetEntry {
+    NetEntry::new("cellar", cellar::cellar)
+        .description("Bottles age on a rack in a cellar that the house reaches through its port")
+        .hosting(Hosting::Manual)
+}
+
+/// The `cellar` net alone, for the transcripts over it (PROTOCOL.md §11).
+#[allow(dead_code)]
+pub fn cellar_registry() -> Vec<NetEntry> {
+    vec![cellar_entry()]
+}
+
+/// The protocol's conformance net `harbour` (PROTOCOL.md §11, §12.1,
+/// §12.6, §12.7): ships that are nets of their own, each holding a subnet
+/// place, so that a transcript shows a subnet inside a net that a token
+/// carries, its path through the token's step, its path as the token moves,
+/// and its end when the token is consumed. Its names, places, transitions,
+/// templates and seed are fixed by §11; the Python twin is
+/// `tests/protocol_nets/harbour.py`. Every body hands its token on
+/// unchanged, and none fails.
+pub mod harbour {
+    use std::error::Error;
+
+    use petritype::{Net, NetBuilder, Params, TakeEdge, Templates};
+    use petritype_runner::LoadError;
+
+    /// The template `Hold`: `Hatch -Settle-> Bay`, both of strings,
+    /// serializable and empty, `Hatch` its port. No parameters.
+    fn hold(_: &Params) -> Result<Net, petritype::BuildError> {
+        let mut b = NetBuilder::new();
+        let hatch = b.place::<String>("Hatch");
+        let bay = b.place::<String>("Bay");
+        b.serializable(hatch);
+        b.serializable(bay);
+        b.port(hatch);
+        b.transition("Settle", (TakeEdge(hatch),), (bay,), |cargo: String| {
+            (cargo,)
+        });
+        b.build()
+    }
+
+    /// The template `Ship`: `Deck`, of strings and serializable, holding
+    /// `"Crate"`, and `Hold`, a subnet place holding a `Hold`, inner first;
+    /// `Stow` takes the crate from the deck into the hold's `Hatch`. No
+    /// parameters.
+    fn ship(holds: &Templates) -> Result<Net, Box<dyn Error + Send + Sync>> {
+        let mut b = NetBuilder::new();
+        b.templates(holds);
+        let deck = b.place::<String>("Deck");
+        let hold_place = b.subnet_place("Hold", holds.build("Hold", &Params::new())?);
+        b.serializable(deck);
+        let hatch = b.port_of::<String>(hold_place, "Hatch");
+        b.seed(deck, ["Crate".to_owned()]);
+        b.transition(
+            "Stow",
+            (TakeEdge(deck),),
+            (hatch,),
+            |cargo: String| (cargo,),
+        );
+        Ok(b.build()?)
+    }
+
+    /// `Hold` and `Ship`, each under its name, which build and stamp the
+    /// ship's net and its hold's, and which the places of ships restore
+    /// from.
+    pub fn templates() -> Templates {
+        let mut holds = Templates::new();
+        holds.register("Hold", hold);
+        let mut templates = holds.clone();
+        templates.register("Ship", move |_: &Params| ship(&holds));
+        templates
+    }
+
+    /// The net as §11 seeds it: `Quay`, a place of nets holding one ship,
+    /// and `Sea`, a place of nets holding none, both inner first. `Sail`
+    /// takes the ship from the quay and puts it to sea, its nets going with
+    /// it, and `Scrap` takes it from the sea and puts nothing back. A token
+    /// of a place of nets is a net, so its one inner net is named `""`.
+    pub fn harbour(_: &petritype_runner::Params) -> Result<Net, LoadError> {
+        let templates = templates();
+        let the_ship = templates
+            .build("Ship", &Params::new())
+            .map_err(|error| LoadError::Other(error.to_string()))?;
+        let mut b = NetBuilder::new();
+        b.templates(&templates);
+        let quay = b.place_nested::<Net>("Quay");
+        let sea = b.place_nested::<Net>("Sea");
+        b.serializable(quay);
+        b.serializable(sea);
+        b.seed(quay, [the_ship]);
+        b.transition("Sail", (TakeEdge(quay),), (sea,), |ship: Net| (ship,));
+        b.transition("Scrap", (TakeEdge(sea),), (), |_: Net| {});
+        Ok(b.build()?)
+    }
+}
+
+/// The `harbour` entry, as PROTOCOL.md §11 names and describes it.
+fn harbour_entry() -> NetEntry {
+    NetEntry::new("harbour", harbour::harbour)
+        .description("A ship stows its crate in its hold, sails and is scrapped")
+        .hosting(Hosting::Manual)
+}
+
+/// The `harbour` net alone, for the transcripts over it (PROTOCOL.md §11).
+#[allow(dead_code)]
+pub fn harbour_registry() -> Vec<NetEntry> {
+    vec![harbour_entry()]
+}
+
+/// The protocol's conformance net `odd-names` (PROTOCOL.md §2, §11, §12.1):
+/// places, transitions, a port, a subnet place and a template whose names
+/// each hold a slash, a hash, a space and a double quote, so that a
+/// transcript shows such names addressed by path and carried in requests,
+/// results, notifications and the log, compared exactly as given. Its
+/// names, places, transitions, template and seed are fixed by §11; the
+/// Python twin is `tests/protocol_nets/odd_names.py`. Every body hands its
+/// memo on unchanged, and none fails.
+pub mod odd_names {
+    use petritype::{Net, NetBuilder, Params, TakeEdge, Templates};
+    use petritype_runner::LoadError;
+
+    /// The outer net's place that holds the memo.
+    pub const INBOX: &str = r#"Inbox #1 / "new""#;
+    /// The subnet place.
+    pub const CABINET: &str = r#"Cabinet "C" #2/3"#;
+    /// The subnet's port, whose apostrophe is U+0027.
+    pub const TRAY: &str = r#"Clerk's tray #4 / "in""#;
+    /// The subnet's other place.
+    pub const FOLDER: &str = r#"Folder "D" #5/6"#;
+    /// The outer net's transition, from the inbox into the port.
+    pub const FILE_IT: &str = r#"File it #1 / "now""#;
+    /// The subnet's transition, from the port into the folder.
+    pub const SORT: &str = r#"Sort #2 / "A-Z""#;
+    /// The template that builds the subnet.
+    pub const TEMPLATE: &str = r#"Cabinet #9 / "steel""#;
+
+    /// The template [`TEMPLATE`]: the port [`TRAY`] and then [`FOLDER`],
+    /// both of strings, serializable and empty, with [`SORT`] from one to
+    /// the other. No parameters.
+    fn cabinet(_: &Params) -> Result<Net, petritype::BuildError> {
+        let mut b = NetBuilder::new();
+        let tray = b.place::<String>(TRAY);
+        let folder = b.place::<String>(FOLDER);
+        b.serializable(tray);
+        b.serializable(folder);
+        b.port(tray);
+        b.transition(SORT, (TakeEdge(tray),), (folder,), |memo: String| (memo,));
+        b.build()
+    }
+
+    /// The cabinet's template, under its name, which builds the subnet and
+    /// stamps it.
+    pub fn templates() -> Templates {
+        let mut templates = Templates::new();
+        templates.register(TEMPLATE, cabinet);
+        templates
+    }
+
+    /// The net as §11 seeds it: [`INBOX`], holding `"Memo"`, and
+    /// [`CABINET`], a subnet place holding a cabinet, inner first;
+    /// [`FILE_IT`] takes the memo from the inbox into the cabinet's
+    /// [`TRAY`].
+    pub fn odd_names(_: &petritype_runner::Params) -> Result<Net, LoadError> {
+        let templates = templates();
+        let the_cabinet = templates
+            .build(TEMPLATE, &Params::new())
+            .map_err(|error| LoadError::Other(error.to_string()))?;
+        let mut b = NetBuilder::new();
+        b.templates(&templates);
+        let inbox = b.place::<String>(INBOX);
+        let cabinet_place = b.subnet_place(CABINET, the_cabinet);
+        b.serializable(inbox);
+        let tray = b.port_of::<String>(cabinet_place, TRAY);
+        b.seed(inbox, ["Memo".to_owned()]);
+        b.transition(FILE_IT, (TakeEdge(inbox),), (tray,), |memo: String| (memo,));
+        Ok(b.build()?)
+    }
+}
+
+/// The `odd-names` entry, as PROTOCOL.md §11 names and describes it.
+fn odd_names_entry() -> NetEntry {
+    NetEntry::new("odd-names", odd_names::odd_names)
+        .description("Every name holds a slash, a hash, a space and a double quote")
+        .hosting(Hosting::Manual)
+}
+
+/// The `odd-names` net alone, for the transcripts over it (PROTOCOL.md
+/// §11).
+#[allow(dead_code)]
+pub fn odd_names_registry() -> Vec<NetEntry> {
+    vec![odd_names_entry()]
+}
+
 /// The conformance net's entry, as PROTOCOL.md §11 names and describes it.
 fn conformance_entry() -> NetEntry {
     NetEntry::new("parcel-distribution", conformance::parcel_distribution)
@@ -719,5 +1107,9 @@ pub fn registry() -> Vec<NetEntry> {
         stepping_rules_entry(),
         levels_entry(),
         groups_entry(),
+        workshop_entry(),
+        cellar_entry(),
+        harbour_entry(),
+        odd_names_entry(),
     ]
 }

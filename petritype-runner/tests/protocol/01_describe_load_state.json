@@ -27,6 +27,14 @@
             {"name": "levels", "description": "Heroes enter two levels through one port and leave through another", "mode": "manual",
              "params": []},
             {"name": "groups", "description": "Letters are sorted in one group and packed in another, into a box that seals them in a group of its own", "mode": "manual",
+             "params": []},
+            {"name": "workshop", "description": "Pots are glazed on a bench and unloaded from a kiln, and a cracked pot fails the firing that holds it", "mode": "manual",
+             "params": [{"name": "restore", "type_name": "bool", "required": false, "default": false}]},
+            {"name": "cellar", "description": "Bottles age on a rack in a cellar that the house reaches through its port", "mode": "manual",
+             "params": []},
+            {"name": "harbour", "description": "A ship stows its crate in its hold, sails and is scrapped", "mode": "manual",
+             "params": []},
+            {"name": "odd-names", "description": "Every name holds a slash, a hash, a space and a double quote", "mode": "manual",
              "params": []}
           ]
         }}

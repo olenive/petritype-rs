@@ -2870,7 +2870,7 @@ a wire format they do not own. `Snapshot` stays unserialisable; tokens are
 
 ### 19.3 The `petritype-runner` crate
 
-**Designed and built 2026-10-03**; as-built notes in §19.3.10, nested nets in §19.3.11, keys in §19.3.12, the protocol's wording gaps and the engine policies in §19.3.13, protocol version 2 in §19.3.15 and §19.3.16, subnet places in §19.3.17, groups in §19.3.18. A library crate in this
+**Designed and built 2026-10-03**; as-built notes in §19.3.10, nested nets in §19.3.11, keys in §19.3.12, the protocol's wording gaps and the engine policies in §19.3.13, protocol version 2 in §19.3.15 and §19.3.16, subnet places in §19.3.17, groups in §19.3.18, four more shared transcripts in §19.3.19. A library crate in this
 workspace plus an example binary. A net's bodies are the user's code, so the
 binary is always the user's own: it lists its nets and hands over to the
 crate. Dependencies: `petritype` with `serde`, `serde`, `serde_json`, and
@@ -3861,6 +3861,46 @@ version 2.
   groups of its own in a net with none, nets with none at any depth
   (`levels`, `transit`), and firings, a page of tokens and the log, which
   name no group.
+
+#### 19.3.19 Four more shared transcripts, 2026-11-22
+
+The Python track recorded four shared transcripts over four new
+conformance nets, each fixed in words in PROTOCOL.md §11 so that it can be
+built from the text alone. The runner replays them with nothing on the wire
+changed and no new rule in the harness.
+
+- **The conformance nets** are written in the example's `nets.rs`, as
+  `levels` and `groups` are, each carried alone by its own registry for the
+  transcript over it. `workshop` (`12_failures.json`): its load parameter
+  `restore`, a `bool` that defaults to `false`, gives both transitions
+  `restore_tokens_on_failure`, since the Python library sets that for a
+  whole net and the core for each transition; each body returns an error
+  for a pot whose text begins with `"Cracked"`. `cellar`
+  (`13_ports_from_outside.json`): its key `years`, an integer, is declared
+  on the outer `Table` and on the port `Rack` inside the subnet, and the
+  template seeds the port's bottle. `harbour`
+  (`14_subnet_in_a_token.json`): `Quay` and `Sea` hold ships, nets the
+  template `Ship` builds, each holding a subnet the template `Hold` builds,
+  and both places are serializable through those templates. `odd-names`
+  (`15_odd_names.json`): every name, the template's included, holds a
+  slash, a hash, a space and a double quote, and the core takes them as
+  they are. Each subnet is built through a `Templates` that registers its
+  template's name, so that it is stamped with that name.
+  `nets::registry()`, what the example binary carries, lists the four
+  after `groups`, and process tests run `workshop`'s failures, without and
+  with `restore`, and `odd-names` over real pipes.
+- **A failure's text.** A shared transcript masks a failure's `error`, in
+  a `failed` and in a log entry, as `"<label>"`, since the Python runner
+  writes `"Type: message"` and this one the error's `Display` (§11, since
+  2026-11-22). The harness's string masks match it already, as the Python
+  harness's do, and `the_masks` pins that.
+- **Transcripts.** The four are copied verbatim from the Python track's
+  recording and replay with no runner change; `05` to `11` did not change,
+  and our own `01_describe_load_state.json` lists the four nets in
+  `describe`. Every failure in `12_failures.json` is a firing of the loaded
+  net with no mutate edge, which both runners report as `launched` then
+  `failed`. `cellar`'s `Age` has a mutate edge, which this runner reports
+  in one piece and the Python runner in two; the fold gives the same lines.
 
 ### 19.4 Who spawns it
 

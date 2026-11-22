@@ -39,7 +39,11 @@
 //!   the expected keys; arrays the expected length, element by element.
 //!   These are PROTOCOL.md §11's rules, and the Python harness's
 //!   (`petritype/tests/test_protocol_transcripts.py`): both search for an
-//!   `<unordered>` pairing, backtracking.
+//!   `<unordered>` pairing, backtracking. A shared transcript masks a
+//!   failure's `error`, in a `failed` and in a log entry, as `"<label>"`,
+//!   since each runtime words it its own way (§11, since 2026-11-22); the
+//!   string masks match it, so both harnesses compare it with the rules
+//!   above and nothing more.
 //! - A `launched` immediately followed by its `distributed` is folded into one
 //!   `fired {transition, consumed, produced, duration_ms}` (stamped with the
 //!   `distributed`'s `marking_version` and `running`) before comparing, so
@@ -90,12 +94,20 @@
 //! `transit`'s places. `10_stepping_rules.json` over `stepping-rules`
 //! (2026-11-21, a place of nets under each stepping rule),
 //! `09_subnet_places.json` over `levels` (2026-11-21, subnet places and
-//! their ports) and `11_groups.json` over `groups` (2026-11-21, the groups
-//! of a net and of its subnet in their topologies) are verbatim copies too.
+//! their ports), `11_groups.json` over `groups` (2026-11-21, the groups
+//! of a net and of its subnet in their topologies), `12_failures.json` over
+//! `workshop` (2026-11-22, failed firings that lose their token and that
+//! give it back, from a place and from a port), `13_ports_from_outside.json`
+//! over `cellar` (2026-11-22, a subnet's port read, changed and filtered by
+//! the net around it), `14_subnet_in_a_token.json` over `harbour`
+//! (2026-11-22, a subnet inside a net that a token carries) and
+//! `15_odd_names.json` over `odd-names` (2026-11-22, names that hold a
+//! slash, a hash, a space and a double quote) are verbatim copies too.
 //! The shared set of §11, over the conformance nets `parcel-distribution`,
 //! `transit`, `wildlife`, `shop`, `traffic-light`, `stepping-rules`,
-//! `levels` and `groups`, lives in the Python repository and is replayed
-//! here from a sibling checkout by `the_shared_transcripts_hold`.
+//! `levels`, `groups`, `workshop`, `cellar`, `harbour` and `odd-names`,
+//! lives in the Python repository and is replayed here from a sibling
+//! checkout by `the_shared_transcripts_hold`.
 //! A transcript over a conformance net is replayed against a runner carrying
 //! that net alone (§11), whichever directory it is in, so that it may pin
 //! `describe` in full; any other against everything the example carries.
@@ -390,6 +402,10 @@ fn registry_for(net: &str) -> Vec<petritype_runner::NetEntry> {
         "stepping-rules" => nets::stepping_rules_registry(),
         "levels" => nets::levels_registry(),
         "groups" => nets::groups_registry(),
+        "workshop" => nets::workshop_registry(),
+        "cellar" => nets::cellar_registry(),
+        "harbour" => nets::harbour_registry(),
+        "odd-names" => nets::odd_names_registry(),
         _ => nets::registry(),
     }
 }
@@ -508,10 +524,11 @@ fn shared_dir() -> PathBuf {
 
 /// The shared transcripts of PROTOCOL.md §11, over the conformance nets
 /// `parcel-distribution`, `transit`, `wildlife`, `shop`, `traffic-light`,
-/// `stepping-rules`, `levels` and `groups`, replayed exactly as ours are, each against a registry
+/// `stepping-rules`, `levels`, `groups`, `workshop`, `cellar`, `harbour` and
+/// `odd-names`, replayed exactly as ours are, each against a registry
 /// carrying its own net alone, which §11 makes the rule so that a shared
-/// transcript may pin `describe` in full. A shared transcript over a net this runner does not
-/// carry fails at its `load`.
+/// transcript may pin `describe` in full. A shared transcript over a net
+/// this runner does not carry fails at its `load`.
 ///
 /// They live in the Python repository (§11 makes it the home of the shared
 /// set), not here, so this test reads them from a sibling checkout, or from
@@ -570,6 +587,18 @@ fn the_masks() {
         b
     ));
     assert!(matches(&json!({"d": "<any>"}), &json!({"d": null}), b));
+    assert!(
+        matches(
+            &json!({"error": "<label>", "restored": false}),
+            &json!({"error": "Cracked bowl broke", "restored": false}),
+            b
+        ) && !matches(
+            &json!({"error": "<label>"}),
+            &json!({"error": {"code": "unknown_place", "message": "x"}}),
+            b
+        ),
+        "a failure's error text is masked as a string; an error object is no string"
+    );
     assert!(matches(
         &json!({"<unordered>": [1, 2, 2]}),
         &json!([2, 1, 2]),

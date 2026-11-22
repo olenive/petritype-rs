@@ -1,0 +1,836 @@
+{
+ "net": "odd-names",
+ "params": {},
+ "exchanges": [
+  {
+   "send": {
+    "method": "describe"
+   },
+   "expect": [
+    {
+     "id": "1",
+     "result": {
+      "protocol_version": 2,
+      "runtime": "<label>",
+      "runtime_version": "<label>",
+      "nets": [
+       {
+        "name": "odd-names",
+        "description": "Every name holds a slash, a hash, a space and a double quote",
+        "mode": "manual",
+        "params": []
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "load",
+    "params": {
+     "net": "odd-names"
+    }
+   },
+   "expect": [
+    {
+     "method": "load_progress",
+     "params": {
+      "step": "build",
+      "message": "<label>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "reloaded",
+     "params": {
+      "generation": 1,
+      "reason": "load",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "2",
+     "result": {
+      "status": "loaded",
+      "generation": 1,
+      "marking_version": "<version>"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "get_state"
+   },
+   "expect": [
+    {
+     "id": "3",
+     "result": {
+      "protocol_version": 2,
+      "runtime": "<label>",
+      "net": "odd-names",
+      "generation": 1,
+      "marking_version": "<version>",
+      "running": false,
+      "topology": {
+       "places": [
+        {
+         "name": "Inbox #1 / \"new\"",
+         "type_name": "<label>",
+         "serializable": true
+        },
+        {
+         "name": "Cabinet \"C\" #2/3",
+         "type_name": "<label>",
+         "subnet": true,
+         "ports": [
+          {
+           "name": "Clerk's tray #4 / \"in\"",
+           "type_name": "<label>",
+           "serializable": true
+          }
+         ],
+         "stepping": "inner_first"
+        }
+       ],
+       "transitions": [
+        {
+         "name": "File it #1 / \"now\"",
+         "detail": "<any>"
+        }
+       ],
+       "edges": {
+        "<unordered>": [
+         {
+          "place": "Inbox #1 / \"new\"",
+          "transition": "File it #1 / \"now\"",
+          "direction": "in",
+          "kind": "take"
+         },
+         {
+          "place": "Cabinet \"C\" #2/3",
+          "port": "Clerk's tray #4 / \"in\"",
+          "transition": "File it #1 / \"now\"",
+          "direction": "out"
+         }
+        ]
+       }
+      },
+      "transitions": {
+       "File it #1 / \"now\"": {
+        "enabled": true,
+        "fireable": true,
+        "in_flight": false,
+        "priority": 0.0
+       }
+      },
+      "marking": {
+       "places": {
+        "Inbox #1 / \"new\"": {
+         "count": 1,
+         "tokens": [
+          {
+           "id": "<id:memo>",
+           "label": "<label>"
+          }
+         ]
+        },
+        "Cabinet \"C\" #2/3": {
+         "subnet": {
+          "nested_id": "<id:cabinet_c_2_3>",
+          "path": [
+           {
+            "place": "Cabinet \"C\" #2/3"
+           }
+          ],
+          "template": "Cabinet #9 / \"steel\"",
+          "count": 0
+         },
+         "ports": {
+          "Clerk's tray #4 / \"in\"": {
+           "count": 0,
+           "tokens": []
+          }
+         }
+        }
+       }
+      },
+      "progress": {
+       "step_count": 0,
+       "last_fired": null,
+       "fired_counts": {},
+       "last_progress_at": null
+      }
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "get_state",
+    "params": {
+     "path": [
+      {
+       "place": "Cabinet \"C\" #2/3"
+      }
+     ]
+    }
+   },
+   "expect": [
+    {
+     "id": "4",
+     "result": {
+      "protocol_version": 2,
+      "runtime": "<label>",
+      "net": "Cabinet \"C\" #2/3",
+      "generation": 1,
+      "marking_version": "<version>",
+      "running": false,
+      "topology": {
+       "places": [
+        {
+         "name": "Clerk's tray #4 / \"in\"",
+         "type_name": "<label>",
+         "serializable": true,
+         "port": true
+        },
+        {
+         "name": "Folder \"D\" #5/6",
+         "type_name": "<label>",
+         "serializable": true
+        }
+       ],
+       "transitions": [
+        {
+         "name": "Sort #2 / \"A-Z\"",
+         "detail": "<any>"
+        }
+       ],
+       "edges": {
+        "<unordered>": [
+         {
+          "place": "Clerk's tray #4 / \"in\"",
+          "transition": "Sort #2 / \"A-Z\"",
+          "direction": "in",
+          "kind": "take"
+         },
+         {
+          "place": "Folder \"D\" #5/6",
+          "transition": "Sort #2 / \"A-Z\"",
+          "direction": "out"
+         }
+        ]
+       }
+      },
+      "transitions": {
+       "Sort #2 / \"A-Z\"": {
+        "enabled": true,
+        "fireable": false,
+        "in_flight": false,
+        "priority": 0.0
+       }
+      },
+      "marking": {
+       "places": {
+        "Clerk's tray #4 / \"in\"": {
+         "count": 0,
+         "tokens": []
+        },
+        "Folder \"D\" #5/6": {
+         "count": 0,
+         "tokens": []
+        }
+       }
+      },
+      "progress": {
+       "step_count": 0,
+       "last_fired": null,
+       "fired_counts": {},
+       "last_progress_at": null
+      },
+      "path": [
+       {
+        "place": "Cabinet \"C\" #2/3"
+       }
+      ],
+      "nested_id": "<id:cabinet_c_2_3>",
+      "template": "Cabinet #9 / \"steel\""
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "get_state",
+    "params": {
+     "path": [
+      {
+       "place": "Cabinet \"C\" #2"
+      }
+     ]
+    }
+   },
+   "expect": [
+    {
+     "id": "5",
+     "error": {
+      "message": "<label>",
+      "code": "unknown_net"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "get_state",
+    "params": {
+     "path": [
+      {
+       "place": "Cabinet 'C' #2/3"
+      }
+     ]
+    }
+   },
+   "expect": [
+    {
+     "id": "6",
+     "error": {
+      "message": "<label>",
+      "code": "unknown_net"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "get_state",
+    "params": {
+     "path": "Cabinet \"C\" #2/3"
+    }
+   },
+   "expect": [
+    {
+     "id": "7",
+     "error": {
+      "message": "<label>",
+      "code": "invalid_params"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "step"
+   },
+   "expect": [
+    {
+     "method": "fired",
+     "params": {
+      "transition": "File it #1 / \"now\"",
+      "consumed": [
+       [
+        "Inbox #1 / \"new\"",
+        "<id:memo>"
+       ]
+      ],
+      "produced": [
+       [
+        {
+         "place": "Cabinet \"C\" #2/3",
+         "port": "Clerk's tray #4 / \"in\""
+        },
+        "<id:cabinet_c_2_3_memo>",
+        "<label>"
+       ]
+      ],
+      "duration_ms": "<ms>",
+      "subnet_marking_versions": {
+       "Cabinet \"C\" #2/3": "<version>"
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "fireable",
+     "params": {
+      "transitions": [],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "nested",
+     "params": {
+      "path": [
+       {
+        "place": "Cabinet \"C\" #2/3"
+       }
+      ],
+      "nested_id": "<id:cabinet_c_2_3>",
+      "event": {
+       "method": "fireable",
+       "params": {
+        "transitions": [
+         "Sort #2 / \"A-Z\""
+        ],
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "8",
+     "result": {
+      "fired": true,
+      "transition": "File it #1 / \"now\"",
+      "marking_version": "<version>",
+      "running": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "get_place_tokens",
+    "params": {
+     "place": "Cabinet \"C\" #2/3",
+     "port": "Clerk's tray #4 / \"in\""
+    }
+   },
+   "expect": [
+    {
+     "id": "9",
+     "result": {
+      "place": "Cabinet \"C\" #2/3",
+      "port": "Clerk's tray #4 / \"in\"",
+      "marking_version": "<version>",
+      "count": 1,
+      "offset": 0,
+      "limit": 200,
+      "tokens": [
+       {
+        "id": "<id:cabinet_c_2_3_memo>",
+        "label": "<label>"
+       }
+      ],
+      "has_more": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "step"
+   },
+   "expect": [
+    {
+     "method": "nested",
+     "params": {
+      "path": [
+       {
+        "place": "Cabinet \"C\" #2/3"
+       }
+      ],
+      "nested_id": "<id:cabinet_c_2_3>",
+      "event": {
+       "method": "fired",
+       "params": {
+        "transition": "Sort #2 / \"A-Z\"",
+        "consumed": [
+         [
+          "Clerk's tray #4 / \"in\"",
+          "<id:cabinet_c_2_3_memo>"
+         ]
+        ],
+        "produced": [
+         [
+          "Folder \"D\" #5/6",
+          "<id:cabinet_c_2_3_memo_folder_d_5>",
+          "<label>"
+         ]
+        ],
+        "duration_ms": "<ms>",
+        "outer_marking_version": "<version>",
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "nested",
+     "params": {
+      "path": [
+       {
+        "place": "Cabinet \"C\" #2/3"
+       }
+      ],
+      "nested_id": "<id:cabinet_c_2_3>",
+      "event": {
+       "method": "fireable",
+       "params": {
+        "transitions": [],
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "10",
+     "result": {
+      "fired": true,
+      "transition": "Sort #2 / \"A-Z\"",
+      "path": [
+       {
+        "place": "Cabinet \"C\" #2/3"
+       }
+      ],
+      "nested_id": "<id:cabinet_c_2_3>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "get_place_tokens",
+    "params": {
+     "place": "Folder \"D\" #5/6",
+     "path": [
+      {
+       "place": "Cabinet \"C\" #2/3"
+      }
+     ]
+    }
+   },
+   "expect": [
+    {
+     "id": "11",
+     "result": {
+      "place": "Folder \"D\" #5/6",
+      "marking_version": "<version>",
+      "count": 1,
+      "offset": 0,
+      "limit": 200,
+      "tokens": [
+       {
+        "id": "<id:cabinet_c_2_3_memo_folder_d_5>",
+        "label": "<label>"
+       }
+      ],
+      "has_more": false,
+      "path": [
+       {
+        "place": "Cabinet \"C\" #2/3"
+       }
+      ],
+      "nested_id": "<id:cabinet_c_2_3>"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "get_token",
+    "params": {
+     "id": "<id:cabinet_c_2_3_memo_folder_d_5>",
+     "path": [
+      {
+       "place": "Cabinet \"C\" #2/3"
+      }
+     ]
+    }
+   },
+   "expect": [
+    {
+     "id": "12",
+     "result": {
+      "id": "<id:cabinet_c_2_3_memo_folder_d_5>",
+      "place": "Folder \"D\" #5/6",
+      "type_name": "<label>",
+      "kind": "json",
+      "value": "Memo",
+      "path": [
+       {
+        "place": "Cabinet \"C\" #2/3"
+       }
+      ],
+      "nested_id": "<id:cabinet_c_2_3>"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "disable",
+    "params": {
+     "transition": "File it #1 / \"now\""
+    }
+   },
+   "expect": [
+    {
+     "method": "toggled",
+     "params": {
+      "transition": "File it #1 / \"now\"",
+      "enabled": false,
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "13",
+     "result": {
+      "marking_version": "<version>"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "inject",
+    "params": {
+     "place": "Inbox #1 / \"new\"",
+     "token": "Note"
+    }
+   },
+   "expect": [
+    {
+     "method": "added",
+     "params": {
+      "place": "Inbox #1 / \"new\"",
+      "id": "<id:note>",
+      "label": "<label>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "14",
+     "result": {
+      "status": "injected",
+      "id": "<id:note>",
+      "marking_version": "<version>"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "enable",
+    "params": {
+     "transition": "File it #1 / \"now\""
+    }
+   },
+   "expect": [
+    {
+     "method": "toggled",
+     "params": {
+      "transition": "File it #1 / \"now\"",
+      "enabled": true,
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "fireable",
+     "params": {
+      "transitions": [
+       "File it #1 / \"now\""
+      ],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "15",
+     "result": {
+      "marking_version": "<version>"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "get_state"
+   },
+   "expect": [
+    {
+     "id": "16",
+     "result": {
+      "protocol_version": 2,
+      "runtime": "<label>",
+      "net": "odd-names",
+      "generation": 1,
+      "marking_version": "<version>",
+      "running": false,
+      "topology": {
+       "places": [
+        {
+         "name": "Inbox #1 / \"new\"",
+         "type_name": "<label>",
+         "serializable": true
+        },
+        {
+         "name": "Cabinet \"C\" #2/3",
+         "type_name": "<label>",
+         "subnet": true,
+         "ports": [
+          {
+           "name": "Clerk's tray #4 / \"in\"",
+           "type_name": "<label>",
+           "serializable": true
+          }
+         ],
+         "stepping": "inner_first"
+        }
+       ],
+       "transitions": [
+        {
+         "name": "File it #1 / \"now\"",
+         "detail": "<any>"
+        }
+       ],
+       "edges": {
+        "<unordered>": [
+         {
+          "place": "Inbox #1 / \"new\"",
+          "transition": "File it #1 / \"now\"",
+          "direction": "in",
+          "kind": "take"
+         },
+         {
+          "place": "Cabinet \"C\" #2/3",
+          "port": "Clerk's tray #4 / \"in\"",
+          "transition": "File it #1 / \"now\"",
+          "direction": "out"
+         }
+        ]
+       }
+      },
+      "transitions": {
+       "File it #1 / \"now\"": {
+        "enabled": true,
+        "fireable": true,
+        "in_flight": false,
+        "priority": 0.0
+       }
+      },
+      "marking": {
+       "places": {
+        "Inbox #1 / \"new\"": {
+         "count": 1,
+         "tokens": [
+          {
+           "id": "<id:note>",
+           "label": "<label>"
+          }
+         ]
+        },
+        "Cabinet \"C\" #2/3": {
+         "subnet": {
+          "nested_id": "<id:cabinet_c_2_3>",
+          "path": [
+           {
+            "place": "Cabinet \"C\" #2/3"
+           }
+          ],
+          "template": "Cabinet #9 / \"steel\"",
+          "count": 1
+         },
+         "ports": {
+          "Clerk's tray #4 / \"in\"": {
+           "count": 0,
+           "tokens": []
+          }
+         }
+        }
+       }
+      },
+      "progress": {
+       "step_count": 1,
+       "last_fired": "File it #1 / \"now\"",
+       "fired_counts": {
+        "File it #1 / \"now\"": 1
+       },
+       "last_progress_at": "<time>"
+      }
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "get_log"
+   },
+   "expect": [
+    {
+     "id": "17",
+     "result": {
+      "entries": [
+       {
+        "seq": 1,
+        "transition": "File it #1 / \"now\"",
+        "started_at": "<time>",
+        "duration_ms": "<ms>",
+        "outcome": "fired",
+        "consumed": [
+         [
+          "Inbox #1 / \"new\"",
+          "<id:memo>"
+         ]
+        ],
+        "produced": [
+         [
+          {
+           "place": "Cabinet \"C\" #2/3",
+           "port": "Clerk's tray #4 / \"in\""
+          },
+          "<id:cabinet_c_2_3_memo>"
+         ]
+        ]
+       },
+       {
+        "seq": 2,
+        "transition": "Sort #2 / \"A-Z\"",
+        "started_at": "<time>",
+        "duration_ms": "<ms>",
+        "outcome": "fired",
+        "consumed": [
+         [
+          "Clerk's tray #4 / \"in\"",
+          "<id:cabinet_c_2_3_memo>"
+         ]
+        ],
+        "produced": [
+         [
+          "Folder \"D\" #5/6",
+          "<id:cabinet_c_2_3_memo_folder_d_5>"
+         ]
+        ],
+        "path": [
+         {
+          "place": "Cabinet \"C\" #2/3"
+         }
+        ],
+        "nested_id": "<id:cabinet_c_2_3>"
+       }
+      ]
+     }
+    }
+   ]
+  }
+ ]
+}

@@ -1,0 +1,1279 @@
+{
+ "net": "workshop",
+ "params": {},
+ "exchanges": [
+  {
+   "send": {
+    "method": "describe"
+   },
+   "expect": [
+    {
+     "id": "1",
+     "result": {
+      "protocol_version": 2,
+      "runtime": "<label>",
+      "runtime_version": "<label>",
+      "nets": [
+       {
+        "name": "workshop",
+        "description": "Pots are glazed on a bench and unloaded from a kiln, and a cracked pot fails the firing that holds it",
+        "mode": "manual",
+        "params": [
+         {
+          "name": "restore",
+          "type_name": "<label>",
+          "required": false,
+          "default": false
+         }
+        ]
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "load",
+    "params": {
+     "net": "workshop"
+    }
+   },
+   "expect": [
+    {
+     "method": "load_progress",
+     "params": {
+      "step": "build",
+      "message": "<label>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "reloaded",
+     "params": {
+      "generation": 1,
+      "reason": "load",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "2",
+     "result": {
+      "status": "loaded",
+      "generation": 1,
+      "marking_version": "<version>"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "inject",
+    "params": {
+     "place": "Bench",
+     "token": "Cracked bowl"
+    }
+   },
+   "expect": [
+    {
+     "method": "added",
+     "params": {
+      "place": "Bench",
+      "id": "<id:cracked_bowl>",
+      "label": "<label>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "fireable",
+     "params": {
+      "transitions": [
+       "Glaze"
+      ],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "3",
+     "result": {
+      "status": "injected",
+      "id": "<id:cracked_bowl>",
+      "marking_version": "<version>"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "step"
+   },
+   "expect": [
+    {
+     "method": "launched",
+     "params": {
+      "transition": "Glaze",
+      "consumed": [
+       [
+        "Bench",
+        "<id:cracked_bowl>"
+       ]
+      ],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "failed",
+     "params": {
+      "transition": "Glaze",
+      "error": "<label>",
+      "restored": false,
+      "consumed": [
+       [
+        "Bench",
+        "<id:cracked_bowl>"
+       ]
+      ],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "fireable",
+     "params": {
+      "transitions": [],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "4",
+     "result": {
+      "fired": true,
+      "transition": "Glaze",
+      "failed": true,
+      "marking_version": "<version>",
+      "running": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "get_state"
+   },
+   "expect": [
+    {
+     "id": "5",
+     "result": {
+      "protocol_version": 2,
+      "runtime": "<label>",
+      "net": "workshop",
+      "generation": 1,
+      "marking_version": "<version>",
+      "running": false,
+      "topology": {
+       "places": [
+        {
+         "name": "Bench",
+         "type_name": "<label>",
+         "serializable": true
+        },
+        {
+         "name": "Kiln",
+         "type_name": "<label>",
+         "subnet": true,
+         "ports": [
+          {
+           "name": "Hatch",
+           "type_name": "<label>",
+           "serializable": true
+          }
+         ],
+         "stepping": "inner_first"
+        },
+        {
+         "name": "Shelf",
+         "type_name": "<label>",
+         "serializable": true
+        }
+       ],
+       "transitions": [
+        {
+         "name": "Glaze",
+         "detail": "<any>"
+        },
+        {
+         "name": "Unload",
+         "detail": "<any>"
+        }
+       ],
+       "edges": {
+        "<unordered>": [
+         {
+          "place": "Bench",
+          "transition": "Glaze",
+          "direction": "in",
+          "kind": "take"
+         },
+         {
+          "place": "Kiln",
+          "port": "Hatch",
+          "transition": "Unload",
+          "direction": "in",
+          "kind": "take"
+         },
+         {
+          "place": "Shelf",
+          "transition": "Glaze",
+          "direction": "out"
+         },
+         {
+          "place": "Shelf",
+          "transition": "Unload",
+          "direction": "out"
+         }
+        ]
+       }
+      },
+      "transitions": {
+       "Glaze": {
+        "enabled": true,
+        "fireable": false,
+        "in_flight": false,
+        "priority": 0.0
+       },
+       "Unload": {
+        "enabled": true,
+        "fireable": false,
+        "in_flight": false,
+        "priority": 0.0
+       }
+      },
+      "marking": {
+       "places": {
+        "Bench": {
+         "count": 0,
+         "tokens": []
+        },
+        "Kiln": {
+         "subnet": {
+          "nested_id": "<id:kiln>",
+          "path": [
+           {
+            "place": "Kiln"
+           }
+          ],
+          "template": "Kiln",
+          "count": 0
+         },
+         "ports": {
+          "Hatch": {
+           "count": 0,
+           "tokens": []
+          }
+         }
+        },
+        "Shelf": {
+         "count": 0,
+         "tokens": []
+        }
+       }
+      },
+      "progress": {
+       "step_count": 0,
+       "last_fired": null,
+       "fired_counts": {},
+       "last_progress_at": null
+      }
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "inject",
+    "params": {
+     "place": "Kiln",
+     "port": "Hatch",
+     "token": "Cracked jug"
+    }
+   },
+   "expect": [
+    {
+     "method": "added",
+     "params": {
+      "place": "Kiln",
+      "port": "Hatch",
+      "id": "<id:kiln_cracked_jug>",
+      "label": "<label>",
+      "subnet_marking_versions": {
+       "Kiln": "<version>"
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "fireable",
+     "params": {
+      "transitions": [
+       "Unload"
+      ],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "6",
+     "result": {
+      "status": "injected",
+      "id": "<id:kiln_cracked_jug>",
+      "marking_version": "<version>"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "step"
+   },
+   "expect": [
+    {
+     "method": "launched",
+     "params": {
+      "transition": "Unload",
+      "consumed": [
+       [
+        {
+         "place": "Kiln",
+         "port": "Hatch"
+        },
+        "<id:kiln_cracked_jug>"
+       ]
+      ],
+      "subnet_marking_versions": {
+       "Kiln": "<version>"
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "failed",
+     "params": {
+      "transition": "Unload",
+      "error": "<label>",
+      "restored": false,
+      "consumed": [
+       [
+        {
+         "place": "Kiln",
+         "port": "Hatch"
+        },
+        "<id:kiln_cracked_jug>"
+       ]
+      ],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "fireable",
+     "params": {
+      "transitions": [],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "7",
+     "result": {
+      "fired": true,
+      "transition": "Unload",
+      "failed": true,
+      "marking_version": "<version>",
+      "running": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "get_state"
+   },
+   "expect": [
+    {
+     "id": "8",
+     "result": {
+      "protocol_version": 2,
+      "runtime": "<label>",
+      "net": "workshop",
+      "generation": 1,
+      "marking_version": "<version>",
+      "running": false,
+      "topology": {
+       "places": [
+        {
+         "name": "Bench",
+         "type_name": "<label>",
+         "serializable": true
+        },
+        {
+         "name": "Kiln",
+         "type_name": "<label>",
+         "subnet": true,
+         "ports": [
+          {
+           "name": "Hatch",
+           "type_name": "<label>",
+           "serializable": true
+          }
+         ],
+         "stepping": "inner_first"
+        },
+        {
+         "name": "Shelf",
+         "type_name": "<label>",
+         "serializable": true
+        }
+       ],
+       "transitions": [
+        {
+         "name": "Glaze",
+         "detail": "<any>"
+        },
+        {
+         "name": "Unload",
+         "detail": "<any>"
+        }
+       ],
+       "edges": {
+        "<unordered>": [
+         {
+          "place": "Bench",
+          "transition": "Glaze",
+          "direction": "in",
+          "kind": "take"
+         },
+         {
+          "place": "Kiln",
+          "port": "Hatch",
+          "transition": "Unload",
+          "direction": "in",
+          "kind": "take"
+         },
+         {
+          "place": "Shelf",
+          "transition": "Glaze",
+          "direction": "out"
+         },
+         {
+          "place": "Shelf",
+          "transition": "Unload",
+          "direction": "out"
+         }
+        ]
+       }
+      },
+      "transitions": {
+       "Glaze": {
+        "enabled": true,
+        "fireable": false,
+        "in_flight": false,
+        "priority": 0.0
+       },
+       "Unload": {
+        "enabled": true,
+        "fireable": false,
+        "in_flight": false,
+        "priority": 0.0
+       }
+      },
+      "marking": {
+       "places": {
+        "Bench": {
+         "count": 0,
+         "tokens": []
+        },
+        "Kiln": {
+         "subnet": {
+          "nested_id": "<id:kiln>",
+          "path": [
+           {
+            "place": "Kiln"
+           }
+          ],
+          "template": "Kiln",
+          "count": 0
+         },
+         "ports": {
+          "Hatch": {
+           "count": 0,
+           "tokens": []
+          }
+         }
+        },
+        "Shelf": {
+         "count": 0,
+         "tokens": []
+        }
+       }
+      },
+      "progress": {
+       "step_count": 0,
+       "last_fired": null,
+       "fired_counts": {},
+       "last_progress_at": null
+      }
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "get_log"
+   },
+   "expect": [
+    {
+     "id": "9",
+     "result": {
+      "entries": [
+       {
+        "seq": 1,
+        "transition": "Glaze",
+        "started_at": "<time>",
+        "duration_ms": "<ms>",
+        "outcome": "failed",
+        "consumed": [
+         [
+          "Bench",
+          "<id:cracked_bowl>"
+         ]
+        ],
+        "produced": [],
+        "error": "<label>",
+        "restored": false
+       },
+       {
+        "seq": 2,
+        "transition": "Unload",
+        "started_at": "<time>",
+        "duration_ms": "<ms>",
+        "outcome": "failed",
+        "consumed": [
+         [
+          {
+           "place": "Kiln",
+           "port": "Hatch"
+          },
+          "<id:kiln_cracked_jug>"
+         ]
+        ],
+        "produced": [],
+        "error": "<label>",
+        "restored": false
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "load",
+    "params": {
+     "net": "workshop",
+     "params": {
+      "restore": true
+     }
+    }
+   },
+   "expect": [
+    {
+     "method": "load_progress",
+     "params": {
+      "step": "build",
+      "message": "<label>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "reloaded",
+     "params": {
+      "generation": 2,
+      "reason": "load",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "10",
+     "result": {
+      "status": "loaded",
+      "generation": 2,
+      "marking_version": "<version>"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "inject",
+    "params": {
+     "place": "Bench",
+     "token": "Cracked cup"
+    }
+   },
+   "expect": [
+    {
+     "method": "added",
+     "params": {
+      "place": "Bench",
+      "id": "<id:cracked_cup>",
+      "label": "<label>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "fireable",
+     "params": {
+      "transitions": [
+       "Glaze"
+      ],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "11",
+     "result": {
+      "status": "injected",
+      "id": "<id:cracked_cup>",
+      "marking_version": "<version>"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "inject",
+    "params": {
+     "place": "Bench",
+     "token": "Plate"
+    }
+   },
+   "expect": [
+    {
+     "method": "added",
+     "params": {
+      "place": "Bench",
+      "id": "<id:plate>",
+      "label": "<label>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "12",
+     "result": {
+      "status": "injected",
+      "id": "<id:plate>",
+      "marking_version": "<version>"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "step"
+   },
+   "expect": [
+    {
+     "method": "launched",
+     "params": {
+      "transition": "Glaze",
+      "consumed": [
+       [
+        "Bench",
+        "<id:cracked_cup>"
+       ]
+      ],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "failed",
+     "params": {
+      "transition": "Glaze",
+      "error": "<label>",
+      "restored": true,
+      "consumed": [
+       [
+        "Bench",
+        "<id:cracked_cup>"
+       ]
+      ],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "13",
+     "result": {
+      "fired": true,
+      "transition": "Glaze",
+      "failed": true,
+      "marking_version": "<version>",
+      "running": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "get_state"
+   },
+   "expect": [
+    {
+     "id": "14",
+     "result": {
+      "protocol_version": 2,
+      "runtime": "<label>",
+      "net": "workshop",
+      "generation": 2,
+      "marking_version": "<version>",
+      "running": false,
+      "topology": {
+       "places": [
+        {
+         "name": "Bench",
+         "type_name": "<label>",
+         "serializable": true
+        },
+        {
+         "name": "Kiln",
+         "type_name": "<label>",
+         "subnet": true,
+         "ports": [
+          {
+           "name": "Hatch",
+           "type_name": "<label>",
+           "serializable": true
+          }
+         ],
+         "stepping": "inner_first"
+        },
+        {
+         "name": "Shelf",
+         "type_name": "<label>",
+         "serializable": true
+        }
+       ],
+       "transitions": [
+        {
+         "name": "Glaze",
+         "detail": "<any>"
+        },
+        {
+         "name": "Unload",
+         "detail": "<any>"
+        }
+       ],
+       "edges": {
+        "<unordered>": [
+         {
+          "place": "Bench",
+          "transition": "Glaze",
+          "direction": "in",
+          "kind": "take"
+         },
+         {
+          "place": "Kiln",
+          "port": "Hatch",
+          "transition": "Unload",
+          "direction": "in",
+          "kind": "take"
+         },
+         {
+          "place": "Shelf",
+          "transition": "Glaze",
+          "direction": "out"
+         },
+         {
+          "place": "Shelf",
+          "transition": "Unload",
+          "direction": "out"
+         }
+        ]
+       }
+      },
+      "transitions": {
+       "Glaze": {
+        "enabled": true,
+        "fireable": true,
+        "in_flight": false,
+        "priority": 0.0
+       },
+       "Unload": {
+        "enabled": true,
+        "fireable": false,
+        "in_flight": false,
+        "priority": 0.0
+       }
+      },
+      "marking": {
+       "places": {
+        "Bench": {
+         "count": 2,
+         "tokens": [
+          {
+           "id": "<id:cracked_cup>",
+           "label": "<label>"
+          },
+          {
+           "id": "<id:plate>",
+           "label": "<label>"
+          }
+         ]
+        },
+        "Kiln": {
+         "subnet": {
+          "nested_id": "<id:kiln_2>",
+          "path": [
+           {
+            "place": "Kiln"
+           }
+          ],
+          "template": "Kiln",
+          "count": 0
+         },
+         "ports": {
+          "Hatch": {
+           "count": 0,
+           "tokens": []
+          }
+         }
+        },
+        "Shelf": {
+         "count": 0,
+         "tokens": []
+        }
+       }
+      },
+      "progress": {
+       "step_count": 0,
+       "last_fired": null,
+       "fired_counts": {},
+       "last_progress_at": null
+      }
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "disable",
+    "params": {
+     "transition": "Glaze"
+    }
+   },
+   "expect": [
+    {
+     "method": "toggled",
+     "params": {
+      "transition": "Glaze",
+      "enabled": false,
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "fireable",
+     "params": {
+      "transitions": [],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "15",
+     "result": {
+      "marking_version": "<version>"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "inject",
+    "params": {
+     "place": "Kiln",
+     "port": "Hatch",
+     "token": "Cracked vase"
+    }
+   },
+   "expect": [
+    {
+     "method": "added",
+     "params": {
+      "place": "Kiln",
+      "port": "Hatch",
+      "id": "<id:kiln_cracked_vase>",
+      "label": "<label>",
+      "subnet_marking_versions": {
+       "Kiln": "<version>"
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "fireable",
+     "params": {
+      "transitions": [
+       "Unload"
+      ],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "16",
+     "result": {
+      "status": "injected",
+      "id": "<id:kiln_cracked_vase>",
+      "marking_version": "<version>"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "step"
+   },
+   "expect": [
+    {
+     "method": "launched",
+     "params": {
+      "transition": "Unload",
+      "consumed": [
+       [
+        {
+         "place": "Kiln",
+         "port": "Hatch"
+        },
+        "<id:kiln_cracked_vase>"
+       ]
+      ],
+      "subnet_marking_versions": {
+       "Kiln": "<version>"
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "failed",
+     "params": {
+      "transition": "Unload",
+      "error": "<label>",
+      "restored": true,
+      "consumed": [
+       [
+        {
+         "place": "Kiln",
+         "port": "Hatch"
+        },
+        "<id:kiln_cracked_vase>"
+       ]
+      ],
+      "subnet_marking_versions": {
+       "Kiln": "<version>"
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "17",
+     "result": {
+      "fired": true,
+      "transition": "Unload",
+      "failed": true,
+      "marking_version": "<version>",
+      "running": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "get_state"
+   },
+   "expect": [
+    {
+     "id": "18",
+     "result": {
+      "protocol_version": 2,
+      "runtime": "<label>",
+      "net": "workshop",
+      "generation": 2,
+      "marking_version": "<version>",
+      "running": false,
+      "topology": {
+       "places": [
+        {
+         "name": "Bench",
+         "type_name": "<label>",
+         "serializable": true
+        },
+        {
+         "name": "Kiln",
+         "type_name": "<label>",
+         "subnet": true,
+         "ports": [
+          {
+           "name": "Hatch",
+           "type_name": "<label>",
+           "serializable": true
+          }
+         ],
+         "stepping": "inner_first"
+        },
+        {
+         "name": "Shelf",
+         "type_name": "<label>",
+         "serializable": true
+        }
+       ],
+       "transitions": [
+        {
+         "name": "Glaze",
+         "detail": "<any>"
+        },
+        {
+         "name": "Unload",
+         "detail": "<any>"
+        }
+       ],
+       "edges": {
+        "<unordered>": [
+         {
+          "place": "Bench",
+          "transition": "Glaze",
+          "direction": "in",
+          "kind": "take"
+         },
+         {
+          "place": "Kiln",
+          "port": "Hatch",
+          "transition": "Unload",
+          "direction": "in",
+          "kind": "take"
+         },
+         {
+          "place": "Shelf",
+          "transition": "Glaze",
+          "direction": "out"
+         },
+         {
+          "place": "Shelf",
+          "transition": "Unload",
+          "direction": "out"
+         }
+        ]
+       }
+      },
+      "transitions": {
+       "Glaze": {
+        "enabled": false,
+        "fireable": false,
+        "in_flight": false,
+        "priority": 0.0
+       },
+       "Unload": {
+        "enabled": true,
+        "fireable": true,
+        "in_flight": false,
+        "priority": 0.0
+       }
+      },
+      "marking": {
+       "places": {
+        "Bench": {
+         "count": 2,
+         "tokens": [
+          {
+           "id": "<id:cracked_cup>",
+           "label": "<label>"
+          },
+          {
+           "id": "<id:plate>",
+           "label": "<label>"
+          }
+         ]
+        },
+        "Kiln": {
+         "subnet": {
+          "nested_id": "<id:kiln_2>",
+          "path": [
+           {
+            "place": "Kiln"
+           }
+          ],
+          "template": "Kiln",
+          "count": 1
+         },
+         "ports": {
+          "Hatch": {
+           "count": 1,
+           "tokens": [
+            {
+             "id": "<id:kiln_cracked_vase>",
+             "label": "<label>"
+            }
+           ]
+          }
+         }
+        },
+        "Shelf": {
+         "count": 0,
+         "tokens": []
+        }
+       }
+      },
+      "progress": {
+       "step_count": 0,
+       "last_fired": null,
+       "fired_counts": {},
+       "last_progress_at": null
+      }
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "get_state",
+    "params": {
+     "path": [
+      {
+       "place": "Kiln"
+      }
+     ]
+    }
+   },
+   "expect": [
+    {
+     "id": "19",
+     "result": {
+      "protocol_version": 2,
+      "runtime": "<label>",
+      "net": "Kiln",
+      "generation": 1,
+      "marking_version": "<version>",
+      "running": false,
+      "topology": {
+       "places": [
+        {
+         "name": "Hatch",
+         "type_name": "<label>",
+         "serializable": true,
+         "port": true
+        }
+       ],
+       "transitions": [],
+       "edges": {
+        "<unordered>": []
+       }
+      },
+      "transitions": {},
+      "marking": {
+       "places": {
+        "Hatch": {
+         "count": 1,
+         "tokens": [
+          {
+           "id": "<id:kiln_cracked_vase>",
+           "label": "<label>"
+          }
+         ]
+        }
+       }
+      },
+      "progress": {
+       "step_count": 0,
+       "last_fired": null,
+       "fired_counts": {},
+       "last_progress_at": null
+      },
+      "path": [
+       {
+        "place": "Kiln"
+       }
+      ],
+      "nested_id": "<id:kiln_2>",
+      "template": "Kiln"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "get_log"
+   },
+   "expect": [
+    {
+     "id": "20",
+     "result": {
+      "entries": [
+       {
+        "seq": 1,
+        "transition": "Glaze",
+        "started_at": "<time>",
+        "duration_ms": "<ms>",
+        "outcome": "failed",
+        "consumed": [
+         [
+          "Bench",
+          "<id:cracked_cup>"
+         ]
+        ],
+        "produced": [],
+        "error": "<label>",
+        "restored": true
+       },
+       {
+        "seq": 2,
+        "transition": "Unload",
+        "started_at": "<time>",
+        "duration_ms": "<ms>",
+        "outcome": "failed",
+        "consumed": [
+         [
+          {
+           "place": "Kiln",
+           "port": "Hatch"
+          },
+          "<id:kiln_cracked_vase>"
+         ]
+        ],
+        "produced": [],
+        "error": "<label>",
+        "restored": true
+       }
+      ]
+     }
+    }
+   ]
+  }
+ ]
+}

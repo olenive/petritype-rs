@@ -1,0 +1,1375 @@
+{
+ "net": "harbour",
+ "params": {},
+ "exchanges": [
+  {
+   "send": {
+    "method": "describe"
+   },
+   "expect": [
+    {
+     "id": "1",
+     "result": {
+      "protocol_version": 2,
+      "runtime": "<label>",
+      "runtime_version": "<label>",
+      "nets": [
+       {
+        "name": "harbour",
+        "description": "A ship stows its crate in its hold, sails and is scrapped",
+        "mode": "manual",
+        "params": []
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "load",
+    "params": {
+     "net": "harbour"
+    }
+   },
+   "expect": [
+    {
+     "method": "load_progress",
+     "params": {
+      "step": "build",
+      "message": "<label>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "reloaded",
+     "params": {
+      "generation": 1,
+      "reason": "load",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "2",
+     "result": {
+      "status": "loaded",
+      "generation": 1,
+      "marking_version": "<version>"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "get_state"
+   },
+   "expect": [
+    {
+     "id": "3",
+     "result": {
+      "protocol_version": 2,
+      "runtime": "<label>",
+      "net": "harbour",
+      "generation": 1,
+      "marking_version": "<version>",
+      "running": false,
+      "topology": {
+       "places": [
+        {
+         "name": "Quay",
+         "type_name": "<label>",
+         "serializable": true,
+         "nested": true,
+         "stepping": "inner_first"
+        },
+        {
+         "name": "Sea",
+         "type_name": "<label>",
+         "serializable": true,
+         "nested": true,
+         "stepping": "inner_first"
+        }
+       ],
+       "transitions": [
+        {
+         "name": "Sail",
+         "detail": "<any>"
+        },
+        {
+         "name": "Scrap",
+         "detail": "<any>"
+        }
+       ],
+       "edges": {
+        "<unordered>": [
+         {
+          "place": "Quay",
+          "transition": "Sail",
+          "direction": "in",
+          "kind": "take"
+         },
+         {
+          "place": "Sea",
+          "transition": "Scrap",
+          "direction": "in",
+          "kind": "take"
+         },
+         {
+          "place": "Sea",
+          "transition": "Sail",
+          "direction": "out"
+         }
+        ]
+       }
+      },
+      "transitions": {
+       "Sail": {
+        "enabled": true,
+        "fireable": true,
+        "in_flight": false,
+        "priority": 0.0
+       },
+       "Scrap": {
+        "enabled": true,
+        "fireable": false,
+        "in_flight": false,
+        "priority": 0.0
+       }
+      },
+      "marking": {
+       "places": {
+        "Quay": {
+         "count": 1,
+         "tokens": [
+          {
+           "id": "<id:quay>",
+           "label": "<label>",
+           "nets": [
+            {
+             "name": "",
+             "nested_id": "<id:quay_2>",
+             "path": [
+              {
+               "place": "Quay",
+               "token": "<id:quay>",
+               "net": ""
+              }
+             ],
+             "template": "Ship",
+             "count": 1
+            }
+           ]
+          }
+         ]
+        },
+        "Sea": {
+         "count": 0,
+         "tokens": []
+        }
+       }
+      },
+      "progress": {
+       "step_count": 0,
+       "last_fired": null,
+       "fired_counts": {},
+       "last_progress_at": null
+      }
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "get_state",
+    "params": {
+     "path": [
+      {
+       "place": "Quay",
+       "token": "<id:quay>",
+       "net": ""
+      }
+     ]
+    }
+   },
+   "expect": [
+    {
+     "id": "4",
+     "result": {
+      "protocol_version": 2,
+      "runtime": "<label>",
+      "net": "",
+      "generation": 1,
+      "marking_version": "<version>",
+      "running": false,
+      "topology": {
+       "places": [
+        {
+         "name": "Deck",
+         "type_name": "<label>",
+         "serializable": true
+        },
+        {
+         "name": "Hold",
+         "type_name": "<label>",
+         "subnet": true,
+         "ports": [
+          {
+           "name": "Hatch",
+           "type_name": "<label>",
+           "serializable": true
+          }
+         ],
+         "stepping": "inner_first"
+        }
+       ],
+       "transitions": [
+        {
+         "name": "Stow",
+         "detail": "<any>"
+        }
+       ],
+       "edges": {
+        "<unordered>": [
+         {
+          "place": "Deck",
+          "transition": "Stow",
+          "direction": "in",
+          "kind": "take"
+         },
+         {
+          "place": "Hold",
+          "port": "Hatch",
+          "transition": "Stow",
+          "direction": "out"
+         }
+        ]
+       }
+      },
+      "transitions": {
+       "Stow": {
+        "enabled": true,
+        "fireable": true,
+        "in_flight": false,
+        "priority": 0.0
+       }
+      },
+      "marking": {
+       "places": {
+        "Deck": {
+         "count": 1,
+         "tokens": [
+          {
+           "id": "<id:quay_crate>",
+           "label": "<label>"
+          }
+         ]
+        },
+        "Hold": {
+         "subnet": {
+          "nested_id": "<id:hold>",
+          "path": [
+           {
+            "place": "Quay",
+            "token": "<id:quay>",
+            "net": ""
+           },
+           {
+            "place": "Hold"
+           }
+          ],
+          "template": "Hold",
+          "count": 0
+         },
+         "ports": {
+          "Hatch": {
+           "count": 0,
+           "tokens": []
+          }
+         }
+        }
+       }
+      },
+      "progress": {
+       "step_count": 0,
+       "last_fired": null,
+       "fired_counts": {},
+       "last_progress_at": null
+      },
+      "path": [
+       {
+        "place": "Quay",
+        "token": "<id:quay>",
+        "net": ""
+       }
+      ],
+      "nested_id": "<id:quay_2>",
+      "template": "Ship"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "get_state",
+    "params": {
+     "path": [
+      {
+       "place": "Quay",
+       "token": "<id:quay>",
+       "net": ""
+      },
+      {
+       "place": "Hold"
+      }
+     ]
+    }
+   },
+   "expect": [
+    {
+     "id": "5",
+     "result": {
+      "protocol_version": 2,
+      "runtime": "<label>",
+      "net": "Hold",
+      "generation": 1,
+      "marking_version": "<version>",
+      "running": false,
+      "topology": {
+       "places": [
+        {
+         "name": "Hatch",
+         "type_name": "<label>",
+         "serializable": true,
+         "port": true
+        },
+        {
+         "name": "Bay",
+         "type_name": "<label>",
+         "serializable": true
+        }
+       ],
+       "transitions": [
+        {
+         "name": "Settle",
+         "detail": "<any>"
+        }
+       ],
+       "edges": {
+        "<unordered>": [
+         {
+          "place": "Hatch",
+          "transition": "Settle",
+          "direction": "in",
+          "kind": "take"
+         },
+         {
+          "place": "Bay",
+          "transition": "Settle",
+          "direction": "out"
+         }
+        ]
+       }
+      },
+      "transitions": {
+       "Settle": {
+        "enabled": true,
+        "fireable": false,
+        "in_flight": false,
+        "priority": 0.0
+       }
+      },
+      "marking": {
+       "places": {
+        "Hatch": {
+         "count": 0,
+         "tokens": []
+        },
+        "Bay": {
+         "count": 0,
+         "tokens": []
+        }
+       }
+      },
+      "progress": {
+       "step_count": 0,
+       "last_fired": null,
+       "fired_counts": {},
+       "last_progress_at": null
+      },
+      "path": [
+       {
+        "place": "Quay",
+        "token": "<id:quay>",
+        "net": ""
+       },
+       {
+        "place": "Hold"
+       }
+      ],
+      "nested_id": "<id:hold>",
+      "template": "Hold"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "step"
+   },
+   "expect": [
+    {
+     "method": "nested",
+     "params": {
+      "path": [
+       {
+        "place": "Quay",
+        "token": "<id:quay>",
+        "net": ""
+       }
+      ],
+      "nested_id": "<id:quay_2>",
+      "event": {
+       "method": "fired",
+       "params": {
+        "transition": "Stow",
+        "consumed": [
+         [
+          "Deck",
+          "<id:quay_crate>"
+         ]
+        ],
+        "produced": [
+         [
+          {
+           "place": "Hold",
+           "port": "Hatch"
+          },
+          "<id:hold_crate>",
+          "<label>"
+         ]
+        ],
+        "duration_ms": "<ms>",
+        "subnet_marking_versions": {
+         "Hold": "<version>"
+        },
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "nested",
+     "params": {
+      "path": [
+       {
+        "place": "Quay",
+        "token": "<id:quay>",
+        "net": ""
+       }
+      ],
+      "nested_id": "<id:quay_2>",
+      "event": {
+       "method": "fireable",
+       "params": {
+        "transitions": [],
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "nested",
+     "params": {
+      "path": [
+       {
+        "place": "Quay",
+        "token": "<id:quay>",
+        "net": ""
+       },
+       {
+        "place": "Hold"
+       }
+      ],
+      "nested_id": "<id:hold>",
+      "event": {
+       "method": "fireable",
+       "params": {
+        "transitions": [
+         "Settle"
+        ],
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "6",
+     "result": {
+      "fired": true,
+      "transition": "Stow",
+      "path": [
+       {
+        "place": "Quay",
+        "token": "<id:quay>",
+        "net": ""
+       }
+      ],
+      "nested_id": "<id:quay_2>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "get_state"
+   },
+   "expect": [
+    {
+     "id": "7",
+     "result": {
+      "protocol_version": 2,
+      "runtime": "<label>",
+      "net": "harbour",
+      "generation": 1,
+      "marking_version": "<version>",
+      "running": false,
+      "topology": {
+       "places": [
+        {
+         "name": "Quay",
+         "type_name": "<label>",
+         "serializable": true,
+         "nested": true,
+         "stepping": "inner_first"
+        },
+        {
+         "name": "Sea",
+         "type_name": "<label>",
+         "serializable": true,
+         "nested": true,
+         "stepping": "inner_first"
+        }
+       ],
+       "transitions": [
+        {
+         "name": "Sail",
+         "detail": "<any>"
+        },
+        {
+         "name": "Scrap",
+         "detail": "<any>"
+        }
+       ],
+       "edges": {
+        "<unordered>": [
+         {
+          "place": "Quay",
+          "transition": "Sail",
+          "direction": "in",
+          "kind": "take"
+         },
+         {
+          "place": "Sea",
+          "transition": "Scrap",
+          "direction": "in",
+          "kind": "take"
+         },
+         {
+          "place": "Sea",
+          "transition": "Sail",
+          "direction": "out"
+         }
+        ]
+       }
+      },
+      "transitions": {
+       "Sail": {
+        "enabled": true,
+        "fireable": true,
+        "in_flight": false,
+        "priority": 0.0
+       },
+       "Scrap": {
+        "enabled": true,
+        "fireable": false,
+        "in_flight": false,
+        "priority": 0.0
+       }
+      },
+      "marking": {
+       "places": {
+        "Quay": {
+         "count": 1,
+         "tokens": [
+          {
+           "id": "<id:quay>",
+           "label": "<label>",
+           "nets": [
+            {
+             "name": "",
+             "nested_id": "<id:quay_2>",
+             "path": [
+              {
+               "place": "Quay",
+               "token": "<id:quay>",
+               "net": ""
+              }
+             ],
+             "template": "Ship",
+             "count": 0
+            }
+           ]
+          }
+         ]
+        },
+        "Sea": {
+         "count": 0,
+         "tokens": []
+        }
+       }
+      },
+      "progress": {
+       "step_count": 0,
+       "last_fired": null,
+       "fired_counts": {},
+       "last_progress_at": null
+      }
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "get_state",
+    "params": {
+     "path": [
+      {
+       "place": "Quay",
+       "token": "<id:quay>",
+       "net": ""
+      }
+     ]
+    }
+   },
+   "expect": [
+    {
+     "id": "8",
+     "result": {
+      "protocol_version": 2,
+      "runtime": "<label>",
+      "net": "",
+      "generation": 1,
+      "marking_version": "<version>",
+      "running": false,
+      "topology": {
+       "places": [
+        {
+         "name": "Deck",
+         "type_name": "<label>",
+         "serializable": true
+        },
+        {
+         "name": "Hold",
+         "type_name": "<label>",
+         "subnet": true,
+         "ports": [
+          {
+           "name": "Hatch",
+           "type_name": "<label>",
+           "serializable": true
+          }
+         ],
+         "stepping": "inner_first"
+        }
+       ],
+       "transitions": [
+        {
+         "name": "Stow",
+         "detail": "<any>"
+        }
+       ],
+       "edges": {
+        "<unordered>": [
+         {
+          "place": "Deck",
+          "transition": "Stow",
+          "direction": "in",
+          "kind": "take"
+         },
+         {
+          "place": "Hold",
+          "port": "Hatch",
+          "transition": "Stow",
+          "direction": "out"
+         }
+        ]
+       }
+      },
+      "transitions": {
+       "Stow": {
+        "enabled": true,
+        "fireable": false,
+        "in_flight": false,
+        "priority": 0.0
+       }
+      },
+      "marking": {
+       "places": {
+        "Deck": {
+         "count": 0,
+         "tokens": []
+        },
+        "Hold": {
+         "subnet": {
+          "nested_id": "<id:hold>",
+          "path": [
+           {
+            "place": "Quay",
+            "token": "<id:quay>",
+            "net": ""
+           },
+           {
+            "place": "Hold"
+           }
+          ],
+          "template": "Hold",
+          "count": 1
+         },
+         "ports": {
+          "Hatch": {
+           "count": 1,
+           "tokens": [
+            {
+             "id": "<id:hold_crate>",
+             "label": "<label>"
+            }
+           ]
+          }
+         }
+        }
+       }
+      },
+      "progress": {
+       "step_count": 1,
+       "last_fired": "Stow",
+       "fired_counts": {
+        "Stow": 1
+       },
+       "last_progress_at": "<time>"
+      },
+      "path": [
+       {
+        "place": "Quay",
+        "token": "<id:quay>",
+        "net": ""
+       }
+      ],
+      "nested_id": "<id:quay_2>",
+      "template": "Ship"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "step"
+   },
+   "expect": [
+    {
+     "method": "nested",
+     "params": {
+      "path": [
+       {
+        "place": "Quay",
+        "token": "<id:quay>",
+        "net": ""
+       },
+       {
+        "place": "Hold"
+       }
+      ],
+      "nested_id": "<id:hold>",
+      "event": {
+       "method": "fired",
+       "params": {
+        "transition": "Settle",
+        "consumed": [
+         [
+          "Hatch",
+          "<id:hold_crate>"
+         ]
+        ],
+        "produced": [
+         [
+          "Bay",
+          "<id:hold_crate_bay>",
+          "<label>"
+         ]
+        ],
+        "duration_ms": "<ms>",
+        "outer_marking_version": "<version>",
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "nested",
+     "params": {
+      "path": [
+       {
+        "place": "Quay",
+        "token": "<id:quay>",
+        "net": ""
+       },
+       {
+        "place": "Hold"
+       }
+      ],
+      "nested_id": "<id:hold>",
+      "event": {
+       "method": "fireable",
+       "params": {
+        "transitions": [],
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "9",
+     "result": {
+      "fired": true,
+      "transition": "Settle",
+      "path": [
+       {
+        "place": "Quay",
+        "token": "<id:quay>",
+        "net": ""
+       },
+       {
+        "place": "Hold"
+       }
+      ],
+      "nested_id": "<id:hold>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "get_state",
+    "params": {
+     "nested_id": "<id:hold>"
+    }
+   },
+   "expect": [
+    {
+     "id": "10",
+     "result": {
+      "protocol_version": 2,
+      "runtime": "<label>",
+      "net": "Hold",
+      "generation": 1,
+      "marking_version": "<version>",
+      "running": false,
+      "topology": {
+       "places": [
+        {
+         "name": "Hatch",
+         "type_name": "<label>",
+         "serializable": true,
+         "port": true
+        },
+        {
+         "name": "Bay",
+         "type_name": "<label>",
+         "serializable": true
+        }
+       ],
+       "transitions": [
+        {
+         "name": "Settle",
+         "detail": "<any>"
+        }
+       ],
+       "edges": {
+        "<unordered>": [
+         {
+          "place": "Hatch",
+          "transition": "Settle",
+          "direction": "in",
+          "kind": "take"
+         },
+         {
+          "place": "Bay",
+          "transition": "Settle",
+          "direction": "out"
+         }
+        ]
+       }
+      },
+      "transitions": {
+       "Settle": {
+        "enabled": true,
+        "fireable": false,
+        "in_flight": false,
+        "priority": 0.0
+       }
+      },
+      "marking": {
+       "places": {
+        "Hatch": {
+         "count": 0,
+         "tokens": []
+        },
+        "Bay": {
+         "count": 1,
+         "tokens": [
+          {
+           "id": "<id:hold_crate_bay>",
+           "label": "<label>"
+          }
+         ]
+        }
+       }
+      },
+      "progress": {
+       "step_count": 1,
+       "last_fired": "Settle",
+       "fired_counts": {
+        "Settle": 1
+       },
+       "last_progress_at": "<time>"
+      },
+      "path": [
+       {
+        "place": "Quay",
+        "token": "<id:quay>",
+        "net": ""
+       },
+       {
+        "place": "Hold"
+       }
+      ],
+      "nested_id": "<id:hold>",
+      "template": "Hold"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "get_log",
+    "params": {
+     "path": [
+      {
+       "place": "Quay",
+       "token": "<id:quay>",
+       "net": ""
+      }
+     ]
+    }
+   },
+   "expect": [
+    {
+     "id": "11",
+     "result": {
+      "entries": [
+       {
+        "seq": 1,
+        "transition": "Stow",
+        "started_at": "<time>",
+        "duration_ms": "<ms>",
+        "outcome": "fired",
+        "consumed": [
+         [
+          "Deck",
+          "<id:quay_crate>"
+         ]
+        ],
+        "produced": [
+         [
+          {
+           "place": "Hold",
+           "port": "Hatch"
+          },
+          "<id:hold_crate>"
+         ]
+        ],
+        "path": [
+         {
+          "place": "Quay",
+          "token": "<id:quay>",
+          "net": ""
+         }
+        ],
+        "nested_id": "<id:quay_2>"
+       },
+       {
+        "seq": 2,
+        "transition": "Settle",
+        "started_at": "<time>",
+        "duration_ms": "<ms>",
+        "outcome": "fired",
+        "consumed": [
+         [
+          "Hatch",
+          "<id:hold_crate>"
+         ]
+        ],
+        "produced": [
+         [
+          "Bay",
+          "<id:hold_crate_bay>"
+         ]
+        ],
+        "path": [
+         {
+          "place": "Quay",
+          "token": "<id:quay>",
+          "net": ""
+         },
+         {
+          "place": "Hold"
+         }
+        ],
+        "nested_id": "<id:hold>"
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "step"
+   },
+   "expect": [
+    {
+     "method": "fired",
+     "params": {
+      "transition": "Sail",
+      "consumed": [
+       [
+        "Quay",
+        "<id:quay>"
+       ]
+      ],
+      "produced": [
+       [
+        "Sea",
+        "<id:sea>",
+        "<label>"
+       ]
+      ],
+      "duration_ms": "<ms>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "fireable",
+     "params": {
+      "transitions": [
+       "Scrap"
+      ],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "12",
+     "result": {
+      "fired": true,
+      "transition": "Sail",
+      "marking_version": "<version>",
+      "running": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "get_place_tokens",
+    "params": {
+     "place": "Bay",
+     "nested_id": "<id:hold>"
+    }
+   },
+   "expect": [
+    {
+     "id": "13",
+     "result": {
+      "place": "Bay",
+      "marking_version": "<version>",
+      "count": 1,
+      "offset": 0,
+      "limit": 200,
+      "tokens": [
+       {
+        "id": "<id:hold_crate_bay>",
+        "label": "<label>"
+       }
+      ],
+      "has_more": false,
+      "path": [
+       {
+        "place": "Sea",
+        "token": "<id:sea>",
+        "net": ""
+       },
+       {
+        "place": "Hold"
+       }
+      ],
+      "nested_id": "<id:hold>"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "get_state",
+    "params": {
+     "path": [
+      {
+       "place": "Quay",
+       "token": "<id:quay>",
+       "net": ""
+      },
+      {
+       "place": "Hold"
+      }
+     ]
+    }
+   },
+   "expect": [
+    {
+     "id": "14",
+     "error": {
+      "message": "<label>",
+      "code": "unknown_net"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "step"
+   },
+   "expect": [
+    {
+     "method": "fired",
+     "params": {
+      "transition": "Scrap",
+      "consumed": [
+       [
+        "Sea",
+        "<id:sea>"
+       ]
+      ],
+      "produced": [],
+      "duration_ms": "<ms>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "fireable",
+     "params": {
+      "transitions": [],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "15",
+     "result": {
+      "fired": true,
+      "transition": "Scrap",
+      "marking_version": "<version>",
+      "running": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "get_state",
+    "params": {
+     "nested_id": "<id:hold>"
+    }
+   },
+   "expect": [
+    {
+     "id": "16",
+     "error": {
+      "message": "<label>",
+      "code": "unknown_net"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "get_state",
+    "params": {
+     "nested_id": "<id:quay_2>"
+    }
+   },
+   "expect": [
+    {
+     "id": "17",
+     "error": {
+      "message": "<label>",
+      "code": "unknown_net"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "step"
+   },
+   "expect": [
+    {
+     "id": "18",
+     "result": {
+      "fired": false,
+      "marking_version": "<version>",
+      "running": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "get_log"
+   },
+   "expect": [
+    {
+     "id": "19",
+     "result": {
+      "entries": [
+       {
+        "seq": 1,
+        "transition": "Stow",
+        "started_at": "<time>",
+        "duration_ms": "<ms>",
+        "outcome": "fired",
+        "consumed": [
+         [
+          "Deck",
+          "<id:quay_crate>"
+         ]
+        ],
+        "produced": [
+         [
+          {
+           "place": "Hold",
+           "port": "Hatch"
+          },
+          "<id:hold_crate>"
+         ]
+        ],
+        "path": [
+         {
+          "place": "Quay",
+          "token": "<id:quay>",
+          "net": ""
+         }
+        ],
+        "nested_id": "<id:quay_2>"
+       },
+       {
+        "seq": 2,
+        "transition": "Settle",
+        "started_at": "<time>",
+        "duration_ms": "<ms>",
+        "outcome": "fired",
+        "consumed": [
+         [
+          "Hatch",
+          "<id:hold_crate>"
+         ]
+        ],
+        "produced": [
+         [
+          "Bay",
+          "<id:hold_crate_bay>"
+         ]
+        ],
+        "path": [
+         {
+          "place": "Quay",
+          "token": "<id:quay>",
+          "net": ""
+         },
+         {
+          "place": "Hold"
+         }
+        ],
+        "nested_id": "<id:hold>"
+       },
+       {
+        "seq": 3,
+        "transition": "Sail",
+        "started_at": "<time>",
+        "duration_ms": "<ms>",
+        "outcome": "fired",
+        "consumed": [
+         [
+          "Quay",
+          "<id:quay>"
+         ]
+        ],
+        "produced": [
+         [
+          "Sea",
+          "<id:sea>"
+         ]
+        ]
+       },
+       {
+        "seq": 4,
+        "transition": "Scrap",
+        "started_at": "<time>",
+        "duration_ms": "<ms>",
+        "outcome": "fired",
+        "consumed": [
+         [
+          "Sea",
+          "<id:sea>"
+         ]
+        ],
+        "produced": []
+       }
+      ]
+     }
+    }
+   ]
+  }
+ ]
+}

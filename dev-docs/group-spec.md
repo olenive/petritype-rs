@@ -1,7 +1,8 @@
 # Spec: groups, a drawing-only label on parts of a net
 
-Draft of 2026-11-21, for both runtimes, the wire, the layout crate and the
-viewer. Not built. It replaces the viewer's clusters by name prefix.
+Written 2026-11-21 and built the next day in both runtimes, the wire, the
+layout crate and the viewer. It replaces the viewer's clusters by name
+prefix. §12 says where the build settled a detail this text left open.
 
 ## 0. What a group is, and what it is not
 
@@ -221,3 +222,32 @@ by sibling subnets. Unfolding a subnet place inside the outer drawing.
 | Where the closed state lives | In the viewer, per view. All closed at the start, with a setting and a flag for all open. |
 | Graphviz | Frames only. |
 | The protocol version | Stays 2: optional fields only. |
+
+## 12. As built
+
+- **Order of groups.** In Rust it is the order the groups are declared in.
+  In Python a group exists from its first use, reading the places and then
+  the transitions. A Rust group can be declared and left empty; it is listed
+  and draws nothing.
+- **Misuse in Rust.** Two groups of one name, a node in two groups and a
+  port's outer handle in a group are build errors. A group handle from
+  another builder panics, as a foreign place handle does. None of these can
+  arise in Python.
+- **Ports on the wire.** A port listed in a subnet place's `ports` carries
+  no `group`. Its group shows in the subnet's own topology.
+- **The layout.** Nodes in no group are packed first, before the framed
+  groups. The declared order is passed to `compute_named` and
+  `compute_subgraph`; `compute(&net)` reads it from the net. A ghosted place
+  joined to a closed group gets one ghost on each side of the box that it
+  uses. A ghosted place hidden in a closed group has no ghosts, so its edges
+  to the outside are drawn straight from the box: a shared place is best
+  left in no group.
+- **The viewer.** `O` opens or closes the selected group, `[` closes every
+  group of the view and `]` opens every one. `GroupsAtStart` (closed by
+  default) is the configuration, and the `remote` example takes
+  `--open-groups`. A closed box counts every token in the group's places,
+  and for a subnet place the tokens its ports hold. A reset, a reload, and
+  going into or out of an inner net start a view closed again.
+- **Not done.** The history player shows a closed box's count but does not
+  animate a past token to a box. A firing inside a subnet place that is
+  hidden in a closed group does not flash the box.

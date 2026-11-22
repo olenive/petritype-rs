@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.2.0, 2026-11-22
+
+The [`v0.2.0` tag](https://github.com/olenive/petritype-rs/tree/v0.2.0). It speaks version 2 of the net protocol, where 0.1.0 spoke version 1, and the runner names itself 0.2.0 in `describe`, so that a host can tell the two apart.
 
 - `petritype-layout` spaces the nodes of a rank so that the names beside them fit: `Layout::fit_labels` is now on by default. It was off, which let long names overlap. A program that wants nodes `node_sep` apart whatever their names sets it to `false`.
 - Subnet places, the mechanism: a place may hold a net of its own for its net's whole life, `NetBuilder::subnet_place(name, net) -> SubnetRef`, reached from outside only through the places the subnet's definition marks with `NetBuilder::port`. `NetBuilder::port_of::<T>(subnet, name)` gives the outer net a `PlaceRef<T>` for one port, which its edges of every kind, every way of choosing an output, guards, queries and external input use as any place; the port has one queue and one set of ids, the subnet's, whichever net looks. A change is told once, by the net that made it: the outer net's firings under its own place for the port, the subnet's lifted as `Event::Subnet`. In a deep step a subnet is one net at its place's position under the place's `Stepping` rule (`NetBuilder::stepping` takes a `SubnetRef` too, through the new `PlaceHandle` trait), and `DeepStep::Subnet` says a firing was in there; while a firing of the outer net on one of its ports is in flight it takes no turn, and `Net::subnet_scope` refuses it with `NetError::InFlight`, which no longer needs the `serde` feature. `Net::subnet` reads a subnet. New build errors `NoSuchPort`, `PortTypeMismatch`, `PortIsSubnetPlace` and `EdgeOnSubnetPlace`, and `NetError::NotSubnet`. `DeepStep` is `#[non_exhaustive]`.

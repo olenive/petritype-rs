@@ -12,4 +12,4 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-petritype = { path = "../petritype", version = "0.1.0" }
+petritype = { path = "../petritype", version = "0.2.0" }

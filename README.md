@@ -3,8 +3,9 @@
 Typed, executable, observable Petri nets in Rust. A port of
 [petritype](https://github.com/olenive/petritype) (Python).
 
-Version 0.1.0, an early release.
-The API will change.
+Version 0.2.0, an early release.
+The API will change. 0.2.0 speaks version 2 of the net protocol, and 0.1.0
+spoke version 1.
 
 ## Installation
 

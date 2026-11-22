@@ -4,7 +4,7 @@ Typed, executable, observable Petri nets in Rust. A port of the Python
 [petritype](https://github.com/olenive/petritype) library, redesigned around ownership instead of
 runtime reflection.
 
-Status: design settled 2026-09-19 and built since, with 0.1.0 the first release. This document is the reference
+Status: design settled 2026-09-19 and built since, with 0.1.0 the first release and 0.2.0 the first to speak version 2 of the net protocol. This document is the reference
 for the first implementation. Vocabulary is fixed in
 `dev-docs/NAMING_CONVENTIONS.md`. Open questions are listed at the end.
 

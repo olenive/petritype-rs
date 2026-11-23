@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- `petritype-layout` reckons a name as wide as the viewer draws it: nine units a character for a place's name and 8.4 for a transition's, where it reckoned 8 and 7.5. The narrower figures let two long names side by side touch even with `Layout::fit_labels` on.
+- `petritype-activity`'s event log keeps tokens as they were. A `Look` is a token's label, cut to a cap the host gives with the core's `...` marker (`Look::new`), and its colour. `Logged` gains `looks`, how each token the entry put down or changed looked after it, kept once for each change and added with `EventLog::push_with`; a program that builds a `Logged` by hand adds `looks: Vec::new()`. A `Roster` names the tokens of each place in their order with their looks and moves on by a logged entry (`Roster::advance`); a log begins on one with `EventLog::with_tokens`, reads it with `EventLog::base_tokens`, and an `EventPlayer` folds it to any entry with `tokens_at`, beside the levels. With `serde` a look's colour is written as `#rrggbb`, and a log written before reads with no looks and no roster.
+- `petritype-activity` serves a host that keeps the logs of a net and of the nets inside it on one sequence. `EventLog::index_at` and `EventPlayer::index_at` find the last entry at or before a position, `None` before the first, where `EventPlayer::before_first` and `EventPlayer::tokens_before_first` give the log's base. `Standing::worked_back` and `Roster::worked_back` undo a run of entries, so that a log of a net first read after some of its entries came begins on the state that stood before them. `EventLog::bytes` and `Logged::bytes` count what a log holds, labels included, for a host that bounds its logs by memory.
+
 ## 0.2.1, 2026-11-22
 
 The [`v0.2.1` tag](https://github.com/olenive/petritype-rs/tree/v0.2.1).

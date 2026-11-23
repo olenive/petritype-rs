@@ -45,6 +45,18 @@
 //!   an [`EventPlayer`] replays it one entry per fixed dwell, so that an
 //!   observer reads the order in which things happened rather than how long
 //!   they took.
+//! - **Tokens as they were**: each logged entry carries the [`Look`] of the
+//!   tokens it put down or changed, a label cut to a host's cap and a
+//!   colour, kept once for each change, and the log's [`Roster`] names the
+//!   tokens of each place at its base, so that a player names the tokens a
+//!   place held at any entry and says how each looked
+//!   ([`EventPlayer::tokens_at`]).
+//! - **One moment across nets**: a host that keeps a log for a net and for
+//!   each net inside it numbers every entry of every log on one sequence,
+//!   so that [`EventLog::index_at`] finds where each log stood at the same
+//!   moment, before its first entry included. A log begun on a net read
+//!   after some of its entries came begins on the state worked back through
+//!   them ([`Standing::worked_back`], [`Roster::worked_back`]).
 //!
 //! ```
 //! use std::time::Duration;
@@ -97,6 +109,7 @@ mod record;
 mod settings;
 mod svg;
 mod thumbnail;
+mod tokens;
 
 pub use delta::{Delta, PlaceDelta, TransitionDelta};
 pub use grid::{Cell, Grid};
@@ -105,6 +118,7 @@ pub use model::{Activity, PlaceActivity, TransitionActivity};
 pub use record::{Bin, Player, Record, Recorder, Replay, Tensor};
 pub use settings::{ActivitySettings, Clock, CountCurve, GlowMode, HueMode, LayerSettings};
 pub use thumbnail::{Palette, Thumbnail};
+pub use tokens::{Look, Roster};
 
 /// The traffic light, petritype's example net, for tests that want a real
 /// one.

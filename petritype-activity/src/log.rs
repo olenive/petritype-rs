@@ -2,12 +2,14 @@
 //! for a reader who wants the order in which things happened rather than
 //! how long they took. [`Entry`] is one thing the model acts on, [`EventLog`]
 //! keeps the entries in a ring with the [`Standing`] state its oldest kept
-//! entry starts from, and [`EventPlayer`] replays the log one entry at a
-//! time, each shown for a fixed dwell.
+//! entry starts from, and the [`Roster`] of the tokens it can name there,
+//! and [`EventPlayer`] replays the log one entry at a time, each shown for a
+//! fixed dwell.
 
 use std::collections::{BTreeMap, VecDeque};
 #[cfg(feature = "serde")]
 use std::io::{self, Write};
+use std::mem::size_of;
 use std::time::{Duration, SystemTime};
 
 use petritype::{Event, PlaceId, TokenId, TransitionId};
@@ -17,6 +19,7 @@ use crate::grid::Grid;
 use crate::model::Activity;
 use crate::record::{file_stem, model_on, unix_ms};
 use crate::settings::ActivitySettings;
+use crate::tokens::{Look, Roster, staged_failures};
 
 /// One thing an [`Activity`] acts on, as an [`EventLog`] keeps it: each of
 /// the core's events that moves a level, by ids only, and the two
@@ -209,6 +212,8 @@ impl Standing {
     ///
     /// A count never goes below 0. The state knows no net, so it follows an
     /// entry naming a node the model does not know, which the model ignores.
+    ///
+    /// [`worked_back`](Standing::worked_back) undoes what this does.
     pub fn advance(&mut self, entry: &Entry) {
         match entry {
             Entry::Fired {
@@ -253,6 +258,93 @@ impl Standing {
             Entry::Count { place, count } => self.set_count(*place, *count),
             Entry::InFlight { transition, on } => self.set_in_flight(*transition, *on),
         }
+    }
+
+    /// The state that stood before `entries`, when this one stands after
+    /// them: each is undone, the last first, by the rule
+    /// [`advance`](Standing::advance) did it by. It is how a host begins a
+    /// log on a net it first reads after some of the net's entries have
+    /// come, such as an inner net whose first event it sees before it can
+    /// read the net, or whose state it asks for and reads after more events
+    /// came: read the state, work it back through those entries, and the log
+    /// begins on the counts that stood before the first of them.
+    ///
+    /// A failure is undone as the failure of a staged firing when a launch
+    /// of its transition comes before it among the entries with no landing
+    /// in between, and as a firing in one go otherwise: a staged firing
+    /// launched before the first entry and failing among them is more than
+    /// the entries can tell. A correction is undone as far as it can be: an
+    /// [`InFlight`](Entry::InFlight) was the other way before, a host
+    /// logging one only when it changes something, and a
+    /// [`Count`](Entry::Count) keeps the count, the one before it being
+    /// unknown.
+    ///
+    /// ```
+    /// use petritype::{PlaceId, TokenId, TransitionId};
+    /// use petritype_activity::{Entry, Standing};
+    ///
+    /// let (queue, done) = (PlaceId::new(0), PlaceId::new(1));
+    /// let fired = Entry::Fired {
+    ///     transition: TransitionId::new(0),
+    ///     consumed: vec![(queue, TokenId::new(1))],
+    ///     produced: vec![(done, TokenId::new(2))],
+    /// };
+    /// let before = Standing { counts: vec![(queue, 2)], in_flight: vec![] };
+    /// let mut after = before.clone();
+    /// after.advance(&fired);
+    /// assert_eq!(after.worked_back(&[fired]), before);
+    /// ```
+    pub fn worked_back(&self, entries: &[Entry]) -> Standing {
+        let staged = staged_failures(entries);
+        let mut standing = self.clone();
+        for (entry, staged) in entries.iter().zip(staged).rev() {
+            match entry {
+                Entry::Fired {
+                    consumed, produced, ..
+                } => {
+                    standing.take(produced);
+                    standing.add(consumed);
+                }
+                Entry::Launched {
+                    transition,
+                    consumed,
+                } => {
+                    standing.add(consumed);
+                    standing.set_in_flight(*transition, false);
+                }
+                Entry::Distributed {
+                    transition,
+                    produced,
+                } => {
+                    standing.take(produced);
+                    standing.set_in_flight(*transition, true);
+                }
+                Entry::Failed {
+                    transition,
+                    consumed,
+                    restored,
+                    ..
+                } => {
+                    if staged {
+                        if *restored {
+                            standing.take(consumed);
+                        }
+                        standing.set_in_flight(*transition, true);
+                    } else if !*restored {
+                        standing.add(consumed);
+                    }
+                }
+                Entry::Added { place, .. } => {
+                    standing.set_count(*place, standing.count(*place).saturating_sub(1));
+                }
+                Entry::Removed { place, .. } => {
+                    standing.set_count(*place, standing.count(*place).saturating_add(1));
+                }
+                Entry::Mutated { .. } | Entry::Count { .. } => {}
+                Entry::InFlight { transition, on } => standing.set_in_flight(*transition, !on),
+            }
+        }
+        standing
     }
 
     /// A place's count: 0 for a place it does not name.
@@ -343,7 +435,12 @@ impl Standing {
 }
 
 /// One entry as an [`EventLog`] keeps it: the host's position for it, when
-/// it came, and the entry.
+/// it came, the entry, and how the tokens it put down or changed looked.
+///
+/// The position is the host's to give. A host that keeps the logs of
+/// several nets, a net and the nets inside it, numbers every entry of every
+/// one on one sequence, so that a position in one log names the same moment
+/// in every other ([`EventLog::index_at`]).
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Logged {
@@ -358,6 +455,41 @@ pub struct Logged {
     pub at_ms: u64,
     /// What the model took.
     pub entry: Entry,
+    /// How each token the entry put down or changed looked after it, for
+    /// those the host could read: a look is kept once for each change of a
+    /// token. Empty for an entry that put down and changed nothing, and for
+    /// a host that keeps no looks. With the `serde` feature it is left out
+    /// when empty, and a log written before it existed reads with none.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Vec::is_empty")
+    )]
+    pub looks: Vec<(TokenId, Look)>,
+}
+
+impl Logged {
+    /// About how many bytes it holds, its token lists, its error and its
+    /// looks' labels among them: what a host counts against a budget.
+    pub fn bytes(&self) -> usize {
+        let pairs = size_of::<(PlaceId, TokenId)>();
+        let entry = match &self.entry {
+            Entry::Fired {
+                consumed, produced, ..
+            } => (consumed.len() + produced.len()) * pairs,
+            Entry::Launched { consumed, .. } => consumed.len() * pairs,
+            Entry::Distributed { produced, .. } => produced.len() * pairs,
+            Entry::Failed {
+                consumed, error, ..
+            } => consumed.len() * pairs + error.len(),
+            _ => 0,
+        };
+        let looks: usize = self
+            .looks
+            .iter()
+            .map(|(_, look)| size_of::<TokenId>() + look.bytes())
+            .sum();
+        size_of::<Logged>() + entry + looks
+    }
 }
 
 /// The entries a net's model took, in order, each with the host's position
@@ -370,9 +502,16 @@ pub struct Logged {
 /// [`first`](EventLog::first) plus its place in the ring, and stays the
 /// same while entries drop behind it.
 ///
+/// Beside the base it keeps the [`Roster`] of the tokens it can name at the
+/// oldest kept entry, [`base_tokens`](EventLog::base_tokens), advanced with
+/// the base, so that a reader can name the tokens of a place at any kept
+/// entry and say how each looked ([`EventPlayer::tokens_at`]).
+///
 /// An entry with two short token lists takes on the order of 150 bytes, so
-/// a hundred thousand take some 15 MB. With the `serde` feature the log is
-/// written as JSON by `write_json` and read back by `read_json`.
+/// a hundred thousand take some 15 MB; [`bytes`](EventLog::bytes) counts
+/// what a log holds, labels included, for a host that bounds its logs by
+/// memory. With the `serde` feature the log is written as JSON by
+/// `write_json` and read back by `read_json`.
 ///
 /// ```
 /// use std::time::Duration;
@@ -414,9 +553,16 @@ pub struct EventLog {
     start_unix_ms: Option<u64>,
     /// The standing state the oldest kept entry starts from.
     base: Standing,
+    /// The tokens named at the oldest kept entry, and their looks. A log
+    /// written before it existed reads with none.
+    #[cfg_attr(feature = "serde", serde(default))]
+    tokens: Roster,
     /// How many entries are no longer kept.
     dropped: u64,
     entries: VecDeque<Logged>,
+    /// What the kept entries hold, counted as they come and go.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    held: usize,
 }
 
 impl EventLog {
@@ -424,33 +570,78 @@ impl EventLog {
     /// entry for `None`, begun at `start`, for its file name and the
     /// entries' times (`None` leaves it undated), on `base`, the counts and
     /// flights standing when it began: a model's
-    /// [`standing_state`](Activity::standing_state).
+    /// [`standing_state`](Activity::standing_state). It names no token at
+    /// its start until [`with_tokens`](EventLog::with_tokens) says.
     pub fn new(capacity: Option<usize>, start: Option<SystemTime>, base: Standing) -> Self {
         Self {
             capacity: capacity.map(|n| n.max(1)),
             start_unix_ms: start.map(unix_ms),
             base,
+            tokens: Roster::default(),
             dropped: 0,
             entries: VecDeque::new(),
+            held: 0,
         }
     }
 
+    /// The same log, naming `tokens` at its start: the tokens its host
+    /// could read in each place when it began, with their looks.
+    pub fn with_tokens(mut self, tokens: Roster) -> Self {
+        self.tokens = tokens;
+        self
+    }
+
     /// Adds an entry at the host's position `seq`, `at` after the log's
-    /// start. Past the capacity the oldest entry is dropped and the base
-    /// advanced by it.
+    /// start, with no look. Past the capacity the oldest entry is dropped
+    /// and the base advanced by it.
     pub fn push(&mut self, entry: Entry, seq: u64, at: Duration) {
-        self.entries.push_back(Logged {
+        self.push_with(entry, seq, at, Vec::new());
+    }
+
+    /// Adds an entry as [`push`](EventLog::push) does, with how each token
+    /// it put down or changed looked after it: the looks a reader names
+    /// those tokens by ([`Logged::looks`]).
+    pub fn push_with(&mut self, entry: Entry, seq: u64, at: Duration, looks: Vec<(TokenId, Look)>) {
+        let logged = Logged {
             seq,
             at_ms: u64::try_from(at.as_millis()).unwrap_or(u64::MAX),
             entry,
-        });
+            looks,
+        };
+        self.held += logged.bytes();
+        self.entries.push_back(logged);
         while self.capacity.is_some_and(|c| self.entries.len() > c) {
             let Some(oldest) = self.entries.pop_front() else {
                 break;
             };
+            self.held = self.held.saturating_sub(oldest.bytes());
             self.base.advance(&oldest.entry);
+            self.tokens.advance(&oldest);
             self.dropped += 1;
         }
+    }
+
+    /// About how many bytes the log holds: its entries, their looks'
+    /// labels, its base and the roster of tokens it names at its start.
+    pub fn bytes(&self) -> usize {
+        size_of::<EventLog>()
+            + self.held
+            + self.tokens.bytes()
+            + (self.base.counts.len() + self.base.in_flight.len()) * 16
+    }
+
+    /// The tokens named at the oldest kept entry, with their looks: the
+    /// roster the log began with, advanced by every entry dropped since.
+    pub fn base_tokens(&self) -> &Roster {
+        &self.tokens
+    }
+
+    /// The absolute index of the last kept entry at or before the host's
+    /// position `seq`, the moment a reader of several logs on one sequence
+    /// shows this one at; `None` when every kept entry is after it, or none
+    /// is kept, where the log stands at its base.
+    pub fn index_at(&self, seq: u64) -> Option<u64> {
+        index_at(&self.entries, self.dropped, seq)
     }
 
     /// How many entries are no longer kept, dropped past the capacity or
@@ -500,13 +691,16 @@ impl EventLog {
     }
 
     /// Drops every entry kept and sets the base to `standing`, the counts
-    /// and flights that stand now. The capacity and the start stay, and the
-    /// entries cleared count as dropped, so that an absolute index is never
-    /// used twice and an [`EventPlayer`] following the log sees them go.
+    /// and flights that stand now, naming no token. The capacity and the
+    /// start stay, and the entries cleared count as dropped, so that an
+    /// absolute index is never used twice and an [`EventPlayer`] following
+    /// the log sees them go.
     pub fn clear(&mut self, standing: Standing) {
         self.dropped += self.entries.len() as u64;
         self.entries.clear();
+        self.held = 0;
         self.base = standing;
+        self.tokens = Roster::default();
     }
 
     /// The standing state the oldest kept entry starts from: the state the
@@ -547,7 +741,9 @@ impl EventLog {
     /// Reads a log written by [`write_json`](EventLog::write_json). The
     /// reader is buffered here.
     pub fn read_json(r: impl io::Read) -> io::Result<EventLog> {
-        Ok(serde_json::from_reader(io::BufReader::new(r))?)
+        let mut log: EventLog = serde_json::from_reader(io::BufReader::new(r))?;
+        log.held = log.entries.iter().map(Logged::bytes).sum();
+        Ok(log)
     }
 }
 
@@ -556,6 +752,13 @@ impl EventLog {
 fn position_at(entries: &VecDeque<Logged>, first: u64, seq: u64) -> Option<u64> {
     let at = entries.partition_point(|logged| logged.seq < seq);
     (at < entries.len()).then(|| first + at as u64)
+}
+
+/// The absolute index of the last of `entries`, the first of which has
+/// absolute index `first`, at or before position `seq`.
+fn index_at(entries: &VecDeque<Logged>, first: u64, seq: u64) -> Option<u64> {
+    let after = entries.partition_point(|logged| logged.seq <= seq);
+    (after > 0).then(|| first + after as u64 - 1)
 }
 
 /// A replay of an [`EventLog`] by entry rather than by time: each entry is
@@ -579,6 +782,15 @@ fn position_at(entries: &VecDeque<Logged>, first: u64, seq: u64) -> Option<u64> 
 /// drops, its entries keeping their absolute indices. A checkpoint made
 /// before entries dropped keeps the levels they left, which a fold from the
 /// new base, on counts alone, does not have.
+///
+/// Beside the levels it folds the log's [`Roster`]
+/// ([`tokens_at`](EventPlayer::tokens_at)): the tokens named in each place
+/// after an entry and how each looked, with checkpoints of its own. Before
+/// the first entry held it stands at the log's base
+/// ([`before_first`](EventPlayer::before_first),
+/// [`tokens_before_first`](EventPlayer::tokens_before_first)), which is where
+/// a moment before every entry ([`index_at`](EventPlayer::index_at) `None`)
+/// shows it.
 #[derive(Debug, Clone)]
 pub struct EventPlayer {
     grid: Grid,
@@ -596,6 +808,13 @@ pub struct EventPlayer {
     /// The model before the first entry held: the base's counts and flights,
     /// every level at 0.
     fresh: Activity,
+    /// The tokens named before the first entry held.
+    tokens: Roster,
+    /// The roster before the entry of each absolute index, folded.
+    token_checkpoints: BTreeMap<u64, Roster>,
+    /// The roster after the entry of an absolute index, as `tokens_at` last
+    /// left it.
+    token_current: Option<(u64, Roster)>,
 }
 
 impl EventPlayer {
@@ -623,7 +842,72 @@ impl EventPlayer {
             every: checkpoint_every.max(1),
             checkpoints: BTreeMap::new(),
             current: None,
+            tokens: log.tokens.clone(),
+            token_checkpoints: BTreeMap::new(),
+            token_current: None,
         }
+    }
+
+    /// The model before the first entry held: the log's base, its counts
+    /// and flights, every level at 0. A moment before every entry held
+    /// shows it.
+    pub fn before_first(&self) -> &Activity {
+        &self.fresh
+    }
+
+    /// The tokens named before the first entry held, with their looks: the
+    /// log's [`base_tokens`](EventLog::base_tokens).
+    pub fn tokens_before_first(&self) -> &Roster {
+        &self.tokens
+    }
+
+    /// The tokens named after the entry at absolute index `index`, clamped
+    /// to the entries held, with how each looked then; the roster before the
+    /// first entry when none is held. Folded from the nearest checkpoint, as
+    /// [`at`](EventPlayer::at) folds the levels.
+    pub fn tokens_at(&mut self, index: u64) -> &Roster {
+        if self.entries.is_empty() {
+            return &self.tokens;
+        }
+        let last = self.first + self.entries.len() as u64 - 1;
+        let target = index.clamp(self.first, last);
+        let from_current = self
+            .token_current
+            .as_ref()
+            .is_some_and(|(after, _)| *after <= target && *after + 1 >= self.first);
+        let checkpoint = self
+            .token_checkpoints
+            .range(self.first..=target + 1)
+            .next_back()
+            .map(|(&before, _)| before);
+        let current_next = self.token_current.as_ref().map_or(0, |c| c.0 + 1);
+        let (mut next, mut roster) = match (from_current, checkpoint) {
+            (true, Some(before)) if before > current_next => {
+                (before, self.token_checkpoints[&before].clone())
+            }
+            (true, _) => {
+                let (after, roster) = self.token_current.take().expect("checked above");
+                (after + 1, roster)
+            }
+            (false, Some(before)) => (before, self.token_checkpoints[&before].clone()),
+            (false, None) => (self.first, self.tokens.clone()),
+        };
+        while next <= target {
+            roster.advance(&self.entries[(next - self.first) as usize]);
+            next += 1;
+            if next % self.every as u64 == 0 && !self.token_checkpoints.contains_key(&next) {
+                self.token_checkpoints.insert(next, roster.clone());
+            }
+        }
+        &self.token_current.insert((target, roster)).1
+    }
+
+    /// The absolute index of the last entry held at or before the host's
+    /// position `seq`, as [`EventLog::index_at`] finds it: `None` when every
+    /// entry held is after it, where the player stands
+    /// [`before_first`](EventPlayer::before_first).
+    pub fn index_at(&self, seq: u64) -> Option<u64> {
+        index_at(&self.entries, self.first, seq)
     }
 
     /// The model after the entry at absolute index `index`, clamped to the
@@ -682,8 +966,11 @@ impl EventPlayer {
             self.entries = log.entries.clone();
             self.first = theirs;
             self.rebase(log.base.clone());
+            self.tokens = log.tokens.clone();
             self.checkpoints.clear();
             self.current = None;
+            self.token_checkpoints.clear();
+            self.token_current = None;
             return;
         }
         if theirs > self.first {
@@ -691,14 +978,23 @@ impl EventPlayer {
             self.entries.drain(..gone);
             self.first = theirs;
             self.rebase(log.base.clone());
+            self.tokens = log.tokens.clone();
             let first = self.first;
             self.checkpoints.retain(|&before, _| before >= first);
+            self.token_checkpoints.retain(|&before, _| before >= first);
             if self
                 .current
                 .as_ref()
                 .is_some_and(|(after, _)| *after + 1 < first)
             {
                 self.current = None;
+            }
+            if self
+                .token_current
+                .as_ref()
+                .is_some_and(|(after, _)| *after + 1 < first)
+            {
+                self.token_current = None;
             }
         }
         let have = self.first + self.entries.len() as u64;
@@ -1385,6 +1681,174 @@ mod tests {
     }
 
     #[test]
+    fn the_standing_state_worked_back_through_entries_is_the_one_they_started_from() {
+        for run in [traffic_run(), parcel_run()] {
+            // Every run of entries, from each start, ending anywhere: the
+            // state after them, worked back, is the state they began on.
+            // The corrections at the end name counts the run did not lead
+            // to, so they are left out here and tried on their own below.
+            let entries: Vec<Entry> = run.events.iter().filter_map(Entry::from_event).collect();
+            let mut states = vec![run.start.standing_state()];
+            for entry in &entries {
+                let mut next = states.last().expect("a state").clone();
+                next.advance(entry);
+                states.push(next);
+            }
+            // A run that starts with a firing in flight cannot tell a
+            // failure of it from one in one go, which it reads it as; so
+            // every start with nothing in flight.
+            let mut tried = 0;
+            for from in (0..entries.len()).filter(|&from| states[from].in_flight.is_empty()) {
+                for to in from..=entries.len() {
+                    assert_eq!(
+                        states[to].worked_back(&entries[from..to]),
+                        states[from],
+                        "{from}..{to}"
+                    );
+                    tried += 1;
+                }
+            }
+            assert!(tried > entries.len(), "{tried}");
+        }
+        // A correction of a flight was the other way before; one of a count
+        // keeps the count.
+        let (place, transition) = (PlaceId::new(0), TransitionId::new(0));
+        let after = Standing {
+            counts: vec![(place, 3)],
+            in_flight: vec![transition],
+        };
+        let back = after.worked_back(&[
+            Entry::Count { place, count: 3 },
+            Entry::InFlight {
+                transition,
+                on: true,
+            },
+        ]);
+        assert_eq!(
+            back,
+            Standing {
+                counts: vec![(place, 3)],
+                in_flight: vec![]
+            }
+        );
+    }
+
+    #[test]
+    fn index_at_finds_the_last_entry_at_or_before_a_moment_and_none_before_the_first() {
+        let mut log = EventLog::new(Some(4), None, Standing::default());
+        let entry = Entry::Mutated {
+            place: PlaceId::new(0),
+            token: TokenId::new(0),
+        };
+        for seq in [1, 2, 3, 3, 5, 8] {
+            log.push(entry.clone(), seq, Duration::ZERO);
+        }
+        // Kept: 3, 3, 5 and 8 at absolute indices 2 to 5.
+        assert_eq!(log.index_at(2), None, "before the oldest kept");
+        assert_eq!(log.index_at(3), Some(3), "the last of two at a moment");
+        assert_eq!(log.index_at(4), Some(3));
+        assert_eq!(log.index_at(7), Some(4));
+        assert_eq!(log.index_at(100), Some(5));
+        let player = EventPlayer::new(&log, &empty_grid(), ActivitySettings::default(), ms(1), 1);
+        assert_eq!(player.index_at(5), Some(4));
+        assert_eq!(player.index_at(0), None);
+        assert_eq!(
+            EventLog::new(None, None, Standing::default()).index_at(9),
+            None
+        );
+    }
+
+    #[test]
+    fn a_player_names_the_tokens_of_each_place_at_any_entry_with_the_looks_they_had() {
+        let run = parcel_run();
+        let looked = |token: TokenId| Look::new(&format!("token {}", token.get()), None, 200);
+        // The roster at the start names the parcels received, as a host
+        // reads them off the net.
+        let mut start = Roster::default();
+        start.set_place(
+            PlaceId::new(0),
+            (0..4).map(|n| (TokenId::new(n), Some(looked(TokenId::new(n))))),
+        );
+        let mut log =
+            EventLog::new(Some(5), None, run.start.standing_state()).with_tokens(start.clone());
+        let mut rosters = vec![start];
+        for (seq, event) in run.events.iter().enumerate() {
+            let Some(entry) = Entry::from_event(event) else {
+                continue;
+            };
+            let put: Vec<TokenId> = match &entry {
+                Entry::Fired { produced, .. } | Entry::Distributed { produced, .. } => {
+                    produced.iter().map(|(_, token)| *token).collect()
+                }
+                Entry::Added { token, .. } | Entry::Mutated { token, .. } => vec![*token],
+                _ => Vec::new(),
+            };
+            let looks: Vec<(TokenId, Look)> = put.into_iter().map(|t| (t, looked(t))).collect();
+            let mut next = rosters.last().expect("a roster").clone();
+            next.advance(&Logged {
+                seq: seq as u64,
+                at_ms: 0,
+                entry: entry.clone(),
+                looks: looks.clone(),
+            });
+            rosters.push(next);
+            log.push_with(entry, seq as u64, ms(seq as u64), looks);
+        }
+        assert!(log.dropped() > 0, "the ring dropped entries");
+        assert_eq!(
+            log.base_tokens(),
+            &rosters[log.first() as usize],
+            "the base roster advanced"
+        );
+        let mut player = EventPlayer::new(&log, &run.grid, ActivitySettings::default(), ms(10), 2);
+        assert_eq!(player.tokens_before_first(), &rosters[log.first() as usize]);
+        for index in (log.first()..log.first() + log.len() as u64).rev() {
+            assert_eq!(
+                player.tokens_at(index),
+                &rosters[index as usize + 1],
+                "{index}"
+            );
+        }
+        // The parcels sorted: names and looks moved with them.
+        let last = player.tokens_at(u64::MAX).clone();
+        assert!(last.places().count() > 0);
+        for (_, tokens) in last.places() {
+            for token in tokens {
+                assert_eq!(last.look(*token), Some(&looked(*token)));
+            }
+        }
+        assert!(player.before_first().place_count() > 0);
+    }
+
+    #[test]
+    fn a_logs_bytes_count_its_entries_and_their_labels_and_follow_the_ring() {
+        // A change of a token the base names none of: what drops leaves
+        // the base's counts and roster as they were.
+        let entry = || Entry::Mutated {
+            place: PlaceId::new(0),
+            token: TokenId::new(1),
+        };
+        let mut log = EventLog::new(Some(2), None, Standing::default());
+        let empty = log.bytes();
+        log.push(entry(), 0, Duration::ZERO);
+        let one = log.bytes();
+        assert!(one > empty);
+        let label = "x".repeat(150);
+        log.push_with(
+            entry(),
+            1,
+            Duration::ZERO,
+            vec![(TokenId::new(1), Look::new(&label, None, 200))],
+        );
+        assert!(log.bytes() >= one + 150, "the label counts");
+        log.push(entry(), 2, Duration::ZERO);
+        log.push(entry(), 3, Duration::ZERO);
+        assert_eq!(log.bytes(), one + (one - empty), "the labelled one dropped");
+        log.clear(Standing::default());
+        assert_eq!(log.bytes(), empty);
+    }
+
+    #[test]
     fn a_file_name_shares_the_records_stem() {
         let start = std::time::UNIX_EPOCH + Duration::from_millis(1_792_499_696_789);
         let dated = EventLog::new(None, Some(start), Standing::default());
@@ -1429,9 +1893,22 @@ mod tests {
             );
         }
         let start = std::time::UNIX_EPOCH + Duration::from_millis(1_792_499_696_789);
-        let mut log = EventLog::new(Some(8), Some(start), run.start.standing_state());
+        let red = petritype::style::Rgb(200, 30, 40);
+        let mut tokens = Roster::default();
+        tokens.set_place(
+            PlaceId::new(4),
+            [(TokenId::new(4), Some(Look::new("fleet", Some(red), 200)))],
+        );
+        let mut log =
+            EventLog::new(Some(8), Some(start), run.start.standing_state()).with_tokens(tokens);
         for (seq, entry) in entries_of(&run).into_iter().enumerate() {
-            log.push(entry, seq as u64, ms(37 * seq as u64));
+            let looks = match &entry {
+                Entry::Mutated { token, .. } => {
+                    vec![(*token, Look::new("changed", Some(red), 200))]
+                }
+                _ => Vec::new(),
+            };
+            log.push_with(entry, seq as u64, ms(37 * seq as u64), looks);
         }
         assert!(log.dropped() > 0 && !log.base().counts.is_empty());
         let mut text = Vec::new();
@@ -1445,5 +1922,12 @@ mod tests {
             "{text}"
         );
         assert!(text.contains(r#""event":"in_flight""#), "{text}");
+        assert!(text.contains(r##""colour":"#c81e28""##), "{text}");
+        assert!(!text.contains(r#""looks":[]"#), "no looks left out: {text}");
+        // A log written before the looks and the roster reads with none.
+        let mut old: serde_json::Value = serde_json::from_str(&text).expect("JSON");
+        old.as_object_mut().expect("an object").remove("tokens");
+        let read = EventLog::read_json(old.to_string().as_bytes()).expect("reads");
+        assert!(read.base_tokens().is_empty());
     }
 }

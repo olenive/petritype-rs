@@ -712,3 +712,10 @@ the canvas's picture, and the viewer's *Thumbnails for panes* (§5.6).
 Added 2026-10-23, on main the same day: tokens move with the entry during
 replay by event, along the arrows through the transition, and the setting
 *Replay moves tokens* (§5.6).
+
+Changed 2026-11-23, on the viewer's `help-and-player`: the history's controls
+are a player of their own at the canvas's bottom left, where they were a
+panel above the thumbnail under the pointer (§5.6 and the note of
+2026-10-21). The player is shown whole for as long as the history is on, and
+while it is off as a `History` button and the settings cog. The thumbnail
+panel carries no controls, and the settings window sits just above it.

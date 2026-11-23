@@ -171,10 +171,12 @@ const FRAME_PAD: f32 = 24.0;
 /// Extra room along the top of a group's frame, for its title.
 const TITLE_ROOM: f32 = 26.0;
 /// How wide a character of a place's name is drawn, as an estimate: the
-/// renderer's 15-point text.
-const PLACE_CHAR_WIDTH: f32 = 8.0;
+/// renderer's 15-point text, in a font whose characters are six tenths of
+/// their size wide. An estimate that is too narrow lets two long names
+/// side by side touch.
+const PLACE_CHAR_WIDTH: f32 = 9.0;
 /// The same for a transition's name, drawn in 14-point text.
-const TRANSITION_CHAR_WIDTH: f32 = 7.5;
+const TRANSITION_CHAR_WIDTH: f32 = 8.4;
 /// The distance between a transition's box and its ghosts: long enough for
 /// an arrow.
 const GHOST_GAP: f32 = 24.0;

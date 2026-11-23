@@ -1436,6 +1436,183 @@ Topology { .., groups: Vec<String> };  TopologyPlace, TopologyTransition { .., g
   numbers of the clusters they replace (`tests/groups.rs` pins both against
   what the commit before computed).
 
+### 6.9 Closed nets
+
+**Decided and built 2026-11-23, stage one** (step 3c of the edges spec,
+with the Python track; the findings are in
+`dev-docs/refusing-a-reach-outside-the-ports.md`). The owner's words: "in
+general, we don't want to be injecting tokens arbitrarily into places in
+the Petri net... definitely the bodies should not be doing that. I'd say
+unless a net has been specifically flagged as one where we expect to
+inject tokens, that should also throw an error if your program does it.
+But if the user wants to override that by specifying that in the net
+definition, I think that's fine. I would rather err on the side of being
+too strict here."
+
+A net that marks any place as a port (`NetBuilder::port`) is **closed**:
+from outside it, tokens are put, taken, removed, replaced or set only at
+its ports. A net that marks no port stays open, as every net was. A net
+may declare itself **open** in its definition, and then anyone outside may
+write to any of its places. **Stage two**, announced and not built, closes
+every net that does not declare itself open; it is one constant in
+`closed.rs` (`UNDER_RULE_WITHOUT_PORTS`, read by `Net::is_under_rule`).
+
+```rust
+b.port(inbox);                       // the net is closed from now on
+b.open() -> &mut Self                // the override: open, ports or not
+net.is_open() -> bool                // the declaration
+net.is_closed() -> bool              // the rule's answer: marks a port and is not open
+net.try_put(place, token) -> Result<TokenId, NetError>      // and try_extend, try_set_tokens
+NetError::ClosedNet { net: String, place: String, act: &'static str }
+NetError::HeldByBody { net: String, act: &'static str }
+```
+
+**Who is outside.** A body, guard or key function of a transition of the
+net around it, by any edge; the program and its drivers; a runner's
+requests. **Inside:** its own transitions' bodies, guards and keys; the
+handlers of its own controls while `Net::press` runs them; the tokens its
+definition starts it with (seeds, and a template's tokens); and the
+engine's own moves, a firing's outputs, a failed firing's restore and a
+deep step's inner firings.
+
+**Tokens.** The check is on the net itself, in every public method that
+writes a token: `put`, `extend`, `set_tokens`, their `try_` forms,
+`remove`, `replace`, and `apply` of an erased `Command` (and so
+`apply_json`). It holds whoever calls: the program, a closure of
+`nested_scope` or `subnet_scope`, and a body that holds the net by a
+mutate or mutate-where edge or owns it through a take, take-where,
+take-all or drain edge (an owned net is the same net, so the same check).
+A read edge lends `&T` and has nothing to write with. The internal paths
+go round it: seeds (`insert_erased` in `build`), outputs (`push_produced`),
+restores (`restore_consumed`), imports (`load_marking`), forks and
+restores from a saved form (both through `import_marking` on a new net),
+and deep steps. Each net is under its own rule whoever reaches it, two
+levels down as one: the program reaching a closed net inside an open one
+writes only at the inner net's ports.
+
+**Windows.** A window, the place a net has for a port of one of its subnet
+places (`port_of`), is a place of the net that holds it, and can never be
+one of that net's own ports (`PortIsSubnetPlace`). A write at it from
+outside is judged by the holding net's rule first: refused when the
+holding net is closed, landing when it is open, the subnet's port taking
+it. A write at the window made inside the holding net (its seeds, its own
+bodies' outputs) lands as before. This is the strict, literal reading the
+owner asked for; a program that deals tokens onto a map's windows, as
+graph-tactics' `GameNet::deal` does, declares the map open.
+
+**Knobs and firing by name.** Setting a parameter, a switch, the tie-break,
+a stepping rule or a selector, firing by name (`fire`, `launch`,
+`distribute`, `step_inside`), pressing a control and importing a marking
+stay with the program, its drivers and the runner, whatever the net. They
+are refused only to a body of the net around it, and only on a net under
+the rule, one that marks a port, closed or declared open: the override
+opens the places, not the controls. A body that holds a net marking no
+port still sets its parameters and the rest in stage one, as the transit
+example's `Depart` and `Arrive` set a cabin's `stopped`. Stage two puts
+every net under the rule, and such a setting then goes to a transition of
+the net's own, which is inside it, or is left to the program: declaring a
+net open opens its places, not its knobs. Reading and stepping are
+allowed for everyone, a body included: `step` and `step_deep` on a net a
+body holds run that net's own transitions, which are inside it.
+
+**The mark.** A body is told apart from the program by a mark on the nets
+it holds, `Net::held`, a `Weak` to a `Hold` the firing owns
+(`Firing::hold`, `Completed::hold`). `consume` marks the nets of each
+token a consuming edge takes from a place of nets, through
+`Nested::nets_mut`, and they stay marked, wherever the body puts them,
+until the firing ends at the end of stage three, when the `Arc` is dropped
+and every `Weak` lapses by itself. `mark_lent` marks the nets of each
+token a mutating edge lends, around the inline call to the body, and
+`unmark_lent` puts back what was there. `nested_scope` and `subnet_scope`
+called on a marked net mark the nets they lend for the closure's time, so
+the mark travels down through the scopes to any depth. The program never
+holds a marked net: a token's nets are marked only while the body that
+has them runs, inline or owned by an airborne `Firing`. A body that puts a
+net it built in place of one it holds (`*unit = fresh`) has made a new
+net: the swap is let through, and the new net carries no mark, so its
+knobs are the body's; its tokens are under its own rule, as the program's
+are, and its seeds are inside. No global state, no unsafe code: the mark
+is per firing, and `Hold` is `Send + Sync`, so it travels with a
+detachable body to a worker thread.
+
+**A refusal.** `NetError::ClosedNet` names the net (by its template, or
+its id, `NetId(7)`, when no template built it), the place and the act
+(`"put a token into"`), and says the three ways to put it right: mark the
+place as a port, start the net with the token in its definition, or
+declare the net open. `NetError::HeldByBody` names the net and the act
+(`"set a parameter of"`) and says to do it from the program or give the
+net a transition of its own that does it.
+
+- **For the program**, the methods that return a `Result` return it, the
+  net unchanged and silent. `put`, `extend` and `set_tokens` keep their
+  signatures and panic with the refusal's message, as they already panic
+  on another net's handle, so a program in the right changes nothing; the
+  `try_` forms return it. `set_tie_break`, `set_selector`,
+  `clear_selector` and `step_inside` panic for a body that holds a net
+  marking a port, which only a body can meet. `press` answers a body with
+  `PressError::Refused` carrying the message, the handler not run.
+- **For a body**, an ordinary failed firing with the named error as its
+  error, not `BodyPanicked`. A net that refuses a body keeps the first
+  refusal on the mark, and `call_body` fails the firing with it after the
+  body returns, whether the body passed it on, dropped the `Err`, or caught
+  the panic of a method with no `Result`. (The panic's payload is the
+  refusal's message, a `String`, so that the default panic hook prints it
+  for a program; the typed error comes back through the mark.) What is
+  restored is what any failure restores (`restore_tokens_on_failure`), and
+  what the body did before the refusal stays done; the refused call
+  changed nothing. A refusal in a consuming firing costs what any failure
+  costs: the Rust core cannot restore a consumed token that carries a net,
+  since a place of nets has no cloner (`BuildError::RestoreOfNoClonePlace`),
+  so a firing that takes such a token and is refused loses it.
+- **For the runner**, `inject` refused this way answers `closed_net`, at
+  the top level and by path, at a window as at any place (§19.3.23).
+
+**Whole-state acts** stay allowed for the program: importing a marking
+(`import_marking`, refused to a body on a net marking a port, as a knob
+is), restoring from a saved form, forking, rebuilding as a reset, and
+saving. They replace the state as a whole, and are how a save is loaded.
+
+**What Rust enforces.** Every write to a place goes through a `Net`
+method, and a body has nothing else to write with, so the rule holds in
+full in this runtime: there is no queue a program or a body can reach
+round it. (Python can enforce it only through its library's own functions
+and the runner, plus a before-and-after check for a body; its documents
+say so.)
+
+**What broke in this repository.** One test: the runner's
+`a_subnet_place_s_entry_holds_its_subnet_and_its_ports_under_the_token_limit`
+injected into a level's `Arena`, which the level does not mark a port; its
+fourth hero now walks in from the lobby by a step. The conformance nets
+and the eighteen shared recorded fixtures replay unchanged, and the
+`post-office` net with the nineteenth, `19_closed_nets.json`, shows the
+rule on the wire.
+
+#### Closed nets: what a program changes
+
+How to tell that a net is closed: it marks a port and does not declare
+itself open. On the wire its topology shows `port: true` on some place and
+no `open`; in Rust, `Net::is_closed()`; in Python, `graph.is_closed`.
+
+A write from outside at a place that is not one of its ports is refused
+(Rust `NetError::ClosedNet`, Python `ClosedNetError`, the runner's
+`closed_net`). There are three ways to make it land:
+
+1. mark the place as a port (`b.port(place)`);
+2. start the net with the token in its definition, as a seed or a
+   template's token, which is inside the net;
+3. or declare the net open (`b.open()`, Python `open=True`), which lets
+   anyone outside write to any of its places.
+
+Knobs (a parameter, a switch, the tie-break, the stepping rule, a
+selector) and firing by name stay with the program and the runner, on any
+net. A body of the net around a net that marks a port is refused them,
+open or closed; a body on a net with no port keeps them in stage one.
+Whole-state acts (loading or importing a marking, restoring, forking,
+resetting, saving) stay allowed. Stage two will close every net that does
+not declare itself open, and refuse a body the knobs of every net it
+holds: give such a setting to a transition of the net's own, or leave it
+to the program.
+
 ## 7. Failure semantics
 
 - **Expected outcomes are data.** Route a token to an error place via a
@@ -1919,6 +2096,85 @@ BuildError::KeyedEdgeOnUnkeyedPlace { transition, place }
   five declines, in that order under `FirstDeclared`) and stops. No engine
   change: the keyed edges of this slice already did all of it.
 
+**Choosing by another input, 2026-11-23** (step 1 of the edges spec,
+agreed with Oleg; built with the Python track). A keyed edge's filter may
+compare one of its keys with a key of the token another input of the same
+firing gives: "the unit this order names". It is a third kind of clause,
+beside constants and a net parameter, so there is no new edge kind.
+
+```rust
+Filter::new().key_is_input("name", orders, "unit")     // orders: PlaceRef<Order>
+#[non_exhaustive] pub enum Clause { In {..}, IsParam {..}, IsInput { key: String, input: InputKey } }
+pub struct InputKey { pub place: PlaceId, pub key: String }
+MutateWhereEdge(units, Filter::new().key_is_input("name", orders, "unit"))
+BuildError::{BoundSourceNotAnInput, BoundSourceGivesMany, BoundSourceIsBound,
+             BoundToTwoSources, BoundKeyNotDeclared}
+```
+
+- **Words.** The edge whose filter holds such a clause is *bound*; the
+  input it names is its *source*. Both values are keys declared on their
+  places, so the clause is plain data: no `serde` is asked of anything, and
+  it shows on the wire and in a drawing as declared.
+- **Which pair fires** (decided by Oleg): the oldest source token that has
+  a match, with the oldest match for it. The source's candidates are its
+  place's tokens in queue order, or, for a source that is keyed itself
+  (`TakeWhereEdge`, `MutateWhereEdge`), those its own filter accepts. For a
+  candidate, each edge bound to the source asks its place for the first
+  token its whole filter accepts, each input clause reading the candidate's
+  key, a constant or a parameter clause beside it as usual. The first
+  candidate with a match in every bound edge is the pair; a candidate
+  without one stays where it is and holds back none behind it. This is the
+  rule keyed edges already followed, carried over to a pair. Several
+  sources in one transition are independent, each reading its own place.
+- **Fireable** when every source has a pair, the other edges hold as
+  before, and the guard passes, asked last. **Launch** asks the same of the
+  same marking once, before any edge moves a token (`consume`), and every
+  source and bound edge then takes its chosen position: a take source takes
+  its token from wherever it stands, a snapshot source clones it, a mutate
+  source lends it, each bound edge takes or lends its match. Positions stay
+  good because no two edges of a transition read one place. Ids, events,
+  detachability and the restore are those of the edge kinds: a failed
+  firing that restores puts both tokens back at the front of their places,
+  with their ids.
+- **The cost.** The bound filters are resolved against the parameters once
+  per question; each candidate costs one extraction of its keys and one
+  lookup in the key index per bound edge (`first_resolved`), never a scan
+  of the bound place. A keyed source's candidates come from the index too
+  (`all_resolved`, the postings of its rarest clause in id order, or the
+  queue of an unordered place), lazily, so the first candidate that pairs
+  ends the question. The crate's tests compare the pairing with a scan
+  through places put out of id order by restores (`pairing.rs`).
+- **Build checks** (`pairing::bindings`, after a transition's other input
+  checks): the source must be an input of the transition
+  (`BoundSourceNotAnInput`) whose edge gives one token, a take, a snapshot
+  or a mutation, keyed or not (`BoundSourceGivesMany` for a take-all, a
+  drain or a survey); a source may not be bound itself, which refuses a
+  chain, a cycle of two and a clause naming its own edge's place
+  (`BoundSourceIsBound`); one filter names one source, though two clauses
+  may read two keys of it (`BoundToTwoSources`); and the bound place must
+  declare the clause's key and the source place the key it reads
+  (`BoundKeyNotDeclared`). Constant and parameter clauses keep their old
+  rule, a key no token has accepting nothing. Several edges may be bound to
+  one source. A transition keeps what was found as `bindings`, and an edge
+  in one is asked with its pair rather than on its own.
+- **Outside a firing** there is no source token: a query, `Filter::matches`,
+  `Net::matches` and `Net::first_match` accept nothing through the clause.
+  A runner refuses one in a client's `query` or `set_filter` with
+  `invalid_params` (PROTOCOL.md §13.2).
+- **Ports.** A source or a bound edge may be a port of a subnet place: its
+  candidates and its match are read from the port's queue and the subnet's
+  index, as any keyed edge on a port is, and on the wire the clause names
+  the source as an edge names its place, `{"place", "port"?, "key"}`.
+- **On the wire** (PROTOCOL.md §5.1, §13.2, §13.5) the clause is
+  `{"key": "name", "input": {"place": "Orders", "key": "unit"}}`, in a keyed
+  edge's `filter`; the core's `Serialize` writes the place by id. The
+  protocol stays version 2: a new optional clause shape, shown as declared.
+  `petritype-dot` writes it `name = Orders.unit`, a port's source as
+  `Subnet/Port.unit`. The shared conformance net `couriers` and
+  `16_keyed_by_input.json` over it show both forms, a source token passed
+  over, a failure that restores both tokens and the refusal of a `query`.
+  `tests/keyed_by_input.rs`.
+
 **Pattern notes.** The game's pattern P2
 (`Cyberpunk2020-Simulation/docs/world-net-design.md` §8.1, "select by
 key": take the whole place, a guard that scans it, a body that splits it,
@@ -1934,6 +2190,122 @@ to the index, asked at fireability and again at launch. `wildlife`'s
 `Migrate` was P2 until this slice. P1 (a guard comparing the *front*
 token's key) stays right where only the front may go, since FIFO order is
 the point there; P2 is the pattern this replaces.
+
+Reaching one token by a value another input carries ("the unit this order
+names") was a drain and a refill until 2026-11-23: drain the units, find the
+one the order names in the body, and put every unit back, each under a fresh
+id, a viewer re-animating them all, the choice made in the body where no
+guard or reader could see it. A bound edge does it in one firing
+(`Filter::key_is_input`, above): the unit is chosen by the index, the
+others are not mentioned and keep their ids, and an order whose unit is not
+there waits without holding back the orders behind it.
+
+### 8.4 Read edges
+
+**2026-11-23** (step 2 of the edges spec, names agreed with Oleg; built with
+the Python track). Three input edges lend the body tokens to look at,
+without taking or copying them:
+
+```rust
+pub struct ReadEdge<T>(pub PlaceRef<T>);                  // body parameter &T, the front token
+pub struct ReadWhereEdge<T>(pub PlaceRef<T>, pub Filter); // &T, the oldest token the filter accepts
+pub struct ReadAllEdge<T>(pub PlaceRef<T>);               // Vec<&T>, every token, zero or more
+EdgeKind::{Read, ReadWhere, ReadAll}                      // "read", "read_where", "read_all"
+kind.lends() -> bool                                      // a mutating or a read kind: runs inline
+```
+
+- **Words.** These three, with snapshot, survey, mutate and mutate-where,
+  are the *non-consuming edges*, the edges that leave their token in its
+  place; "read edge" means only these three. The documents said "read
+  edges" for the whole group until this step.
+- **Nothing moves.** No token leaves its place, no id changes, nothing is
+  copied, and no event names a token read: no `Mutated`, and the firing's
+  `consumed` does not list it. A firing whose inputs are all non-consuming
+  is still a firing, reported as such. `Read` and `ReadWhere` hold their
+  transition back while there is no token (one the filter accepts, for a
+  read-where); `ReadAll` never does, and lends an empty `Vec` on an empty
+  place, as `Survey` copies one.
+- **No `Clone`.** The impls ask `T: Send + Sync + 'static` alone, so a read
+  edge reads a `place_no_clone` place and a place of net-carrying tokens,
+  where a snapshot or a survey is refused (`SnapshotOfNoClonePlace`). A
+  token that carries nets is read in place, so its nets keep their ids.
+- **How the borrow is lent.** Two erased inputs, `ErasedInput::Lent(&'a
+  ErasedToken)` and `ErasedInput::LentAll(Vec<&'a ErasedToken>)`, beside
+  `Borrowed`. Stage one records each read edge as it records a mutating
+  one (`Lent`: the argument, the token's position, the slot that holds it
+  and, for a port, the port), in a list of its own, `looked`, so that the
+  mutation events and the reindexing see only the mutating edges. The pass
+  that lends the `&mut`s (`borrow_mutated`) lends these too: it walks the
+  places with `iter_mut`, a subnet's ports with the subnet's own, and for a
+  read edge turns its slot's `&mut` into a shared borrow of the one token or
+  of every token. Every borrow it takes may be alive at once because no two
+  edges of a transition read one place (`DuplicateInputPlace`, which stays).
+  No unsafe code. The body cannot change what it is lent (`tests/ui/
+  fail_read_edge_mutates.rs`, `fail_read_edge_writes.rs`), and nothing else
+  can while it runs.
+- **Inline.** A lent borrow ties the firing to the net, so a transition
+  with a read edge is not detachable, as one with a mutate edge is not
+  (`EdgeKind::lends`), and `launch` runs its body there and then. The
+  runner reports such a firing in one piece.
+- **With the other rules.** `ReadWhere` is keyed: it chooses as
+  `TakeWhere` does, through the index, a port's through its subnet's; its
+  place must declare keys; and it may be bound to a source by a
+  `Clause::IsInput` (§8.3). `Read` and `ReadWhere` give one token, so each
+  may be a source; `ReadAll` gives every token and is refused as one
+  (`BoundSourceGivesMany`). None of the three consumes, so none counts in
+  `assert_acyclic`, `assert_no_source_transitions` or
+  `RestoreOfNoClonePlace`. Each works on a port of a subnet place.
+- **Drawn** by `petritype-dot` dotted and dim grey, where a snapshot is
+  dashed; a read-where with its filter as the label, and a read-all with the
+  hollow head and the `*` of the edges that take every token, zero or
+  more. The shared conformance net `roll-call` and `17_read_edges.json`
+  read a place of net-carrying tokens by each form. `tests/read_edges.rs`.
+
+### 8.5 Ports on a token's net, and the reach an edge declares
+
+**2026-11-23** (step 3 of the edges spec, parts 3a and 3b; built with the
+Python track). A net a token carries may mark ports as any net may
+(`NetBuilder::port`); until now only a subnet's showed them.
+
+```rust
+MutateEdge(field).reaching(["Orders In"])      // any edge kind: Reaching<E>
+EdgeInfo::Input { .., reaches: Vec<String> }   // empty for an edge that names none
+TransitionInfo::reaches: &[Vec<String>]        // TopologyTransition::reaches, one per input edge
+BuildError::{ReachIntoNoNets, EmptyReachName}
+```
+
+- **Ports shown everywhere (3a).** `PlaceInfo::port` was always true on a
+  marked place of any net; the runner now writes `port: true` on the
+  topology of every net, the loaded net and a net a token carries as well
+  as a subnet (PROTOCOL.md §5.1). `petritype-dot` already rang a marked
+  place of a net drawn on its own (`peripheries=2`).
+- **No declaration on the place of nets.** A place whose tokens carry nets
+  does not say which ports they offer: the nets arrive with their tokens at
+  run time and may differ, each shows its own ports when read by path, and
+  the edge's reach is the outer net's statement of what it uses. A
+  declaration on the place would be a second statement of the same thing,
+  true of the nets the author had in mind and checked against none.
+- **The reach (3b).** `.reaching([..])`, an inherent method on every edge
+  kind, wraps the edge in `Reaching<E>`, which reads, takes or lends exactly
+  as `E` does and describes itself as `E` with the names beside it
+  (`InputSpec::Edge::reaches`). The names travel with the transition
+  (`TransitionSlot::reaches`, beside `filters`) to the read API, the
+  topology, a snapshot, the wire (`reaches`, written only when not empty)
+  and a drawing (`petritype-dot` writes `reaches Orders In` as the label's
+  last line). A `Reaching` field may stand in a struct of inputs.
+- **A declaration only.** It changes nothing about firing, like a group.
+  The build refuses only what can never be right: a reach on a place whose
+  tokens carry no nets (`ReachIntoNoNets`) and an empty name
+  (`EmptyReachName`). A name the token's net does not have as a port is
+  found out nowhere: the nets arrive at run time. Since 2026-11-23 a body
+  that writes outside the ports of a closed token's net fails its firing,
+  whatever its edge reaches (§6.9), so the reach stays a declaration.
+  `EdgeInfo::Input` gained a field, so code that builds one by struct
+  literal adds `reaches: vec![]`.
+- **The conformance net** `trays` and `18_ports_on_a_token.json`: a unit, a
+  token that is a net with two ports, handed an order through one and its
+  shot collected from the other, each outer edge naming the port it
+  reaches, and the unit read by path showing `port`. `tests/reaches.rs`.
 
 ## 9. External input
 
@@ -2121,6 +2493,14 @@ Always:
   no keys (`KeyedEdgeOnUnkeyedPlace { transition, place }`, slice 19,
   §8.3): it could never fire. Checked edge by edge with the three above, the
   first offender in transition order.
+- A keyed edge that chooses by another input (`Clause::IsInput`, §8.3,
+  2026-11-23), after the transition's other input checks: a filter naming
+  two sources (`BoundToTwoSources`), a source the transition does not read
+  (`BoundSourceNotAnInput`), one that gives every token
+  (`BoundSourceGivesMany`), one that is bound itself or the edge's own place
+  (`BoundSourceIsBound`), and a key either place does not declare
+  (`BoundKeyNotDeclared`); the first offender in transition order, then
+  edge order.
 - Groups (§6.8): two of one name (`DuplicateGroupName`), then the first
   node put in a second group (`PlaceInTwoGroups`, `TransitionInTwoGroups`)
   or a port's handle put in one (`PortInGroup`). `in_group` and
@@ -2135,19 +2515,20 @@ Always:
 
 Opt-in:
 - `b.assert_acyclic()`: iterative three-colour DFS over consuming input edges
-  (`TakeWhereEdge` among them) and output edges; read edges excluded (they
-  move no tokens), and since slice 22 `DrainEdge` too, which consumes but
-  may take nothing, so the proof does not lean on it (§4.4). Roots are
-  transitions in declaration order; the first cycle found is reported as
+  (`TakeWhereEdge` among them) and output edges; non-consuming edges
+  excluded (they move no tokens), and since slice 22 `DrainEdge` too, which
+  consumes but may take nothing, so the proof does not lean on it (§4.4).
+  Roots are transitions in declaration order; the first cycle found is
+  reported as
   `BuildError::Cycle { path }`, node names from the repeated node round to
   itself (first == last, so it normally starts at a transition), joined with
   `" -> "` in the message.
 - `b.assert_no_source_transitions()`: every transition has at least one
   `TakeEdge`, `TakeAllEdge` or `TakeWhereEdge` input, an edge that always
-  takes a token; a transition with only read edges (`MutateWhereEdge` and
-  `SurveyEdge` among them) fails, and so, since slice 22, does one whose
-  only consuming input is a `DrainEdge`, which fires for ever on an empty
-  place.
+  takes a token; a transition with only non-consuming edges
+  (`MutateWhereEdge`, `SurveyEdge` and the read edges among them) fails,
+  and so, since slice 22, does one whose only consuming input is a
+  `DrainEdge`, which fires for ever on an empty place.
   First offender in declaration order → `BuildError::SourceTransition`.
 - Both run after the always-on checks, source transitions before cycles.
 - The pair is a static termination proof; each alone proves less, and the
@@ -2281,7 +2662,8 @@ Examples (each also an integration test), mirroring the Python acceptance set:
 quickstart, parcel distribution, caching (union return → routed enum),
 match-up tokens (`TakeAllEdge` + guard + positional), coloured balls
 (`Distribution`), web scrape (routed enums), execution modes (sequential vs
-concurrent), read-edge scaler (`SnapshotEdge` + `MutateEdge`). A ninth,
+concurrent), the scaler of `read_edge_scaler.rs` (`SnapshotEdge` + `MutateEdge`,
+two non-consuming edges; the file keeps its older name). A ninth,
 transit (slice 15), is no port: it is the nets-as-tokens proposal's example
 (§6.6), which ran the proposal's acceptance script until 2026-10-10 and has
 run its journey on its own since. Since slice 16 it is also the protocol's
@@ -2326,7 +2708,7 @@ restores it, so it needs `serde`.
   dotted-both-ends for `MutateEdge`) with four additions: disabled
   transitions grey and dashed, `*` on a `TakeAllEdge`, return positions numbered on a
   transition with more than one output, red for a `Failed` event. A
-  highlighted read edge keeps its shape and only changes colour. A subnet
+  highlighted non-consuming edge keeps its shape and only changes colour. A subnet
   place is one `Mrecord` box, its ports cells of it (§6.7).
 - The examples live in `petritype/examples/` as cargo examples with
   `test = true`, so `cargo test` runs their assertions and `cargo run
@@ -3868,7 +4250,7 @@ to the core.
   own are untouched. `tests/subnets.rs` has the rest: the versions in each
   case, at two depths, with a subnet inside a token's net and a token's net
   inside a port, keys and filters on a port, a failed firing that restores
-  into one, read edges and an empty drain that change nothing there, the
+  into one, non-consuming edges and an empty drain that change nothing there, the
   read that waits, and a hosted world quiet and told.
 - **What a reader of the protocol types meets** (the viewer, §6.1 of the
   spec): `Notification`'s firing and token variants gained `port` and the
@@ -3970,6 +4352,110 @@ changed and no new rule in the harness.
   response and then, while fewer lines have come than it expects or a
   `launched` waits for its other piece, what follows, as a running net's
   firings follow the answer to `start`.
+
+#### 19.3.20 Choosing by another input on the wire, 2026-11-23
+
+A keyed edge that chooses its token by another input (§8.3, "Choosing by
+another input") needs three things of the runner, and nothing else on the
+wire changes; the protocol stays version 2, the clause being an optional
+new shape shown as declared (PROTOCOL.md §13.2).
+
+- **Writing it.** `filter_to_wire` writes a `Clause::IsInput` as
+  `protocol::Clause::IsInput { key, input: protocol::InputKey { place,
+  port, key } }`, `{"key", "input": {"place", "port"?, "key"}}`, the source
+  named by `Names::split` as an edge's place is, so a port's source gives
+  its subnet place and `port`. The derived, lenient `Deserialize` reads it
+  back.
+- **Refusing it in a request.** It has no meaning outside a firing, so
+  `protocol::Filter::parse` refuses a clause with `input` in a `query` or
+  `set_filter`, and `filter_from_wire` refuses one that reaches it by
+  another road; both are `invalid_params` with a message that says why.
+- **The conformance net** `couriers` is written in the example's `nets.rs`
+  from PROTOCOL.md §11's words, carried alone for the transcript over it,
+  and listed last in `nets::registry()`, so our own
+  `01_describe_load_state.json` lists it in `describe`. Its `Load` has a
+  mutate edge, so this runner reports each of its firings in one piece and
+  the Python runner in two; the fold gives the same lines. Its `Dispatch`
+  failure is a firing with no mutate edge, `launched` then `failed` from
+  both. `16_keyed_by_input.json` is copied verbatim from the Python track's
+  recording and replays with no rule added to the harness.
+
+#### 19.3.21 Read edges on the wire, and readers that do not know a kind, 2026-11-23
+
+- **Writing them.** `edge_kind` maps the three read kinds to `"read"`,
+  `"read_where"` and `"read_all"`, and a read-where carries its filter as
+  any keyed edge does. A body with a read edge runs inline, so the runner
+  reports its firing in one piece, as it does a mutate edge's; the Python
+  runner reports it in two, and the fold gives the same lines. No `mutated`
+  is sent for a token read.
+- **Reading tolerantly.** Until now the runner's `protocol` types failed a
+  whole topology over one edge kind or one clause shape they did not know,
+  which is what a reader built on 0.2.x still does. `protocol::EdgeKind`
+  gains an untagged `Other(String)` and `protocol::Clause` an untagged
+  `Other(Value)`, each last, so that a name or a shape this version does
+  not know is kept as written, written back unchanged, and the rest is
+  read. A request's filter is still read strictly (`Filter::parse`), and
+  `filter_from_wire` refuses an `Other` clause as `invalid_params`.
+  `TransitionDetail` is the Rust runner's own `detail` and stays strict, so
+  these types still cannot read a topology the Python runner wrote, whose
+  `detail` has other keys (PROTOCOL.md §5.1 lets a reader ignore it).
+- **The conformance net** `roll-call` is written in the example's `nets.rs`
+  from PROTOCOL.md §11's words: `Barracks` holds squads, each a net the
+  template `Squad` builds and then given its members, keyed by `leader`,
+  and read by `Call the Roll` (read-all), `Check the Front` (read) and
+  `Inspect` (read-where, bound to `Inspections` by `leader`).
+  `17_read_edges.json` is copied verbatim from the Python track's
+  recording.
+
+#### 19.3.22 Ports on every net, and an edge's reach on the wire, 2026-11-23
+
+- **Ports.** `topology` writes `port: true` on a marked place of whatever
+  net it writes, where it wrote it only on a subnet's (`View::subnet` and
+  `Inner::is_subnet` are gone with the rule). No shared transcript before
+  `18` read a loaded net or a token's net that marks a port, so none
+  changed.
+- **Reaches.** `protocol::Edge::reaches`, written only when not empty, from
+  `EdgeInfo::Input::reaches`. The `protocol` types read an edge field they
+  do not know by passing over it, as serde does by default, so a reader
+  built on 0.2.x reads a topology carrying `reaches` and drops the names;
+  Python's wire models refused unknown fields until this step.
+- **The conformance net** `trays`, from PROTOCOL.md §11: `Hand Over` puts an
+  order into the front unit's `Orders In` (`MutateEdge(field)
+  .reaching(["Orders In"])`), the unit's `Fire` shoots inside it, and
+  `Collect` takes the shots out of `Shots Out` into `Reports`, guarded on
+  there being one. `18_ports_on_a_token.json` is copied verbatim from the
+  Python track's recording.
+
+#### 19.3.23 Closed nets on the wire, 2026-11-23
+
+- **`inject`.** Refused outside the ports of a closed net (§6.9), at the
+  top level and by path, it answers the new error code `closed_net`
+  (`ErrorCode::ClosedNet`, mapped from `NetError::ClosedNet` in
+  `errors.rs`), the net unchanged and nothing told. A window of a closed
+  net is never one of its ports, so an `inject` with `port` beside `place`
+  into a closed net's subnet place is `closed_net` too. An older client
+  sees a code it does not know, which PROTOCOL.md §3 tells it to treat as a
+  failed request. The other requests that change a net (`enable`,
+  `disable`, `set_param`, `press`) take no path and act on the loaded net
+  as the program would, so the rule refuses none of them.
+- **`open`.** `protocol::Topology::open`, written as `open: true` only for
+  a net whose definition declares it open, from `Net::is_open`. A reader
+  knows a net is closed when its topology shows a `port` and no `open`.
+  `protocol::Topology` gained a field, so code that builds one by struct
+  literal adds `open: false`. The `fireable`, `launched` and `failed`
+  reporting is unchanged: a body's refusal is an ordinary `failed` firing
+  whose `error` the fixtures mask.
+- **The conformance net** `post-office`, from PROTOCOL.md §11: `Posts`
+  holds a `Post`, closed since it marks `Inbox` a port, and an `Open
+  Post`, the same declared open. `Deliver` puts a letter into the front
+  post's `Inbox` (`MutateEdge(posts).reaching(["Inbox"])`); `Forge` takes a
+  forgery and the front post and writes the forgery into the post's
+  `Ledger`, which the closed post refuses, failing the firing and losing
+  both tokens, since neither transition restores its inputs (a consuming
+  edge on a place of nets cannot, §6.9). `19_closed_nets.json` is copied
+  verbatim from the Python track's recording. The protocol stays version
+  2: `open` is an optional new field and `closed_net` a new code, both of
+  which an older reader passes over or treats as a failed request.
 
 ### 19.4 Who spawns it
 

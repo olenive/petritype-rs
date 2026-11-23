@@ -102,10 +102,20 @@
 //! the net around it), `14_subnet_in_a_token.json` over `harbour`
 //! (2026-11-22, a subnet inside a net that a token carries) and
 //! `15_odd_names.json` over `odd-names` (2026-11-22, names that hold a
-//! slash, a hash, a space and a double quote) are verbatim copies too.
+//! slash, a hash, a space and a double quote), `16_keyed_by_input.json`
+//! over `couriers` (2026-11-23, keyed edges that choose their token by
+//! another input of the firing), `17_read_edges.json` over `roll-call`
+//! (2026-11-23, the three read edges over a place of net-carrying tokens),
+//! `18_ports_on_a_token.json` over `trays` (2026-11-23, a token's net
+//! with ports, reached by edges that name them) and `19_closed_nets.json`
+//! over `post-office` (2026-11-23, a closed net and an open one: a body's
+//! write and an `inject` at a port landing, an `inject` at another place
+//! of the closed net answered `closed_net` and landing in the open one,
+//! and a body's write there failing its firing) are verbatim copies too.
 //! The shared set of §11, over the conformance nets `parcel-distribution`,
 //! `transit`, `wildlife`, `shop`, `traffic-light`, `stepping-rules`,
-//! `levels`, `groups`, `workshop`, `cellar`, `harbour` and `odd-names`,
+//! `levels`, `groups`, `workshop`, `cellar`, `harbour`, `odd-names`,
+//! `couriers`, `roll-call`, `trays` and `post-office`,
 //! lives in the Python repository and is replayed here from a sibling
 //! checkout by `the_shared_transcripts_hold`.
 //! A transcript over a conformance net is replayed against a runner carrying
@@ -417,6 +427,10 @@ fn conformance_registry(net: &str) -> Option<Vec<petritype_runner::NetEntry>> {
         "cellar" => nets::cellar_registry(),
         "harbour" => nets::harbour_registry(),
         "odd-names" => nets::odd_names_registry(),
+        "couriers" => nets::couriers_registry(),
+        "roll-call" => nets::roll_call_registry(),
+        "trays" => nets::trays_registry(),
+        "post-office" => nets::post_office_registry(),
         _ => return None,
     })
 }
@@ -574,8 +588,9 @@ fn shared_dir() -> PathBuf {
 
 /// The shared transcripts of PROTOCOL.md §11, over the conformance nets
 /// `parcel-distribution`, `transit`, `wildlife`, `shop`, `traffic-light`,
-/// `stepping-rules`, `levels`, `groups`, `workshop`, `cellar`, `harbour` and
-/// `odd-names`, replayed exactly as ours are, each against a registry
+/// `stepping-rules`, `levels`, `groups`, `workshop`, `cellar`, `harbour`,
+/// `odd-names`, `couriers`, `roll-call`, `trays` and `post-office`, replayed
+/// exactly as ours are, each against a registry
 /// carrying its own net alone, which §11 makes the rule so that a shared
 /// transcript may pin `describe` in full. A shared transcript over a net
 /// this runner does not carry fails at its `load`.

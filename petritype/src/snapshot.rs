@@ -113,6 +113,7 @@ impl Net {
                 name: slot.name.clone(),
                 inputs: slot.inputs.clone(),
                 filters: slot.filters.clone(),
+                reaches: slot.reaches.clone(),
                 params: slot.params.clone(),
                 outputs: slot.outputs.clone(),
                 positional: slot.positional,
@@ -254,6 +255,7 @@ struct SnapshotTransition {
     name: String,
     inputs: Vec<(PlaceId, crate::EdgeKind)>,
     filters: Vec<Option<crate::Filter>>,
+    reaches: Vec<Vec<String>>,
     params: Vec<&'static str>,
     outputs: Vec<PlaceId>,
     positional: bool,
@@ -362,6 +364,7 @@ impl Snapshot {
                 name: &slot.name,
                 inputs: &slot.inputs,
                 filters: &slot.filters,
+                reaches: &slot.reaches,
                 params: &slot.params,
                 outputs: &slot.outputs,
                 positional: slot.positional,
@@ -616,6 +619,7 @@ impl Clone for Snapshot {
                     name: slot.name.clone(),
                     inputs: slot.inputs.clone(),
                     filters: slot.filters.clone(),
+                    reaches: slot.reaches.clone(),
                     params: slot.params.clone(),
                     outputs: slot.outputs.clone(),
                     positional: slot.positional,
@@ -674,6 +678,7 @@ impl fmt::Debug for SnapshotTransition {
             .field("name", &self.name)
             .field("inputs", &self.inputs)
             .field("filters", &self.filters)
+            .field("reaches", &self.reaches)
             .field("params", &self.params)
             .field("outputs", &self.outputs)
             .field("enabled", &self.enabled)

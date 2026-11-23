@@ -3,7 +3,7 @@
 Typed, executable, observable Petri nets in Rust. A port of
 [petritype](https://github.com/olenive/petritype) (Python).
 
-Version 0.2.1, an early release.
+Version 0.3.0, an early release.
 The API will change. 0.2.0 speaks version 2 of the net protocol, and 0.1.0
 spoke version 1.
 
@@ -126,7 +126,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 Condensed from `petritype/examples/quickstart.rs`; `cargo run -p petritype
 --example quickstart` runs the full version. The other examples in `petritype/examples/` port the
 Python acceptance set (parcel distribution, caching, match-up tokens,
-coloured balls, web scrape, execution modes, read-edge scaler); each is also
+coloured balls, web scrape, execution modes, and the scaler of `read_edge_scaler.rs`, whose snapshot and mutate
+edges are non-consuming edges); each is also
 a test.
 
 ## Nets as tokens
@@ -191,6 +192,43 @@ Served by `petritype-runner`, a subnet is addressed by the step `{"place": "Leve
 port by the pair (`{"place": "Level 1", "port": "Lobby"}`), and a change of a port moves the versions of both nets
 that see it (PROTOCOL.md §12.7, `DESIGN.md` §19.3.17).
 
+## Closed nets
+
+Since 2026-11-23 a net that marks any place as a port is **closed**: from outside it, tokens are put, taken,
+removed, replaced or set only at its ports. That holds for everyone outside: a body of the net around it, holding the
+net as a token by any edge, the program and its drivers, and the runner's `inject`, at the top level and by path. A
+net that marks no port stays open, as every net was. Its own transitions, the handlers of its own controls and the
+tokens its definition starts it with are inside, and the place a net has for a port of one of its subnet places is a
+place of that net, so a write there from outside is refused when that net is closed.
+
+```rust
+b.port(inbox);                                   // closed: from outside, only Inbox takes tokens
+b.open();                                        // the override, in the definition: open, ports or not
+post.put(ledger, letter);                        // panics on a closed net, Ledger not being a port
+post.try_put(ledger, letter)?;                   // NetError::ClosedNet instead; also try_extend, try_set_tokens
+```
+
+`remove`, `replace` and an erased `Command` return `NetError::ClosedNet`, and `inject` answers `closed_net`. A body
+that is refused fails its firing with the error, whether or not it passed the error on, and the firing restores what
+any failure restores; a firing that took a token carrying a net cannot restore it in this core
+(`RestoreOfNoClonePlace`), so a refused one loses it. A body that holds a net marking a port, closed or open, is also
+refused its knobs and firing by name (`NetError::HeldByBody`). Reading, stepping and the whole-state acts stay allowed.
+`DESIGN.md` §6.9 has the rules; `petritype-runner`'s conformance net `post-office` shows them on the wire.
+
+What a program changes:
+
+- **How to tell a net is closed.** It marks a port and does not declare itself open. On the wire its topology shows
+  `port: true` on some place and no `open`; in Rust, `Net::is_closed()`; in Python, `graph.is_closed`.
+- **Three ways to make a refused write land.** Mark the place as a port; start the net with the token in its
+  definition, as a seed or a template's token; or declare the net open (`b.open()`, Python `open=True`).
+- **Knobs and firing by name** (a parameter, a switch, the tie-break, the stepping rule, a selector, `fire`, `launch`,
+  `step_inside`, a control) stay with the program, its drivers and the runner on any net. A body of the net around a
+  net that marks a port is refused them, open or closed, since declaring a net open opens its places and not its knobs.
+  A body on a net with no port keeps them in stage one; in stage two, give such a setting to a transition of the net's
+  own, or leave it to the program.
+- **Whole-state acts** (loading or importing a marking, restoring, forking, resetting, saving) stay allowed.
+- **Stage two** will close every net that does not declare itself open.
+
 ## Groups
 
 A net whose parts all read and change one shared place cannot be split into subnets, so it stays flat and is read
@@ -237,6 +275,10 @@ never stored, so a mutation changes them; the net keeps an index of them, so a q
 A *keyed edge* chooses its token by them: `TakeWhereEdge(forest, Filter::new().key_in("class", ["Bird"]))` takes
 the oldest bird, wherever it stands, and `MutateWhereEdge` lends it to the body in place. Every other token stays
 where it is under its id, so taking one token out of a crowd no longer means taking the crowd and putting it back.
+A keyed edge may also choose by another input of the same firing, "the unit this order names":
+`MutateWhereEdge(units, Filter::new().key_is_input("name", orders, "unit"))` beside `TakeEdge(orders)` hands the body
+the oldest order whose unit is there, with that unit; an order whose unit is not there waits without holding back
+the orders behind it.
 
 `petritype/examples/wildlife.rs` asks the token-keys proposal's five questions of species across habitats, migrates
 its birds through keyed take edges, and spreads the egret and thins the deer and the lemmings through keyed mutate
@@ -260,8 +302,21 @@ An input edge says how a transition reads a place, and so what its body is hande
 | `MutateWhereEdge(p, filter)` | nothing (that token, borrowed) | `&mut T` | a token the filter accepts |
 | `DrainEdge(p)` | every token, zero or more | `Vec<T>`, possibly empty | nothing |
 | `SurveyEdge(p)` | nothing (clones of every token, zero or more) | `Vec<T>`, possibly empty | nothing |
+| `ReadEdge(p)` | nothing (the front token, lent to look at) | `&T` | a token |
+| `ReadWhereEdge(p, filter)` | nothing (the oldest token the filter accepts, lent) | `&T` | a token the filter accepts |
+| `ReadAllEdge(p)` | nothing (every token, lent, zero or more) | `Vec<&T>`, possibly empty | nothing |
 
-The last two are for a place a transition only needs to read, or to empty, when something is there. A shop prices an
+The edges that take nothing (snapshot, survey, mutate, the keyed mutate and the three read edges) are the
+*non-consuming* edges. The read edges, since 2026-11-23, lend the body tokens to look at without taking or copying
+them, so they ask no `Clone` of the token type and can read a place whose tokens carry nets; a transition with one runs
+its body inline, as one with a mutate edge does.
+
+An edge on a place whose tokens carry nets may name the ports it reaches in them, `MutateEdge(field).reaching(["Orders
+In"])`: a declaration that the runner sends as `reaches` and a drawing writes on the edge, which changes nothing about
+firing. Every net shows its own ports on the wire, the nets that tokens carry included. A token's net that marks a port
+is closed, so the body writes inside it only at its ports, whatever the edge names (see [Closed nets](#closed-nets)).
+
+`DrainEdge` and `SurveyEdge` are for a place a transition only needs to read, or to empty, when something is there. A shop prices an
 order with whatever promotions are running, and a shop with none running still sells things; a traffic light lets
 everyone waiting go in one firing while it is green:
 

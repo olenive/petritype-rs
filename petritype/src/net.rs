@@ -7,6 +7,7 @@ use std::any::{Any, TypeId, type_name};
 use std::borrow::Borrow;
 use std::fmt;
 
+use crate::closed::{ADD, PUT, REMOVE, REPLACE, SET, SET_PARAM};
 use crate::command::ERASED;
 use crate::edge::EdgeInfo;
 use crate::error::NetError;
@@ -72,6 +73,22 @@ pub struct Net {
     /// Whether the author declared the net safe to rebuild as a reset. See
     /// [`is_resettable`](Net::is_resettable).
     pub(crate) resettable: bool,
+    /// Whether the definition declared the net open
+    /// ([`NetBuilder::open`](crate::NetBuilder::open)): part of the
+    /// definition, never saved. See [`is_open`](Net::is_open).
+    pub(crate) open: bool,
+    /// Whether any of the net's own places is a port, fixed at build: what
+    /// puts a net under the rule of closed nets in stage one (see
+    /// [`is_closed`](Net::is_closed)).
+    pub(crate) marks_ports: bool,
+    /// The mark of the firing whose body holds this net, if one does: a
+    /// [`Weak`](std::sync::Weak) to that firing's hold, which lapses when
+    /// the firing ends (DESIGN §6.9). Never saved, forked or copied.
+    pub(crate) held: Option<std::sync::Weak<crate::closed::Hold>>,
+    /// True while [`press`](Net::press) runs one of this net's own
+    /// controls' handlers, which are inside the net and write where they
+    /// like.
+    pub(crate) inside: bool,
     /// Maximum number of characters in a [`label`](Net::label).
     pub(crate) label_limit: usize,
     /// Appended to by the net, drained by the driver.
@@ -280,6 +297,7 @@ impl Net {
                 name: &slot.name,
                 inputs: &slot.inputs,
                 filters: &slot.filters,
+                reaches: &slot.reaches,
                 params: &slot.params,
                 outputs: &slot.outputs,
                 positional: slot.positional,
@@ -325,8 +343,8 @@ impl Net {
     /// assert_eq!(
     ///     net.edges().collect::<Vec<_>>(),
     ///     [
-    ///         EdgeInfo::Input { place: inbox.id(), transition: weigh, kind: EdgeKind::Take, filter: None },
-    ///         EdgeInfo::Input { place: config.id(), transition: weigh, kind: EdgeKind::Snapshot, filter: None },
+    ///         EdgeInfo::Input { place: inbox.id(), transition: weigh, kind: EdgeKind::Take, filter: None, reaches: vec![] },
+    ///         EdgeInfo::Input { place: config.id(), transition: weigh, kind: EdgeKind::Snapshot, filter: None, reaches: vec![] },
     ///         EdgeInfo::Output { transition: weigh, place: heavy.id(), slot: 0 },
     ///     ],
     /// );
@@ -682,14 +700,61 @@ impl Net {
     ///
     /// If `place` does not belong to this net. A `PlaceRef` is only valid
     /// for the net built from the builder that handed it out.
+    ///
+    /// If this net is [closed](Net::is_closed) and `place` is not one of
+    /// its ports, with the message of the [`NetError::ClosedNet`] that
+    /// [`try_extend`](Net::try_extend) returns instead (since 2026-11-23).
+    /// A program in the right writes nothing new, and a body that meets it
+    /// fails its firing with the error. A write that should land is put
+    /// right by marking the place as a port, starting the net with the
+    /// tokens in its definition, or declaring the net
+    /// [open](crate::NetBuilder::open).
     pub fn extend<T, I>(&mut self, place: PlaceRef<T>, tokens: I) -> Vec<TokenId>
     where
         T: Send + Sync + 'static,
         I: IntoIterator<Item = T>,
     {
         self.checked_index(place, "extend");
+        self.admit_or_panic(place.id(), ADD);
         self.extend_erased(place.id(), erase_all(tokens), type_name::<T>())
             .expect("a stamped handle indexes a place of its own type")
+    }
+
+    /// [`extend`](Net::extend) for a caller that handles a refusal: the new
+    /// ids, or the error, the net unchanged.
+    ///
+    /// ```
+    /// use petritype::{NetBuilder, NetError};
+    ///
+    /// let mut b = NetBuilder::new();
+    /// let inbox = b.place::<u32>("Inbox");
+    /// let ledger = b.place::<u32>("Ledger");
+    /// b.port(inbox);
+    /// let mut net = b.build()?;
+    ///
+    /// assert_eq!(net.try_extend(inbox, [1, 2])?.len(), 2);
+    /// let refused = net.try_extend(ledger, [3]).unwrap_err();
+    /// assert!(matches!(refused, NetError::ClosedNet { act: "add tokens to", .. }));
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// [`NetError::NoSuchPlace`] if `place` belongs to another net, and
+    /// [`NetError::ClosedNet`] if this net is [closed](Net::is_closed) and
+    /// `place` is not one of its ports.
+    pub fn try_extend<T, I>(
+        &mut self,
+        place: PlaceRef<T>,
+        tokens: I,
+    ) -> Result<Vec<TokenId>, NetError>
+    where
+        T: Send + Sync + 'static,
+        I: IntoIterator<Item = T>,
+    {
+        self.own(place)?;
+        self.admit(place.id(), ADD)?;
+        self.extend_erased(place.id(), erase_all(tokens), type_name::<T>())
     }
 
     /// Appends one token to a place and returns its new id. Sugar for an
@@ -697,9 +762,31 @@ impl Net {
     ///
     /// # Panics
     ///
-    /// If `place` does not belong to this net.
+    /// If `place` does not belong to this net, and, with the message of
+    /// the [`NetError::ClosedNet`] that [`try_put`](Net::try_put) returns
+    /// instead, if this net is [closed](Net::is_closed) and `place` is not
+    /// one of its ports (since 2026-11-23). A program in the right changes
+    /// nothing, and a body that meets it fails its firing with the error.
     pub fn put<T: Send + Sync + 'static>(&mut self, place: PlaceRef<T>, token: T) -> TokenId {
         self.push_typed(place, token, "put")
+    }
+
+    /// [`put`](Net::put) for a caller that handles a refusal: the new id,
+    /// or the error, the net unchanged.
+    ///
+    /// # Errors
+    ///
+    /// [`NetError::NoSuchPlace`] if `place` belongs to another net, and
+    /// [`NetError::ClosedNet`] if this net is [closed](Net::is_closed) and
+    /// `place` is not one of its ports.
+    pub fn try_put<T: Send + Sync + 'static>(
+        &mut self,
+        place: PlaceRef<T>,
+        token: T,
+    ) -> Result<TokenId, NetError> {
+        self.own(place)?;
+        self.admit(place.id(), PUT)?;
+        self.push_erased(place.id(), Box::new(token), type_name::<T>())
     }
 
     /// Replaces everything in a place. An empty iterator clears it.
@@ -715,7 +802,11 @@ impl Net {
     ///
     /// # Panics
     ///
-    /// If `place` does not belong to this net.
+    /// If `place` does not belong to this net, and, with the message of
+    /// the [`NetError::ClosedNet`] that [`try_set_tokens`](Net::try_set_tokens)
+    /// returns instead, if this net is [closed](Net::is_closed) and `place`
+    /// is not one of its ports (since 2026-11-23). Either is checked before
+    /// the place is emptied.
     pub fn set_tokens<T, I>(&mut self, place: PlaceRef<T>, tokens: I)
     where
         T: Send + Sync + 'static,
@@ -725,8 +816,28 @@ impl Net {
         // foreign handle must not empty a place of this net on its way to
         // the panic.
         self.checked_index(place, "set_tokens");
+        self.admit_or_panic(place.id(), SET);
         self.set_erased(place.id(), erase_all(tokens), type_name::<T>())
             .expect("a stamped handle indexes a place of its own type");
+    }
+
+    /// [`set_tokens`](Net::set_tokens) for a caller that handles a refusal,
+    /// the net unchanged when it is refused.
+    ///
+    /// # Errors
+    ///
+    /// [`NetError::NoSuchPlace`] if `place` belongs to another net, and
+    /// [`NetError::ClosedNet`] if this net is [closed](Net::is_closed) and
+    /// `place` is not one of its ports.
+    pub fn try_set_tokens<T, I>(&mut self, place: PlaceRef<T>, tokens: I) -> Result<(), NetError>
+    where
+        T: Send + Sync + 'static,
+        I: IntoIterator<Item = T>,
+    {
+        self.own(place)?;
+        self.admit(place.id(), SET)?;
+        self.set_erased(place.id(), erase_all(tokens), type_name::<T>())
+            .map(drop)
     }
 
     /// Removes one token by id.
@@ -738,12 +849,15 @@ impl Net {
     ///
     /// # Errors
     ///
-    /// [`NetError::NoSuchPlace`] or [`NetError::NoSuchToken`]; the net is
-    /// unchanged in both cases.
+    /// [`NetError::NoSuchPlace`], [`NetError::ClosedNet`] if this net is
+    /// [closed](Net::is_closed) and `place` is not one of its ports (since
+    /// 2026-11-23), or [`NetError::NoSuchToken`]; the net is unchanged in
+    /// each case.
     pub fn remove(&mut self, place: PlaceId, token: TokenId) -> Result<(), NetError> {
         if place.0 as usize >= self.places.len() {
             return Err(NetError::NoSuchPlace { place });
         }
+        self.admit(place, REMOVE)?;
         let lifted = {
             let (holder, at) = self.holder_mut(place);
             let slot = &mut holder.places[at.0 as usize];
@@ -781,8 +895,10 @@ impl Net {
     ///
     /// # Errors
     ///
-    /// [`NetError::NoSuchPlace`] if the handle is from another net, or
-    /// [`NetError::NoSuchToken`]; the net is unchanged in both cases. Unlike
+    /// [`NetError::NoSuchPlace`] if the handle is from another net,
+    /// [`NetError::ClosedNet`] if this net is [closed](Net::is_closed) and
+    /// `place` is not one of its ports (since 2026-11-23), or
+    /// [`NetError::NoSuchToken`]; the net is unchanged in each case. Unlike
     /// the infallible half of this API, `replace` has somewhere to report a
     /// foreign handle, so it does. ([`NetError::TypeMismatch`] is kept as a
     /// defensive check: a stamped handle always indexes a place of its own
@@ -794,9 +910,8 @@ impl Net {
         token: TokenId,
         value: T,
     ) -> Result<(), NetError> {
-        if place.net() != self.id {
-            return Err(NetError::NoSuchPlace { place: place.id() });
-        }
+        self.own(place)?;
+        self.admit(place.id(), REPLACE)?;
         self.replace_erased(place.id(), token, Box::new(value), type_name::<T>())
     }
 
@@ -842,10 +957,14 @@ impl Net {
     /// [`NetError::NoSuchParam`] if this net has no parameter of type `T`.
     /// Parameters are fixed at [`build`](crate::NetBuilder::build): this adds
     /// none, and the net is unchanged and silent when it refuses.
+    /// [`NetError::HeldByBody`] when a body of the net around this one holds
+    /// it and it marks a port (since 2026-11-23): its parameters are the
+    /// program's.
     pub fn set_param<T: Clone + Send + Sync + 'static>(
         &mut self,
         value: T,
     ) -> Result<(), NetError> {
+        self.admit_knob(SET_PARAM)?;
         if param_slot_index(&self.params, TypeId::of::<T>()).is_none() {
             return Err(NetError::NoSuchParam {
                 type_name: type_name::<T>(),
@@ -1136,6 +1255,7 @@ impl Net {
     /// cannot. The [`ParamChanged`](Event::ParamChanged) event carries the
     /// *net's* name for the type, which is the real one either way.
     pub(crate) fn set_param_erased(&mut self, value: ErasedToken) -> Result<(), NetError> {
+        self.admit_knob(SET_PARAM)?;
         // `(*value).type_id()` and not `value.type_id()`: the latter would
         // ask the `Box` for *its* type, as on the token path.
         let type_id = (*value).type_id();
@@ -1157,8 +1277,20 @@ impl Net {
         method: &str,
     ) -> TokenId {
         self.checked_index(place, method);
+        self.admit_or_panic(place.id(), PUT);
         self.push_erased(place.id(), Box::new(value), type_name::<T>())
             .expect("a stamped handle indexes a place of its own type")
+    }
+
+    /// [`NetError::NoSuchPlace`] for a handle from another net: the
+    /// fallible half's answer to what [`checked_index`](Net::checked_index)
+    /// panics on.
+    fn own<T>(&self, place: PlaceRef<T>) -> Result<(), NetError> {
+        if place.net() == self.id {
+            Ok(())
+        } else {
+            Err(NetError::NoSuchPlace { place: place.id() })
+        }
     }
 
     /// The index of a handle in this net, or a panic naming both nets.
@@ -1229,6 +1361,8 @@ impl fmt::Debug for Net {
             .field("last_pick", &self.last_pick)
             .field("ring_cursor", &self.ring_cursor)
             .field("resettable", &self.resettable)
+            .field("open", &self.open)
+            .field("held", &self.is_held())
             .field("pending_events", &self.events.len())
             .field(
                 "controls",
@@ -1335,16 +1469,15 @@ pub(crate) fn edges_of<'a>(
     transitions: impl Iterator<Item = (TransitionId, TransitionInfo<'a>)>,
 ) -> impl Iterator<Item = EdgeInfo> {
     transitions.flat_map(|(transition, info)| {
-        let inputs = info
-            .inputs
-            .iter()
-            .zip(info.filters)
-            .map(move |(&(place, kind), filter)| EdgeInfo::Input {
+        let inputs = info.inputs.iter().zip(info.filters).zip(info.reaches).map(
+            move |((&(place, kind), filter), reaches)| EdgeInfo::Input {
                 place,
                 transition,
                 kind,
                 filter: filter.clone(),
-            });
+                reaches: reaches.clone(),
+            },
+        );
         let outputs = info
             .outputs
             .iter()

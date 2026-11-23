@@ -29,7 +29,7 @@
 //! [`Net::extend`](crate::Net::extend),
 //! [`Net::set_tokens`](crate::Net::set_tokens)) are outside it: an
 //! interactive net that is fed while it runs has no finish line, and is
-//! bounded while it runs instead. Read edges are outside it too, and are
+//! bounded while it runs instead. Non-consuming edges are outside it too, and are
 //! excluded from both checks, because they move no tokens: a configuration
 //! place every transition snapshots is not a cycle, and a transition that
 //! only reads is a source however many input edges it has.
@@ -243,6 +243,9 @@ pub struct NetBuilder {
     /// Whether the author declared the net resettable, with
     /// [`resettable`](NetBuilder::resettable).
     resettable: bool,
+    /// Whether the author declared the net open, with
+    /// [`open`](NetBuilder::open).
+    open: bool,
     /// The first place given a [`stepping`](NetBuilder::stepping) rule that
     /// holds no nets, kept until [`build`](NetBuilder::build) reports it as
     /// [`BuildError::NotNested`]: the per-place options are infallible.
@@ -290,6 +293,7 @@ impl NetBuilder {
             assert_no_source_transitions: false,
             tie_break: TieBreak::FirstDeclared,
             resettable: false,
+            open: false,
             not_nested: None,
             keys_problem: None,
             port_problem: None,
@@ -414,6 +418,19 @@ impl NetBuilder {
     /// marking one changes nothing about how this net uses it. Direction
     /// comes from the edges that touch it, on either side, so there is one
     /// kind of port. A second call changes nothing.
+    ///
+    /// **A net that marks a port is closed** (since 2026-11-23,
+    /// [`Net::is_closed`]): from outside it, tokens are put, taken, removed,
+    /// replaced or set only at its ports, whoever writes: a body of a net
+    /// around it holding this net as a token, the program, a runner's
+    /// `inject`. Anything else is [`NetError::ClosedNet`](crate::NetError::ClosedNet).
+    /// Its own transitions, its controls' handlers and the tokens it is
+    /// [seeded](NetBuilder::seed) with are inside, and a net that marks no
+    /// port stays open. A write that should land is put right in one of
+    /// three ways: mark its place as a port too, start the net with the
+    /// token in its definition, or declare the net [open](NetBuilder::open).
+    /// A body that holds such a net, closed or open, is refused its knobs
+    /// and firing by name ([`NetError::HeldByBody`](crate::NetError::HeldByBody)).
     ///
     /// ```
     /// use petritype::NetBuilder;
@@ -1209,12 +1226,13 @@ impl NetBuilder {
         EdgeTupleSealed::describe(&inputs, &mut described);
         let mut edges = Vec::with_capacity(described.len());
         let mut filters = Vec::with_capacity(described.len());
+        let mut reaches = Vec::with_capacity(described.len());
         let mut params = Vec::new();
         // The tuple is the body's parameter list, so its order has to
         // survive the split into edges and parameters.
         let mut args = Vec::with_capacity(described.len());
-        // Detachable until proven otherwise: one mutating edge is enough to
-        // tie the firing to the net. A parameter is a clone taken at launch
+        // Detachable until proven otherwise: one mutating or read edge is
+        // enough to tie the firing to the net. A parameter is a clone taken at launch
         // and borrows nothing, so it never ties one down.
         let mut detachable = true;
         for spec in described {
@@ -1224,12 +1242,14 @@ impl NetBuilder {
                     kind,
                     net,
                     filter,
+                    reaches: reach,
                 } => {
                     self.index_of_erased(place, net, "transition");
-                    detachable &= !kind.mutates();
+                    detachable &= !kind.lends();
                     args.push(ArgSource::Edge(edges.len()));
                     edges.push((place, kind));
                     filters.push(filter);
+                    reaches.push(reach);
                 }
                 InputSpec::Param { type_id, type_name } => {
                     args.push(ArgSource::Param { type_id, type_name });
@@ -1256,6 +1276,8 @@ impl NetBuilder {
             name: name.into(),
             inputs: edges,
             filters,
+            bindings: Vec::new(),
+            reaches,
             params,
             args,
             outputs: targets,
@@ -1305,6 +1327,42 @@ impl NetBuilder {
         self
     }
 
+    /// Declares the net **open**: anyone outside it may write to any of its
+    /// places, ports or not, as to a net that marks no port (DESIGN §6.9,
+    /// since 2026-11-23). Chainable.
+    ///
+    /// A net that marks a [port](NetBuilder::port) is closed by default:
+    /// from outside it, tokens are written only at its ports. This is the
+    /// override, for a net the program or a runner is expected to fill
+    /// (a map that a game deals its starting units onto, say). It opens
+    /// this net's places alone, not those of the nets inside it, and it
+    /// opens the places, not the controls: a body that holds the net is
+    /// still refused its parameters, switches, tie-break, stepping rules,
+    /// selector and firing by name while it marks a port. It is part of
+    /// the definition, read with [`Net::is_open`]: a fork or a restored net
+    /// keeps it, a saved marking does not carry it, and a runner shows it
+    /// on the net's topology as `open: true`.
+    ///
+    /// ```
+    /// use petritype::NetBuilder;
+    ///
+    /// let mut b = NetBuilder::new();
+    /// let inbox = b.place::<String>("Inbox");
+    /// let ledger = b.place::<String>("Ledger");
+    /// b.port(inbox);
+    /// b.open();
+    /// let mut post = b.build()?;
+    ///
+    /// assert!(post.is_open() && !post.is_closed());
+    /// post.put(ledger, "IOU".to_owned());
+    /// assert_eq!(post.count(ledger.id()), 1, "an open net takes it anywhere");
+    /// # Ok::<(), petritype::BuildError>(())
+    /// ```
+    pub fn open(&mut self) -> &mut Self {
+        self.open = true;
+        self
+    }
+
     /// Declares that rebuilding this net with the code that built it gives
     /// back an equivalent starting state, so a tool may offer to reset it.
     ///
@@ -1328,11 +1386,12 @@ impl NetBuilder {
     /// transition that takes from it ([`TakeEdge`](crate::TakeEdge),
     /// [`TakeAllEdge`](crate::TakeAllEdge) and
     /// [`TakeWhereEdge`](crate::TakeWhereEdge)), and every output edge, from
-    /// a transition to a place it writes. Read edges are left out:
+    /// a transition to a place it writes. Non-consuming edges are left out:
     /// [`SnapshotEdge`](crate::SnapshotEdge),
     /// [`MutateEdge`](crate::MutateEdge),
-    /// [`MutateWhereEdge`](crate::MutateWhereEdge) and
-    /// [`SurveyEdge`](crate::SurveyEdge) move no tokens, so a loop through
+    /// [`MutateWhereEdge`](crate::MutateWhereEdge),
+    /// [`SurveyEdge`](crate::SurveyEdge) and the read edges move no tokens,
+    /// so a loop through
     /// one cannot feed itself, and a configuration place every transition
     /// reads is not a cycle.
     ///
@@ -1492,7 +1551,13 @@ impl NetBuilder {
     /// [`BuildError::KeyedEdgeOnUnkeyedPlace`] if a
     /// [`TakeWhereEdge`](crate::TakeWhereEdge) or
     /// [`MutateWhereEdge`](crate::MutateWhereEdge) reads a place that declares
-    /// no [keys](NetBuilder::keys); and, for a transition whose body
+    /// no [keys](NetBuilder::keys); for a keyed edge that chooses its token by
+    /// another input's ([`Clause::IsInput`](crate::Clause::IsInput)),
+    /// [`BuildError::BoundToTwoSources`],
+    /// [`BuildError::BoundSourceNotAnInput`],
+    /// [`BuildError::BoundSourceGivesMany`],
+    /// [`BuildError::BoundSourceIsBound`] or
+    /// [`BuildError::BoundKeyNotDeclared`]; and, for a transition whose body
     /// [routes](crate::RoutedOutput) its outputs by type,
     /// [`BuildError::UnroutableOutput`], [`BuildError::AmbiguousOutput`] or
     /// [`BuildError::UnreachableOutput`].
@@ -1556,6 +1621,9 @@ impl NetBuilder {
         }
 
         let mut seen = HashSet::with_capacity(self.transitions.len());
+        // Each transition's bound edges by their sources, found below with
+        // its other checks and kept once every transition has passed.
+        let mut bindings = Vec::with_capacity(self.transitions.len());
         for slot in &self.transitions {
             if !seen.insert(slot.name.as_str()) {
                 return Err(BuildError::DuplicateTransitionName {
@@ -1608,7 +1676,7 @@ impl NetBuilder {
                 // Restoring is done with clones taken at stage one, so a
                 // transition that restores can only consume places that can
                 // clone, a drain's included, empty or not: the check is about
-                // the edge, not the marking. The read edges are exempt
+                // the edge, not the marking. The non-consuming edges are exempt
                 // because they consume nothing: a mutating edge has nothing
                 // to put back, and a snapshot or a survey of such a place
                 // was refused just above.
@@ -1632,6 +1700,33 @@ impl NetBuilder {
                     });
                 }
             }
+            // A reach is declared into the nets a place's tokens carry, so a
+            // place that holds none has nothing to reach, and a name is not
+            // empty. Nothing else about a reach is checked (DESIGN §8.5).
+            for ((place, _), reach) in slot.inputs.iter().zip(&slot.reaches) {
+                if reach.is_empty() {
+                    continue;
+                }
+                let meta = &self.places[place.0 as usize].meta;
+                if meta.nested.is_none() {
+                    return Err(BuildError::ReachIntoNoNets {
+                        transition: slot.name.clone(),
+                        place: meta.name.clone(),
+                    });
+                }
+                if reach.iter().any(String::is_empty) {
+                    return Err(BuildError::EmptyReachName {
+                        transition: slot.name.clone(),
+                        place: meta.name.clone(),
+                    });
+                }
+            }
+            // A keyed edge that chooses by another input's token, and that
+            // input: one pair for each firing to find, or a refusal.
+            bindings.push(crate::pairing::bindings(slot, &self.places)?);
+        }
+        for (slot, bindings) in self.transitions.iter_mut().zip(bindings) {
+            slot.bindings = bindings;
         }
 
         let mut seen = HashSet::with_capacity(self.controls.len());
@@ -1791,8 +1886,13 @@ impl NetBuilder {
             }
         }
 
+        let marks_ports = self.places.iter().any(|slot| slot.meta.port);
         let mut net = Net {
             id: self.net,
+            open: self.open,
+            marks_ports,
+            held: None,
+            inside: false,
             places: self.places,
             transitions: self.transitions,
             params,
@@ -1953,7 +2053,7 @@ impl NetBuilder {
     /// everything reachable from it.
     fn find_cycle(&self) -> Option<Vec<String>> {
         // The reverse of `inputs`, taken once: which transitions consume a
-        // place, in declaration order. Read edges are not token flow, and a
+        // place, in declaration order. Non-consuming edges are not token flow, and a
         // drain, which may take nothing, is no part of the proof
         // (`assert_acyclic`'s docs).
         let mut consumers: Vec<Vec<u32>> = vec![Vec::new(); self.places.len()];
@@ -2185,6 +2285,7 @@ impl fmt::Debug for NetBuilder {
             .field("assert_acyclic", &self.assert_acyclic)
             .field("tie_break", &self.tie_break)
             .field("resettable", &self.resettable)
+            .field("open", &self.open)
             .field("not_nested", &self.not_nested)
             .field("keys_problem", &self.keys_problem)
             .field("port_problem", &self.port_problem)

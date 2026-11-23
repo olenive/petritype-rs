@@ -1,0 +1,747 @@
+{
+ "net": "trays",
+ "params": {},
+ "exchanges": [
+  {
+   "send": {
+    "method": "describe",
+    "params": {}
+   },
+   "expect": [
+    {
+     "id": "1",
+     "result": {
+      "protocol_version": 2,
+      "runtime": "<label>",
+      "runtime_version": "<label>",
+      "nets": [
+       {
+        "name": "trays",
+        "description": "A unit is handed an order through one tray and its shots are collected from another",
+        "mode": "manual",
+        "params": []
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "load",
+    "params": {
+     "net": "trays"
+    }
+   },
+   "expect": [
+    {
+     "method": "load_progress",
+     "params": {
+      "step": "build",
+      "message": "<label>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "reloaded",
+     "params": {
+      "generation": 1,
+      "reason": "load",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "2",
+     "result": {
+      "status": "loaded",
+      "generation": 1,
+      "marking_version": "<version>"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "get_state",
+    "params": {}
+   },
+   "expect": [
+    {
+     "id": "3",
+     "result": {
+      "protocol_version": 2,
+      "runtime": "<label>",
+      "net": "trays",
+      "generation": 1,
+      "marking_version": "<version>",
+      "running": false,
+      "topology": {
+       "places": [
+        {
+         "name": "Orders",
+         "type_name": "<label>",
+         "serializable": true
+        },
+        {
+         "name": "Field",
+         "type_name": "<label>",
+         "serializable": true,
+         "nested": true,
+         "stepping": "inner_first"
+        },
+        {
+         "name": "Reports",
+         "type_name": "<label>",
+         "serializable": true
+        }
+       ],
+       "transitions": [
+        {
+         "name": "Hand Over",
+         "detail": "<any>"
+        },
+        {
+         "name": "Collect",
+         "detail": "<any>"
+        }
+       ],
+       "edges": {
+        "<unordered>": [
+         {
+          "place": "Orders",
+          "transition": "Hand Over",
+          "direction": "in",
+          "kind": "take"
+         },
+         {
+          "place": "Field",
+          "transition": "Hand Over",
+          "direction": "in",
+          "kind": "mutate",
+          "reaches": [
+           "Orders In"
+          ]
+         },
+         {
+          "place": "Field",
+          "transition": "Collect",
+          "direction": "in",
+          "kind": "mutate",
+          "reaches": [
+           "Shots Out"
+          ]
+         },
+         {
+          "place": "Reports",
+          "transition": "Collect",
+          "direction": "out"
+         }
+        ]
+       }
+      },
+      "transitions": {
+       "Hand Over": {
+        "enabled": true,
+        "fireable": false,
+        "in_flight": false,
+        "priority": 0.0
+       },
+       "Collect": {
+        "enabled": true,
+        "fireable": false,
+        "in_flight": false,
+        "priority": 0.0
+       }
+      },
+      "marking": {
+       "places": {
+        "Orders": {
+         "count": 0,
+         "tokens": []
+        },
+        "Field": {
+         "count": 1,
+         "tokens": [
+          {
+           "id": "<id:unit>",
+           "label": "<label>",
+           "nets": [
+            {
+             "name": "",
+             "nested_id": "<id:unit_2>",
+             "path": [
+              {
+               "place": "Field",
+               "token": "<id:unit>",
+               "net": ""
+              }
+             ],
+             "template": "Unit",
+             "count": 0
+            }
+           ]
+          }
+         ]
+        },
+        "Reports": {
+         "count": 0,
+         "tokens": []
+        }
+       }
+      },
+      "progress": {
+       "step_count": 0,
+       "last_fired": null,
+       "fired_counts": {},
+       "last_progress_at": null
+      }
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "get_state",
+    "params": {
+     "path": [
+      {
+       "place": "Field",
+       "token": "<id:unit>",
+       "net": ""
+      }
+     ]
+    }
+   },
+   "expect": [
+    {
+     "id": "4",
+     "result": {
+      "protocol_version": 2,
+      "runtime": "<label>",
+      "net": "",
+      "generation": 1,
+      "marking_version": "<version>",
+      "running": false,
+      "topology": {
+       "places": [
+        {
+         "name": "Orders In",
+         "type_name": "<label>",
+         "serializable": true,
+         "port": true
+        },
+        {
+         "name": "Shots Out",
+         "type_name": "<label>",
+         "serializable": true,
+         "port": true
+        }
+       ],
+       "transitions": [
+        {
+         "name": "Fire",
+         "detail": "<any>"
+        }
+       ],
+       "edges": {
+        "<unordered>": [
+         {
+          "place": "Orders In",
+          "transition": "Fire",
+          "direction": "in",
+          "kind": "take"
+         },
+         {
+          "place": "Shots Out",
+          "transition": "Fire",
+          "direction": "out"
+         }
+        ]
+       }
+      },
+      "transitions": {
+       "Fire": {
+        "enabled": true,
+        "fireable": false,
+        "in_flight": false,
+        "priority": 0.0
+       }
+      },
+      "marking": {
+       "places": {
+        "Orders In": {
+         "count": 0,
+         "tokens": []
+        },
+        "Shots Out": {
+         "count": 0,
+         "tokens": []
+        }
+       }
+      },
+      "progress": {
+       "step_count": 0,
+       "last_fired": null,
+       "fired_counts": {},
+       "last_progress_at": null
+      },
+      "path": [
+       {
+        "place": "Field",
+        "token": "<id:unit>",
+        "net": ""
+       }
+      ],
+      "nested_id": "<id:unit_2>",
+      "template": "Unit"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "inject",
+    "params": {
+     "place": "Orders",
+     "token": "Hold the bridge"
+    }
+   },
+   "expect": [
+    {
+     "method": "added",
+     "params": {
+      "place": "Orders",
+      "id": "<id:hold_the_bridge>",
+      "label": "<label>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "fireable",
+     "params": {
+      "transitions": [
+       "Hand Over"
+      ],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "5",
+     "result": {
+      "status": "injected",
+      "id": "<id:hold_the_bridge>",
+      "marking_version": "<version>"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "step",
+    "params": {}
+   },
+   "expect": [
+    {
+     "method": "nested",
+     "params": {
+      "path": [
+       {
+        "place": "Field",
+        "token": "<id:unit>",
+        "net": ""
+       }
+      ],
+      "nested_id": "<id:unit_2>",
+      "event": {
+       "method": "added",
+       "params": {
+        "place": "Orders In",
+        "id": "<id:unit_hold_the_bridge>",
+        "label": "<label>",
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "mutated",
+     "params": {
+      "place": "Field",
+      "id": "<id:unit>",
+      "label": "<label>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "fired",
+     "params": {
+      "transition": "Hand Over",
+      "consumed": [
+       [
+        "Orders",
+        "<id:hold_the_bridge>"
+       ]
+      ],
+      "produced": [],
+      "duration_ms": "<ms>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "fireable",
+     "params": {
+      "transitions": [],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "nested",
+     "params": {
+      "path": [
+       {
+        "place": "Field",
+        "token": "<id:unit>",
+        "net": ""
+       }
+      ],
+      "nested_id": "<id:unit_2>",
+      "event": {
+       "method": "fireable",
+       "params": {
+        "transitions": [
+         "Fire"
+        ],
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "6",
+     "result": {
+      "fired": true,
+      "transition": "Hand Over",
+      "marking_version": "<version>",
+      "running": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "step",
+    "params": {}
+   },
+   "expect": [
+    {
+     "method": "nested",
+     "params": {
+      "path": [
+       {
+        "place": "Field",
+        "token": "<id:unit>",
+        "net": ""
+       }
+      ],
+      "nested_id": "<id:unit_2>",
+      "event": {
+       "method": "fired",
+       "params": {
+        "transition": "Fire",
+        "consumed": [
+         [
+          "Orders In",
+          "<id:unit_hold_the_bridge>"
+         ]
+        ],
+        "produced": [
+         [
+          "Shots Out",
+          "<id:unit_shot_hold_the_bridge>",
+          "<label>"
+         ]
+        ],
+        "duration_ms": "<ms>",
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "fireable",
+     "params": {
+      "transitions": [
+       "Collect"
+      ],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "nested",
+     "params": {
+      "path": [
+       {
+        "place": "Field",
+        "token": "<id:unit>",
+        "net": ""
+       }
+      ],
+      "nested_id": "<id:unit_2>",
+      "event": {
+       "method": "fireable",
+       "params": {
+        "transitions": [],
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "7",
+     "result": {
+      "fired": true,
+      "transition": "Fire",
+      "path": [
+       {
+        "place": "Field",
+        "token": "<id:unit>",
+        "net": ""
+       }
+      ],
+      "nested_id": "<id:unit_2>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "step",
+    "params": {}
+   },
+   "expect": [
+    {
+     "method": "nested",
+     "params": {
+      "path": [
+       {
+        "place": "Field",
+        "token": "<id:unit>",
+        "net": ""
+       }
+      ],
+      "nested_id": "<id:unit_2>",
+      "event": {
+       "method": "removed",
+       "params": {
+        "place": "Shots Out",
+        "id": "<id:unit_shot_hold_the_bridge>",
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "mutated",
+     "params": {
+      "place": "Field",
+      "id": "<id:unit>",
+      "label": "<label>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "fired",
+     "params": {
+      "transition": "Collect",
+      "consumed": [],
+      "produced": [
+       [
+        "Reports",
+        "<id:shot_hold_the_bridge>",
+        "<label>"
+       ]
+      ],
+      "duration_ms": "<ms>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "fireable",
+     "params": {
+      "transitions": [],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "8",
+     "result": {
+      "fired": true,
+      "transition": "Collect",
+      "marking_version": "<version>",
+      "running": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "get_state",
+    "params": {
+     "path": [
+      {
+       "place": "Field",
+       "token": "<id:unit>",
+       "net": ""
+      }
+     ]
+    }
+   },
+   "expect": [
+    {
+     "id": "9",
+     "result": {
+      "protocol_version": 2,
+      "runtime": "<label>",
+      "net": "",
+      "generation": 1,
+      "marking_version": "<version>",
+      "running": false,
+      "topology": {
+       "places": [
+        {
+         "name": "Orders In",
+         "type_name": "<label>",
+         "serializable": true,
+         "port": true
+        },
+        {
+         "name": "Shots Out",
+         "type_name": "<label>",
+         "serializable": true,
+         "port": true
+        }
+       ],
+       "transitions": [
+        {
+         "name": "Fire",
+         "detail": "<any>"
+        }
+       ],
+       "edges": {
+        "<unordered>": [
+         {
+          "place": "Orders In",
+          "transition": "Fire",
+          "direction": "in",
+          "kind": "take"
+         },
+         {
+          "place": "Shots Out",
+          "transition": "Fire",
+          "direction": "out"
+         }
+        ]
+       }
+      },
+      "transitions": {
+       "Fire": {
+        "enabled": true,
+        "fireable": false,
+        "in_flight": false,
+        "priority": 0.0
+       }
+      },
+      "marking": {
+       "places": {
+        "Orders In": {
+         "count": 0,
+         "tokens": []
+        },
+        "Shots Out": {
+         "count": 0,
+         "tokens": []
+        }
+       }
+      },
+      "progress": {
+       "step_count": 1,
+       "last_fired": "Fire",
+       "fired_counts": {
+        "Fire": 1
+       },
+       "last_progress_at": "<time>"
+      },
+      "path": [
+       {
+        "place": "Field",
+        "token": "<id:unit>",
+        "net": ""
+       }
+      ],
+      "nested_id": "<id:unit_2>",
+      "template": "Unit"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "query",
+    "params": {
+     "filter": {
+      "places": [
+       "Reports"
+      ]
+     }
+    }
+   },
+   "expect": [
+    {
+     "id": "10",
+     "result": {
+      "marking_version": "<version>",
+      "count": 1,
+      "matches": [
+       {
+        "place": "Reports",
+        "token": {
+         "id": "<id:shot_hold_the_bridge>",
+         "label": "<label>"
+        },
+        "json": "Shot: Hold the bridge"
+       }
+      ]
+     }
+    }
+   ]
+  }
+ ]
+}

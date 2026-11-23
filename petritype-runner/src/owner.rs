@@ -376,11 +376,6 @@ impl Inner {
             self.seats = seats_of(net);
         }
     }
-
-    /// Whether this net is a subnet, whose ports the net around it sees.
-    fn is_subnet(&self) -> bool {
-        self.around.is_some()
-    }
 }
 
 /// One log entry and, off the wire, the nested ids of the nets it happened
@@ -938,8 +933,8 @@ impl<'e> Lifted<'e> {
 /// names them (PROTOCOL.md §12.7): what a firing took or put, what a failed
 /// one put back when it restored, and the place of a token that was added,
 /// removed or mutated. What happened counts, not what a connection's filter
-/// lets the notification list, and a read edge, or a drain of an empty
-/// place, takes nothing.
+/// lets the notification list, and a non-consuming edge, or a drain of an
+/// empty place, takes nothing.
 fn changed_places(event: &Event) -> Vec<PlaceId> {
     let places = |pairs: &[(PlaceId, TokenId)]| pairs.iter().map(|&(place, _)| place).collect();
     match event {
@@ -2090,8 +2085,6 @@ struct View<'a> {
     inner: Option<InnerView>,
     /// The connection's projection of this net, if it set one (§13.4).
     projection: Option<&'a Projection>,
-    /// Whether the net is a subnet, whose topology marks its ports.
-    subnet: bool,
     /// Its subnet places.
     seats: &'a [Seat],
     /// Every inner net's record: its subnets' among them, whose projections
@@ -3250,7 +3243,6 @@ impl Owner {
                 path: Vec::new(),
                 inner: None,
                 projection: loaded.projection.as_ref(),
-                subnet: false,
                 seats: &loaded.seats,
                 records: &loaded.inner,
             });
@@ -3277,7 +3269,6 @@ impl Owner {
                 template: inner.template.clone(),
             }),
             projection: inner.projection.as_ref(),
-            subnet: inner.is_subnet(),
             seats: &inner.seats,
             records: &loaded.inner,
         })
@@ -3400,7 +3391,7 @@ impl Owner {
                 } else {
                     Vec::new()
                 },
-                ..translate::topology(net, view.topology, view.names, view.subnet)
+                ..translate::topology(net, view.topology, view.names)
             },
             transitions,
             marking: protocol::Marking { places },

@@ -121,8 +121,8 @@ petritype-rs (ac80731):
   `TakeWhereEdge` 321, `MutateWhereEdge` 340); `InputEdge`, `InputSpec`, the
   `impl_edges!` arity macro (line 530; arity from `src/arity.rs`, 12).
 - `petritype/src/builder.rs`: `assert_no_source_transitions` (~line 880-915):
-  a transition is a source unless it has a consuming edge; read edges do not
-  count. `SnapshotOfNoClonePlace` (`error.rs`) refuses a snapshot of a
+  a transition is a source unless it has a consuming edge; non-consuming
+  edges do not count. `SnapshotOfNoClonePlace` (`error.rs`) refuses a snapshot of a
   `place_no_clone` place. `DuplicateInputPlace`: one edge per place per
   transition.
 - Fireability scan: DESIGN §6.1 ("every input place non-empty ... and a keyed
@@ -145,7 +145,8 @@ plain edge".
 
 petritype-bevy (6d5813b): `src/remote/mirror.rs:189-194` maps the wire kind
 to `EdgeKind` (unknown → `Take`); `src/render.rs:879-889` colours a
-non-consuming edge as a read edge and draws a keyed edge dashed;
+non-consuming edge in the colour it gives every such edge and draws a keyed
+edge dashed;
 `src/inspector.rs:421` prints the kind and a keyed edge's filter.
 
 Python petritype (85f5eb2), `petritype/core/executable_graph_components.py`:
@@ -153,7 +154,7 @@ Python petritype (85f5eb2), `petritype/core/executable_graph_components.py`:
 `SnapshotEdge` (277: a deep copy of the place's tokens; "fireability requires"
 presence), `MutateEdge` (286), `MutateWhereEdge` (295); the presence check
 near line 1275 ("read edges require presence too"); the source and cycle
-analyses near 1462 and 1513 treat read edges as moving nothing. Python has
+analyses near 1462 and 1513 treat non-consuming edges as moving nothing. Python has
 no take-all *kind*: the plain argument edge hands the body every token as a
 list when the parameter is annotated `list[T]`, and the runner reports that
 edge as `take_all` on the wire (`petritype/runner/translate.py`,
@@ -205,7 +206,8 @@ writes the proposed §5.1 wording into petritype-rs DESIGN §19.3 for the
 protocol's owner rather than editing PROTOCOL.md.
 
 **R7. Viewer.** `mirror.rs` maps the two strings; `render.rs` already colours
-by `consumes()` and dashes by `is_keyed()`, so `Survey` draws as a read edge
+by `consumes()` and dashes by `is_keyed()`, so `Survey` draws as a
+non-consuming edge
 and `Drain` as a consuming one. Mark an edge that accepts an empty place so
 a reader can tell it from `TakeAll`/`Snapshot`: a hollow arrowhead (D5,
 taken). The inspector prints `Drain` / `Survey`.

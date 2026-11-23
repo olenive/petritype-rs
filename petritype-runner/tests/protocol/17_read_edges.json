@@ -1,0 +1,855 @@
+{
+ "net": "roll-call",
+ "params": {},
+ "exchanges": [
+  {
+   "send": {
+    "method": "describe",
+    "params": {}
+   },
+   "expect": [
+    {
+     "id": "1",
+     "result": {
+      "protocol_version": 2,
+      "runtime": "<label>",
+      "runtime_version": "<label>",
+      "nets": [
+       {
+        "name": "roll-call",
+        "description": "A roll call reads the squads in the barracks without taking them",
+        "mode": "manual",
+        "params": []
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "load",
+    "params": {
+     "net": "roll-call"
+    }
+   },
+   "expect": [
+    {
+     "method": "load_progress",
+     "params": {
+      "step": "build",
+      "message": "<label>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "reloaded",
+     "params": {
+      "generation": 1,
+      "reason": "load",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "2",
+     "result": {
+      "status": "loaded",
+      "generation": 1,
+      "marking_version": "<version>"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "get_state",
+    "params": {}
+   },
+   "expect": [
+    {
+     "id": "3",
+     "result": {
+      "protocol_version": 2,
+      "runtime": "<label>",
+      "net": "roll-call",
+      "generation": 1,
+      "marking_version": "<version>",
+      "running": false,
+      "topology": {
+       "places": [
+        {
+         "name": "Barracks",
+         "type_name": "<label>",
+         "serializable": true,
+         "nested": true,
+         "stepping": "inner_first",
+         "key_names": [
+          "leader"
+         ]
+        },
+        {
+         "name": "Calls",
+         "type_name": "<label>",
+         "serializable": true
+        },
+        {
+         "name": "Checks",
+         "type_name": "<label>",
+         "serializable": true
+        },
+        {
+         "name": "Inspections",
+         "type_name": "<label>",
+         "serializable": true,
+         "key_names": [
+          "leader"
+         ]
+        },
+        {
+         "name": "Roll",
+         "type_name": "<label>",
+         "serializable": true
+        }
+       ],
+       "transitions": [
+        {
+         "name": "Call the Roll",
+         "detail": "<any>"
+        },
+        {
+         "name": "Check the Front",
+         "detail": "<any>"
+        },
+        {
+         "name": "Inspect",
+         "detail": "<any>"
+        }
+       ],
+       "edges": {
+        "<unordered>": [
+         {
+          "place": "Calls",
+          "transition": "Call the Roll",
+          "direction": "in",
+          "kind": "take"
+         },
+         {
+          "place": "Checks",
+          "transition": "Check the Front",
+          "direction": "in",
+          "kind": "take"
+         },
+         {
+          "place": "Inspections",
+          "transition": "Inspect",
+          "direction": "in",
+          "kind": "take"
+         },
+         {
+          "place": "Barracks",
+          "transition": "Call the Roll",
+          "direction": "in",
+          "kind": "read_all"
+         },
+         {
+          "place": "Barracks",
+          "transition": "Check the Front",
+          "direction": "in",
+          "kind": "read"
+         },
+         {
+          "place": "Barracks",
+          "transition": "Inspect",
+          "direction": "in",
+          "kind": "read_where",
+          "filter": {
+           "clauses": [
+            {
+             "key": "leader",
+             "input": {
+              "place": "Inspections",
+              "key": "leader"
+             }
+            }
+           ]
+          }
+         },
+         {
+          "place": "Roll",
+          "transition": "Call the Roll",
+          "direction": "out"
+         },
+         {
+          "place": "Roll",
+          "transition": "Check the Front",
+          "direction": "out"
+         },
+         {
+          "place": "Roll",
+          "transition": "Inspect",
+          "direction": "out"
+         }
+        ]
+       }
+      },
+      "transitions": {
+       "Call the Roll": {
+        "enabled": true,
+        "fireable": false,
+        "in_flight": false,
+        "priority": 0.0
+       },
+       "Check the Front": {
+        "enabled": true,
+        "fireable": false,
+        "in_flight": false,
+        "priority": 0.0
+       },
+       "Inspect": {
+        "enabled": true,
+        "fireable": false,
+        "in_flight": false,
+        "priority": 0.0
+       }
+      },
+      "marking": {
+       "places": {
+        "Barracks": {
+         "count": 2,
+         "tokens": [
+          {
+           "id": "<id:squad>",
+           "label": "<label>",
+           "keys": {
+            "leader": "Ada"
+           },
+           "nets": [
+            {
+             "name": "",
+             "nested_id": "<id:squad_2>",
+             "path": [
+              {
+               "place": "Barracks",
+               "token": "<id:squad>",
+               "net": ""
+              }
+             ],
+             "template": "Squad",
+             "count": 2
+            }
+           ]
+          },
+          {
+           "id": "<id:squad_barracks>",
+           "label": "<label>",
+           "keys": {
+            "leader": "Cy"
+           },
+           "nets": [
+            {
+             "name": "",
+             "nested_id": "<id:squad_3>",
+             "path": [
+              {
+               "place": "Barracks",
+               "token": "<id:squad_barracks>",
+               "net": ""
+              }
+             ],
+             "template": "Squad",
+             "count": 1
+            }
+           ]
+          }
+         ]
+        },
+        "Calls": {
+         "count": 0,
+         "tokens": []
+        },
+        "Checks": {
+         "count": 0,
+         "tokens": []
+        },
+        "Inspections": {
+         "count": 0,
+         "tokens": []
+        },
+        "Roll": {
+         "count": 0,
+         "tokens": []
+        }
+       }
+      },
+      "progress": {
+       "step_count": 0,
+       "last_fired": null,
+       "fired_counts": {},
+       "last_progress_at": null
+      }
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "inject",
+    "params": {
+     "place": "Calls",
+     "token": "Sarge"
+    }
+   },
+   "expect": [
+    {
+     "method": "added",
+     "params": {
+      "place": "Calls",
+      "id": "<id:sarge>",
+      "label": "<label>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "fireable",
+     "params": {
+      "transitions": [
+       "Call the Roll"
+      ],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "4",
+     "result": {
+      "status": "injected",
+      "id": "<id:sarge>",
+      "marking_version": "<version>"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "step",
+    "params": {}
+   },
+   "expect": [
+    {
+     "method": "fired",
+     "params": {
+      "transition": "Call the Roll",
+      "consumed": [
+       [
+        "Calls",
+        "<id:sarge>"
+       ]
+      ],
+      "produced": [
+       [
+        "Roll",
+        "<id:sarge_ada_2_cy>",
+        "<label>"
+       ]
+      ],
+      "duration_ms": "<ms>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "fireable",
+     "params": {
+      "transitions": [],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "5",
+     "result": {
+      "fired": true,
+      "transition": "Call the Roll",
+      "marking_version": "<version>",
+      "running": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "inject",
+    "params": {
+     "place": "Checks",
+     "token": "Corporal"
+    }
+   },
+   "expect": [
+    {
+     "method": "added",
+     "params": {
+      "place": "Checks",
+      "id": "<id:corporal>",
+      "label": "<label>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "fireable",
+     "params": {
+      "transitions": [
+       "Check the Front"
+      ],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "6",
+     "result": {
+      "status": "injected",
+      "id": "<id:corporal>",
+      "marking_version": "<version>"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "step",
+    "params": {}
+   },
+   "expect": [
+    {
+     "method": "fired",
+     "params": {
+      "transition": "Check the Front",
+      "consumed": [
+       [
+        "Checks",
+        "<id:corporal>"
+       ]
+      ],
+      "produced": [
+       [
+        "Roll",
+        "<id:corporal_ada>",
+        "<label>"
+       ]
+      ],
+      "duration_ms": "<ms>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "fireable",
+     "params": {
+      "transitions": [],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "7",
+     "result": {
+      "fired": true,
+      "transition": "Check the Front",
+      "marking_version": "<version>",
+      "running": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "inject",
+    "params": {
+     "place": "Inspections",
+     "token": {
+      "leader": "Cy"
+     }
+    }
+   },
+   "expect": [
+    {
+     "method": "added",
+     "params": {
+      "place": "Inspections",
+      "id": "<id:cy>",
+      "label": "<label>",
+      "keys": {
+       "leader": "Cy"
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "fireable",
+     "params": {
+      "transitions": [
+       "Inspect"
+      ],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "8",
+     "result": {
+      "status": "injected",
+      "id": "<id:cy>",
+      "marking_version": "<version>"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "step",
+    "params": {}
+   },
+   "expect": [
+    {
+     "method": "fired",
+     "params": {
+      "transition": "Inspect",
+      "consumed": [
+       [
+        "Inspections",
+        "<id:cy>"
+       ]
+      ],
+      "produced": [
+       [
+        "Roll",
+        "<id:inspected_cy>",
+        "<label>"
+       ]
+      ],
+      "duration_ms": "<ms>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "fireable",
+     "params": {
+      "transitions": [],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "9",
+     "result": {
+      "fired": true,
+      "transition": "Inspect",
+      "marking_version": "<version>",
+      "running": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "get_state",
+    "params": {}
+   },
+   "expect": [
+    {
+     "id": "10",
+     "result": {
+      "protocol_version": 2,
+      "runtime": "<label>",
+      "net": "roll-call",
+      "generation": 1,
+      "marking_version": "<version>",
+      "running": false,
+      "topology": {
+       "places": [
+        {
+         "name": "Barracks",
+         "type_name": "<label>",
+         "serializable": true,
+         "nested": true,
+         "stepping": "inner_first",
+         "key_names": [
+          "leader"
+         ]
+        },
+        {
+         "name": "Calls",
+         "type_name": "<label>",
+         "serializable": true
+        },
+        {
+         "name": "Checks",
+         "type_name": "<label>",
+         "serializable": true
+        },
+        {
+         "name": "Inspections",
+         "type_name": "<label>",
+         "serializable": true,
+         "key_names": [
+          "leader"
+         ]
+        },
+        {
+         "name": "Roll",
+         "type_name": "<label>",
+         "serializable": true
+        }
+       ],
+       "transitions": [
+        {
+         "name": "Call the Roll",
+         "detail": "<any>"
+        },
+        {
+         "name": "Check the Front",
+         "detail": "<any>"
+        },
+        {
+         "name": "Inspect",
+         "detail": "<any>"
+        }
+       ],
+       "edges": {
+        "<unordered>": [
+         {
+          "place": "Calls",
+          "transition": "Call the Roll",
+          "direction": "in",
+          "kind": "take"
+         },
+         {
+          "place": "Checks",
+          "transition": "Check the Front",
+          "direction": "in",
+          "kind": "take"
+         },
+         {
+          "place": "Inspections",
+          "transition": "Inspect",
+          "direction": "in",
+          "kind": "take"
+         },
+         {
+          "place": "Barracks",
+          "transition": "Call the Roll",
+          "direction": "in",
+          "kind": "read_all"
+         },
+         {
+          "place": "Barracks",
+          "transition": "Check the Front",
+          "direction": "in",
+          "kind": "read"
+         },
+         {
+          "place": "Barracks",
+          "transition": "Inspect",
+          "direction": "in",
+          "kind": "read_where",
+          "filter": {
+           "clauses": [
+            {
+             "key": "leader",
+             "input": {
+              "place": "Inspections",
+              "key": "leader"
+             }
+            }
+           ]
+          }
+         },
+         {
+          "place": "Roll",
+          "transition": "Call the Roll",
+          "direction": "out"
+         },
+         {
+          "place": "Roll",
+          "transition": "Check the Front",
+          "direction": "out"
+         },
+         {
+          "place": "Roll",
+          "transition": "Inspect",
+          "direction": "out"
+         }
+        ]
+       }
+      },
+      "transitions": {
+       "Call the Roll": {
+        "enabled": true,
+        "fireable": false,
+        "in_flight": false,
+        "priority": 0.0
+       },
+       "Check the Front": {
+        "enabled": true,
+        "fireable": false,
+        "in_flight": false,
+        "priority": 0.0
+       },
+       "Inspect": {
+        "enabled": true,
+        "fireable": false,
+        "in_flight": false,
+        "priority": 0.0
+       }
+      },
+      "marking": {
+       "places": {
+        "Barracks": {
+         "count": 2,
+         "tokens": [
+          {
+           "id": "<id:squad>",
+           "label": "<label>",
+           "keys": {
+            "leader": "Ada"
+           },
+           "nets": [
+            {
+             "name": "",
+             "nested_id": "<id:squad_2>",
+             "path": [
+              {
+               "place": "Barracks",
+               "token": "<id:squad>",
+               "net": ""
+              }
+             ],
+             "template": "Squad",
+             "count": 2
+            }
+           ]
+          },
+          {
+           "id": "<id:squad_barracks>",
+           "label": "<label>",
+           "keys": {
+            "leader": "Cy"
+           },
+           "nets": [
+            {
+             "name": "",
+             "nested_id": "<id:squad_3>",
+             "path": [
+              {
+               "place": "Barracks",
+               "token": "<id:squad_barracks>",
+               "net": ""
+              }
+             ],
+             "template": "Squad",
+             "count": 1
+            }
+           ]
+          }
+         ]
+        },
+        "Calls": {
+         "count": 0,
+         "tokens": []
+        },
+        "Checks": {
+         "count": 0,
+         "tokens": []
+        },
+        "Inspections": {
+         "count": 0,
+         "tokens": []
+        },
+        "Roll": {
+         "count": 3,
+         "tokens": [
+          {
+           "id": "<id:sarge_ada_2_cy>",
+           "label": "<label>"
+          },
+          {
+           "id": "<id:corporal_ada>",
+           "label": "<label>"
+          },
+          {
+           "id": "<id:inspected_cy>",
+           "label": "<label>"
+          }
+         ]
+        }
+       }
+      },
+      "progress": {
+       "step_count": 3,
+       "last_fired": "Inspect",
+       "fired_counts": {
+        "Call the Roll": 1,
+        "Check the Front": 1,
+        "Inspect": 1
+       },
+       "last_progress_at": "<time>"
+      }
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "query",
+    "params": {
+     "filter": {
+      "places": [
+       "Roll"
+      ]
+     }
+    }
+   },
+   "expect": [
+    {
+     "id": "11",
+     "result": {
+      "marking_version": "<version>",
+      "count": 3,
+      "matches": [
+       {
+        "place": "Roll",
+        "token": {
+         "id": "<id:sarge_ada_2_cy>",
+         "label": "<label>"
+        },
+        "json": "Sarge: Ada 2, Cy 1"
+       },
+       {
+        "place": "Roll",
+        "token": {
+         "id": "<id:corporal_ada>",
+         "label": "<label>"
+        },
+        "json": "Corporal: Ada 2"
+       },
+       {
+        "place": "Roll",
+        "token": {
+         "id": "<id:inspected_cy>",
+         "label": "<label>"
+        },
+        "json": "Inspected Cy 1"
+       }
+      ]
+     }
+    }
+   ]
+  }
+ ]
+}

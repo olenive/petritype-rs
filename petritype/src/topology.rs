@@ -168,6 +168,11 @@ pub struct TopologyTransition {
     /// edges is what it always was.
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "no_filters"))]
     pub filters: Vec<Option<Filter>>,
+    /// The ports each input edge says it reaches: [`TransitionInfo::reaches`]
+    /// (since 2026-11-23). With `serde`, written only when some edge names
+    /// one.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "no_reaches"))]
+    pub reaches: Vec<Vec<String>>,
     /// The parameter types it declared, by name:
     /// [`TransitionInfo::params`].
     pub params: Vec<&'static str>,
@@ -224,6 +229,7 @@ impl Topology {
                     name: info.name.to_owned(),
                     inputs: info.inputs.to_vec(),
                     filters: info.filters.to_vec(),
+                    reaches: info.reaches.to_vec(),
                     params: info.params.to_vec(),
                     outputs: info.outputs.to_vec(),
                     positional: info.positional,
@@ -248,4 +254,10 @@ fn is_true(value: &bool) -> bool {
 #[cfg(feature = "serde")]
 fn no_filters(filters: &[Option<Filter>]) -> bool {
     filters.iter().all(Option::is_none)
+}
+
+/// Whether no input edge names a port it reaches.
+#[cfg(feature = "serde")]
+fn no_reaches(reaches: &[Vec<String>]) -> bool {
+    reaches.iter().all(Vec::is_empty)
 }

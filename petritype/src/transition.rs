@@ -9,6 +9,7 @@ use crate::erased::ErasedBody;
 use crate::ids::{PlaceId, TransitionId};
 use crate::keys::Filter;
 use crate::net::Net;
+use crate::pairing::Binding;
 
 /// A transition's guard: may this transition fire, given the whole net?
 ///
@@ -76,6 +77,15 @@ pub(crate) struct TransitionSlot {
     /// other. Apart rather than inside the kind so that the kind stays
     /// `Copy` and everything that reads only places reads on unchanged.
     pub(crate) filters: Vec<Option<Filter>>,
+    /// Each source of a [bound edge](crate::Clause::IsInput) and the edges
+    /// bound to it, checked and found by [`build`](crate::NetBuilder::build);
+    /// empty for a transition whose filters name no input, and until then.
+    /// What fireability and stage one pair tokens by (DESIGN §8.3).
+    pub(crate) bindings: Vec<Binding>,
+    /// One entry per input edge, beside [`inputs`](TransitionSlot::inputs):
+    /// the ports of its tokens' nets the edge says its body reaches
+    /// ([`Reaching`](crate::Reaching)), empty for an edge that names none.
+    pub(crate) reaches: Vec<Vec<String>>,
     /// The declared parameter types by name, in declaration order: what
     /// [`TransitionInfo::params`](TransitionInfo::params) reports so that a
     /// renderer can badge the transition (DESIGN §10).
@@ -131,12 +141,25 @@ pub(crate) struct TransitionSlot {
     pub(crate) group: Option<u32>,
 }
 
+impl TransitionSlot {
+    /// Whether the input edge at this index is a source or a bound edge of
+    /// one of [`bindings`](TransitionSlot::bindings): one whose token is
+    /// chosen with its pair's, rather than on its own.
+    pub(crate) fn is_paired(&self, edge: usize) -> bool {
+        self.bindings
+            .iter()
+            .any(|binding| binding.source == edge || binding.bound.contains(&edge))
+    }
+}
+
 impl fmt::Debug for TransitionSlot {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("TransitionSlot")
             .field("name", &self.name)
             .field("inputs", &self.inputs)
             .field("filters", &self.filters)
+            .field("bindings", &self.bindings)
+            .field("reaches", &self.reaches)
             // The type names only: a parameter's value is never printed
             // anywhere (DESIGN §10).
             .field("params", &self.params)
@@ -185,6 +208,12 @@ pub struct TransitionInfo<'a> {
     /// shape and [`EdgeKind`] stays `Copy`; `filters[i]` belongs to
     /// `inputs[i]`.
     pub filters: &'a [Option<Filter>],
+    /// One entry per input edge, in the order of
+    /// [`inputs`](TransitionInfo::inputs): the ports of its tokens' nets the
+    /// edge says its body reaches, as declared with
+    /// [`reaching`](crate::Reaching), empty for an edge that names none
+    /// (since 2026-11-23).
+    pub reaches: &'a [Vec<String>],
     /// The [parameter](crate::Param) types this transition declared, by
     /// name, in declaration order (DESIGN §10).
     ///

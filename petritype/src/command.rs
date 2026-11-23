@@ -6,6 +6,7 @@
 use std::any::Any;
 use std::fmt;
 
+use crate::closed::{ADD, REPLACE, SET};
 use crate::error::CommandError;
 use crate::ids::{PlaceId, PlaceRef, TokenId, TransitionId};
 use crate::net::Net;
@@ -388,10 +389,14 @@ impl Net {
     /// [`NoSuchToken`](crate::NetError::NoSuchToken),
     /// [`TypeMismatch`](crate::NetError::TypeMismatch) or, for a
     /// [`SetParam`](Command::SetParam) of a type this net has no parameter
-    /// of, [`NoSuchParam`](crate::NetError::NoSuchParam). **The net is
-    /// untouched and silent in every case**: a batch is checked token by
-    /// token before any of it is written, so a rejected command is one an
-    /// observer never hears about.
+    /// of, [`NoSuchParam`](crate::NetError::NoSuchParam); a token command
+    /// at a place of a [closed](Net::is_closed) net that is not one of its
+    /// ports is [`ClosedNet`](crate::NetError::ClosedNet), and a switch or a
+    /// parameter asked by a body that holds a net marking a port is
+    /// [`HeldByBody`](crate::NetError::HeldByBody) (both since 2026-11-23).
+    /// **The net is untouched and silent in every case**: a batch is checked
+    /// token by token before any of it is written, so a rejected command is
+    /// one an observer never hears about.
     ///
     /// ```
     /// # use petritype::{Command, CommandError, NetBuilder, NetError};
@@ -412,9 +417,11 @@ impl Net {
     pub fn apply(&mut self, command: Command) -> Result<(), CommandError> {
         match command {
             Command::Extend { place, tokens } => {
+                self.admit(place, ADD)?;
                 self.extend_erased(place, tokens, ERASED)?;
             }
             Command::SetTokens { place, tokens } => {
+                self.admit(place, SET)?;
                 self.set_erased(place, tokens, ERASED)?;
             }
             Command::Remove { place, token } => self.remove(place, token)?,
@@ -422,7 +429,10 @@ impl Net {
                 place,
                 token,
                 value,
-            } => self.replace_erased(place, token, value, ERASED)?,
+            } => {
+                self.admit(place, REPLACE)?;
+                self.replace_erased(place, token, value, ERASED)?;
+            }
             Command::Enable { transition } => self.set_enabled(transition, true)?,
             Command::Disable { transition } => self.set_enabled(transition, false)?,
             Command::SetParam { value } => self.set_param_erased(value)?,

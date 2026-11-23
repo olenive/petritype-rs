@@ -303,25 +303,8 @@ impl KeyIndex {
         place: PlaceId,
         resolved: &Resolved<'_>,
     ) -> Option<(usize, TokenId)> {
-        let mut clauses: Vec<Vec<&Postings>> = Vec::with_capacity(resolved.clauses.len());
-        for clause in &resolved.clauses {
-            let values = self.postings.get(clause.key)?;
-            let sets: Vec<&Postings> = clause
-                .values()
-                .iter()
-                .filter_map(|value| values.get(value))
-                .collect();
-            if sets.is_empty() {
-                return None;
-            }
-            clauses.push(sets);
-        }
-        let passes = |token: TokenId| {
-            clauses.iter().all(|sets| {
-                sets.iter()
-                    .any(|postings| postings.contains(&(place, token)))
-            })
-        };
+        let clauses = self.held(resolved)?;
+        let passes = |token: TokenId| passes(&clauses, place, token);
 
         if self.unordered.contains(&place) {
             return slot
@@ -350,6 +333,82 @@ impl KeyIndex {
             "the index names {token:?} in {place:?}, which does not hold it"
         );
         Some((at.ok()?, token))
+    }
+
+    /// Per resolved clause, the postings of the values it accepts; `None`
+    /// when a key or a whole clause is held by no token, which no token can
+    /// then pass.
+    fn held(&self, resolved: &Resolved<'_>) -> Option<Vec<Vec<&Postings>>> {
+        let mut clauses: Vec<Vec<&Postings>> = Vec::with_capacity(resolved.clauses.len());
+        for clause in &resolved.clauses {
+            let values = self.postings.get(clause.key)?;
+            let sets: Vec<&Postings> = clause
+                .values()
+                .iter()
+                .filter_map(|value| values.get(value))
+                .collect();
+            if sets.is_empty() {
+                return None;
+            }
+            clauses.push(sets);
+        }
+        Some(clauses)
+    }
+
+    /// Every token of `place` in queue order whose keys pass every resolved
+    /// clause, with where it stands: [`first_in`](KeyIndex::first_in) for
+    /// them all, as a source of a bound edge tries them (DESIGN §8.3).
+    ///
+    /// In a place in id order the candidates are the tokens of this place
+    /// holding the clause with the fewest tokens, sorted by id, each kept if
+    /// every other clause holds it too and found by binary search; an
+    /// unordered place is walked in queue order. Lazy, so a firing that
+    /// pairs its first candidate reads no further.
+    fn all_in<'a>(
+        &'a self,
+        slot: &'a PlaceSlot,
+        place: PlaceId,
+        resolved: &Resolved<'_>,
+    ) -> Box<dyn Iterator<Item = (usize, TokenId)> + 'a> {
+        let Some(clauses) = self.held(resolved) else {
+            return Box::new(std::iter::empty());
+        };
+        if self.unordered.contains(&place) {
+            return Box::new(
+                slot.tokens
+                    .iter()
+                    .enumerate()
+                    .filter(move |(_, (token, _))| passes(&clauses, place, *token))
+                    .map(|(at, (token, _))| (at, *token)),
+            );
+        }
+        let Some(fewest) = clauses
+            .iter()
+            .min_by_key(|sets| sets.iter().map(|postings| postings.len()).sum::<usize>())
+        else {
+            return Box::new(std::iter::empty());
+        };
+        let here = (place, TokenId(0))..=(place, TokenId(u64::MAX));
+        let mut tokens: Vec<TokenId> = fewest
+            .iter()
+            .flat_map(|postings| postings.range(here.clone()).map(|&(_, token)| token))
+            .collect();
+        // A value a clause names twice gives its tokens twice.
+        tokens.sort_unstable();
+        tokens.dedup();
+        Box::new(
+            tokens
+                .into_iter()
+                .filter(move |&token| passes(&clauses, place, token))
+                .filter_map(move |token| {
+                    let at = slot.tokens.binary_search_by_key(&token, |(id, _)| *id);
+                    debug_assert!(
+                        at.is_ok(),
+                        "the index names {token:?} in {place:?}, which does not hold it"
+                    );
+                    Some((at.ok()?, token))
+                }),
+        )
     }
 
     /// The index a net with these places would have if it were built from
@@ -404,30 +463,88 @@ pub(crate) fn first_match(
     place: PlaceId,
     filter: &Filter,
 ) -> Option<(usize, TokenId)> {
+    first_resolved(places, index, place, &filter.resolve_in(params))
+}
+
+/// [`first_match`] for a filter already resolved against the net's
+/// parameters, and perhaps [bound](Resolved::bind) to a source token: what
+/// a bound edge asks for each source token tried, one lookup each.
+pub(crate) fn first_resolved(
+    places: &[PlaceSlot],
+    index: &KeyIndex,
+    place: PlaceId,
+    resolved: &Resolved<'_>,
+) -> Option<(usize, TokenId)> {
     let slot = places.get(place.0 as usize)?;
     if let Some(window) = slot.meta.window {
-        return first_match_in_port(places, params, window, filter);
+        return first_in_port(places, window, resolved);
     }
-    if filter.clauses.is_empty() {
+    if resolved.clauses.is_empty() {
         return slot.tokens.front().map(|(token, _)| (0, *token));
     }
     slot.meta.keys.as_ref()?;
-    index.first_in(slot, place, &filter.resolve_in(params))
+    index.first_in(slot, place, resolved)
 }
 
-/// [`first_match`] for a window. Its tokens are its port's, indexed by the
-/// subnet, so the question is the subnet's, about the port, with this net's
-/// parameters, since the filter is this net's. Kept out of line, so that a
-/// net without subnet places asks as it always has.
+/// [`first_resolved`] for a window. Its tokens are its port's, indexed by
+/// the subnet, so the question is the subnet's, about the port, the filter
+/// resolved with this net's parameters, since it is this net's. Kept out of
+/// line, so that a net without subnet places asks as it always has.
 #[cold]
-fn first_match_in_port(
+fn first_in_port(
     places: &[PlaceSlot],
-    params: &[ParamSlot],
     window: Window,
-    filter: &Filter,
+    resolved: &Resolved<'_>,
 ) -> Option<(usize, TokenId)> {
     let subnet = &places.get(window.subnet.0 as usize)?.subnet.as_deref()?.net;
-    first_match(&subnet.places, params, &subnet.index, window.port, filter)
+    first_resolved(&subnet.places, &subnet.index, window.port, resolved)
+}
+
+/// Every token of `place` that `resolved` accepts, in queue order, with
+/// where each stands: the candidates a source with a filter of its own
+/// offers, or, for a filter without clauses, every token. A window's are its
+/// port's, asked of its subnet's index. Nothing for a place without keys
+/// when there are clauses, or no such place.
+pub(crate) fn all_resolved<'a>(
+    places: &'a [PlaceSlot],
+    index: &'a KeyIndex,
+    place: PlaceId,
+    resolved: &Resolved<'_>,
+) -> Box<dyn Iterator<Item = (usize, TokenId)> + 'a> {
+    let Some(slot) = places.get(place.0 as usize) else {
+        return Box::new(std::iter::empty());
+    };
+    if let Some(window) = slot.meta.window {
+        let Some(subnet) = places
+            .get(window.subnet.0 as usize)
+            .and_then(|holder| holder.subnet.as_deref())
+        else {
+            return Box::new(std::iter::empty());
+        };
+        let subnet = &subnet.net;
+        return all_resolved(&subnet.places, &subnet.index, window.port, resolved);
+    }
+    if resolved.clauses.is_empty() {
+        return Box::new(
+            slot.tokens
+                .iter()
+                .enumerate()
+                .map(|(at, (token, _))| (at, *token)),
+        );
+    }
+    if slot.meta.keys.is_none() {
+        return Box::new(std::iter::empty());
+    }
+    index.all_in(slot, place, resolved)
+}
+
+/// Whether the token `token` of `place` is held by some set of every
+/// clause: the postings alone decide, no key is extracted.
+fn passes(clauses: &[Vec<&Postings>], place: PlaceId, token: TokenId) -> bool {
+    clauses.iter().all(|sets| {
+        sets.iter()
+            .any(|postings| postings.contains(&(place, token)))
+    })
 }
 
 /// [`first_match`] by reading the place front to back and extracting each

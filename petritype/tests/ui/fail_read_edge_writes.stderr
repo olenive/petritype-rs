@@ -1,0 +1,13 @@
+error[E0594]: cannot assign to `*n`, which is behind a `&` reference
+  --> tests/ui/fail_read_edge_writes.rs:17:13
+   |
+17 |             *n += 1;
+   |             ^^^^^^^ `n` is a `&` reference, so it cannot be written to
+
+error[E0594]: cannot assign to `*m`, which is behind a `&` reference
+  --> tests/ui/fail_read_edge_writes.rs:19:17
+   |
+18 |             for m in all {
+   |                      --- this iterator yields `&` references
+19 |                 *m += 1;
+   |                 ^^^^^^^ `m` is a `&` reference, so it cannot be written to

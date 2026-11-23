@@ -24,12 +24,13 @@ use crate::place::ErasedToken;
 /// [`EdgeKind`](crate::EdgeKind), so the extractors in [`crate::edge`] may
 /// treat any other variant as a bug rather than a runtime error.
 ///
-/// Three of the four variants own their tokens, which is what lets a
+/// Three of the six variants own their tokens, which is what lets a
 /// [`Firing`](crate::Firing) be `Send` and outlive the call that launched it:
 /// the arguments of a detachable transition are all `ErasedInput<'static>`.
-/// Only [`Borrowed`](ErasedInput::Borrowed) ties a firing to the net, and it
-/// is filled in, after the other places have been drained, for inline
-/// firings alone.
+/// [`Borrowed`](ErasedInput::Borrowed), [`Lent`](ErasedInput::Lent) and
+/// [`LentAll`](ErasedInput::LentAll) tie a firing to the net, and they are
+/// filled in, after the other places have been drained, for inline firings
+/// alone.
 ///
 /// Crate-private: an input position takes its arguments through an
 /// [`ErasedCursor`], which hands these out to the extractors in this crate
@@ -50,6 +51,14 @@ pub(crate) enum ErasedInput<'a> {
     /// transition with such an edge runs inline instead of being handed to
     /// a worker.
     Borrowed(&'a mut ErasedToken),
+    /// A token of a place, lent to look at where it lies: the front one for
+    /// a [`ReadEdge`](crate::ReadEdge), the one its filter chose for a
+    /// [`ReadWhereEdge`](crate::ReadWhereEdge). Shared, so the body cannot
+    /// change it; still a borrow, so the firing runs inline.
+    Lent(&'a ErasedToken),
+    /// Every token of a place, oldest first, lent to look at: a
+    /// [`ReadAllEdge`](crate::ReadAllEdge), possibly none.
+    LentAll(Vec<&'a ErasedToken>),
     /// What an extractor leaves behind when it has moved the value out. An
     /// input is extracted exactly once, so this is never seen by a body.
     Taken,
@@ -61,6 +70,8 @@ impl fmt::Debug for ErasedInput<'_> {
             ErasedInput::Token(_) => f.write_str("Token(..)"),
             ErasedInput::Tokens(tokens) => write!(f, "Tokens(x{})", tokens.len()),
             ErasedInput::Borrowed(_) => f.write_str("Borrowed(..)"),
+            ErasedInput::Lent(_) => f.write_str("Lent(..)"),
+            ErasedInput::LentAll(tokens) => write!(f, "LentAll(x{})", tokens.len()),
             ErasedInput::Taken => f.write_str("Taken"),
         }
     }

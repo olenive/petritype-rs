@@ -188,7 +188,8 @@ pub(crate) fn keys(net: &Net, place: PlaceId, token: TokenId) -> Option<protocol
 
 /// A filter of the core's, places by id, as the wire writes it, places by
 /// name (§13.2): what a keyed edge carries in the topology (§13.5), a
-/// `{key, param}` clause as declared.
+/// `{key, param}` clause as declared, and a `{key, input}` clause with its
+/// source named as an edge names its place, `{place, port?, key}`.
 pub(crate) fn filter_to_wire(filter: &Filter, names: &Names) -> protocol::Filter {
     protocol::Filter {
         clauses: filter
@@ -203,6 +204,17 @@ pub(crate) fn filter_to_wire(filter: &Filter, names: &Names) -> protocol::Filter
                     key: key.clone(),
                     param: param.clone(),
                 }),
+                Clause::IsInput { key, input } => {
+                    let (place, port) = names.split(input.place);
+                    Some(protocol::Clause::IsInput {
+                        key: key.clone(),
+                        input: protocol::InputKey {
+                            place,
+                            port,
+                            key: input.key.clone(),
+                        },
+                    })
+                }
                 // A kind of clause this runner does not know yet: left out,
                 // as an unknown kind of edge is.
                 _ => None,
@@ -256,28 +268,40 @@ pub(crate) fn filter(value: &Value, net: &Net) -> Result<Filter, FilterError> {
     filter_from_wire(&wire, net)
 }
 
-/// A wire filter's places, by name or by pair, turned into `net`'s ids.
+/// A wire filter's places, by name or by pair, turned into `net`'s ids. A
+/// `{key, input}` clause has no meaning outside a firing, so a request's
+/// filter that holds one is [`FilterError::Shape`] (§13.2), as
+/// [`protocol::Filter::parse`] already says of one it reads.
 pub(crate) fn filter_from_wire(wire: &protocol::Filter, net: &Net) -> Result<Filter, FilterError> {
     let places = wire
         .places
         .as_ref()
         .map(|names| place_ids(names, net))
         .transpose()?;
+    let clauses = wire
+        .clauses
+        .iter()
+        .map(|clause| match clause {
+            protocol::Clause::In { key, values } => Ok(Clause::In {
+                key: key.clone(),
+                values: values.clone(),
+            }),
+            protocol::Clause::IsParam { key, param } => Ok(Clause::IsParam {
+                key: key.clone(),
+                param: param.clone(),
+            }),
+            protocol::Clause::IsInput { .. } => Err(FilterError::Shape(
+                "a clause with \"input\" chooses by another input of a firing, so it has no \
+                 meaning in a request"
+                    .to_owned(),
+            )),
+            protocol::Clause::Other(_) => Err(FilterError::Shape(
+                "a clause is {\"key\", \"values\"} or {\"key\", \"param\"}".to_owned(),
+            )),
+        })
+        .collect::<Result<_, _>>()?;
     Ok(Filter {
-        clauses: wire
-            .clauses
-            .iter()
-            .map(|clause| match clause {
-                protocol::Clause::In { key, values } => Clause::In {
-                    key: key.clone(),
-                    values: values.clone(),
-                },
-                protocol::Clause::IsParam { key, param } => Clause::IsParam {
-                    key: key.clone(),
-                    param: param.clone(),
-                },
-            })
-            .collect(),
+        clauses,
         places,
         prefix: wire.prefix.clone(),
     })
@@ -327,9 +351,10 @@ pub(crate) fn place_id(name: &protocol::PlaceName, net: &Net) -> Result<PlaceId,
 /// `type_name` (or `""`) and its ports as the subnet's own topology has
 /// them, read from the subnet; the places the net has for those ports are
 /// not listed on their own, and an edge on one names the subnet place and
-/// the port. `subnet` says that `net` is itself a subnet, whose topology
-/// marks its ports `port: true`; a net that is no subnet has no net around
-/// it to reach them, and marks none (§5.1).
+/// the port. Every net marks its own ports `port: true`, the loaded net
+/// and a net a token carries as well as a subnet (§5.1, since 2026-11-23;
+/// until then only a subnet's did, and `subnet` said which). An input edge
+/// carries the ports it says it reaches as `reaches`.
 ///
 /// The net's own groups are `groups`, in declared order, and each place,
 /// subnet place and transition in one carries its `group`, each written
@@ -337,12 +362,7 @@ pub(crate) fn place_id(name: &protocol::PlaceName, net: &Net) -> Result<PlaceId,
 /// none: its group is the subnet's, shown in the subnet's own topology.
 /// Every net's topology is written from its own core topology, so an inner
 /// net shows its own groups and none of the net around it.
-pub(crate) fn topology(
-    net: &Net,
-    topology: &Topology,
-    names: &Names,
-    subnet: bool,
-) -> protocol::Topology {
+pub(crate) fn topology(net: &Net, topology: &Topology, names: &Names) -> protocol::Topology {
     let slotted: HashMap<TransitionId, bool> = topology
         .transitions
         .iter()
@@ -367,7 +387,7 @@ pub(crate) fn topology(
             .iter()
             .filter(|p| p.port_of.is_none())
             .map(|p| match net.subnet(p.id).filter(|_| p.subnet) {
-                None => place(p, subnet && p.port),
+                None => place(p, p.port),
                 Some(inside) => protocol::Place {
                     type_name: inside.template().unwrap_or_default().to_owned(),
                     serializable: None,
@@ -411,6 +431,7 @@ pub(crate) fn topology(
                     transition,
                     kind,
                     filter,
+                    reaches,
                     ..
                 } => Some(protocol::Edge {
                     place: names.split(*place).0,
@@ -421,6 +442,7 @@ pub(crate) fn topology(
                     // A keyed edge's filter as declared (§13.5), its places
                     // by name.
                     filter: filter.as_ref().map(|filter| filter_to_wire(filter, names)),
+                    reaches: reaches.clone(),
                     slot: None,
                 }),
                 EdgeInfo::Output {
@@ -434,6 +456,7 @@ pub(crate) fn topology(
                     direction: protocol::Direction::Out,
                     kind: None,
                     filter: None,
+                    reaches: Vec::new(),
                     slot: slotted
                         .get(transition)
                         .copied()
@@ -448,6 +471,9 @@ pub(crate) fn topology(
         groups: topology.groups.clone(),
         // From the net, not its topology: see `controls`.
         controls: Vec::new(),
+        // The definition's declaration, which a reader puts beside the
+        // ports it shows to know whether the net is closed (§5.1).
+        open: net.is_open(),
     }
 }
 
@@ -551,6 +577,9 @@ fn edge_kind(kind: petritype::EdgeKind) -> Option<protocol::EdgeKind> {
         petritype::EdgeKind::MutateWhere => Some(protocol::EdgeKind::MutateWhere),
         petritype::EdgeKind::Drain => Some(protocol::EdgeKind::Drain),
         petritype::EdgeKind::Survey => Some(protocol::EdgeKind::Survey),
+        petritype::EdgeKind::Read => Some(protocol::EdgeKind::Read),
+        petritype::EdgeKind::ReadWhere => Some(protocol::EdgeKind::ReadWhere),
+        petritype::EdgeKind::ReadAll => Some(protocol::EdgeKind::ReadAll),
         _ => None,
     }
 }
@@ -724,7 +753,7 @@ mod tests {
         );
         let net = b.build().unwrap();
         let core = net.topology();
-        let wire = topology(&net, &core, &Names::new(&core), false);
+        let wire = topology(&net, &core, &Names::new(&core));
         let slots: Vec<(&str, Option<usize>)> = wire
             .edges
             .iter()

@@ -72,7 +72,7 @@ checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
 name = "petritype"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "petritype-derive",
  "petritype-dot",
@@ -84,7 +84,7 @@ dependencies = [
 
 [[package]]
 name = "petritype-activity"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "petritype",
  "petritype-layout",
@@ -94,7 +94,7 @@ dependencies = [
 
 [[package]]
 name = "petritype-derive"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -103,14 +103,14 @@ dependencies = [
 
 [[package]]
 name = "petritype-dot"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "petritype",
 ]
 
 [[package]]
 name = "petritype-layout"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "petritype",
  "serde",
@@ -118,7 +118,7 @@ dependencies = [
 
 [[package]]
 name = "petritype-runner"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "petritype",
  "rustix",

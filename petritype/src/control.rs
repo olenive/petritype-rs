@@ -45,8 +45,10 @@
 //! ```
 
 use std::fmt;
+use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 use std::sync::Arc;
 
+use crate::closed::PRESS;
 use crate::error::{NetError, PressError};
 use crate::ids::{PlaceId, PlaceRef, TransitionId, foreign_place};
 use crate::net::Net;
@@ -459,12 +461,26 @@ impl Net {
     /// option it does not list, or a number outside a slider's bounds,
     /// included), the net untouched in both cases, and
     /// [`PressError::Refused`] with the handler's message when it returns
-    /// `Err`.
+    /// `Err`. Also `Refused`, with the message of a
+    /// [`NetError::HeldByBody`], the handler not run, when a body of the net
+    /// around this one holds it and it marks a port (since 2026-11-23): a
+    /// net's controls are the program's and the runner's, and the body's
+    /// firing fails with that error.
+    ///
+    /// # Closed nets
+    ///
+    /// A handler is inside its net: while it runs, it writes to any of the
+    /// net's places, ports or not, even on a
+    /// [closed](Net::is_closed) net, as the net's own transitions do. A
+    /// net it reaches inside a token or a subnet place is under that net's
+    /// own rule.
     ///
     /// # Panics
     ///
     /// If the handler panics: the panic is the handler's, not caught here.
     pub fn press(&mut self, name: &str, value: Value) -> Result<Pressed, PressError> {
+        self.admit_knob(PRESS)
+            .map_err(|refusal| PressError::Refused(refusal.to_string()))?;
         let control = self
             .controls
             .iter()
@@ -483,7 +499,14 @@ impl Net {
         // `Arc` is cloned first so that nothing of `self` is borrowed while
         // it runs.
         let handler = Arc::clone(&control.handler);
-        handler(self, value).map_err(PressError::Refused)
+        // Inside the net while it runs, and outside again however it ends.
+        let was_inside = std::mem::replace(&mut self.inside, true);
+        let pressed = catch_unwind(AssertUnwindSafe(|| handler(self, value)));
+        self.inside = was_inside;
+        match pressed {
+            Ok(pressed) => pressed.map_err(PressError::Refused),
+            Err(payload) => resume_unwind(payload),
+        }
     }
 }
 

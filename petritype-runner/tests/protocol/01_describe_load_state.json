@@ -6,7 +6,7 @@
       "send": {"method": "describe", "params": {}},
       "expect": [
         {"id": "1", "result": {
-          "protocol_version": 2, "runtime": "rust", "runtime_version": "0.2.1",
+          "protocol_version": 2, "runtime": "rust", "runtime_version": "0.3.0",
           "nets": [
             {"name": "parcel-fleet", "description": "Sort and dispatch parcels", "mode": "manual",
              "params": [{"name": "trucks", "type_name": "u32", "required": false, "default": 2}]},
@@ -35,6 +35,14 @@
             {"name": "harbour", "description": "A ship stows its crate in its hold, sails and is scrapped", "mode": "manual",
              "params": []},
             {"name": "odd-names", "description": "Every name holds a slash, a hash, a space and a double quote", "mode": "manual",
+             "params": []},
+            {"name": "couriers", "description": "Orders are loaded onto the courier they name, and a call sends that courier out", "mode": "manual",
+             "params": []},
+            {"name": "roll-call", "description": "A roll call reads the squads in the barracks without taking them", "mode": "manual",
+             "params": []},
+            {"name": "trays", "description": "A unit is handed an order through one tray and its shots are collected from another", "mode": "manual",
+             "params": []},
+            {"name": "post-office", "description": "Letters are delivered to a post's inbox, and a forgery written into its ledger is refused", "mode": "manual",
              "params": []}
           ]
         }}

@@ -31,7 +31,10 @@
 //! "Taxi"}`). It carries the rest of PROTOCOL.md §11's conformance nets too:
 //! `stepping-rules`, `levels`, `groups`, `workshop` (whose cracked pots
 //! fail their firings, and whose load parameter `restore` gives them back),
-//! `cellar`, `harbour` and `odd-names`. This file is the whole of what an
+//! `cellar`, `harbour`, `odd-names`, `couriers` (whose orders and calls
+//! each choose the courier they name), `roll-call` (whose roll call reads
+//! the squads in the barracks without taking them) and `trays` (whose unit,
+//! a net with two ports, is handed an order and gives up its shots). This file is the whole of what an
 //! author writes besides them.
 
 use std::process::ExitCode;

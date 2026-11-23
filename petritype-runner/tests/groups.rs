@@ -185,9 +185,9 @@ fn a_net_a_token_carries_shows_its_own_groups_and_the_net_around_it_none() {
         assert_eq!(topology["groups"], json!(["Sealing"]));
         let tray = named(&topology["places"], "Tray");
         assert_eq!(tray["group"], "Sealing");
-        assert!(
-            tray.get("port").is_none(),
-            "a token's net is no subnet: it shows no port"
+        assert_eq!(
+            tray["port"], true,
+            "a token's net shows its own ports, as every net does since 2026-11-23"
         );
         assert_eq!(named(&topology["transitions"], "Seal")["group"], "Sealing");
     }

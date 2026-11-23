@@ -37,9 +37,12 @@
 //! | [`TakeAllEdge`](petritype::TakeAllEdge) | the same, plus `label="*"` (*new*: the arity matters to a reader) |
 //! | [`SnapshotEdge`](petritype::SnapshotEdge) | `style=dashed, color=dimgray, arrowhead=normal, penwidth=1` |
 //! | [`MutateEdge`](petritype::MutateEdge) | `dir=both, arrowhead=dot, arrowtail=dot, color=dimgray, penwidth=2` |
-//! | [`TakeWhereEdge`](petritype::TakeWhereEdge), [`MutateWhereEdge`](petritype::MutateWhereEdge) | as `TakeEdge` and `MutateEdge`, plus the filter as the label, `label="class in {Bird}"` (*new*: a keyed edge chooses its token, and the diagram says by what) |
+//! | [`TakeWhereEdge`](petritype::TakeWhereEdge), [`MutateWhereEdge`](petritype::MutateWhereEdge) | as `TakeEdge` and `MutateEdge`, plus the filter as the label, `label="class in {Bird}"`, a parameter clause as `class = $season` and a clause that chooses by another input as `name = Orders.courier` (*new*: a keyed edge chooses its token, and the diagram says by what) |
 //! | [`DrainEdge`](petritype::DrainEdge) | as `TakeAllEdge`, with `arrowhead=empty` (*new*: a hollow arrowhead marks an edge an empty place satisfies) |
 //! | [`SurveyEdge`](petritype::SurveyEdge) | as `SnapshotEdge`, with `arrowhead=empty` and `label="*"` (*new*: every token, and possibly none) |
+//! | [`ReadEdge`](petritype::ReadEdge), [`ReadWhereEdge`](petritype::ReadWhereEdge) | `style=dotted, color=dimgray, arrowhead=normal, penwidth=1`, a read-where with its filter as the label (*new*: a read lends its token to look at, where a snapshot's dashed edge copies it) |
+//! | [`ReadAllEdge`](petritype::ReadAllEdge) | as `ReadEdge`, with `arrowhead=empty` and `label="*"` (every token, and possibly none) |
+//! | an input edge that names the ports it reaches ([`Reaching`](petritype::Reaching)) | as its kind draws it, with a last label line `reaches Orders In, Shots Out` (*new*: where the edge ends inside the nets its tokens carry) |
 //! | an input edge of a kind this version does not know | as a `TakeEdge` |
 //! | output edge | `color=black, penwidth=1`, plus `label="<slot>"` when the transition has more than one output (*new*: positional order is what a positional body returns into) |
 //! | highlighted edge | both its ends highlighted: the kind's shape is kept and its `color` and `penwidth` become `magenta`/`red` and `2` |
@@ -522,6 +525,26 @@ fn render(source: &impl DotSource, style: &Style, out: &mut String) -> fmt::Resu
         writeln!(out, "  }}")?;
     }
 
+    // A place as a clause that names it writes it: its name, or a port's
+    // as `Subnet/Port`.
+    let own: HashMap<PlaceId, &str> = source.places().map(|(id, info)| (id, info.name)).collect();
+    let spelt: HashMap<PlaceId, String> = source
+        .places()
+        .map(|(id, info)| {
+            let name = match info.port_of.and_then(|subnet| own.get(&subnet)) {
+                Some(subnet) => format!("{subnet}/{}", info.name),
+                None => info.name.to_owned(),
+            };
+            (id, name)
+        })
+        .collect();
+    let place_name = |place: PlaceId| {
+        spelt
+            .get(&place)
+            .cloned()
+            .unwrap_or_else(|| format!("{place:?}"))
+    };
+
     for edge in source.edges() {
         let drawn = match edge {
             EdgeInfo::Input {
@@ -529,11 +552,18 @@ fn render(source: &impl DotSource, style: &Style, out: &mut String) -> fmt::Resu
                 transition,
                 kind,
                 filter,
+                reaches,
                 ..
             } => {
                 let lit = style.highlights_place(place) && style.highlights_transition(transition);
                 let (node, cell) = end(place);
-                let mut attrs = input_attrs(kind, filter.as_ref(), lit.then(|| style.colour()));
+                let mut attrs = input_attrs(
+                    kind,
+                    filter.as_ref(),
+                    &reaches,
+                    &place_name,
+                    lit.then(|| style.colour()),
+                );
                 if let Some(cell) = cell {
                     attrs.push_str(&format!(", tailport=port{cell}"));
                 }
@@ -736,7 +766,13 @@ fn transition_label(name: &str, params: &[&'static str]) -> String {
 
 /// The attributes of a place → transition edge, by the kind of read it is,
 /// with a keyed edge's filter as its label.
-fn input_attrs(kind: EdgeKind, filter: Option<&Filter>, highlight: Option<&str>) -> String {
+fn input_attrs(
+    kind: EdgeKind,
+    filter: Option<&Filter>,
+    reaches: &[String],
+    place_name: &dyn Fn(PlaceId) -> String,
+    highlight: Option<&str>,
+) -> String {
     let mut attrs: Vec<String> = match kind {
         EdgeKind::Take | EdgeKind::TakeWhere => {
             vec![String::from("color=black"), String::from("penwidth=1")]
@@ -775,21 +811,52 @@ fn input_attrs(kind: EdgeKind, filter: Option<&Filter>, highlight: Option<&str>)
             String::from("penwidth=1"),
             String::from("label=\"*\""),
         ],
+        // The read edges, which lend their tokens to look at: dotted where a
+        // snapshot's copy is dashed, and a read-all with the hollow head and
+        // the `*` of the other edges that take every token, zero or more.
+        EdgeKind::Read | EdgeKind::ReadWhere => vec![
+            String::from("style=dotted"),
+            String::from("color=dimgray"),
+            String::from("arrowhead=normal"),
+            String::from("penwidth=1"),
+        ],
+        EdgeKind::ReadAll => vec![
+            String::from("style=dotted"),
+            String::from("color=dimgray"),
+            String::from("arrowhead=empty"),
+            String::from("penwidth=1"),
+            String::from("label=\"*\""),
+        ],
         // `EdgeKind` is `#[non_exhaustive]`: a kind this renderer has never
         // heard of is drawn as a plain take, as a protocol reader would.
         _ => vec![String::from("color=black"), String::from("penwidth=1")],
     };
+    // The label's lines: the `*` of an edge that takes every token, or a
+    // keyed edge's filter, and then the ports the edge says it reaches.
+    let mut lines: Vec<String> = Vec::new();
+    if let Some(at) = attrs.iter().position(|attr| attr == "label=\"*\"") {
+        attrs.remove(at);
+        lines.push(String::from("*"));
+    }
     if let Some(filter) = filter {
-        attrs.push(format!("label=\"{}\"", escape(&filter_label(filter))));
+        lines.push(escape(&filter_label(filter, place_name)));
+    }
+    if !reaches.is_empty() {
+        lines.push(escape(&format!("reaches {}", reaches.join(", "))));
+    }
+    if !lines.is_empty() {
+        attrs.push(format!("label=\"{}\"", lines.join("\\n")));
     }
     join_attrs(attrs, highlight)
 }
 
 /// A keyed edge's filter as a reader writes one: `class in {Bird, Mammal}
-/// and diet in {Insectivore}`, a parameter clause as `class = $season`, and
-/// `any` for a filter with no clauses. Its places and prefix are left out:
-/// an edge reads one place, and does not consult them.
-fn filter_label(filter: &Filter) -> String {
+/// and diet in {Insectivore}`, a parameter clause as `class = $season`, a
+/// clause that chooses by another input as `name = Orders.courier` (the
+/// source's name, `Subnet/Port` for a port, then its key), and `any` for a
+/// filter with no clauses. Its places and prefix are left out: an edge
+/// reads one place, and does not consult them.
+fn filter_label(filter: &Filter, place_name: &dyn Fn(PlaceId) -> String) -> String {
     if filter.clauses.is_empty() {
         return String::from("any");
     }
@@ -802,6 +869,9 @@ fn filter_label(filter: &Filter) -> String {
                 format!("{key} in {{{}}}", values.join(", "))
             }
             Clause::IsParam { key, param } => format!("{key} = ${param}"),
+            Clause::IsInput { key, input } => {
+                format!("{key} = {}.{}", place_name(input.place), input.key)
+            }
             // `Clause` is `#[non_exhaustive]`: a condition this version
             // cannot spell is still a condition.
             _ => String::from("?"),
@@ -824,7 +894,8 @@ fn output_attrs(slot: Option<usize>, highlight: Option<&str>) -> String {
 /// highlighted firing.
 ///
 /// A highlight replaces `color` and `penwidth` and leaves everything else
-/// alone, so a read edge stays dashed and a mutating edge keeps its dots: the
+/// alone, so a snapshot stays dashed, a read edge dotted and a mutating edge
+/// keeps its dots: the
 /// outline says *what happened*, the shape says *what kind of edge it is*,
 /// and neither should hide the other.
 fn join_attrs(attrs: Vec<String>, highlight: Option<&str>) -> String {

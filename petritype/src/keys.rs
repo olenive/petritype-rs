@@ -314,7 +314,7 @@ impl fmt::Debug for KeysVtable {
 ///
 /// With the `serde` feature it is `Serialize` and `Deserialize` in the
 /// protocol's shape (PROTOCOL.md §13.2): `{"clauses": [{"key", "values"} |
-/// {"key", "param"}], "places"?, "prefix"?}`, `clauses` defaulting to none
+/// {"key", "param"} | {"key", "input"}], "places"?, "prefix"?}`, `clauses` defaulting to none
 /// and the two restrictions written only when set. The one difference is
 /// that `places` holds the core's [`PlaceId`]s, as everything the core
 /// serialises does (DESIGN §19.2). The protocol names places by name; a
@@ -345,9 +345,11 @@ pub struct Filter {
 /// `#[non_exhaustive]`: match with a `_` arm.
 ///
 /// With the `serde` feature a clause is written untagged, as the protocol
-/// writes it: `{"key": "class", "values": ["Bird"]}` or `{"key": "class",
-/// "param": "season"}`. An object with neither `values` nor `param` reads as
-/// neither and is an error.
+/// writes it: `{"key": "class", "values": ["Bird"]}`, `{"key": "class",
+/// "param": "season"}` or `{"key": "name", "input": {"place": 1, "key":
+/// "courier"}}` (the place by the core's id, as everything the core
+/// serialises names one). An object with none of `values`, `param` and
+/// `input` reads as none of them and is an error.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(untagged))]
@@ -380,6 +382,44 @@ pub enum Clause {
         /// The wire name of the net parameter whose value is accepted.
         param: String,
     },
+    /// The token's value for `key` equals the value of the key
+    /// `input.key` of the token that the same firing gets from the place
+    /// `input.place`: "the unit this order names" (since 2026-11-23).
+    ///
+    /// It has a meaning only in the filter of a keyed edge
+    /// ([`TakeWhereEdge`](crate::TakeWhereEdge),
+    /// [`MutateWhereEdge`](crate::MutateWhereEdge)), whose transition reads
+    /// `input.place` through another edge, the *source*, which gives one
+    /// token. The edge whose filter holds such a clause is *bound* to its
+    /// source, and the firing chooses the two tokens as a pair: the oldest
+    /// source token that has a match, with the oldest match for it (DESIGN
+    /// §8.3). [`build`](crate::NetBuilder::build) checks the rest
+    /// ([`BuildError::BoundSourceNotAnInput`](crate::BuildError::BoundSourceNotAnInput)
+    /// and the four after it).
+    ///
+    /// Outside a firing there is no source token, so a query, a filter on
+    /// its own and [`Net::first_match`] accept nothing through it.
+    IsInput {
+        /// The key's name, on the bound edge's place.
+        key: String,
+        /// The source place, and its key whose value is accepted.
+        input: InputKey,
+    },
+}
+
+/// A key of the token a firing gets from one of its input places: what a
+/// [`Clause::IsInput`] compares with.
+///
+/// With the `serde` feature it is `{"place": 1, "key": "courier"}`, the
+/// place by the core's id; a runner names it as the protocol does,
+/// `{"place": "Orders", "key": "courier"}`.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct InputKey {
+    /// The source place: another input place of the same transition.
+    pub place: PlaceId,
+    /// The key the source place declares, whose value is accepted.
+    pub key: String,
 }
 
 impl Filter {
@@ -411,6 +451,67 @@ impl Filter {
         self
     }
 
+    /// Adds a clause: the token's `key` equals the key `input_key` of the
+    /// token the same firing gets from `input`, another input place of the
+    /// transition (see [`Clause::IsInput`]). For the filter of a keyed edge:
+    /// "the unit this order names".
+    ///
+    /// ```
+    /// use petritype::{Filter, MutateWhereEdge, NetBuilder, TakeEdge};
+    ///
+    /// let mut b = NetBuilder::new();
+    /// // An order names the unit it is for.
+    /// let orders = b.place::<(String, String)>("Orders");
+    /// let units = b.place::<(String, u32)>("Units");
+    /// let done = b.place::<(String, String)>("Done");
+    /// b.keys(orders, ["unit"], |(_, unit): &(String, String)| [unit.as_str().into()]);
+    /// b.keys(units, ["name"], |(name, _): &(String, u32)| [name.as_str().into()]);
+    /// b.seed(orders, [("Hold".into(), "Bravo".into())]);
+    /// b.seed(units, [("Alpha".into(), 0), ("Bravo".into(), 0)]);
+    /// b.transition(
+    ///     "Order",
+    ///     (TakeEdge(orders), MutateWhereEdge(units, Filter::new().key_is_input("name", orders, "unit"))),
+    ///     (done,),
+    ///     |order: (String, String), unit: &mut (String, u32)| {
+    ///         unit.1 += 1;
+    ///         (order,)
+    ///     },
+    /// );
+    /// let mut net = b.build()?;
+    ///
+    /// net.step()?;
+    /// let orders_given: Vec<u32> = net
+    ///     .tokens(units.id())
+    ///     .map(|(id, _)| net.token::<(String, u32)>(units.id(), id).unwrap().1)
+    ///     .collect();
+    /// assert_eq!(orders_given, [0, 1], "Bravo, the unit the order named");
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn key_is_input<T>(
+        mut self,
+        key: impl Into<String>,
+        input: crate::PlaceRef<T>,
+        input_key: impl Into<String>,
+    ) -> Filter {
+        self.clauses.push(Clause::IsInput {
+            key: key.into(),
+            input: InputKey {
+                place: input.id(),
+                key: input_key.into(),
+            },
+        });
+        self
+    }
+
+    /// The source each [`Clause::IsInput`] of this filter names, in clause
+    /// order: what a build checks and a firing pairs by.
+    pub(crate) fn inputs(&self) -> impl Iterator<Item = (&str, &InputKey)> {
+        self.clauses.iter().filter_map(|clause| match clause {
+            Clause::IsInput { key, input } => Some((key.as_str(), input)),
+            _ => None,
+        })
+    }
+
     /// Restricts the filter to these places. A place that is not in the net
     /// makes [`Net::query`] fail with [`NetError::NoSuchPlace`].
     pub fn in_places(mut self, places: impl IntoIterator<Item = PlaceId>) -> Filter {
@@ -427,14 +528,15 @@ impl Filter {
     /// Whether a token with these keys passes every clause, the token being
     /// in a place the filter covers. A [`Clause::IsParam`] passes nothing here,
     /// since a filter alone knows no parameters; [`Net::matches`] and
-    /// [`Net::query`] read them from the net.
+    /// [`Net::query`] read them from the net. A [`Clause::IsInput`] passes
+    /// nothing anywhere outside a firing.
     pub fn matches(&self, keys: &Keys) -> bool {
         self.matches_with(keys, |_| None)
     }
 
     /// Whether a token with these keys passes every clause, a
     /// [`Clause::IsParam`] reading the parameter's value from `param` (by wire
-    /// name; `None` accepts nothing).
+    /// name; `None` accepts nothing). A [`Clause::IsInput`] passes nothing.
     pub fn matches_with(&self, keys: &Keys, param: impl Fn(&str) -> Option<KeyValue>) -> bool {
         self.resolve(param).accepts(keys)
     }
@@ -455,7 +557,8 @@ impl Filter {
     ///
     /// This is the primitive a query and a keyed edge share: a filter,
     /// resolved against the net's parameters once, then asked of one
-    /// token's keys at a time.
+    /// token's keys at a time. A [`Clause::IsInput`] accepts nothing until a
+    /// firing [binds](Resolved::bind) it to a source token.
     pub(crate) fn resolve(&self, param: impl Fn(&str) -> Option<KeyValue>) -> Resolved<'_> {
         Resolved {
             clauses: self
@@ -465,10 +568,17 @@ impl Filter {
                     Clause::In { key, values } => ResolvedClause {
                         key,
                         accepts: Accepts::Values(values),
+                        input: None,
                     },
                     Clause::IsParam { key, param: name } => ResolvedClause {
                         key,
                         accepts: Accepts::One(param(name)),
+                        input: None,
+                    },
+                    Clause::IsInput { key, input } => ResolvedClause {
+                        key,
+                        accepts: Accepts::One(None),
+                        input: Some(input),
                     },
                 })
                 .collect(),
@@ -493,6 +603,9 @@ pub(crate) struct Resolved<'f> {
 pub(crate) struct ResolvedClause<'f> {
     pub(crate) key: &'f str,
     accepts: Accepts<'f>,
+    /// The source key of a [`Clause::IsInput`], which
+    /// [`bind`](Resolved::bind) reads; `None` for the other clauses.
+    input: Option<&'f InputKey>,
 }
 
 /// What a resolved clause accepts: the values written in it, or the one
@@ -524,6 +637,19 @@ impl Resolved<'_> {
     /// Whether a token with these keys passes every clause.
     pub(crate) fn accepts(&self, keys: &Keys) -> bool {
         self.clauses.iter().all(|clause| clause.accepts(keys))
+    }
+
+    /// Gives every [`Clause::IsInput`] the value its source token has for
+    /// the key it names, from that token's keys (`None`, accepting nothing,
+    /// for a key the token lacks). The other clauses keep what they were
+    /// resolved to, so a firing resolves a bound edge's filter once and
+    /// binds it again for each source token it tries.
+    pub(crate) fn bind(&mut self, source: &Keys) {
+        for clause in &mut self.clauses {
+            if let Some(input) = clause.input {
+                clause.accepts = Accepts::One(source.get(&input.key).cloned());
+            }
+        }
     }
 }
 
@@ -716,7 +842,9 @@ impl Net {
     /// front token. Asked as the edge asks it: of this one place, so the
     /// filter's [`places`](Filter::places) and [`prefix`](Filter::prefix)
     /// are not consulted, a [`Clause::IsParam`] reading the parameter now,
-    /// and answered from the index.
+    /// and answered from the index. A filter with a [`Clause::IsInput`]
+    /// chooses its token only within a firing, paired with its source's,
+    /// so here it finds none.
     ///
     /// ```
     /// use petritype::{Filter, NetBuilder};

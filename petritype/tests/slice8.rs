@@ -129,12 +129,14 @@ fn the_weigh_net_reads_back_as_its_edges() {
                 transition: weigh,
                 kind: EdgeKind::TakeAll,
                 filter: None,
+                reaches: Vec::new()
             },
             EdgeInfo::Input {
                 place: config.id(),
                 transition: weigh,
                 kind: EdgeKind::Snapshot,
                 filter: None,
+                reaches: Vec::new()
             },
             EdgeInfo::Output {
                 transition: weigh,
@@ -207,7 +209,7 @@ fn the_same_loop_builds_without_the_assertion() {
     );
 }
 
-/// A loop closed by a read edge is not a cycle: a snapshot and a mutation
+/// A loop closed by a non-consuming edge is not a cycle: a snapshot and a mutation
 /// move no tokens, so nothing goes round.
 #[test]
 fn a_loop_through_a_read_edge_only_is_not_a_cycle() {
@@ -239,7 +241,7 @@ fn a_loop_through_a_read_edge_only_is_not_a_cycle() {
 
         let net = b
             .build()
-            .expect("a read edge carries no token, so it closes no cycle");
+            .expect("a non-consuming edge carries no token, so it closes no cycle");
         assert_eq!(net.edges().count(), 4, "the edges are all still drawn");
     }
 }
@@ -293,7 +295,7 @@ fn a_source_builds_without_the_assertion() {
     assert_eq!(net.fireable(), [spawn], "for ever");
 }
 
-/// Reading is not consuming: a transition whose every input is a read edge is
+/// Reading is not consuming: a transition whose every input is a non-consuming edge is
 /// a source like one with no inputs at all.
 #[test]
 fn a_transition_that_only_reads_is_a_source() {

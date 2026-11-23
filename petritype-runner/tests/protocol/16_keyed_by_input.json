@@ -1,0 +1,1006 @@
+{
+ "net": "couriers",
+ "params": {},
+ "exchanges": [
+  {
+   "send": {
+    "method": "describe"
+   },
+   "expect": [
+    {
+     "id": "1",
+     "result": {
+      "protocol_version": 2,
+      "runtime": "<label>",
+      "runtime_version": "<label>",
+      "nets": [
+       {
+        "name": "couriers",
+        "description": "Orders are loaded onto the courier they name, and a call sends that courier out",
+        "mode": "manual",
+        "params": []
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "load",
+    "params": {
+     "net": "couriers"
+    }
+   },
+   "expect": [
+    {
+     "method": "load_progress",
+     "params": {
+      "step": "build",
+      "message": "<label>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "reloaded",
+     "params": {
+      "generation": 1,
+      "reason": "load",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "2",
+     "result": {
+      "status": "loaded",
+      "generation": 1,
+      "marking_version": "<version>"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "get_state"
+   },
+   "expect": [
+    {
+     "id": "3",
+     "result": {
+      "protocol_version": 2,
+      "runtime": "<label>",
+      "net": "couriers",
+      "generation": 1,
+      "marking_version": "<version>",
+      "running": false,
+      "topology": {
+       "places": [
+        {
+         "name": "Couriers",
+         "type_name": "<label>",
+         "serializable": true,
+         "key_names": [
+          "name"
+         ]
+        },
+        {
+         "name": "Orders",
+         "type_name": "<label>",
+         "serializable": true,
+         "key_names": [
+          "courier"
+         ]
+        },
+        {
+         "name": "Calls",
+         "type_name": "<label>",
+         "serializable": true,
+         "key_names": [
+          "courier"
+         ]
+        },
+        {
+         "name": "Loaded",
+         "type_name": "<label>",
+         "serializable": true
+        },
+        {
+         "name": "On Road",
+         "type_name": "<label>",
+         "serializable": true
+        }
+       ],
+       "transitions": [
+        {
+         "name": "Load",
+         "detail": "<any>"
+        },
+        {
+         "name": "Dispatch",
+         "detail": "<any>"
+        }
+       ],
+       "edges": {
+        "<unordered>": [
+         {
+          "place": "Orders",
+          "transition": "Load",
+          "direction": "in",
+          "kind": "take"
+         },
+         {
+          "place": "Calls",
+          "transition": "Dispatch",
+          "direction": "in",
+          "kind": "take"
+         },
+         {
+          "place": "Couriers",
+          "transition": "Dispatch",
+          "direction": "in",
+          "kind": "take_where",
+          "filter": {
+           "clauses": [
+            {
+             "key": "name",
+             "input": {
+              "place": "Calls",
+              "key": "courier"
+             }
+            }
+           ]
+          }
+         },
+         {
+          "place": "Couriers",
+          "transition": "Load",
+          "direction": "in",
+          "kind": "mutate_where",
+          "filter": {
+           "clauses": [
+            {
+             "key": "name",
+             "input": {
+              "place": "Orders",
+              "key": "courier"
+             }
+            }
+           ]
+          }
+         },
+         {
+          "place": "Loaded",
+          "transition": "Load",
+          "direction": "out"
+         },
+         {
+          "place": "On Road",
+          "transition": "Dispatch",
+          "direction": "out"
+         }
+        ]
+       }
+      },
+      "transitions": {
+       "Load": {
+        "enabled": true,
+        "fireable": true,
+        "in_flight": false,
+        "priority": 0.0
+       },
+       "Dispatch": {
+        "enabled": true,
+        "fireable": false,
+        "in_flight": false,
+        "priority": 0.0
+       }
+      },
+      "marking": {
+       "places": {
+        "Couriers": {
+         "count": 3,
+         "tokens": [
+          {
+           "id": "<id:ada>",
+           "label": "<label>",
+           "keys": {
+            "name": "Ada"
+           }
+          },
+          {
+           "id": "<id:ben>",
+           "label": "<label>",
+           "keys": {
+            "name": "Ben"
+           }
+          },
+          {
+           "id": "<id:dot>",
+           "label": "<label>",
+           "keys": {
+            "name": "Dot"
+           }
+          }
+         ]
+        },
+        "Orders": {
+         "count": 3,
+         "tokens": [
+          {
+           "id": "<id:lamp>",
+           "label": "<label>",
+           "keys": {
+            "courier": "Cleo"
+           }
+          },
+          {
+           "id": "<id:book>",
+           "label": "<label>",
+           "keys": {
+            "courier": "Ben"
+           }
+          },
+          {
+           "id": "<id:kite>",
+           "label": "<label>",
+           "keys": {
+            "courier": "Ada"
+           }
+          }
+         ]
+        },
+        "Calls": {
+         "count": 0,
+         "tokens": []
+        },
+        "Loaded": {
+         "count": 0,
+         "tokens": []
+        },
+        "On Road": {
+         "count": 0,
+         "tokens": []
+        }
+       }
+      },
+      "progress": {
+       "step_count": 0,
+       "last_fired": null,
+       "fired_counts": {},
+       "last_progress_at": null
+      }
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "step"
+   },
+   "expect": [
+    {
+     "method": "mutated",
+     "params": {
+      "place": "Couriers",
+      "id": "<id:ben>",
+      "label": "<label>",
+      "keys": {
+       "name": "Ben"
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "fired",
+     "params": {
+      "transition": "Load",
+      "consumed": [
+       [
+        "Orders",
+        "<id:book>"
+       ]
+      ],
+      "produced": [
+       [
+        "Loaded",
+        "<id:book_loaded>",
+        "<label>"
+       ]
+      ],
+      "duration_ms": "<ms>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "4",
+     "result": {
+      "fired": true,
+      "transition": "Load",
+      "marking_version": "<version>",
+      "running": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "step"
+   },
+   "expect": [
+    {
+     "method": "mutated",
+     "params": {
+      "place": "Couriers",
+      "id": "<id:ada>",
+      "label": "<label>",
+      "keys": {
+       "name": "Ada"
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "fired",
+     "params": {
+      "transition": "Load",
+      "consumed": [
+       [
+        "Orders",
+        "<id:kite>"
+       ]
+      ],
+      "produced": [
+       [
+        "Loaded",
+        "<id:kite_loaded>",
+        "<label>"
+       ]
+      ],
+      "duration_ms": "<ms>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "fireable",
+     "params": {
+      "transitions": [],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "5",
+     "result": {
+      "fired": true,
+      "transition": "Load",
+      "marking_version": "<version>",
+      "running": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "step"
+   },
+   "expect": [
+    {
+     "id": "6",
+     "result": {
+      "fired": false,
+      "marking_version": "<version>",
+      "running": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "get_place_tokens",
+    "params": {
+     "place": "Orders"
+    }
+   },
+   "expect": [
+    {
+     "id": "7",
+     "result": {
+      "place": "Orders",
+      "marking_version": "<version>",
+      "count": 1,
+      "offset": 0,
+      "limit": 200,
+      "tokens": [
+       {
+        "id": "<id:lamp>",
+        "label": "<label>",
+        "keys": {
+         "courier": "Cleo"
+        }
+       }
+      ],
+      "has_more": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "query",
+    "params": {
+     "filter": {
+      "clauses": [
+       {
+        "key": "name",
+        "input": {
+         "place": "Orders",
+         "key": "courier"
+        }
+       }
+      ]
+     }
+    }
+   },
+   "expect": [
+    {
+     "id": "8",
+     "error": {
+      "message": "<label>",
+      "code": "invalid_params"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "set_filter",
+    "params": {
+     "filter": {
+      "clauses": [
+       {
+        "key": "name",
+        "input": {
+         "place": "Orders",
+         "key": "courier"
+        }
+       }
+      ]
+     }
+    }
+   },
+   "expect": [
+    {
+     "id": "9",
+     "error": {
+      "message": "<label>",
+      "code": "invalid_params"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "inject",
+    "params": {
+     "place": "Calls",
+     "token": {
+      "courier": "Ben"
+     }
+    }
+   },
+   "expect": [
+    {
+     "method": "added",
+     "params": {
+      "place": "Calls",
+      "id": "<id:ben_calls>",
+      "label": "<label>",
+      "keys": {
+       "courier": "Ben"
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "fireable",
+     "params": {
+      "transitions": [
+       "Dispatch"
+      ],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "10",
+     "result": {
+      "status": "injected",
+      "id": "<id:ben_calls>",
+      "marking_version": "<version>"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "step"
+   },
+   "expect": [
+    {
+     "method": "fired",
+     "params": {
+      "transition": "Dispatch",
+      "consumed": [
+       [
+        "Calls",
+        "<id:ben_calls>"
+       ],
+       [
+        "Couriers",
+        "<id:ben>"
+       ]
+      ],
+      "produced": [
+       [
+        "On Road",
+        "<id:ben_on_road>",
+        "<label>"
+       ]
+      ],
+      "duration_ms": "<ms>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "fireable",
+     "params": {
+      "transitions": [],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "11",
+     "result": {
+      "fired": true,
+      "transition": "Dispatch",
+      "marking_version": "<version>",
+      "running": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "inject",
+    "params": {
+     "place": "Calls",
+     "token": {
+      "courier": "Dot"
+     }
+    }
+   },
+   "expect": [
+    {
+     "method": "added",
+     "params": {
+      "place": "Calls",
+      "id": "<id:dot_calls>",
+      "label": "<label>",
+      "keys": {
+       "courier": "Dot"
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "fireable",
+     "params": {
+      "transitions": [
+       "Dispatch"
+      ],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "12",
+     "result": {
+      "status": "injected",
+      "id": "<id:dot_calls>",
+      "marking_version": "<version>"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "step"
+   },
+   "expect": [
+    {
+     "method": "launched",
+     "params": {
+      "transition": "Dispatch",
+      "consumed": [
+       [
+        "Calls",
+        "<id:dot_calls>"
+       ],
+       [
+        "Couriers",
+        "<id:dot>"
+       ]
+      ],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "failed",
+     "params": {
+      "transition": "Dispatch",
+      "error": "<label>",
+      "restored": true,
+      "consumed": [
+       [
+        "Calls",
+        "<id:dot_calls>"
+       ],
+       [
+        "Couriers",
+        "<id:dot>"
+       ]
+      ],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "13",
+     "result": {
+      "fired": true,
+      "transition": "Dispatch",
+      "failed": true,
+      "marking_version": "<version>",
+      "running": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "get_state"
+   },
+   "expect": [
+    {
+     "id": "14",
+     "result": {
+      "protocol_version": 2,
+      "runtime": "<label>",
+      "net": "couriers",
+      "generation": 1,
+      "marking_version": "<version>",
+      "running": false,
+      "topology": {
+       "places": [
+        {
+         "name": "Couriers",
+         "type_name": "<label>",
+         "serializable": true,
+         "key_names": [
+          "name"
+         ]
+        },
+        {
+         "name": "Orders",
+         "type_name": "<label>",
+         "serializable": true,
+         "key_names": [
+          "courier"
+         ]
+        },
+        {
+         "name": "Calls",
+         "type_name": "<label>",
+         "serializable": true,
+         "key_names": [
+          "courier"
+         ]
+        },
+        {
+         "name": "Loaded",
+         "type_name": "<label>",
+         "serializable": true
+        },
+        {
+         "name": "On Road",
+         "type_name": "<label>",
+         "serializable": true
+        }
+       ],
+       "transitions": [
+        {
+         "name": "Load",
+         "detail": "<any>"
+        },
+        {
+         "name": "Dispatch",
+         "detail": "<any>"
+        }
+       ],
+       "edges": {
+        "<unordered>": [
+         {
+          "place": "Orders",
+          "transition": "Load",
+          "direction": "in",
+          "kind": "take"
+         },
+         {
+          "place": "Calls",
+          "transition": "Dispatch",
+          "direction": "in",
+          "kind": "take"
+         },
+         {
+          "place": "Couriers",
+          "transition": "Dispatch",
+          "direction": "in",
+          "kind": "take_where",
+          "filter": {
+           "clauses": [
+            {
+             "key": "name",
+             "input": {
+              "place": "Calls",
+              "key": "courier"
+             }
+            }
+           ]
+          }
+         },
+         {
+          "place": "Couriers",
+          "transition": "Load",
+          "direction": "in",
+          "kind": "mutate_where",
+          "filter": {
+           "clauses": [
+            {
+             "key": "name",
+             "input": {
+              "place": "Orders",
+              "key": "courier"
+             }
+            }
+           ]
+          }
+         },
+         {
+          "place": "Loaded",
+          "transition": "Load",
+          "direction": "out"
+         },
+         {
+          "place": "On Road",
+          "transition": "Dispatch",
+          "direction": "out"
+         }
+        ]
+       }
+      },
+      "transitions": {
+       "Load": {
+        "enabled": true,
+        "fireable": false,
+        "in_flight": false,
+        "priority": 0.0
+       },
+       "Dispatch": {
+        "enabled": true,
+        "fireable": true,
+        "in_flight": false,
+        "priority": 0.0
+       }
+      },
+      "marking": {
+       "places": {
+        "Couriers": {
+         "count": 2,
+         "tokens": [
+          {
+           "id": "<id:dot>",
+           "label": "<label>",
+           "keys": {
+            "name": "Dot"
+           }
+          },
+          {
+           "id": "<id:ada>",
+           "label": "<label>",
+           "keys": {
+            "name": "Ada"
+           }
+          }
+         ]
+        },
+        "Orders": {
+         "count": 1,
+         "tokens": [
+          {
+           "id": "<id:lamp>",
+           "label": "<label>",
+           "keys": {
+            "courier": "Cleo"
+           }
+          }
+         ]
+        },
+        "Calls": {
+         "count": 1,
+         "tokens": [
+          {
+           "id": "<id:dot_calls>",
+           "label": "<label>",
+           "keys": {
+            "courier": "Dot"
+           }
+          }
+         ]
+        },
+        "Loaded": {
+         "count": 2,
+         "tokens": [
+          {
+           "id": "<id:book_loaded>",
+           "label": "<label>"
+          },
+          {
+           "id": "<id:kite_loaded>",
+           "label": "<label>"
+          }
+         ]
+        },
+        "On Road": {
+         "count": 1,
+         "tokens": [
+          {
+           "id": "<id:ben_on_road>",
+           "label": "<label>"
+          }
+         ]
+        }
+       }
+      },
+      "progress": {
+       "step_count": 3,
+       "last_fired": "Dispatch",
+       "fired_counts": {
+        "Load": 2,
+        "Dispatch": 1
+       },
+       "last_progress_at": "<time>"
+      }
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "inject",
+    "params": {
+     "place": "Couriers",
+     "token": {
+      "name": "Cleo",
+      "parcels": 0
+     }
+    }
+   },
+   "expect": [
+    {
+     "method": "added",
+     "params": {
+      "place": "Couriers",
+      "id": "<id:cleo>",
+      "label": "<label>",
+      "keys": {
+       "name": "Cleo"
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "fireable",
+     "params": {
+      "transitions": [
+       "Load",
+       "Dispatch"
+      ],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "15",
+     "result": {
+      "status": "injected",
+      "id": "<id:cleo>",
+      "marking_version": "<version>"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "step"
+   },
+   "expect": [
+    {
+     "method": "mutated",
+     "params": {
+      "place": "Couriers",
+      "id": "<id:cleo>",
+      "label": "<label>",
+      "keys": {
+       "name": "Cleo"
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "fired",
+     "params": {
+      "transition": "Load",
+      "consumed": [
+       [
+        "Orders",
+        "<id:lamp>"
+       ]
+      ],
+      "produced": [
+       [
+        "Loaded",
+        "<id:lamp_loaded>",
+        "<label>"
+       ]
+      ],
+      "duration_ms": "<ms>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "fireable",
+     "params": {
+      "transitions": [
+       "Dispatch"
+      ],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "16",
+     "result": {
+      "fired": true,
+      "transition": "Load",
+      "marking_version": "<version>",
+      "running": false
+     }
+    }
+   ]
+  }
+ ]
+}

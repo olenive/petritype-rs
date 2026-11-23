@@ -49,6 +49,7 @@
 use std::any::Any;
 use std::fmt;
 
+use crate::closed;
 use crate::error::{FiringFailed, NetError, PathStep};
 use crate::event::Event;
 use crate::ids::{NetId, PlaceId, TokenId, TransitionId};
@@ -657,6 +658,13 @@ impl Net {
     /// `None`, with `f` not called, if the place is not nested or holds no
     /// such token.
     ///
+    /// Each net it lends is under its own rule (DESIGN §6.9, since
+    /// 2026-11-23): one that marks a port is [closed](Net::is_closed), and
+    /// `f`, being outside it, writes tokens only at its ports. Called on a
+    /// net that a body holds as a token, it lends the nets with the body's
+    /// mark for `f`'s time, so that their knobs and firing by name are
+    /// refused to the body too, at any depth.
+    ///
     /// ```
     /// use petritype::{Event, NetBuilder};
     ///
@@ -688,13 +696,20 @@ impl Net {
         f: impl FnOnce(&mut [(&str, &mut Net)]) -> R,
     ) -> Option<R> {
         self.places.get(place.0 as usize)?;
+        // A body that holds this net holds the nets it lends too, for the
+        // closure's time (DESIGN §6.9).
+        let mark = self.live_mark();
         let (result, lifted) = {
             let (holder, at) = self.holder_mut(place);
             let slot = &mut holder.places[at.0 as usize];
             let nested = slot.meta.nested?;
             let index = slot.position(token)?;
             let value = &mut slot.tokens[index].1;
+            let before = mark.as_ref().map(|mark| closed::mark(nested, value, mark));
             let result = f(&mut (nested.nets_mut)(&mut **value));
+            if let Some(before) = before {
+                closed::unmark(nested, &mut slot.tokens[index].1, before);
+            }
             // A key may read the inner nets: the token is indexed again as
             // it is now (DESIGN §8.3).
             if slot.meta.keys.is_some() {
@@ -754,6 +769,13 @@ impl Net {
     /// levels are reached by calling `subnet_scope` or `nested_scope` on the
     /// subnet; each level lifts into the one above it as its call returns.
     ///
+    /// The subnet is under its own rule (DESIGN §6.9, since 2026-11-23): it
+    /// marks ports, so it is [closed](Net::is_closed) unless it declares
+    /// itself open, and `f`, being outside it, writes tokens only at its
+    /// ports. Its parameters, switches and other knobs stay the program's.
+    /// Called on a net that a body holds as a token, it lends the subnet
+    /// with the body's mark for `f`'s time, as `nested_scope` does.
+    ///
     /// ```
     /// use petritype::{Event, NetBuilder};
     ///
@@ -812,13 +834,20 @@ impl Net {
                 name: self.transition_name(transition),
             });
         }
+        // A body that holds this net holds its subnet too, for the
+        // closure's time (DESIGN §6.9).
+        let mark = self.live_mark();
         let subnet = &mut self.places[place.0 as usize]
             .subnet
             .as_deref_mut()
             .expect("the place was just found to hold a subnet")
             .net;
         let nested_id = subnet.id();
+        let before = mark.map(|mark| subnet.held.replace(mark));
         let result = f(subnet);
+        if let Some(before) = before {
+            subnet.held = before;
+        }
         assert_eq!(
             subnet.id(),
             nested_id,
@@ -1069,8 +1098,11 @@ impl Net {
     ///
     /// [`NetError::NoSuchPlace`] for a place this net does not have, and
     /// [`NetError::NotNested`] for one that holds no nets, which has no rule
-    /// to change.
+    /// to change. [`NetError::HeldByBody`] when a body of the net around
+    /// this one holds it and it marks a port (since 2026-11-23): its
+    /// stepping rules are the program's.
     pub fn set_stepping(&mut self, place: PlaceId, stepping: Stepping) -> Result<(), NetError> {
+        self.admit_knob(closed::SET_STEPPING)?;
         let slot = self
             .places
             .get_mut(place.0 as usize)
@@ -1166,7 +1198,16 @@ impl Net {
     ///
     /// The inner failure's [`FiringFailed`], as from `step_deep`, its
     /// [`path`](FiringFailed::path) saying where.
+    ///
+    /// # Panics
+    ///
+    /// When a body of the net around this one holds it and it marks a port
+    /// (since 2026-11-23): a step that leaves out the net's own turn is
+    /// the program's, and the body's firing fails with
+    /// [`NetError::HeldByBody`]. A body steps a net it holds with
+    /// [`step`](Net::step) or [`step_deep`](Net::step_deep).
     pub fn step_inside(&mut self) -> Result<Option<DeepStep>, FiringFailed> {
+        self.admit_knob_or_panic(closed::STEP_INSIDE);
         if let Some(step) = self.take_turn(Part::Ahead)? {
             return Ok(Some(step));
         }

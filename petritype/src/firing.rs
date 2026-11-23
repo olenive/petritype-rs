@@ -86,9 +86,15 @@
 //! undone either way: it was made where the token lies, and there is nothing
 //! to roll back to.
 
+use std::collections::VecDeque;
 use std::fmt;
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::sync::{Arc, Weak};
 
+use crate::closed::{
+    CLEAR_SELECTOR, DISTRIBUTE, FIRE, Hold, LAUNCH, SET_SELECTOR, SET_TIE_BREAK, SWITCH, hold_of,
+    mark, unmark,
+};
 use crate::distribution::{DistributionError, FOREIGN_PLACE};
 use crate::edge::EdgeKind;
 use crate::erased::{ErasedBody, ErasedInput, ErasedInputs, ErasedOutcome, OutputTarget};
@@ -99,6 +105,7 @@ use crate::index::{KeyIndex, first_match};
 use crate::keys::KeyValue;
 use crate::nested::lift_from;
 use crate::net::{Net, slot_of};
+use crate::pairing::pair;
 use crate::param::{ParamSlot, param_slot};
 use crate::place::{ErasedToken, PlaceMeta, PlaceSlot, Window};
 use crate::transition::{ArgSource, TransitionSlot};
@@ -108,9 +115,9 @@ use crate::transition::{ArgSource, TransitionSlot};
 /// what was checked. A drain or a survey edge never asks.
 const NON_EMPTY: &str = "a fireable transition's input places all hold a token";
 
-/// Why a keyed edge finds its token once stage one starts: fireability asked
-/// the same question of the same marking, and the other edges of the
-/// transition read other places.
+/// Why a keyed edge finds its token once stage one starts, and a bound edge
+/// its pair: fireability asked the same question of the same marking, and
+/// the other edges of the transition read other places.
 const MATCHING: &str = "a fireable transition's keyed edges each have a token to choose";
 
 /// How a net picks which of its fireable transitions fires next.
@@ -197,7 +204,11 @@ impl Net {
     ///   [`MutateWhereEdge`](crate::MutateWhereEdge)) needs a token its
     ///   filter accepts, asked of the key index, a
     ///   [`Clause::IsParam`](crate::Clause::IsParam) reading the parameter as
-    ///   it is now. The exceptions are the edges that do not
+    ///   it is now. A keyed edge bound to another input by a
+    ///   [`Clause::IsInput`](crate::Clause::IsInput) needs, with that input,
+    ///   a pair: a token of the input that has a match, the oldest such
+    ///   token tried first, one index lookup per token tried. The exceptions
+    ///   are the edges that do not
     ///   [require presence](EdgeKind::requires_presence),
     ///   [`DrainEdge`](crate::DrainEdge) and
     ///   [`SurveyEdge`](crate::SurveyEdge), which read every token there
@@ -281,20 +292,23 @@ impl Net {
     fn slot_is_fireable(&self, slot: &TransitionSlot) -> bool {
         slot.enabled
             && slot.body.is_some()
-            && slot
-                .inputs
-                .iter()
-                .zip(&slot.filters)
-                .all(|(&(place, kind), filter)| match filter {
+            && slot.inputs.iter().zip(&slot.filters).enumerate().all(
+                |(edge, (&(place, kind), filter))| match filter {
                     // A drain or a survey takes whatever is there, nothing
                     // included: its place cannot hold the transition back.
                     _ if !kind.requires_presence() => true,
+                    // A source or a bound edge is asked with its pair, below.
+                    _ if slot.is_paired(edge) => true,
                     None => self.count(place) > 0,
                     Some(filter) => {
                         first_match(&self.places, &self.params, &self.index, place, filter)
                             .is_some()
                     }
-                })
+                },
+            )
+            && slot.bindings.iter().all(|binding| {
+                pair(&self.places, &self.params, &self.index, slot, binding).is_some()
+            })
             && match &slot.guard {
                 Some(guard) => guard(self),
                 None => true,
@@ -343,10 +357,17 @@ impl Net {
     /// assert_eq!(net.fireable().len(), 1, "fireable, but not chosen");
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
+    ///
+    /// # Panics
+    ///
+    /// When a body of the net around this one holds it and it marks a port
+    /// (since 2026-11-23): its selector is the program's, and the body's
+    /// firing fails with [`NetError::HeldByBody`].
     pub fn set_selector<F>(&mut self, selector: F)
     where
         F: Fn(&Net, &[TransitionId]) -> Option<TransitionId> + Send + Sync + 'static,
     {
+        self.admit_knob_or_panic(SET_SELECTOR);
         self.selector = Some(Box::new(selector));
     }
 
@@ -380,7 +401,13 @@ impl Net {
     /// assert_eq!(net.step()?, Some(double), "the default is back");
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
+    ///
+    /// # Panics
+    ///
+    /// As [`set_selector`](Net::set_selector), for a body that holds a net
+    /// marking a port.
     pub fn clear_selector(&mut self) {
+        self.admit_knob_or_panic(CLEAR_SELECTOR);
         self.selector = None;
     }
 
@@ -504,7 +531,14 @@ impl Net {
     /// [round robin](TieBreak::RoundRobin)'s cursor where it is. A custom
     /// selector installed with [`set_selector`](Net::set_selector) ignores
     /// it.
+    ///
+    /// # Panics
+    ///
+    /// When a body of the net around this one holds it and it marks a port
+    /// (since 2026-11-23): its tie-break is the program's, and the body's
+    /// firing fails with [`NetError::HeldByBody`].
     pub fn set_tie_break(&mut self, tie_break: TieBreak) {
+        self.admit_knob_or_panic(SET_TIE_BREAK);
         self.tie_break = tie_break;
     }
 
@@ -582,13 +616,17 @@ impl Net {
     /// [`NetError::NotFireable`] for a transition that cannot fire right now;
     /// the net is untouched in both cases. A body that returns `Err` or
     /// panics gives [`NetError::FiringFailed`], with the same consequences as
-    /// for [`step`](Net::step).
+    /// for [`step`](Net::step). [`NetError::HeldByBody`], the net untouched,
+    /// when a body of the net around this one holds it and it marks a port
+    /// (since 2026-11-23): firing by name is the program's, and the body
+    /// steps the net instead.
     ///
     /// # Panics
     ///
     /// As [`step`](Net::step): a panicking body is caught and reported as a
     /// failure, not propagated.
     pub fn fire(&mut self, transition: TransitionId) -> Result<(), NetError> {
+        self.admit_knob(FIRE)?;
         let slot = self
             .transitions
             .get(transition.0 as usize)
@@ -649,8 +687,9 @@ impl Net {
     ///
     /// [`NetError::NoSuchTransition`] for an unknown id, and
     /// [`NetError::NotFireable`] for a transition that cannot fire right now,
-    /// including one that is already in flight. The net is untouched in
-    /// both cases.
+    /// including one that is already in flight. [`NetError::HeldByBody`]
+    /// when a body holds this net and it marks a port, as for
+    /// [`fire`](Net::fire). The net is untouched in each case.
     ///
     /// # Panics
     ///
@@ -661,6 +700,7 @@ impl Net {
     #[must_use = "a Firing that is dropped instead of distributed strands its transition in \
                   flight for good: the body never comes home"]
     pub fn launch(&mut self, transition: TransitionId) -> Result<Firing, NetError> {
+        self.admit_knob(LAUNCH)?;
         let slot = self
             .transitions
             .get(transition.0 as usize)
@@ -693,6 +733,9 @@ impl Net {
     ///
     /// # Errors
     ///
+    /// [`NetError::HeldByBody`] when a body holds this net and it marks a
+    /// port, as for [`fire`](Net::fire) (a body cannot have launched one of
+    /// its firings, so this is misuse and keeps the transition in flight);
     /// [`NetError::ForeignFiring`] if the `Completed` was launched by another
     /// net, [`NetError::NotInFlight`] if this net's transition is not in
     /// flight, and [`NetError::FiringFailed`] if the body returned `Err` or
@@ -704,6 +747,7 @@ impl Net {
     /// takes its body with it: the two rejections above are misuse, and the
     /// net they belong to keeps that transition in flight.
     pub fn distribute(&mut self, completed: Completed) -> Result<(), NetError> {
+        self.admit_knob(DISTRIBUTE)?;
         // The stamp first, exactly as a `PlaceRef` is checked before it is
         // used as an index: a `TransitionId` from another net would otherwise
         // name whatever transition sits at that index here.
@@ -754,6 +798,9 @@ impl Net {
         // Beside `mutated`: for each token a mutating edge will lend the
         // body, the argument it fills and where it stands in its place.
         let mut lent = Vec::new();
+        // The same for each token a read edge lends the body to look at,
+        // which is told of in no event (DESIGN §8.3, read edges).
+        let mut looked = Vec::new();
         // What the inner nets of consumed nested tokens had logged, lifted
         // under the place and id each token had (DESIGN §6.6, rule 3).
         let mut lifted = Vec::new();
@@ -764,6 +811,9 @@ impl Net {
         let mut restore = self.transitions[index]
             .restore_tokens_on_failure
             .then(Vec::new);
+        // The mark of this firing, made when it first lends or hands its
+        // body a token's net, and held until the firing ends (DESIGN §6.9).
+        let mut hold = None;
         let state = {
             // Field by field, so that the input places can be emptied while
             // the edge list and the parameter values are read out of the
@@ -783,8 +833,10 @@ impl Net {
                 &mut consumed,
                 &mut mutated,
                 &mut lent,
+                &mut looked,
                 &mut lifted,
                 restore.as_mut(),
+                &mut hold,
             );
             if transitions[index].detachable {
                 Stage::Airborne { body, args }
@@ -793,11 +845,15 @@ impl Net {
                 // they are still the old ones: the index finds a token's
                 // entries by them (DESIGN §8.3).
                 let before = keys_before(places, &mutated, &lent);
+                // The nets of the tokens the body is lent are held by it
+                // for as long as it runs, and no longer (DESIGN §6.9).
+                let marks = mark_lent(places, &lent, &mut hold);
                 // Stage two, here and now: a `MutateEdge` hands the body a
                 // borrow into a place, which may neither travel with the
                 // `Firing` nor still be alive when stage three writes.
-                let args = borrow_mutated(places, &mutated, &lent, args);
-                let outcome = call_body(&mut body, args);
+                let args = borrow_mutated(places, &lent, &looked, args);
+                let outcome = call_body(&mut body, args, hold.as_deref());
+                unmark_lent(places, &lent, marks);
                 // Whatever the body did, done or half done before a panic,
                 // is in the place now, and the index follows it there. The
                 // body could change the token, never the place around it,
@@ -828,6 +884,7 @@ impl Net {
             restore,
             report,
             state,
+            hold,
         }
     }
 
@@ -841,6 +898,7 @@ impl Net {
             report,
             body,
             outcome,
+            hold,
             ..
         } = completed;
         // Home before anything else can go wrong, on the failing path too:
@@ -849,7 +907,12 @@ impl Net {
         // that panicked comes home as well, carrying whatever state the panic
         // left it in.
         self.transitions[transition.0 as usize].body = Some(body);
-        self.distribute_outcome(transition, outcome, consumed, mutated, restore, report)
+        let landed =
+            self.distribute_outcome(transition, outcome, consumed, mutated, restore, report);
+        // The firing has ended, and with it the mark on every net it handed
+        // its body, wherever the body put them (DESIGN §6.9).
+        drop(hold);
+        landed
     }
 
     /// Places what the body produced, or accounts for its failure.
@@ -1101,7 +1164,11 @@ impl Net {
     /// # Errors
     ///
     /// [`NetError::NoSuchTransition`] for an unknown id.
+    /// [`NetError::HeldByBody`] when a body of the net around this one holds
+    /// it and it marks a port (since 2026-11-23): its switches are the
+    /// program's.
     pub fn set_enabled(&mut self, transition: TransitionId, enabled: bool) -> Result<(), NetError> {
+        self.admit_knob(SWITCH)?;
         let slot = self
             .transitions
             .get_mut(transition.0 as usize)
@@ -1207,6 +1274,10 @@ pub struct Firing {
     report: Report,
     /// How far along this firing is.
     state: Stage,
+    /// This firing's mark, when it handed or lent its body a token's net:
+    /// every such net holds a `Weak` to it, which lapses when this is
+    /// dropped at the end of stage three (DESIGN §6.9).
+    hold: Option<Arc<Hold>>,
 }
 
 /// What a [`Firing`] is carrying: work still to do, or an answer already.
@@ -1290,10 +1361,11 @@ impl Firing {
             restore,
             report,
             state,
+            hold,
         } = self;
         let (body, outcome) = match state {
             Stage::Airborne { mut body, args } => {
-                let outcome = call_body(&mut body, args);
+                let outcome = call_body(&mut body, args, hold.as_deref());
                 (body, outcome)
             }
             Stage::Ran { body, outcome } => (body, outcome),
@@ -1307,6 +1379,7 @@ impl Firing {
             report,
             body,
             outcome,
+            hold,
         }
     }
 }
@@ -1345,6 +1418,9 @@ pub struct Completed {
     body: ErasedBody,
     /// What the body produced, or how it failed.
     outcome: ErasedOutcome,
+    /// The firing's mark, kept until stage three ends. See
+    /// [`Firing`](Firing#structfield.hold).
+    hold: Option<Arc<Hold>>,
 }
 
 impl Completed {
@@ -1438,8 +1514,9 @@ fn round_robin(net: &Net, fireable: &[TransitionId]) -> Option<TransitionId> {
     after.or_else(|| tied.next())
 }
 
-/// A token a mutating edge lends the body, beside its entry in `mutated`:
-/// which argument it fills and where it stands in its place.
+/// A token a mutating edge lends the body, beside its entry in `mutated`, or
+/// that a read edge lends it to look at: which argument it fills and where
+/// it stands in its place.
 ///
 /// The position is taken when the edge chooses its token (the front for a
 /// [`MutateEdge`](crate::MutateEdge), the first its filter accepts for a
@@ -1458,6 +1535,9 @@ struct Lent {
     holder: usize,
     /// For a window, the port's index in that slot's subnet.
     port: Option<usize>,
+    /// For a [`ReadAllEdge`](crate::ReadAllEdge), every token of the place
+    /// rather than the one at `at`.
+    all: bool,
 }
 
 /// Stage one: one argument per input, in declaration order, taking out of the
@@ -1482,7 +1562,11 @@ struct Lent {
 /// first in queue order its filter accepts, which is wherever it is. A
 /// [`TakeWhereEdge`](crate::TakeWhereEdge) takes it out of the middle of the
 /// place, as a [`TakeEdge`](crate::TakeEdge) takes the front, and every
-/// other token stays where it is.
+/// other token stays where it is. A bound edge and its source
+/// ([`Clause::IsInput`](crate::Clause::IsInput)) take the pair
+/// [`pair`] finds, chosen before any edge has moved a thing: the source's
+/// token wherever it stands, whatever its kind (a take, a snapshot or a
+/// mutation), and the bound edge's match for it.
 ///
 /// A [`DrainEdge`](crate::DrainEdge) takes every token as a
 /// [`TakeAllEdge`](crate::TakeAllEdge) does, which for an empty place is
@@ -1522,10 +1606,22 @@ fn consume(
     consumed: &mut Vec<(PlaceId, TokenId)>,
     mutated: &mut Vec<(PlaceId, TokenId)>,
     lent: &mut Vec<Lent>,
+    looked: &mut Vec<Lent>,
     lifted: &mut Vec<Event>,
     mut restore: Option<&mut Vec<(PlaceId, TokenId, ErasedToken)>>,
+    hold: &mut Option<Arc<Hold>>,
 ) -> Vec<ErasedInput<'static>> {
     let mut args = Vec::with_capacity(transition.args.len());
+
+    // The pairs of the bound edges and their sources, each edge's position
+    // and token, chosen before anything moves, as fireability chose them:
+    // every edge reads a place of its own, so a position stays good until
+    // its edge's turn below (DESIGN §8.3).
+    let paired: Vec<(usize, usize, TokenId)> = transition
+        .bindings
+        .iter()
+        .flat_map(|binding| pair(places, params, index, transition, binding).expect(MATCHING))
+        .collect();
 
     for source in &transition.args {
         let edge = match *source {
@@ -1538,9 +1634,14 @@ fn consume(
             }
         };
         let (place, kind) = transition.inputs[edge];
-        // The token a keyed edge chooses, with where it stands, asked before
-        // anything of its place has moved.
+        // The token a keyed edge, a bound edge or a source chooses, with
+        // where it stands, asked before anything of its place has moved.
+        let pairs = paired.iter().find(|(chosen, _, _)| *chosen == edge);
+        let chooses = kind.is_keyed() || pairs.is_some();
         let chosen = |places: &[PlaceSlot], index: &KeyIndex| {
+            if let Some(&(_, at, token)) = pairs {
+                return (at, token);
+            }
             let filter = transition.filters[edge]
                 .as_ref()
                 .expect("a keyed edge carries its filter");
@@ -1548,14 +1649,15 @@ fn consume(
         };
         match kind {
             EdgeKind::Take | EdgeKind::TakeWhere => {
-                let at = match kind {
-                    EdgeKind::TakeWhere => chosen(places, index).0,
-                    _ => 0,
-                };
+                let at = if chooses { chosen(places, index).0 } else { 0 };
                 // The holder's slot and index, and the place's id there: a
                 // window's are its port's. What is reported is this net's.
                 let (slot, index, here) = resolve_mut(places, index, place);
                 let (token, mut value) = slot.tokens.remove(at).expect(NON_EMPTY);
+                debug_assert!(
+                    pairs.is_none_or(|&(_, _, chosen)| chosen == token),
+                    "a paired token is where it was chosen"
+                );
                 index.leave(&slot.meta, here, token, &*value);
                 if slot.tokens.is_empty() {
                     index.emptied(here);
@@ -1565,6 +1667,9 @@ fn consume(
                 }
                 if let Some(nested) = slot.meta.nested {
                     lifted.extend(lift_from(nested, &mut value, place, token));
+                    // The body owns the token's nets now, and holds them
+                    // until the firing ends.
+                    mark(nested, &mut value, &hold_of(hold));
                 }
                 consumed.push((place, token));
                 args.push(ErasedInput::Token(value));
@@ -1582,6 +1687,7 @@ fn consume(
                     }
                     if let Some(nested) = nested {
                         lifted.extend(lift_from(nested, &mut value, place, token));
+                        mark(nested, &mut value, &hold_of(hold));
                     }
                     consumed.push((place, token));
                     values.push(value);
@@ -1595,7 +1701,9 @@ fn consume(
                     .meta
                     .clone
                     .expect("build rejects a snapshot of a place that cannot clone its tokens");
-                let (_, value) = slot.tokens.front().expect(NON_EMPTY);
+                // The front token, or a source's, wherever it stands.
+                let at = if chooses { chosen(places, index).0 } else { 0 };
+                let (_, value) = slot.tokens.get(at).expect(NON_EMPTY);
                 // The clone is taken now, so the body sees a value that
                 // cannot change under it even once firings run elsewhere.
                 args.push(ErasedInput::Token(clone(&**value)));
@@ -1616,12 +1724,11 @@ fn consume(
                 args.push(ErasedInput::Tokens(values));
             }
             EdgeKind::Mutate | EdgeKind::MutateWhere => {
-                let (at, token) = match kind {
-                    EdgeKind::MutateWhere => chosen(places, index),
-                    _ => {
-                        let slot = slot_of(places, place).expect(NON_EMPTY);
-                        (0, slot.tokens.front().expect(NON_EMPTY).0)
-                    }
+                let (at, token) = if chooses {
+                    chosen(places, index)
+                } else {
+                    let slot = slot_of(places, place).expect(NON_EMPTY);
+                    (0, slot.tokens.front().expect(NON_EMPTY).0)
                 };
                 mutated.push((place, token));
                 let (holder, port) = match places[place.0 as usize].meta.window {
@@ -1633,9 +1740,33 @@ fn consume(
                     at,
                     holder,
                     port,
+                    all: false,
                 });
                 // Overwritten by `borrow_mutated`, which is the only caller
                 // allowed to hold the borrow; a body never sees this.
+                args.push(ErasedInput::Taken);
+            }
+            // A read edge moves nothing and is told of in no event: it is
+            // recorded in `looked`, and `borrow_mutated` lends the token, or
+            // every token for a read-all, once the other places are done.
+            EdgeKind::Read | EdgeKind::ReadWhere | EdgeKind::ReadAll => {
+                let all = kind == EdgeKind::ReadAll;
+                let at = if chooses && !all {
+                    chosen(places, index).0
+                } else {
+                    0
+                };
+                let (holder, port) = match places[place.0 as usize].meta.window {
+                    None => (place.0 as usize, None),
+                    Some(window) => (window.subnet.0 as usize, Some(window.port.0 as usize)),
+                };
+                looked.push(Lent {
+                    arg: args.len(),
+                    at,
+                    holder,
+                    port,
+                    all,
+                });
                 args.push(ErasedInput::Taken);
             }
         }
@@ -1731,17 +1862,90 @@ fn restore_clone(meta: &PlaceMeta, value: &ErasedToken) -> ErasedToken {
 /// mutating edge's token, whose type cannot make the *net* inconsistent: a
 /// half-changed token is a value the author's own code left behind, and the
 /// [`Mutated`](Event::Mutated) event reports it either way.
-fn call_body(body: &mut ErasedBody, args: Vec<ErasedInput<'_>>) -> ErasedOutcome {
-    match catch_unwind(AssertUnwindSafe(move || body(ErasedInputs::new(args)))) {
+///
+/// `hold` is this firing's mark, when it lent or handed its body a token's
+/// net. A net that refused the body a write or a knob kept the refusal
+/// there, and the firing fails with the first one, whatever the body made
+/// of it: passed it on, dropped the `Err`, or caught the panic of a method
+/// that has no `Result` (DESIGN §6.9). A panic of such a method carries
+/// the refusal's message, and the refusal itself is what the firing fails
+/// with, not a [`BodyPanicked`](crate::BodyPanicked).
+fn call_body(
+    body: &mut ErasedBody,
+    args: Vec<ErasedInput<'_>>,
+    hold: Option<&Hold>,
+) -> ErasedOutcome {
+    let outcome = match catch_unwind(AssertUnwindSafe(move || body(ErasedInputs::new(args)))) {
         Ok(outcome) => outcome,
         Err(payload) => ErasedOutcome::Err(Box::new(BodyPanicked::from_payload(payload))),
+    };
+    match hold.and_then(Hold::take_refusal) {
+        Some(refusal) => ErasedOutcome::Err(Box::new(refusal)),
+        None => outcome,
     }
 }
 
-/// Fills in the arguments of the mutating edges: the token each one chose,
-/// borrowed where it lies (the front one for a
-/// [`MutateEdge`](crate::MutateEdge), the one its filter accepted for a
-/// [`MutateWhereEdge`](crate::MutateWhereEdge)).
+/// Marks the nets of each token a mutating edge lends the body as held by
+/// this firing, and gives back what each was marked with before, for
+/// [`unmark_lent`]: `None` for a token that carries no nets.
+#[allow(clippy::type_complexity)]
+fn mark_lent(
+    places: &mut [PlaceSlot],
+    lent: &[Lent],
+    hold: &mut Option<Arc<Hold>>,
+) -> Vec<Option<Vec<Option<Weak<Hold>>>>> {
+    lent.iter()
+        .map(|lent| {
+            let slot = lent_slot(places, lent);
+            let nested = slot.meta.nested?;
+            let (_, value) = slot.tokens.get_mut(lent.at).expect(NON_EMPTY);
+            Some(mark(nested, value, &hold_of(hold)))
+        })
+        .collect()
+}
+
+/// Puts back what [`mark_lent`] found, once the body has returned: a
+/// mutating edge's token never left its place, so it is where it was lent.
+fn unmark_lent(
+    places: &mut [PlaceSlot],
+    lent: &[Lent],
+    marks: Vec<Option<Vec<Option<Weak<Hold>>>>>,
+) {
+    for (lent, before) in lent.iter().zip(marks) {
+        let Some(before) = before else {
+            continue;
+        };
+        let slot = lent_slot(places, lent);
+        let nested = slot.meta.nested.expect("a marked token carries nets");
+        let (_, value) = slot.tokens.get_mut(lent.at).expect(NON_EMPTY);
+        unmark(nested, value, before);
+    }
+}
+
+/// The slot a lent token lies in: its place's own, or, for a window, its
+/// port's in the subnet.
+fn lent_slot<'a>(places: &'a mut [PlaceSlot], lent: &Lent) -> &'a mut PlaceSlot {
+    let slot = &mut places[lent.holder];
+    match lent.port {
+        None => slot,
+        Some(port) => {
+            &mut slot
+                .subnet
+                .as_deref_mut()
+                .expect("a window's subnet place holds its subnet")
+                .net
+                .places[port]
+        }
+    }
+}
+
+/// Fills in the arguments of the mutating edges and the read edges: the token
+/// each one chose, borrowed where it lies (the front one for a
+/// [`MutateEdge`](crate::MutateEdge) or a [`ReadEdge`](crate::ReadEdge), the
+/// one its filter accepted for a [`MutateWhereEdge`](crate::MutateWhereEdge)
+/// or a [`ReadWhereEdge`](crate::ReadWhereEdge), or every token for a
+/// [`ReadAllEdge`](crate::ReadAllEdge)), mutably for a mutating edge and
+/// shared for a read edge.
 ///
 /// The second half of stage one, and inline firing's alone. A `&mut` into a
 /// place may not be taken while [`consume`] is still draining the other
@@ -1753,49 +1957,71 @@ fn call_body(body: &mut ErasedBody, args: Vec<ErasedInput<'_>>) -> ErasedOutcome
 /// is what the annotation below says.
 fn borrow_mutated<'a>(
     places: &'a mut [PlaceSlot],
-    mutated: &[(PlaceId, TokenId)],
     lent: &[Lent],
+    looked: &[Lent],
     args: Vec<ErasedInput<'static>>,
 ) -> Vec<ErasedInput<'a>> {
     let mut args: Vec<ErasedInput<'a>> = args;
-    if mutated.is_empty() {
+    if lent.is_empty() && looked.is_empty() {
         return args;
     }
 
     // `slice::get_disjoint_mut` wants its indices as a fixed-size array and a
-    // transition's mutating edges are only counted at run time, so the same
+    // transition's lending edges are only counted at run time, so the same
     // job is done with `iter_mut`: its items borrow the slice rather than the
     // iterator, so every borrow this pass takes may be alive at once, a
     // subnet's ports included, through the subnet's own `iter_mut`. That
     // they are disjoint is `BuildError::DuplicateInputPlace`'s doing: no two
     // input edges of one transition name the same place, and a port has one
-    // window.
+    // window. A read edge's slot is taken mutably like the others and then
+    // only read through, so its tokens are lent shared, and nothing can
+    // change them while the body holds them.
     for (index, slot) in places.iter_mut().enumerate() {
         let PlaceSlot { tokens, subnet, .. } = slot;
         if let Some(subnet) = subnet.as_deref_mut() {
             for (port, slot) in subnet.net.places.iter_mut().enumerate() {
-                let Some(lent) = lent
-                    .iter()
-                    .find(|lent| lent.holder == index && lent.port == Some(port))
-                else {
-                    continue;
-                };
-                let (_, value) = slot.tokens.get_mut(lent.at).expect(NON_EMPTY);
-                args[lent.arg] = ErasedInput::Borrowed(value);
+                lend(
+                    &mut args,
+                    &mut slot.tokens,
+                    (index, Some(port)),
+                    lent,
+                    looked,
+                );
             }
             continue;
         }
-        let Some(lent) = lent
-            .iter()
-            .find(|lent| lent.holder == index && lent.port.is_none())
-        else {
-            continue;
-        };
-        let (_, value) = tokens.get_mut(lent.at).expect(NON_EMPTY);
-        args[lent.arg] = ErasedInput::Borrowed(value);
+        lend(&mut args, tokens, (index, None), lent, looked);
     }
 
     args
+}
+
+/// Fills in the argument of the one lending edge, if any, that reads this
+/// slot (`at`: its holder's index and, for a port, the port's): a `&mut`
+/// for a mutating edge, a shared borrow of one token or of every token for
+/// a read edge.
+fn lend<'a>(
+    args: &mut [ErasedInput<'a>],
+    tokens: &'a mut VecDeque<(TokenId, ErasedToken)>,
+    at: (usize, Option<usize>),
+    lent: &[Lent],
+    looked: &[Lent],
+) {
+    let here = |lent: &&Lent| (lent.holder, lent.port) == at;
+    if let Some(lent) = lent.iter().find(here) {
+        let (_, value) = tokens.get_mut(lent.at).expect(NON_EMPTY);
+        args[lent.arg] = ErasedInput::Borrowed(value);
+        return;
+    }
+    let Some(look) = looked.iter().find(here) else {
+        return;
+    };
+    let tokens: &'a VecDeque<(TokenId, ErasedToken)> = tokens;
+    args[look.arg] = if look.all {
+        ErasedInput::LentAll(tokens.iter().map(|(_, value)| value).collect())
+    } else {
+        ErasedInput::Lent(&tokens.get(look.at).expect(NON_EMPTY).1)
+    };
 }
 
 #[cfg(test)]
@@ -1942,6 +2168,7 @@ mod tests {
             report: Report::Staged,
             body: Box::new(|_: ErasedInputs<'_>| ErasedOutcome::Ok(Vec::new())),
             outcome: ErasedOutcome::Ok(Vec::new()),
+            hold: None,
         };
         let error = net
             .distribute(ghost)

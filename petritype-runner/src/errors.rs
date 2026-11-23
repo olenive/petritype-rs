@@ -59,6 +59,9 @@ pub(crate) fn code_of(error: CoreError<'_>) -> ErrorCode {
             NetError::NoSuchTransition { .. } => ErrorCode::UnknownTransition,
             NetError::NoSuchToken { .. } => ErrorCode::UnknownToken,
             NetError::NoSuchParam { .. } => ErrorCode::Unsupported,
+            // A write outside the ports of a closed net (PROTOCOL.md §3,
+            // since 2026-11-23): an `inject`, at the top level or by path.
+            NetError::ClosedNet { .. } => ErrorCode::ClosedNet,
             _ => ErrorCode::Internal,
         },
         CoreError::Load(error) => match error {
@@ -276,6 +279,26 @@ mod tests {
         });
         assert!(matches!(e, CommandError::Net(NetError::NoSuchToken { .. })));
         assert_eq!(command(e), ErrorCode::UnknownToken);
+    }
+
+    #[test]
+    fn a_write_outside_the_ports_of_a_closed_net_is_closed_net() {
+        let mut b = NetBuilder::new();
+        let inbox = b.place::<u32>("Inbox");
+        let ledger = b.place::<u32>("Ledger");
+        b.serializable(inbox);
+        b.serializable(ledger);
+        b.port(inbox);
+        let mut closed = b.build().unwrap();
+        let e = closed
+            .apply_json(JsonCommand::Extend {
+                place: "Ledger".into(),
+                tokens: vec![json!(1)],
+            })
+            .unwrap_err();
+        assert!(matches!(e, CommandError::Net(NetError::ClosedNet { .. })));
+        assert_eq!(command(e), ErrorCode::ClosedNet);
+        assert_eq!(ErrorCode::ClosedNet.as_str(), "closed_net");
     }
 
     #[test]

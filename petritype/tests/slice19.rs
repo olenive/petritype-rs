@@ -743,12 +743,14 @@ fn the_read_api_carries_the_filter() {
             transition: pick,
             kind: EdgeKind::TakeWhere,
             filter: Some(birds()),
+            reaches: Vec::new(),
         },
         EdgeInfo::Input {
             place: feed.id(),
             transition: pick,
             kind: EdgeKind::Take,
             filter: None,
+            reaches: Vec::new(),
         },
         EdgeInfo::Output {
             transition: pick,
@@ -760,6 +762,7 @@ fn the_read_api_carries_the_filter() {
             transition: trip,
             kind: EdgeKind::MutateWhere,
             filter: Some(mammals()),
+            reaches: Vec::new(),
         },
     ];
     assert_eq!(net.edges().collect::<Vec<_>>(), expected);

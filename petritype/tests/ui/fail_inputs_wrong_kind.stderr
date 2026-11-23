@@ -4,7 +4,7 @@ error[E0277]: `TakeEdge<Promo>` cannot fill a field of type `Vec<Promo>`
 36 |         (PricingEdges { order: TakeEdge(orders), promos: TakeEdge(promos), prices: Param::new() },),
    |                                                          ^^^^^^^^^^^^^^^^ this input does not read `Vec<Promo>`
    |
-   = note: each kind of input reads one shape: `T` from `TakeEdge`, `SnapshotEdge`, `TakeWhereEdge` or `Param::<T>::new()`; `Vec<T>` from `TakeAllEdge`, `DrainEdge` or `SurveyEdge`; `&mut T` from `MutateEdge` or `MutateWhereEdge`
+   = note: each kind of input reads one shape: `T` from `TakeEdge`, `SnapshotEdge`, `TakeWhereEdge` or `Param::<T>::new()`; `Vec<T>` from `TakeAllEdge`, `DrainEdge` or `SurveyEdge`; `&mut T` from `MutateEdge` or `MutateWhereEdge`; `&T` from `ReadEdge` or `ReadWhereEdge`; `Vec<&T>` from `ReadAllEdge`
 help: the trait `Reads<Vec<Promo>>` is not implemented for `TakeEdge<Promo>`
       but trait `Reads<Promo>` is implemented for it
   --> src/edge.rs
@@ -31,7 +31,7 @@ error[E0277]: `TakeEdge<Promo>` cannot fill a field of type `Vec<Promo>`
 39 | |     );
    | |_____^ this input does not read `Vec<Promo>`
    |
-   = note: each kind of input reads one shape: `T` from `TakeEdge`, `SnapshotEdge`, `TakeWhereEdge` or `Param::<T>::new()`; `Vec<T>` from `TakeAllEdge`, `DrainEdge` or `SurveyEdge`; `&mut T` from `MutateEdge` or `MutateWhereEdge`
+   = note: each kind of input reads one shape: `T` from `TakeEdge`, `SnapshotEdge`, `TakeWhereEdge` or `Param::<T>::new()`; `Vec<T>` from `TakeAllEdge`, `DrainEdge` or `SurveyEdge`; `&mut T` from `MutateEdge` or `MutateWhereEdge`; `&T` from `ReadEdge` or `ReadWhereEdge`; `Vec<&T>` from `ReadAllEdge`
 help: the trait `Reads<Vec<Promo>>` is not implemented for `TakeEdge<Promo>`
       but trait `Reads<Promo>` is implemented for it
   --> src/edge.rs

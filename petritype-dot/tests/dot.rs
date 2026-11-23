@@ -12,7 +12,8 @@ use std::fmt;
 
 use petritype::{
     DrainEdge, Event, Filter, MutateEdge, MutateWhereEdge, Net, NetBuilder, Param, PlaceRef,
-    SnapshotEdge, SurveyEdge, TakeAllEdge, TakeEdge, TakeWhereEdge, TransitionId,
+    ReadAllEdge, ReadEdge, ReadWhereEdge, SnapshotEdge, SurveyEdge, TakeAllEdge, TakeEdge,
+    TakeWhereEdge, TransitionId,
 };
 use petritype_dot::{Highlight, RankDir, Style, dot, dot_with};
 
@@ -461,6 +462,68 @@ fn a_keyed_edge_is_labelled_with_its_filter() {
         ),
         "{text}"
     );
+}
+
+/// A keyed edge that chooses by another input names that input's place and
+/// key, `name = Orders.courier`, and a port as `Subnet/Port`; a snapshot
+/// and a live net draw it alike.
+#[test]
+fn a_clause_that_chooses_by_another_input_names_its_place_and_key() {
+    let mut yard = NetBuilder::new();
+    let bay = yard.place::<(String, i64)>("Bay");
+    yard.keys(bay, ["name"], |(name, _): &(String, i64)| {
+        [name.as_str().into()]
+    });
+    yard.port(bay);
+    let yard = yard.build().unwrap();
+
+    let mut b = NetBuilder::new();
+    let orders = b.place::<(String, i64)>("Orders");
+    let couriers = b.place::<(String, i64)>("Couriers");
+    b.keys(orders, ["courier"], |(courier, _): &(String, i64)| {
+        [courier.as_str().into()]
+    });
+    b.keys(couriers, ["name"], |(name, _): &(String, i64)| {
+        [name.as_str().into()]
+    });
+    let yard = b.subnet_place("Yard", yard);
+    let bay = b.port_of::<(String, i64)>(yard, "Bay");
+    b.transition(
+        "Load",
+        (
+            TakeEdge(orders),
+            MutateWhereEdge(
+                couriers,
+                Filter::new().key_is_input("name", orders, "courier"),
+            ),
+        ),
+        (),
+        |_: (String, i64), courier: &mut (String, i64)| courier.1 += 1,
+    );
+    b.transition(
+        "Call",
+        (
+            SnapshotEdge(bay),
+            TakeWhereEdge(orders, Filter::new().key_is_input("courier", bay, "name")),
+        ),
+        (),
+        |_: (String, i64), _: (String, i64)| {},
+    );
+    let net = b.build().unwrap();
+    let text = dot(&net);
+
+    assert!(
+        text.contains(
+            "  p1 -> t0 [dir=both, arrowhead=dot, arrowtail=dot, color=dimgray, penwidth=2, \
+             label=\"name = Orders.courier\"];\n"
+        ),
+        "{text}"
+    );
+    assert!(
+        text.contains("label=\"courier = Yard/Bay.name\"]"),
+        "{text}"
+    );
+    assert_eq!(text, dot(&net.snapshot().unwrap()));
 }
 
 #[test]
@@ -945,4 +1008,84 @@ fn a_subnet_s_own_drawing_has_its_own_groups() {
         "    p0 [shape=oval, style=filled, fillcolor=deepskyblue, color=black, penwidth=1, peripheries=2, label=\"Lobby\"];\n",
         "    p1 [shape=oval",
     )));
+}
+
+/// The read edges are dotted, where a snapshot is dashed: a read-where
+/// carries its filter and a read-all the hollow head and `*` of an edge that
+/// takes every token, zero or more.
+#[test]
+fn read_edges_are_dotted() {
+    let mut b = NetBuilder::new();
+    let limits = b.place::<(String, i64)>("Limits");
+    let gauges = b.place::<(String, i64)>("Gauges");
+    let notes = b.place::<(String, i64)>("Notes");
+    b.keys(gauges, ["name"], |(name, _): &(String, i64)| {
+        [name.as_str().into()]
+    });
+    b.transition(
+        "Look",
+        (
+            ReadEdge(limits),
+            ReadWhereEdge(gauges, Filter::new().key_in("name", ["Oil"])),
+            ReadAllEdge(notes),
+        ),
+        (),
+        |_: &(String, i64), _: &(String, i64), _: Vec<&(String, i64)>| {},
+    );
+    let text = dot(&b.build().unwrap());
+    for line in [
+        "  p0 -> t0 [style=dotted, color=dimgray, arrowhead=normal, penwidth=1];\n",
+        "  p1 -> t0 [style=dotted, color=dimgray, arrowhead=normal, penwidth=1, label=\"name in {Oil}\"];\n",
+        "  p2 -> t0 [style=dotted, color=dimgray, arrowhead=empty, penwidth=1, label=\"*\"];\n",
+    ] {
+        assert!(text.contains(line), "{line}\n{text}");
+    }
+}
+
+/// An edge that names the ports it reaches writes them as its label's last
+/// line, after a filter or a `*`; and a net drawn on its own, such as the
+/// net a token carries, rings its ports as a subnet's drawing does.
+#[test]
+fn an_edge_writes_the_ports_it_reaches_and_a_net_rings_its_ports() {
+    let mut unit = NetBuilder::new();
+    let orders_in = unit.place::<String>("Orders In");
+    let shots_out = unit.place::<String>("Shots Out");
+    unit.place::<String>("Notes");
+    unit.port(orders_in);
+    unit.port(shots_out);
+    let unit = unit.build().unwrap();
+    let ringed = dot(&unit);
+    assert_eq!(
+        ringed.matches("peripheries=2").count(),
+        2,
+        "the two trays, not the notes: {ringed}"
+    );
+
+    let mut b = NetBuilder::new();
+    let orders = b.place::<String>("Orders");
+    let field = b.place_nested::<Net>("Field");
+    let squads = b.place_nested::<Net>("Squads");
+    b.seed(field, [unit]);
+    b.transition(
+        "Hand Over",
+        (
+            TakeEdge(orders),
+            MutateEdge(field).reaching(["Orders In"]),
+            ReadAllEdge(squads).reaching(["Orders In", "Shots Out"]),
+        ),
+        (),
+        |_: String, _: &mut Net, _: Vec<&Net>| {},
+    );
+    let text = dot(&b.build().unwrap());
+    assert!(
+        text.contains(
+            "  p1 -> t0 [dir=both, arrowhead=dot, arrowtail=dot, color=dimgray, penwidth=2, \
+             label=\"reaches Orders In\"];\n"
+        ),
+        "{text}"
+    );
+    assert!(
+        text.contains("label=\"*\\nreaches Orders In, Shots Out\"];\n"),
+        "{text}"
+    );
 }

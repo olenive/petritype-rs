@@ -410,6 +410,7 @@ fn the_topology_lists_every_input_and_output_in_order() {
             transition: till.serve,
             kind,
             filter: None,
+            reaches: Vec::new(),
         })
         .collect();
     let output_edges: Vec<_> = outputs

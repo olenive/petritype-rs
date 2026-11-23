@@ -186,12 +186,14 @@ fn edges_are_inputs_then_outputs_transition_by_transition() {
             transition: weigh,
             kind: EdgeKind::Take,
             filter: None,
+            reaches: Vec::new(),
         },
         EdgeInfo::Input {
             place: place("Config"),
             transition: weigh,
             kind: EdgeKind::Snapshot,
             filter: None,
+            reaches: Vec::new(),
         },
         EdgeInfo::Output {
             transition: weigh,
@@ -203,12 +205,14 @@ fn edges_are_inputs_then_outputs_transition_by_transition() {
             transition: batch,
             kind: EdgeKind::TakeAll,
             filter: None,
+            reaches: Vec::new(),
         },
         EdgeInfo::Input {
             place: place("Tally"),
             transition: batch,
             kind: EdgeKind::Mutate,
             filter: None,
+            reaches: Vec::new(),
         },
         EdgeInfo::Output {
             transition: batch,

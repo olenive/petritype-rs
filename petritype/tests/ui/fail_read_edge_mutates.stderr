@@ -1,0 +1,18 @@
+error[E0631]: type mismatch in closure arguments
+  --> tests/ui/fail_read_edge_mutates.rs:11:7
+   |
+11 |     b.transition("Raise", (ReadEdge(limit),), (), |n: &mut u32| {
+   |       ^^^^^^^^^^ expected due to this             ------------- found signature defined here
+   |
+   = note: expected closure signature `for<'a> fn(&'a u32) -> _`
+              found closure signature `fn(&mut u32) -> _`
+   = note: required for `{closure@$DIR/tests/ui/fail_read_edge_mutates.rs:11:51: 11:64}` to implement `TransitionBody<(ReadEdge<u32>,), (), (_, _)>`
+note: required by a bound in `NetBuilder::transition`
+  --> src/builder.rs
+   |
+   | impl NetBuilder {
+...
+   |     pub fn transition<Edges, Outputs, Body, Marker>(
+...
+   |         Body: TransitionBody<Edges, Outputs, Marker>,
+   |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `NetBuilder::transition`

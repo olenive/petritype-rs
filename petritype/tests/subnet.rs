@@ -1463,7 +1463,8 @@ fn the_topology_lists_a_subnet_place_its_ports_and_the_edges_on_them() {
         place: w.hall.id(),
         transition: leave,
         kind: EdgeKind::Take,
-        filter: None
+        filter: None,
+        reaches: Vec::new()
     }));
     // In the subnet's own topology the ports are marked, and nothing is a
     // port of anything.

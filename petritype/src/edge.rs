@@ -1,4 +1,4 @@
-//! Input edges: the eight kinds, and what each one hands to the body.
+//! Input edges: the eleven kinds, and what each one hands to the body.
 //!
 //! An input edge says *how* a transition reads a place, which fixes the type
 //! of the matching body parameter:
@@ -13,6 +13,9 @@
 //! | [`MutateWhereEdge<T>`] | nothing (borrows the oldest token a [`Filter`] accepts) | `&mut T` | a token the filter accepts |
 //! | [`DrainEdge<T>`] | every token, zero or more | `Vec<T>` | no |
 //! | [`SurveyEdge<T>`] | nothing (clones every token, zero or more) | `Vec<T>` | no |
+//! | [`ReadEdge<T>`] | nothing (lends the front token to look at) | `&T` | yes |
+//! | [`ReadWhereEdge<T>`] | nothing (lends the oldest token a [`Filter`] accepts) | `&T` | a token the filter accepts |
+//! | [`ReadAllEdge<T>`] | nothing (lends every token, zero or more) | `Vec<&T>` | no |
 //!
 //! The first four require the place to be non-empty for the transition to be
 //! [fireable](crate::Net::fireable), including the two that do not consume;
@@ -25,6 +28,13 @@
 //! ([`EdgeKind::requires_presence`], DESIGN §4.4). One transition may read
 //! one place through one edge only: two edges into the same place are a
 //! [`BuildError::DuplicateInputPlace`](crate::BuildError::DuplicateInputPlace).
+//!
+//! The *non-consuming* edges are those that leave their token in its place:
+//! snapshot, survey, mutate, mutate-where, and the three *read edges*
+//! (since 2026-11-23), which lend the body tokens to look at without taking
+//! or copying them, so that they ask no `Clone` of the token type and work on
+//! a place of net-carrying tokens. A read or a mutate edge ties the firing to
+//! the net, which then runs its body inline ([`EdgeKind::lends`]).
 //!
 //! A fifth kind of input is not an edge at all: [`Param<T>`](crate::Param)
 //! reads a value off the net rather than out of a place (DESIGN §10). It
@@ -42,11 +52,11 @@ use crate::ids::{NetId, PlaceId, PlaceRef, TransitionId};
 use crate::keys::Filter;
 use crate::sealed::{EdgeSealed, EdgeTupleSealed};
 
-/// Which of the eight input edge kinds an edge is, with its type forgotten.
+/// Which of the eleven input edge kinds an edge is, with its type forgotten.
 ///
 /// This is the form the net stores and the read API reports
 /// ([`TransitionInfo::inputs`](crate::TransitionInfo::inputs)); the typed
-/// form is [`TakeEdge`] and the other seven structs. The filter of a keyed
+/// form is [`TakeEdge`] and the other ten structs. The filter of a keyed
 /// kind is beside it, not in it, so that the kind stays `Copy`:
 /// [`TransitionInfo::filters`](crate::TransitionInfo::filters) and
 /// [`EdgeInfo::Input`]'s `filter`.
@@ -54,12 +64,14 @@ use crate::sealed::{EdgeSealed, EdgeTupleSealed};
 /// With the `serde` feature it is `Serialize` (never `Deserialize`) as a
 /// snake_case string, for logs and tests: `"take"`, `"take_all"`,
 /// `"snapshot"`, `"mutate"`, `"take_where"`, `"mutate_where"`, `"drain"`,
-/// `"survey"`, the protocol's names (PROTOCOL.md §5.1).
+/// `"survey"`, `"read"`, `"read_where"`, `"read_all"`, the protocol's names
+/// (PROTOCOL.md §5.1).
 ///
 /// `#[non_exhaustive]` since the two keyed kinds were added (slice 19):
 /// match with a `_` arm, which a reader of the protocol fills by drawing a
 /// plain edge. The two kinds that accept an empty place came after them
-/// (slice 22) and needed no other change of shape.
+/// (slice 22) and needed no other change of shape, and so did the three read
+/// edges (2026-11-23).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
@@ -82,6 +94,13 @@ pub enum EdgeKind {
     Drain,
     /// [`SurveyEdge`]: reads a clone of every token, zero or more.
     Survey,
+    /// [`ReadEdge`]: lends the front token to look at (since 2026-11-23).
+    Read,
+    /// [`ReadWhereEdge`]: lends the oldest token its filter accepts to look
+    /// at.
+    ReadWhere,
+    /// [`ReadAllEdge`]: lends every token to look at, zero or more.
+    ReadAll,
 }
 
 impl EdgeKind {
@@ -89,8 +108,9 @@ impl EdgeKind {
     /// [`Take`](EdgeKind::Take), [`TakeAll`](EdgeKind::TakeAll),
     /// [`TakeWhere`](EdgeKind::TakeWhere) and [`Drain`](EdgeKind::Drain).
     ///
-    /// The reading kinds leave the marking alone, which is what makes them
-    /// safe to point at a configuration place that every transition reads.
+    /// The non-consuming kinds leave the marking alone, which is what makes
+    /// them safe to point at a configuration place that every transition
+    /// reads.
     /// A `Drain` removes every token there is, which may be none: it
     /// consumes, but a firing is not guaranteed to take anything through
     /// it, which is why the termination checks do not count it
@@ -103,11 +123,11 @@ impl EdgeKind {
     }
 
     /// Whether this edge holds its transition back until its place has
-    /// something for it: true for the six kinds that need a token present
+    /// something for it: true for the eight kinds that need a token present
     /// (a token their filter accepts, for a keyed one), false for
-    /// [`Drain`](EdgeKind::Drain) and [`Survey`](EdgeKind::Survey), which
-    /// read every token there is, zero or more, and so are satisfied by an
-    /// empty place.
+    /// [`Drain`](EdgeKind::Drain), [`Survey`](EdgeKind::Survey) and
+    /// [`ReadAll`](EdgeKind::ReadAll), which take, copy or lend every token
+    /// there is, zero or more, and so are satisfied by an empty place.
     ///
     /// [`Net::fireable`](crate::Net::fireable) skips the presence check for
     /// an edge that does not require it; the transition's other edges and
@@ -115,7 +135,7 @@ impl EdgeKind {
     /// reader tells it from a [`TakeAll`](EdgeKind::TakeAll) or a
     /// [`Snapshot`](EdgeKind::Snapshot).
     pub fn requires_presence(self) -> bool {
-        !matches!(self, EdgeKind::Drain | EdgeKind::Survey)
+        !matches!(self, EdgeKind::Drain | EdgeKind::Survey | EdgeKind::ReadAll)
     }
 
     /// Whether every firing through this edge takes at least one token out
@@ -133,12 +153,35 @@ impl EdgeKind {
     }
 
     /// Whether this edge chooses its token with a [`Filter`]:
-    /// [`TakeWhere`](EdgeKind::TakeWhere) and
-    /// [`MutateWhere`](EdgeKind::MutateWhere). Exactly these carry a filter
-    /// in [`TransitionInfo::filters`](crate::TransitionInfo::filters) and
+    /// [`TakeWhere`](EdgeKind::TakeWhere),
+    /// [`MutateWhere`](EdgeKind::MutateWhere) and
+    /// [`ReadWhere`](EdgeKind::ReadWhere). Exactly these carry a filter in
+    /// [`TransitionInfo::filters`](crate::TransitionInfo::filters) and
     /// [`EdgeInfo::Input`].
     pub fn is_keyed(self) -> bool {
-        matches!(self, EdgeKind::TakeWhere | EdgeKind::MutateWhere)
+        matches!(
+            self,
+            EdgeKind::TakeWhere | EdgeKind::MutateWhere | EdgeKind::ReadWhere
+        )
+    }
+
+    /// Whether this edge lends the body tokens where they lie, which ties
+    /// the firing to the net so that its body runs inline: the mutating
+    /// kinds ([`Mutate`](EdgeKind::Mutate),
+    /// [`MutateWhere`](EdgeKind::MutateWhere)), which lend a token to
+    /// change, and the read kinds ([`Read`](EdgeKind::Read),
+    /// [`ReadWhere`](EdgeKind::ReadWhere), [`ReadAll`](EdgeKind::ReadAll)),
+    /// which lend tokens to look at. A transition with none is detachable.
+    pub fn lends(self) -> bool {
+        self.mutates() || self.reads()
+    }
+
+    /// Whether this edge lends tokens to look at: the three read kinds.
+    pub(crate) fn reads(self) -> bool {
+        matches!(
+            self,
+            EdgeKind::Read | EdgeKind::ReadWhere | EdgeKind::ReadAll
+        )
     }
 
     /// Whether this edge hands its body a borrow into the place, which ties
@@ -181,6 +224,9 @@ pub enum InputSpec {
         /// The filter of a [keyed](EdgeKind::is_keyed) edge; `None` for the
         /// others.
         filter: Option<Filter>,
+        /// The ports of its tokens' nets the edge says its body reaches
+        /// ([`Reaching`]); empty for an edge that names none.
+        reaches: Vec<String>,
     },
     /// A [`Param<T>`](crate::Param): no place, no net, just the type whose
     /// value the body is handed a clone of.
@@ -237,6 +283,13 @@ pub enum EdgeInfo {
         /// `None` for every other kind.
         #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
         filter: Option<Filter>,
+        /// The ports of its tokens' nets that the edge says its body
+        /// reaches, as declared with [`reaching`](Reaching) (since
+        /// 2026-11-23); empty for an edge that names none, and with `serde`
+        /// then not written. A declaration, read by a drawing: it changes
+        /// nothing about firing.
+        #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Vec::is_empty"))]
+        reaches: Vec<String>,
     },
     /// transition → place, positional index `slot` among the transition's
     /// outputs.
@@ -347,6 +400,11 @@ pub struct MutateEdge<T>(
 /// puts the token back at the **front** of the place, as every restore does,
 /// with its id: the id is kept, the position is not.
 ///
+/// The filter may choose by another input of the same firing,
+/// [`Filter::key_is_input`]: "the unit this order names". The firing then
+/// takes the oldest token of that input that has a match here, with the
+/// oldest match for it (DESIGN §8.3).
+///
 /// ```
 /// # use petritype::{Filter, KeyValue, NetBuilder, TakeWhereEdge};
 /// let mut b = NetBuilder::new();
@@ -388,6 +446,8 @@ pub struct TakeWhereEdge<T>(
 /// reads changes what the next firing finds. A transition with one is not
 /// detachable, as with a `MutateEdge`. The place must declare keys
 /// ([`BuildError::KeyedEdgeOnUnkeyedPlace`](crate::BuildError::KeyedEdgeOnUnkeyedPlace)).
+/// As for a `TakeWhereEdge`, the filter may choose by another input of the
+/// same firing ([`Filter::key_is_input`]).
 pub struct MutateWhereEdge<T>(
     /// The place whose token to borrow.
     pub PlaceRef<T>,
@@ -522,16 +582,85 @@ pub struct SurveyEdge<T>(
     pub PlaceRef<T>,
 );
 
+/// Lends the body the front token of a place to look at, where it lies; the
+/// body parameter is `&T` (since 2026-11-23).
+///
+/// A *read edge*: nothing moves, nothing is copied, and no event is emitted
+/// for the token, which keeps its id and its place; the firing's `consumed`
+/// does not name it. The transition is [fireable](crate::Net::fireable)
+/// only while the place holds a token. No `Clone` is asked of `T`, so a read
+/// edge works on a place declared with
+/// [`place_no_clone`](crate::NetBuilder::place_no_clone) and on a place of
+/// net-carrying tokens ([`place_nested`](crate::NetBuilder::place_nested)),
+/// where a [`SnapshotEdge`] cannot go. The body holds a borrow into the net,
+/// so a transition with a read edge is not detachable: its body runs inline,
+/// as one with a [`MutateEdge`] does. The borrow is shared, so the body
+/// cannot change the token, and nothing else can while the body runs.
+///
+/// ```
+/// # use petritype::{NetBuilder, ReadEdge, TakeEdge};
+/// let mut b = NetBuilder::new();
+/// let limit = b.place::<u32>("Limit");
+/// let inbox = b.place::<u32>("Inbox");
+/// let ok = b.place::<u32>("Ok");
+/// b.seed(limit, [10]);
+/// b.seed(inbox, [3, 30]);
+/// b.transition("Check", (TakeEdge(inbox), ReadEdge(limit)), (ok,), |n: u32, limit: &u32| {
+///     (if n <= *limit { Some(n) } else { None },)
+/// });
+/// let mut net = b.build()?;
+/// let (front, _) = net.tokens(limit.id()).next().unwrap();
+/// net.step()?;
+/// net.step()?;
+/// assert_eq!(net.count(ok.id()), 1, "3, not 30");
+/// assert_eq!(net.tokens(limit.id()).next().unwrap().0, front, "the limit stays, same id");
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
+pub struct ReadEdge<T>(
+    /// The place whose front token to read.
+    pub PlaceRef<T>,
+);
+
+/// Lends the body the oldest token of a place that a [`Filter`] accepts, to
+/// look at where it lies; the body parameter is `&T`.
+///
+/// A [`ReadEdge`] that chooses its token as a [`TakeWhereEdge`] does: the
+/// transition is fireable only while the place holds a token the filter
+/// accepts, and the body is lent the first such token in queue order. The
+/// place must declare keys
+/// ([`BuildError::KeyedEdgeOnUnkeyedPlace`](crate::BuildError::KeyedEdgeOnUnkeyedPlace)).
+/// Its filter may choose by another input of the same firing
+/// ([`Filter::key_is_input`]), and a read edge may itself be the input
+/// another edge chooses by.
+pub struct ReadWhereEdge<T>(
+    /// The place whose token to read.
+    pub PlaceRef<T>,
+    /// Which tokens it may read.
+    pub Filter,
+);
+
+/// Lends the body every token of a place to look at, oldest first, zero or
+/// more; the body parameter is `Vec<&T>`, possibly empty.
+///
+/// A [`SurveyEdge`] that copies nothing: the edge is satisfied by an empty
+/// place ([`EdgeKind::requires_presence`] is false), nothing moves and no
+/// event is emitted for the tokens. No `Clone` is asked of `T`. Like every
+/// read edge it ties the firing to the net, which runs its body inline.
+pub struct ReadAllEdge<T>(
+    /// The place to read.
+    pub PlaceRef<T>,
+);
+
 /// One input position of a transition.
 ///
 /// The name says "edge" because that is what an input almost always is: one
-/// of the eight kinds in this module, reading one place. The ninth
+/// of the eleven kinds in this module, reading one place. The twelfth
 /// implementor is [`Param<T>`](crate::Param), which reads a value off the net
 /// instead (DESIGN §10), with no place and no node in the diagram, and is here
 /// because the tuple of inputs is also the list of the body's parameters,
 /// and a parameter occupies one of those positions like anything else.
 ///
-/// Sealed: the nine structs are the only implementors in this crate, and the
+/// Sealed: the twelve structs are the only implementors in this crate, and the
 /// bound exists so that a transition's inputs are checked at compile time.
 /// What each one hands the body is the table at the top of this module, plus
 /// `T` for a `Param<T>`. The one implementor outside it is the wiring that
@@ -548,7 +677,9 @@ pub struct SurveyEdge<T>(
     note = "an input must say how it reads its place: `TakeEdge(p)`, `TakeAllEdge(p)`, \
             `SnapshotEdge(p)`, `MutateEdge(p)`, by a filter `TakeWhereEdge(p, f)` or \
             `MutateWhereEdge(p, f)`, or every token, possibly none, `DrainEdge(p)` or \
-            `SurveyEdge(p)`; `Param::<T>::new()` is the input that reads no place",
+            `SurveyEdge(p)`; to look at tokens without taking or copying them, `ReadEdge(p)`, \
+            `ReadWhereEdge(p, f)` or `ReadAllEdge(p)`; `Param::<T>::new()` is the input that \
+            reads no place",
     note = "a struct of such inputs, bound to a body's struct by field name, is the \
             `...Edges` struct that `#[derive(Inputs)]` generates for it"
 )]
@@ -571,12 +702,15 @@ pub trait InputEdge: EdgeSealed {}
 /// | [`TakeEdge<T>`], [`SnapshotEdge<T>`], [`TakeWhereEdge<T>`], [`Param<T>`](crate::Param) | `T` |
 /// | [`TakeAllEdge<T>`], [`DrainEdge<T>`], [`SurveyEdge<T>`] | `Vec<T>` |
 /// | [`MutateEdge<T>`], [`MutateWhereEdge<T>`] | `&'a mut T`, for any `'a` |
+/// | [`ReadEdge<T>`], [`ReadWhereEdge<T>`] | `&'a T`, for any `'a` |
+/// | [`ReadAllEdge<T>`] | `Vec<&'a T>`, for any `'a` |
 ///
 /// A field of type `&'a mut T` borrows its token where it lies for one
-/// call, as the mutating kinds always do; the struct then has the lifetime
-/// `'a`, and the body takes it as `Inputs<'_>`.
+/// call, as the mutating kinds always do, and a field of type `&'a T` or
+/// `Vec<&'a T>` likewise, as the read kinds do; the struct then has the
+/// lifetime `'a`, and the body takes it as `Inputs<'_>`.
 ///
-/// These nine are the only implementors: the engine half, which takes the
+/// These twelve are the only implementors: the engine half, which takes the
 /// value out of the erased inputs, is a hidden trait implemented beside
 /// each of them.
 ///
@@ -623,7 +757,8 @@ pub trait InputEdge: EdgeSealed {}
     label = "this input does not read `{V}`",
     note = "each kind of input reads one shape: `T` from `TakeEdge`, `SnapshotEdge`, \
             `TakeWhereEdge` or `Param::<T>::new()`; `Vec<T>` from `TakeAllEdge`, `DrainEdge` \
-            or `SurveyEdge`; `&mut T` from `MutateEdge` or `MutateWhereEdge`"
+            or `SurveyEdge`; `&mut T` from `MutateEdge` or `MutateWhereEdge`; `&T` from \
+            `ReadEdge` or `ReadWhereEdge`; `Vec<&T>` from `ReadAllEdge`"
 )]
 pub trait Reads<V>: InputEdge {}
 
@@ -661,6 +796,33 @@ pub(crate) fn owned_tokens<T: 'static>(input: &mut ErasedInput<'_>) -> Vec<T> {
     }
 }
 
+/// The token a read edge lends, as `&T`. The `expect`s cannot fire, as in
+/// [`owned_token`].
+pub(crate) fn lent_token<'a, T: 'static>(input: &mut ErasedInput<'a>) -> &'a T {
+    match std::mem::replace(input, ErasedInput::Taken) {
+        ErasedInput::Lent(token) => (**token)
+            .downcast_ref::<T>()
+            .expect("an input edge's token has the type of its place"),
+        other => panic!("expected a lent token for this edge, got {other:?}"),
+    }
+}
+
+/// Every token a [`ReadAllEdge`] lends, oldest first, as `&T`s. The
+/// `expect`s cannot fire, as in [`owned_token`].
+pub(crate) fn lent_tokens<'a, T: 'static>(input: &mut ErasedInput<'a>) -> Vec<&'a T> {
+    match std::mem::replace(input, ErasedInput::Taken) {
+        ErasedInput::LentAll(tokens) => tokens
+            .into_iter()
+            .map(|token| {
+                (**token)
+                    .downcast_ref::<T>()
+                    .expect("an input edge's token has the type of its place")
+            })
+            .collect(),
+        other => panic!("expected every token lent for this edge, got {other:?}"),
+    }
+}
+
 /// The `describe` of a place edge, written once: one spec, with the handle's
 /// place and net and the kind this edge type stands for; a keyed edge's
 /// filter, cloned, when the kind is followed by `keyed`.
@@ -672,6 +834,7 @@ macro_rules! edge_describe {
                 kind: $kind,
                 net: self.0.net(),
                 filter: None,
+                reaches: Vec::new(),
             });
         }
     };
@@ -682,6 +845,7 @@ macro_rules! edge_describe {
                 kind: $kind,
                 net: self.0.net(),
                 filter: Some(self.1.clone()),
+                reaches: Vec::new(),
             });
         }
     };
@@ -806,6 +970,44 @@ impl<T: Clone + Send + Sync + 'static> EdgeSealed for SurveyEdge<T> {
 
 impl<T: Clone + Send + Sync + 'static> InputEdge for SurveyEdge<T> {}
 
+/// Lends, as a [`MutateEdge`] borrows, but shared: no `Clone` bound, and the
+/// body cannot change the token.
+impl<T: Send + Sync + 'static> EdgeSealed for ReadEdge<T> {
+    type Arg<'a> = &'a T;
+
+    fn extract<'a>(inputs: &mut ErasedCursor<'a, '_>) -> &'a T {
+        lent_token::<T>(inputs.next())
+    }
+
+    edge_describe!(EdgeKind::Read);
+}
+
+impl<T: Send + Sync + 'static> InputEdge for ReadEdge<T> {}
+
+impl<T: Send + Sync + 'static> EdgeSealed for ReadWhereEdge<T> {
+    type Arg<'a> = &'a T;
+
+    fn extract<'a>(inputs: &mut ErasedCursor<'a, '_>) -> &'a T {
+        lent_token::<T>(inputs.next())
+    }
+
+    edge_describe!(EdgeKind::ReadWhere, keyed);
+}
+
+impl<T: Send + Sync + 'static> InputEdge for ReadWhereEdge<T> {}
+
+impl<T: Send + Sync + 'static> EdgeSealed for ReadAllEdge<T> {
+    type Arg<'a> = Vec<&'a T>;
+
+    fn extract<'a>(inputs: &mut ErasedCursor<'a, '_>) -> Vec<&'a T> {
+        lent_tokens::<T>(inputs.next())
+    }
+
+    edge_describe!(EdgeKind::ReadAll);
+}
+
+impl<T: Send + Sync + 'static> InputEdge for ReadAllEdge<T> {}
+
 // What each edge kind reads, for a field of a struct of inputs: the public
 // `Reads` and its engine half `Extract`, one pair per kind, with the bounds
 // of the kind's `EdgeSealed` impl. Written out rather than generated, so
@@ -879,6 +1081,175 @@ impl<'a, T: Clone + Send + Sync + 'static> Extract<'a, Vec<T>> for SurveyEdge<T>
     }
 }
 
+/// Whatever the lifetime, as for a mutating edge.
+impl<T: Send + Sync + 'static> Reads<&T> for ReadEdge<T> {}
+
+impl<'a, T: Send + Sync + 'static> Extract<'a, &'a T> for ReadEdge<T> {
+    fn extract(inputs: &mut ErasedCursor<'a, '_>) -> &'a T {
+        <Self as EdgeSealed>::extract(inputs)
+    }
+}
+
+impl<T: Send + Sync + 'static> Reads<&T> for ReadWhereEdge<T> {}
+
+impl<'a, T: Send + Sync + 'static> Extract<'a, &'a T> for ReadWhereEdge<T> {
+    fn extract(inputs: &mut ErasedCursor<'a, '_>) -> &'a T {
+        <Self as EdgeSealed>::extract(inputs)
+    }
+}
+
+impl<T: Send + Sync + 'static> Reads<Vec<&T>> for ReadAllEdge<T> {}
+
+impl<'a, T: Send + Sync + 'static> Extract<'a, Vec<&'a T>> for ReadAllEdge<T> {
+    fn extract(inputs: &mut ErasedCursor<'a, '_>) -> Vec<&'a T> {
+        <Self as EdgeSealed>::extract(inputs)
+    }
+}
+
+/// An input edge that names the ports of its tokens' nets its body reaches:
+/// what [`reaching`](TakeEdge::reaching), on every edge kind, makes (since
+/// 2026-11-23).
+///
+/// For an edge on a place whose tokens carry nets
+/// ([`place_nested`](crate::NetBuilder::place_nested)), a declaration of
+/// where its body goes inside them: `MutateEdge(field).reaching(["Orders
+/// In"])` says that the body puts its order into each unit's `Orders In`.
+/// The names are carried on [`EdgeInfo::Input`] and on the wire as
+/// `reaches`, and a drawing writes them on the edge. A declaration and
+/// nothing more, like a group: the edge reads, takes or lends exactly as it
+/// would without it, and a name that no token's net has as a port is found
+/// out nowhere yet. An edge on a place that holds no nets may not name any
+/// ([`BuildError::ReachIntoNoNets`](crate::BuildError::ReachIntoNoNets)).
+///
+/// ```
+/// use petritype::{MutateEdge, Net, NetBuilder, TakeEdge};
+///
+/// let mut unit = NetBuilder::new();
+/// let orders_in = unit.place::<String>("Orders In");
+/// unit.port(orders_in);
+/// let unit = unit.build()?;
+///
+/// let mut b = NetBuilder::new();
+/// let orders = b.place::<String>("Orders");
+/// let field = b.place_nested::<Net>("Field");
+/// b.seed(field, [unit]);
+/// b.transition(
+///     "Hand Over",
+///     (TakeEdge(orders), MutateEdge(field).reaching(["Orders In"])),
+///     (),
+///     |order: String, unit: &mut Net| {
+///         let tray = unit.place_ref::<String>("Orders In").expect("a unit has a tray");
+///         unit.put(tray, order);
+///     },
+/// );
+/// let net = b.build()?;
+/// let reach: Vec<Vec<String>> = net.edges().filter_map(|edge| match edge {
+///     petritype::EdgeInfo::Input { reaches, .. } => Some(reaches),
+///     _ => None,
+/// }).collect();
+/// assert_eq!(reach, [vec![], vec!["Orders In".to_owned()]]);
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
+pub struct Reaching<E> {
+    edge: E,
+    ports: Vec<String>,
+}
+
+impl<E> Reaching<E> {
+    /// The edge, without the names.
+    pub fn edge(&self) -> &E {
+        &self.edge
+    }
+
+    /// The port names, in the order given.
+    pub fn ports(&self) -> &[String] {
+        &self.ports
+    }
+}
+
+impl<E: Clone> Clone for Reaching<E> {
+    fn clone(&self) -> Self {
+        Reaching {
+            edge: self.edge.clone(),
+            ports: self.ports.clone(),
+        }
+    }
+}
+
+impl<E: fmt::Debug> fmt::Debug for Reaching<E> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Reaching")
+            .field("edge", &self.edge)
+            .field("ports", &self.ports)
+            .finish()
+    }
+}
+
+/// Reads as its edge does, and describes itself as its edge with the names
+/// beside it.
+impl<E: EdgeSealed> EdgeSealed for Reaching<E> {
+    type Arg<'a> = E::Arg<'a>;
+
+    fn extract<'a>(inputs: &mut ErasedCursor<'a, '_>) -> E::Arg<'a> {
+        E::extract(inputs)
+    }
+
+    fn describe(&self, out: &mut Vec<InputSpec>) {
+        let from = out.len();
+        self.edge.describe(out);
+        for spec in &mut out[from..] {
+            if let InputSpec::Edge { reaches, .. } = spec {
+                reaches.clone_from(&self.ports);
+            }
+        }
+    }
+}
+
+impl<E: InputEdge> InputEdge for Reaching<E> {}
+
+impl<V, E: Reads<V>> Reads<V> for Reaching<E> {}
+
+impl<'a, V, E: Extract<'a, V>> Extract<'a, V> for Reaching<E> {
+    fn extract(inputs: &mut ErasedCursor<'a, '_>) -> V {
+        <E as Extract<'a, V>>::extract(inputs)
+    }
+}
+
+/// `reaching`, one inherent method per edge kind, so that it reads as part
+/// of the edge it names: `MutateEdge(field).reaching(["Orders In"])`.
+macro_rules! reaching {
+    ($($name:ident),*) => {$(
+        impl<T> $name<T> {
+            /// This edge, naming the ports of its tokens' nets its body
+            /// reaches: a declaration a drawing shows, which changes nothing
+            /// about firing. See [`Reaching`].
+            pub fn reaching<S: Into<String>>(
+                self,
+                ports: impl IntoIterator<Item = S>,
+            ) -> Reaching<Self> {
+                Reaching {
+                    edge: self,
+                    ports: ports.into_iter().map(Into::into).collect(),
+                }
+            }
+        }
+    )*};
+}
+
+reaching!(
+    TakeEdge,
+    TakeAllEdge,
+    SnapshotEdge,
+    MutateEdge,
+    TakeWhereEdge,
+    MutateWhereEdge,
+    DrainEdge,
+    SurveyEdge,
+    ReadEdge,
+    ReadWhereEdge,
+    ReadAllEdge
+);
+
 /// A tuple of input edges, `()` to sixteen of them.
 ///
 /// This is the type of the `inputs` argument of
@@ -951,6 +1322,8 @@ edge_handle_impls!(SnapshotEdge);
 edge_handle_impls!(MutateEdge);
 edge_handle_impls!(DrainEdge);
 edge_handle_impls!(SurveyEdge);
+edge_handle_impls!(ReadEdge);
+edge_handle_impls!(ReadAllEdge);
 
 /// A keyed edge holds its filter, so it is `Clone` and not `Copy`; still no
 /// bound on `T`.
@@ -975,6 +1348,7 @@ macro_rules! keyed_edge_handle_impls {
 
 keyed_edge_handle_impls!(TakeWhereEdge);
 keyed_edge_handle_impls!(MutateWhereEdge);
+keyed_edge_handle_impls!(ReadWhereEdge);
 
 #[cfg(test)]
 mod tests {
@@ -993,15 +1367,18 @@ mod tests {
         assert_handle::<MutateEdge<Rc<u32>>>();
         assert_handle::<DrainEdge<Rc<u32>>>();
         assert_handle::<SurveyEdge<Rc<u32>>>();
+        assert_handle::<ReadEdge<Rc<u32>>>();
+        assert_handle::<ReadAllEdge<Rc<u32>>>();
 
         // A keyed edge carries its filter, so it clones rather than copies.
         fn assert_keyed<H: Clone + Send + Sync + fmt::Debug>() {}
         assert_keyed::<TakeWhereEdge<Rc<u32>>>();
         assert_keyed::<MutateWhereEdge<Rc<u32>>>();
+        assert_keyed::<ReadWhereEdge<Rc<u32>>>();
     }
 
     /// Every kind, in declaration order.
-    const ALL: [EdgeKind; 8] = [
+    const ALL: [EdgeKind; 11] = [
         EdgeKind::Take,
         EdgeKind::TakeAll,
         EdgeKind::Snapshot,
@@ -1010,6 +1387,9 @@ mod tests {
         EdgeKind::MutateWhere,
         EdgeKind::Drain,
         EdgeKind::Survey,
+        EdgeKind::Read,
+        EdgeKind::ReadWhere,
+        EdgeKind::ReadAll,
     ];
 
     /// The kinds a predicate holds for, in declaration order.
@@ -1027,29 +1407,49 @@ mod tests {
         assert!(!EdgeKind::Mutate.consumes());
         assert!(!EdgeKind::MutateWhere.consumes());
         assert!(!EdgeKind::Survey.consumes());
+        assert!(!EdgeKind::Read.consumes());
+        assert!(!EdgeKind::ReadWhere.consumes());
+        assert!(!EdgeKind::ReadAll.consumes());
     }
 
     #[test]
     fn the_keyed_kinds_are_the_where_kinds_and_the_mutating_ones_borrow() {
         assert_eq!(
             kinds(EdgeKind::is_keyed),
-            [EdgeKind::TakeWhere, EdgeKind::MutateWhere]
+            [
+                EdgeKind::TakeWhere,
+                EdgeKind::MutateWhere,
+                EdgeKind::ReadWhere
+            ]
         );
         assert_eq!(
             kinds(EdgeKind::mutates),
             [EdgeKind::Mutate, EdgeKind::MutateWhere]
         );
+        assert_eq!(
+            kinds(EdgeKind::lends),
+            [
+                EdgeKind::Mutate,
+                EdgeKind::MutateWhere,
+                EdgeKind::Read,
+                EdgeKind::ReadWhere,
+                EdgeKind::ReadAll
+            ]
+        );
     }
 
-    /// Exactly the two zero-or-more kinds accept an empty place, and a drain
-    /// is the one consuming kind that does not always take a token.
+    /// Exactly the three zero-or-more kinds accept an empty place, and a
+    /// drain is the one consuming kind that does not always take a token.
     #[test]
-    fn drain_and_survey_alone_accept_an_empty_place() {
+    fn drain_survey_and_read_all_alone_accept_an_empty_place() {
         let absent: Vec<EdgeKind> = ALL
             .into_iter()
             .filter(|kind| !kind.requires_presence())
             .collect();
-        assert_eq!(absent, [EdgeKind::Drain, EdgeKind::Survey]);
+        assert_eq!(
+            absent,
+            [EdgeKind::Drain, EdgeKind::Survey, EdgeKind::ReadAll]
+        );
         assert_eq!(
             kinds(EdgeKind::always_consumes),
             [EdgeKind::Take, EdgeKind::TakeAll, EdgeKind::TakeWhere]
@@ -1073,18 +1473,21 @@ mod tests {
                     kind: EdgeKind::Take,
                     net,
                     filter: None,
+                    reaches: Vec::new(),
                 },
                 InputSpec::Edge {
                     place: PlaceId(1),
                     kind: EdgeKind::Snapshot,
                     net,
                     filter: None,
+                    reaches: Vec::new(),
                 },
                 InputSpec::Edge {
                     place: PlaceId(0),
                     kind: EdgeKind::Mutate,
                     net,
                     filter: None,
+                    reaches: Vec::new(),
                 },
             ]
         );
@@ -1107,12 +1510,14 @@ mod tests {
                     kind: EdgeKind::Drain,
                     net,
                     filter: None,
+                    reaches: Vec::new(),
                 },
                 InputSpec::Edge {
                     place: PlaceId(1),
                     kind: EdgeKind::Survey,
                     net,
                     filter: None,
+                    reaches: Vec::new(),
                 },
             ]
         );
@@ -1140,12 +1545,14 @@ mod tests {
                     kind: EdgeKind::TakeWhere,
                     net,
                     filter: Some(birds),
+                    reaches: Vec::new(),
                 },
                 InputSpec::Edge {
                     place: PlaceId(1),
                     kind: EdgeKind::MutateWhere,
                     net,
                     filter: Some(Filter::new()),
+                    reaches: Vec::new(),
                 },
             ]
         );

@@ -156,6 +156,135 @@ pub enum BuildError {
         /// The place it reads, which declares no keys.
         place: String,
     },
+    /// A keyed edge chooses its token by a key of another input's token
+    /// ([`Clause::IsInput`](crate::Clause::IsInput)), and that input, the
+    /// edge's *source*, is a place the transition does not read.
+    ///
+    /// The clause compares with the token the same firing gets from its
+    /// source, so the source must be one of the transition's input places.
+    /// Add an edge on it, or name the place the transition reads. Reported,
+    /// as the next four are, for the first such edge in transition order and
+    /// then edge order (since 2026-11-23).
+    #[error(
+        "transition {transition:?} chooses its token from place {place:?} by place {input:?}, \
+         which it does not read"
+    )]
+    BoundSourceNotAnInput {
+        /// The transition whose edge it is.
+        transition: String,
+        /// The place the bound edge reads.
+        place: String,
+        /// The place the clause names.
+        input: String,
+    },
+    /// A keyed edge chooses its token by a key of another input's token, and
+    /// that input's edge gives every token rather than one: a
+    /// [`TakeAllEdge`](crate::TakeAllEdge), a
+    /// [`DrainEdge`](crate::DrainEdge), a
+    /// [`SurveyEdge`](crate::SurveyEdge) or a
+    /// [`ReadAllEdge`](crate::ReadAllEdge).
+    ///
+    /// A key is read from one token, so the source must give one: a take, a
+    /// snapshot, a mutation or a read, keyed or not.
+    #[error(
+        "transition {transition:?} chooses its token from place {place:?} by place {input:?}, \
+         whose edge gives every token rather than one"
+    )]
+    BoundSourceGivesMany {
+        /// The transition whose edge it is.
+        transition: String,
+        /// The place the bound edge reads.
+        place: String,
+        /// The source place.
+        input: String,
+    },
+    /// A keyed edge chooses its token by a key of another input's token, and
+    /// that input's own token is chosen by an input too: a chain, or a
+    /// clause naming the edge's own place, the shortest cycle.
+    ///
+    /// A source chooses its token by its own filter alone, so that each
+    /// firing has one pair to find per source. Bind both edges to the same
+    /// source instead, or choose in two transitions.
+    #[error(
+        "transition {transition:?} chooses its token from place {place:?} by place {input:?}, \
+         whose own token is chosen by an input"
+    )]
+    BoundSourceIsBound {
+        /// The transition whose edge it is.
+        transition: String,
+        /// The place the bound edge reads.
+        place: String,
+        /// The source place, which is bound itself.
+        input: String,
+    },
+    /// One keyed edge's filter names two different sources.
+    ///
+    /// A bound edge has one source, whose token it is paired with. Two
+    /// clauses may name two keys of the same source.
+    #[error(
+        "transition {transition:?} chooses its token from place {place:?} by two inputs, \
+         {first:?} and {second:?}"
+    )]
+    BoundToTwoSources {
+        /// The transition whose edge it is.
+        transition: String,
+        /// The place the bound edge reads.
+        place: String,
+        /// The source the first input clause names.
+        first: String,
+        /// Another source a later clause names.
+        second: String,
+    },
+    /// A clause that chooses a token by another input's names a key that
+    /// one of the two places does not declare: the bound edge's place its
+    /// `key`, or the source place the key it reads.
+    ///
+    /// Both values are keys, so that the clause shows on the wire and in a
+    /// drawing as declared, and so that the pair is found through the index.
+    /// Declare the key, or name one the place has. Constant and parameter
+    /// clauses are not checked this way: a key no token has accepts nothing.
+    #[error(
+        "transition {transition:?} chooses its token from place {place:?} by key {key:?}, which \
+         place {owner:?} does not declare"
+    )]
+    BoundKeyNotDeclared {
+        /// The transition whose edge it is.
+        transition: String,
+        /// The place the bound edge reads.
+        place: String,
+        /// The key named.
+        key: String,
+        /// The place that should declare it: the bound edge's or the
+        /// source's.
+        owner: String,
+    },
+    /// An edge names ports it reaches ([`Reaching`](crate::Reaching)) on a
+    /// place whose tokens carry no nets, so there is nothing for it to
+    /// reach (since 2026-11-23). Declare the place with
+    /// [`place_nested`](crate::NetBuilder::place_nested), or drop the
+    /// names.
+    #[error(
+        "transition {transition:?} names ports it reaches through place {place:?}, whose \
+         tokens carry no nets"
+    )]
+    ReachIntoNoNets {
+        /// The transition whose edge it is.
+        transition: String,
+        /// The place it reads.
+        place: String,
+    },
+    /// An edge names a port it reaches by the empty string, which no place
+    /// is called.
+    #[error(
+        "transition {transition:?} names a port it reaches through place {place:?} by \
+             the empty string"
+    )]
+    EmptyReachName {
+        /// The transition whose edge it is.
+        transition: String,
+        /// The place it reads.
+        place: String,
+    },
     /// A place that holds no nets was given a
     /// [`stepping`](crate::NetBuilder::stepping) rule.
     ///
@@ -242,12 +371,12 @@ pub enum BuildError {
     ///
     /// Such a *source* transition takes no token out of any place when it
     /// fires, so having fired changes nothing about whether it can fire
-    /// again, and the net never quiesces. Read edges do not count, since a
+    /// again, and the net never quiesces. Non-consuming edges do not count, since a
     /// [`SnapshotEdge`](crate::SnapshotEdge), a
     /// [`MutateEdge`](crate::MutateEdge), a
-    /// [`MutateWhereEdge`](crate::MutateWhereEdge) and a
-    /// [`SurveyEdge`](crate::SurveyEdge) leave their places as they found
-    /// them, and a [`Param<T>`](crate::Param) is not a place at all; nor
+    /// [`MutateWhereEdge`](crate::MutateWhereEdge), a
+    /// [`SurveyEdge`](crate::SurveyEdge) and the read edges leave their
+    /// places as they found them, and a [`Param<T>`](crate::Param) is not a place at all; nor
     /// does a [`DrainEdge`](crate::DrainEdge), which takes every token there
     /// is, possibly none, and so does not hold the transition back on an
     /// empty place. Give it a
@@ -721,6 +850,61 @@ pub enum NetError {
         /// The factory's error, or the [`CommandError`] of the import.
         #[source]
         source: Box<dyn std::error::Error + Send + Sync>,
+    },
+    /// A write from outside a closed net at a place that is not one of its
+    /// ports (DESIGN §6.9, since 2026-11-23): see
+    /// [`Net::is_closed`](crate::Net::is_closed).
+    ///
+    /// A net that marks a port is closed: from outside it (a body of the net
+    /// around it, the program and its drivers, a runner's `inject`), tokens
+    /// are put, taken, removed, replaced or set only at its ports. The net
+    /// is unchanged. The message says the three ways to make the write
+    /// land: mark the place as a port, start the net with the token in its
+    /// definition (a seed, or a template's token), or declare the net open
+    /// ([`NetBuilder::open`](crate::NetBuilder::open)). A body that meets it
+    /// fails its firing with it, whether or not the body passed it on.
+    #[error(
+        "cannot {act} {place:?} from outside net {net:?}, which is closed: from outside it, \
+         tokens are written only at its ports, and {place:?} is not one. Mark the place as a \
+         port, start the net with the token in its definition, or declare the net open"
+    )]
+    ClosedNet {
+        /// The net, by the template that built it, or by its id
+        /// (`NetId(7)`) when no template did.
+        net: String,
+        /// The place written to, by its name in that net.
+        place: String,
+        /// What the write was: `"put a token into"`, `"add tokens to"`,
+        /// `"set the tokens of"`, `"remove a token from"` or
+        /// `"replace a token in"`.
+        act: &'static str,
+    },
+    /// A knob or a firing by name asked of a net that marks a port by a body
+    /// of the net around it, which holds the net as a token (DESIGN §6.9,
+    /// since 2026-11-23).
+    ///
+    /// On a net that marks a port, closed or declared open, the parameters,
+    /// switches, tie-break, stepping rules and selector, firing its
+    /// transitions by name, pressing its controls and importing a marking
+    /// into it are the program's, its drivers' and the runner's. A body is
+    /// handed such a net to read, to step and to write at its ports, and
+    /// while it holds the net each of these is refused, the net unchanged,
+    /// and its firing fails with this error when the body returns, whether
+    /// or not the body passed it on. A body that holds a net marking no
+    /// port keeps all of them in stage one.
+    #[error(
+        "cannot {act} net {net:?} from a body of the net around it: the parameters, switches, \
+         tie-break, stepping rules, selector and controls of a net that marks a port, and \
+         firing its transitions by name, are for the program, its drivers and the runner. Do \
+         it from the program, or give the net a transition of its own that does it"
+    )]
+    HeldByBody {
+        /// The net, by the template that built it, or by its id
+        /// (`NetId(7)`) when no template did.
+        net: String,
+        /// What was asked: `"set a parameter of"`, `"switch a transition
+        /// of"`, `"fire a transition of"` and the like.
+        act: &'static str,
     },
     /// A firing this call started failed. [`Net::fire`](crate::Net::fire)
     /// reports a body's failure this way; [`Net::step`](crate::Net::step)

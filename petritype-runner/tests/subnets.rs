@@ -597,7 +597,7 @@ fn the_outer_topology_lists_a_subnet_place_with_its_ports_and_edges_name_a_port(
 }
 
 #[test]
-fn a_subnet_s_own_topology_marks_its_ports_and_a_net_loaded_alone_does_not() {
+fn a_subnet_s_own_topology_marks_its_ports_and_so_does_a_net_loaded_alone() {
     let mut h = loaded_levels();
     let marks = |state: &Value| -> Vec<Value> {
         state["topology"]["places"]
@@ -613,8 +613,8 @@ fn a_subnet_s_own_topology_marks_its_ports_and_a_net_loaded_alone_does_not() {
     let alone = h.result("get_state", json!({}));
     assert_eq!(
         marks(&alone),
-        [Value::Null, Value::Null, Value::Null],
-        "no net around it reaches them"
+        [json!(true), Value::Null, json!(true)],
+        "every net shows its own ports, since 2026-11-23"
     );
 }
 
@@ -917,16 +917,16 @@ fn hidden_names_a_port_under_its_subnet_s_filter() {
 #[test]
 fn a_subnet_place_s_entry_holds_its_subnet_and_its_ports_under_the_token_limit() {
     let mut h = loaded_levels();
-    for name in ["Bram", "Cato", "Dara"] {
+    for name in ["Bram", "Cato", "Dara", "Eve"] {
         h.result(
             "inject",
             json!({"place": "Level 2", "port": "Lobby", "token": {"name": name, "fought": false}}),
         );
     }
-    h.result(
-        "inject",
-        json!({"place": "Arena", "path": l2(), "token": {"name": "Eve", "fought": false}}),
-    );
+    // A level is closed (it marks its lobby and exit hall as ports), so a
+    // hero reaches its arena by walking in, not by an inject (DESIGN §6.9,
+    // since 2026-11-23): level 2 is inner first, and Bram walks in.
+    h.send("step", json!({}));
     let state = h.result("get_state", json!({"token_limit": 2}));
     let entry = &state["marking"]["places"]["Level 2"];
     assert_eq!(

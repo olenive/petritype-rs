@@ -926,12 +926,14 @@ fn the_read_api_carries_the_kinds() {
             transition: shop.price_order,
             kind: EdgeKind::Take,
             filter: None,
+            reaches: Vec::new(),
         },
         EdgeInfo::Input {
             place: shop.promotions.id(),
             transition: shop.price_order,
             kind: EdgeKind::Survey,
             filter: None,
+            reaches: Vec::new(),
         },
         EdgeInfo::Output {
             transition: shop.price_order,
@@ -970,6 +972,7 @@ fn the_read_api_carries_the_kinds() {
         transition,
         kind,
         filter: None,
+        reaches: Vec::new(),
     };
     let output = |transition, place: PlaceId, slot| EdgeInfo::Output {
         transition,

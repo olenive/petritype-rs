@@ -140,8 +140,14 @@ pub struct ErrorBody {
     pub code: ErrorCode,
 }
 
-/// The closed set of error codes (PROTOCOL.md §3).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+/// The error codes of PROTOCOL.md §3.
+///
+/// Read tolerantly (since 2026-11-23): a code this version does not know is
+/// kept as [`Other`](ErrorCode::Other), its name as written, and the rest of
+/// the answer is read, so that a client meets a later runner's new code as a
+/// failed request with that code (§3). A client built on 0.2.x fails to read
+/// such an answer at all. No longer `Copy`, since `Other` holds its name.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ErrorCode {
     /// No such method.
@@ -168,13 +174,22 @@ pub enum ErrorCode {
     Unsupported,
     /// `press` named a control the net does not declare.
     UnknownControl,
+    /// `inject` named a place of a closed net that is not one of its ports
+    /// (§3, §6.4, since 2026-11-23): the net marks a port and does not
+    /// declare itself open. An older client sees a code it does not know,
+    /// which §3 tells it to treat as a failed request.
+    ClosedNet,
     /// Anything else.
     Internal,
+    /// A code this version does not know, by the name it was written with,
+    /// written back unchanged. A runner never sends one of its own.
+    #[serde(untagged)]
+    Other(String),
 }
 
 impl ErrorCode {
     /// The code as it appears on the wire, for example `"unknown_place"`.
-    pub fn as_str(self) -> &'static str {
+    pub fn as_str(&self) -> &str {
         match self {
             ErrorCode::UnknownMethod => "unknown_method",
             ErrorCode::InvalidParams => "invalid_params",
@@ -188,7 +203,9 @@ impl ErrorCode {
             ErrorCode::InvalidToken => "invalid_token",
             ErrorCode::Unsupported => "unsupported",
             ErrorCode::UnknownControl => "unknown_control",
+            ErrorCode::ClosedNet => "closed_net",
             ErrorCode::Internal => "internal",
+            ErrorCode::Other(code) => code,
         }
     }
 }
@@ -1061,6 +1078,13 @@ pub struct Topology {
     /// only when there are some.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub controls: Vec<Control>,
+    /// Whether the net's definition declares it open (§5.1, since
+    /// 2026-11-23): `open: true`, written only then. A net that shows a
+    /// `port` on one of its places and no `open` is closed: from outside
+    /// it, tokens are written only at its ports, and an `inject` anywhere
+    /// else is `closed_net`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub open: bool,
 }
 
 /// A control in [`Topology`]: a widget a viewer renders, which `press`
@@ -1226,7 +1250,8 @@ pub struct Transition {
 pub struct TransitionDetail {
     /// The type names of the transition's `Param<T>` inputs.
     pub params: Vec<String>,
-    /// False for a transition with a mutate edge, whose body runs inline.
+    /// False for a transition with a mutate edge or a read edge, whose body
+    /// runs inline.
     pub detachable: bool,
 }
 
@@ -1252,6 +1277,11 @@ pub struct Edge {
     /// token with, as declared (§13.5).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub filter: Option<Filter>,
+    /// The ports of its tokens' nets an input edge on a place of nets says
+    /// its body reaches, as declared (§5.1, since 2026-11-23); written only
+    /// when there are some.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reaches: Vec<String>,
     /// The output slot, for a transition with more than one output that
     /// returns them by position.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1269,7 +1299,13 @@ pub enum Direction {
 }
 
 /// How an input [`Edge`] reads its place.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// Read tolerantly (since 2026-11-23): a kind this version does not know is
+/// kept as [`Other`](EdgeKind::Other), its name as written, and the rest of
+/// the topology is read; a reader draws such an edge as a plain edge
+/// (PROTOCOL.md §5.1). Until then an unknown kind failed the whole topology,
+/// which is what a reader built on 0.2.x still does.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EdgeKind {
     /// Consumes the front token.
@@ -1290,6 +1326,18 @@ pub enum EdgeKind {
     /// Reads a clone of every token, zero or more: an empty place does not
     /// hold the transition back (§5.1, slice 22).
     Survey,
+    /// Lends the front token to look at, taking and copying nothing (§5.1,
+    /// since 2026-11-23).
+    Read,
+    /// Lends the oldest token its filter accepts to look at (§13.5).
+    ReadWhere,
+    /// Lends every token to look at, zero or more: an empty place does not
+    /// hold the transition back.
+    ReadAll,
+    /// A kind this version does not know, by the name it was written with,
+    /// written back unchanged.
+    #[serde(untagged)]
+    Other(String),
 }
 
 // ----- filters ---------------------------------------------------------------
@@ -1316,7 +1364,9 @@ pub struct Filter {
     pub prefix: Option<String>,
 }
 
-/// One clause of a [`Filter`]: `{key, values}` or `{key, param}`.
+/// One clause of a [`Filter`]: `{key, values}`, `{key, param}` or, in a
+/// keyed edge's filter in a topology only, `{key, input}`; and, read
+/// tolerantly from a topology, any other shape, as [`Clause::Other`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum Clause {
@@ -1337,6 +1387,36 @@ pub enum Clause {
         /// The net parameter's wire name.
         param: String,
     },
+    /// The token's `key` equals the key `input.key` of the token the same
+    /// firing gets from the input place `input` names (keyed edges, §13.5,
+    /// since 2026-11-23). It has a meaning only within a firing, so it is
+    /// found only in a keyed edge's filter in a topology; in a request's
+    /// filter it is `invalid_params` ([`Filter::parse`]).
+    IsInput {
+        /// The key's name, on the edge's place.
+        key: String,
+        /// The source place and its key.
+        input: InputKey,
+    },
+    /// A clause of a shape this version does not know, kept as it was
+    /// written and written back unchanged (since 2026-11-23), so that a
+    /// topology holding one is read whole (PROTOCOL.md §13.2). A request's
+    /// filter never holds one: [`Filter::parse`] refuses an unknown shape.
+    Other(Value),
+}
+
+/// The source of a [`Clause::IsInput`]: `{place, port?, key}`, the place
+/// named as an edge names it (a port by its subnet place and `port`), and
+/// the key of that place whose value is accepted.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InputKey {
+    /// The source place, or the subnet place of a port.
+    pub place: String,
+    /// The port of the subnet place `place`, for a source on a port place.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub port: Option<String>,
+    /// The key of the source place.
+    pub key: String,
 }
 
 impl Filter {
@@ -1347,7 +1427,9 @@ impl Filter {
     /// integers and booleans or a string `param`, never both; `places` a
     /// list of place names and `{"place", "port"}` objects
     /// ([`PlaceName::parse`]); `prefix` a string. Whether the places exist
-    /// is the net's to say.
+    /// is the net's to say. A clause with `input`, which only a keyed edge's
+    /// filter in a topology carries, has no meaning outside a firing and is
+    /// refused (§13.2, since 2026-11-23).
     ///
     /// # Errors
     ///
@@ -1400,6 +1482,13 @@ impl Clause {
         let Some(Value::String(key)) = value.get("key") else {
             return Err(SHAPE.into());
         };
+        if value.get("input").is_some() {
+            return Err(
+                "a clause with \"input\" chooses by another input of a firing, so it \
+                        has no meaning in a request"
+                    .into(),
+            );
+        }
         let key = key.clone();
         match (value.get("values"), value.get("param")) {
             (None, Some(Value::String(param))) => Ok(Clause::IsParam {
@@ -2106,6 +2195,7 @@ mod tests {
             edges: Vec::new(),
             groups: Vec::new(),
             controls: Vec::new(),
+            open: false,
         };
         assert!(
             to_value(&topology).get("controls").is_none(),
@@ -2307,6 +2397,7 @@ mod tests {
             edges: Vec::new(),
             groups: vec!["Sorting".into(), "Packing".into()],
             controls: Vec::new(),
+            open: false,
         };
         let value = to_value(&topology);
         assert_eq!(
@@ -2385,9 +2476,121 @@ mod tests {
             json!({"clauses": [{"key": 3, "values": [1]}]}),
             json!({"places": [1]}),
             json!({"limit": 3}),
+            json!({"clauses": [{"key": "name", "input": {"place": "Orders", "key": "unit"}}]}),
         ] {
             assert!(Filter::parse(&bad).is_err(), "{bad}");
         }
+    }
+
+    /// A topology holding an edge kind and a clause shape this version does
+    /// not know is read whole: the kind and the clause are kept as written
+    /// and written back unchanged, and the rest is read as usual.
+    #[test]
+    fn an_unknown_kind_and_an_unknown_clause_are_kept() {
+        let value = json!({
+            "places": [{"name": "Shelf", "type_name": "Book", "serializable": true}],
+            "transitions": [{"name": "Glance", "detail": {"params": [], "detachable": false}}],
+            "edges": [
+                {"place": "Shelf", "transition": "Glance", "direction": "in", "kind": "glance",
+                 "filter": {"clauses": [{"key": "title", "near": {"place": "Desk", "by": 2}},
+                                        {"key": "shelf", "values": ["A"]}]}},
+                {"place": "Shelf", "transition": "Glance", "direction": "in", "kind": "read_all"}
+            ]
+        });
+        let topology: Topology = serde_json::from_value(value.clone()).unwrap();
+        let edge = &topology.edges[0];
+        assert_eq!(edge.kind, Some(EdgeKind::Other("glance".into())));
+        let clauses = &edge.filter.as_ref().unwrap().clauses;
+        assert_eq!(
+            clauses[0],
+            Clause::Other(json!({"key": "title", "near": {"place": "Desk", "by": 2}}))
+        );
+        assert_eq!(
+            clauses[1],
+            Clause::In {
+                key: "shelf".into(),
+                values: vec!["A".into()]
+            }
+        );
+        assert_eq!(topology.edges[1].kind, Some(EdgeKind::ReadAll));
+        assert_eq!(
+            to_value(&topology.edges[0])["kind"],
+            json!("glance"),
+            "written back as it was"
+        );
+        assert_eq!(
+            to_value(&topology.edges[0])["filter"]["clauses"][0],
+            json!({"key": "title", "near": {"place": "Desk", "by": 2}})
+        );
+        assert!(
+            Filter::parse(&json!({"clauses": [{"key": "title", "near": {}}]})).is_err(),
+            "a request's filter is still read strictly"
+        );
+    }
+
+    /// An edge's `reaches` is read and written back, and a field this
+    /// version does not know is passed over while the rest is read.
+    #[test]
+    fn an_edge_reads_its_reaches_and_passes_over_a_field_it_does_not_know() {
+        let value = json!({"place": "Field", "transition": "Hand Over", "direction": "in",
+                           "kind": "mutate", "reaches": ["Orders In"], "aim": {"at": 3}});
+        let edge: Edge = serde_json::from_value(value).unwrap();
+        assert_eq!(edge.reaches, ["Orders In"]);
+        assert_eq!(edge.kind, Some(EdgeKind::Mutate));
+        assert_eq!(
+            to_value(&edge),
+            json!({"place": "Field", "transition": "Hand Over", "direction": "in",
+                   "kind": "mutate", "reaches": ["Orders In"]})
+        );
+        let plain: Edge = serde_json::from_value(
+            json!({"place": "Field", "transition": "Hand Over", "direction": "in"}),
+        )
+        .unwrap();
+        assert!(plain.reaches.is_empty());
+        assert!(
+            to_value(&plain).get("reaches").is_none(),
+            "written only when there are some"
+        );
+    }
+
+    /// A clause that chooses by another input is written in a topology,
+    /// its source named as an edge names its place, and read back by the
+    /// lenient reading; a request's filter may not hold one.
+    #[test]
+    fn an_input_clause_is_written_and_read_back_but_refused_in_a_request() {
+        let filter = Filter {
+            clauses: vec![
+                Clause::IsInput {
+                    key: "name".into(),
+                    input: InputKey {
+                        place: "Orders".into(),
+                        port: None,
+                        key: "unit".into(),
+                    },
+                },
+                Clause::IsInput {
+                    key: "kind".into(),
+                    input: InputKey {
+                        place: "Yard".into(),
+                        port: Some("Bay".into()),
+                        key: "kind".into(),
+                    },
+                },
+            ],
+            places: None,
+            prefix: None,
+        };
+        let value = to_value(&filter);
+        assert_eq!(
+            value,
+            json!({"clauses": [
+                {"key": "name", "input": {"place": "Orders", "key": "unit"}},
+                {"key": "kind", "input": {"place": "Yard", "port": "Bay", "key": "kind"}}]})
+        );
+        let back: Filter = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(back, filter);
+        let refused = Filter::parse(&value).unwrap_err();
+        assert!(refused.contains("\"input\""), "{refused}");
     }
 
     #[test]
@@ -2423,9 +2626,32 @@ mod tests {
             ErrorCode::InvalidToken,
             ErrorCode::Unsupported,
             ErrorCode::UnknownControl,
+            ErrorCode::ClosedNet,
             ErrorCode::Internal,
         ] {
-            assert_eq!(to_value(code), json!(code.as_str()));
+            assert_eq!(to_value(&code), json!(code.as_str()));
         }
+    }
+
+    /// An answer carrying a code this version does not know is read whole:
+    /// the code is kept by its name and written back unchanged, and a known
+    /// code still reads as itself.
+    #[test]
+    fn an_unknown_error_code_is_kept_and_the_answer_read() {
+        let line = r#"{"id":"7","error":{"code":"teapot_full","message":"no room"}}"#;
+        let answer: Response = serde_json::from_str(line).unwrap();
+        assert_eq!(answer.id, "7");
+        let Outcome::Error(error) = &answer.outcome else {
+            panic!("an error answer: {answer:?}");
+        };
+        assert_eq!(error.code, ErrorCode::Other("teapot_full".into()));
+        assert_eq!(error.code.as_str(), "teapot_full");
+        assert_eq!(error.message, "no room");
+        assert_eq!(
+            to_value(&answer),
+            json!({"id": "7", "error": {"code": "teapot_full", "message": "no room"}})
+        );
+        let known: ErrorCode = serde_json::from_value(json!("closed_net")).unwrap();
+        assert_eq!(known, ErrorCode::ClosedNet);
     }
 }

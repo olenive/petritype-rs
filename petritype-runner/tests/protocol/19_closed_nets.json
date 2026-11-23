@@ -1,0 +1,898 @@
+{
+ "net": "post-office",
+ "params": {},
+ "exchanges": [
+  {
+   "send": {
+    "method": "describe",
+    "params": {}
+   },
+   "expect": [
+    {
+     "id": "1",
+     "result": {
+      "protocol_version": 2,
+      "runtime": "<label>",
+      "runtime_version": "<label>",
+      "nets": [
+       {
+        "name": "post-office",
+        "description": "Letters are delivered to a post's inbox, and a forgery written into its ledger is refused",
+        "mode": "manual",
+        "params": []
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "load",
+    "params": {
+     "net": "post-office"
+    }
+   },
+   "expect": [
+    {
+     "method": "load_progress",
+     "params": {
+      "step": "build",
+      "message": "<label>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "reloaded",
+     "params": {
+      "generation": 1,
+      "reason": "load",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "2",
+     "result": {
+      "status": "loaded",
+      "generation": 1,
+      "marking_version": "<version>"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "get_state",
+    "params": {}
+   },
+   "expect": [
+    {
+     "id": "3",
+     "result": {
+      "protocol_version": 2,
+      "runtime": "<label>",
+      "net": "post-office",
+      "generation": 1,
+      "marking_version": "<version>",
+      "running": false,
+      "topology": {
+       "places": [
+        {
+         "name": "Letters",
+         "type_name": "<label>",
+         "serializable": true
+        },
+        {
+         "name": "Forgeries",
+         "type_name": "<label>",
+         "serializable": true
+        },
+        {
+         "name": "Posts",
+         "type_name": "<label>",
+         "serializable": true,
+         "nested": true,
+         "stepping": "inner_first"
+        }
+       ],
+       "transitions": [
+        {
+         "name": "Deliver",
+         "detail": "<any>"
+        },
+        {
+         "name": "Forge",
+         "detail": "<any>"
+        }
+       ],
+       "edges": {
+        "<unordered>": [
+         {
+          "place": "Letters",
+          "transition": "Deliver",
+          "direction": "in",
+          "kind": "take"
+         },
+         {
+          "place": "Forgeries",
+          "transition": "Forge",
+          "direction": "in",
+          "kind": "take"
+         },
+         {
+          "place": "Posts",
+          "transition": "Forge",
+          "direction": "in",
+          "kind": "take"
+         },
+         {
+          "place": "Posts",
+          "transition": "Deliver",
+          "direction": "in",
+          "kind": "mutate",
+          "reaches": [
+           "Inbox"
+          ]
+         },
+         {
+          "place": "Posts",
+          "transition": "Forge",
+          "direction": "out"
+         }
+        ]
+       }
+      },
+      "transitions": {
+       "Deliver": {
+        "enabled": true,
+        "fireable": true,
+        "in_flight": false,
+        "priority": 0.0
+       },
+       "Forge": {
+        "enabled": true,
+        "fireable": true,
+        "in_flight": false,
+        "priority": 0.0
+       }
+      },
+      "marking": {
+       "places": {
+        "Letters": {
+         "count": 1,
+         "tokens": [
+          {
+           "id": "<id:dear_ada>",
+           "label": "<label>"
+          }
+         ]
+        },
+        "Forgeries": {
+         "count": 1,
+         "tokens": [
+          {
+           "id": "<id:iou>",
+           "label": "<label>"
+          }
+         ]
+        },
+        "Posts": {
+         "count": 2,
+         "tokens": [
+          {
+           "id": "<id:post>",
+           "label": "<label>",
+           "nets": [
+            {
+             "name": "",
+             "nested_id": "<id:post_2>",
+             "path": [
+              {
+               "place": "Posts",
+               "token": "<id:post>",
+               "net": ""
+              }
+             ],
+             "template": "Post",
+             "count": 0
+            }
+           ]
+          },
+          {
+           "id": "<id:open_post>",
+           "label": "<label>",
+           "nets": [
+            {
+             "name": "",
+             "nested_id": "<id:open_post_2>",
+             "path": [
+              {
+               "place": "Posts",
+               "token": "<id:open_post>",
+               "net": ""
+              }
+             ],
+             "template": "Open Post",
+             "count": 0
+            }
+           ]
+          }
+         ]
+        }
+       }
+      },
+      "progress": {
+       "step_count": 0,
+       "last_fired": null,
+       "fired_counts": {},
+       "last_progress_at": null
+      }
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "get_state",
+    "params": {
+     "path": [
+      {
+       "place": "Posts",
+       "token": "<id:post>",
+       "net": ""
+      }
+     ]
+    }
+   },
+   "expect": [
+    {
+     "id": "4",
+     "result": {
+      "protocol_version": 2,
+      "runtime": "<label>",
+      "net": "",
+      "generation": 1,
+      "marking_version": "<version>",
+      "running": false,
+      "topology": {
+       "places": [
+        {
+         "name": "Inbox",
+         "type_name": "<label>",
+         "serializable": true,
+         "port": true
+        },
+        {
+         "name": "Ledger",
+         "type_name": "<label>",
+         "serializable": true
+        }
+       ],
+       "transitions": [],
+       "edges": {
+        "<unordered>": []
+       }
+      },
+      "transitions": {},
+      "marking": {
+       "places": {
+        "Inbox": {
+         "count": 0,
+         "tokens": []
+        },
+        "Ledger": {
+         "count": 0,
+         "tokens": []
+        }
+       }
+      },
+      "progress": {
+       "step_count": 0,
+       "last_fired": null,
+       "fired_counts": {},
+       "last_progress_at": null
+      },
+      "path": [
+       {
+        "place": "Posts",
+        "token": "<id:post>",
+        "net": ""
+       }
+      ],
+      "nested_id": "<id:post_2>",
+      "template": "Post"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "get_state",
+    "params": {
+     "path": [
+      {
+       "place": "Posts",
+       "token": "<id:open_post>",
+       "net": ""
+      }
+     ]
+    }
+   },
+   "expect": [
+    {
+     "id": "5",
+     "result": {
+      "protocol_version": 2,
+      "runtime": "<label>",
+      "net": "",
+      "generation": 1,
+      "marking_version": "<version>",
+      "running": false,
+      "topology": {
+       "places": [
+        {
+         "name": "Inbox",
+         "type_name": "<label>",
+         "serializable": true,
+         "port": true
+        },
+        {
+         "name": "Ledger",
+         "type_name": "<label>",
+         "serializable": true
+        }
+       ],
+       "transitions": [],
+       "edges": {
+        "<unordered>": []
+       },
+       "open": true
+      },
+      "transitions": {},
+      "marking": {
+       "places": {
+        "Inbox": {
+         "count": 0,
+         "tokens": []
+        },
+        "Ledger": {
+         "count": 0,
+         "tokens": []
+        }
+       }
+      },
+      "progress": {
+       "step_count": 0,
+       "last_fired": null,
+       "fired_counts": {},
+       "last_progress_at": null
+      },
+      "path": [
+       {
+        "place": "Posts",
+        "token": "<id:open_post>",
+        "net": ""
+       }
+      ],
+      "nested_id": "<id:open_post_2>",
+      "template": "Open Post"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "step",
+    "params": {}
+   },
+   "expect": [
+    {
+     "method": "nested",
+     "params": {
+      "path": [
+       {
+        "place": "Posts",
+        "token": "<id:post>",
+        "net": ""
+       }
+      ],
+      "nested_id": "<id:post_2>",
+      "event": {
+       "method": "added",
+       "params": {
+        "place": "Inbox",
+        "id": "<id:post_dear_ada>",
+        "label": "<label>",
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "mutated",
+     "params": {
+      "place": "Posts",
+      "id": "<id:post>",
+      "label": "<label>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "fired",
+     "params": {
+      "transition": "Deliver",
+      "consumed": [
+       [
+        "Letters",
+        "<id:dear_ada>"
+       ]
+      ],
+      "produced": [],
+      "duration_ms": "<ms>",
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "fireable",
+     "params": {
+      "transitions": [
+       "Forge"
+      ],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "6",
+     "result": {
+      "fired": true,
+      "transition": "Deliver",
+      "marking_version": "<version>",
+      "running": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "inject",
+    "params": {
+     "place": "Inbox",
+     "path": [
+      {
+       "place": "Posts",
+       "token": "<id:post>",
+       "net": ""
+      }
+     ],
+     "token": "Note"
+    }
+   },
+   "expect": [
+    {
+     "method": "nested",
+     "params": {
+      "path": [
+       {
+        "place": "Posts",
+        "token": "<id:post>",
+        "net": ""
+       }
+      ],
+      "nested_id": "<id:post_2>",
+      "event": {
+       "method": "added",
+       "params": {
+        "place": "Inbox",
+        "id": "<id:post_note>",
+        "label": "<label>",
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "7",
+     "result": {
+      "status": "injected",
+      "id": "<id:post_note>",
+      "marking_version": "<version>",
+      "path": [
+       {
+        "place": "Posts",
+        "token": "<id:post>",
+        "net": ""
+       }
+      ],
+      "nested_id": "<id:post_2>"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "inject",
+    "params": {
+     "place": "Ledger",
+     "path": [
+      {
+       "place": "Posts",
+       "token": "<id:post>",
+       "net": ""
+      }
+     ],
+     "token": "Note"
+    }
+   },
+   "expect": [
+    {
+     "id": "8",
+     "error": {
+      "message": "<label>",
+      "code": "closed_net"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "inject",
+    "params": {
+     "place": "Ledger",
+     "path": [
+      {
+       "place": "Posts",
+       "token": "<id:open_post>",
+       "net": ""
+      }
+     ],
+     "token": "Note"
+    }
+   },
+   "expect": [
+    {
+     "method": "nested",
+     "params": {
+      "path": [
+       {
+        "place": "Posts",
+        "token": "<id:open_post>",
+        "net": ""
+       }
+      ],
+      "nested_id": "<id:open_post_2>",
+      "event": {
+       "method": "added",
+       "params": {
+        "place": "Ledger",
+        "id": "<id:open_post_note>",
+        "label": "<label>",
+        "marking_version": "<version>",
+        "running": false
+       }
+      },
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "9",
+     "result": {
+      "status": "injected",
+      "id": "<id:open_post_note>",
+      "marking_version": "<version>",
+      "path": [
+       {
+        "place": "Posts",
+        "token": "<id:open_post>",
+        "net": ""
+       }
+      ],
+      "nested_id": "<id:open_post_2>"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "get_state",
+    "params": {
+     "path": [
+      {
+       "place": "Posts",
+       "token": "<id:post>",
+       "net": ""
+      }
+     ]
+    }
+   },
+   "expect": [
+    {
+     "id": "10",
+     "result": {
+      "protocol_version": 2,
+      "runtime": "<label>",
+      "net": "",
+      "generation": 1,
+      "marking_version": "<version>",
+      "running": false,
+      "topology": {
+       "places": [
+        {
+         "name": "Inbox",
+         "type_name": "<label>",
+         "serializable": true,
+         "port": true
+        },
+        {
+         "name": "Ledger",
+         "type_name": "<label>",
+         "serializable": true
+        }
+       ],
+       "transitions": [],
+       "edges": {
+        "<unordered>": []
+       }
+      },
+      "transitions": {},
+      "marking": {
+       "places": {
+        "Inbox": {
+         "count": 2,
+         "tokens": [
+          {
+           "id": "<id:post_dear_ada>",
+           "label": "<label>"
+          },
+          {
+           "id": "<id:post_note>",
+           "label": "<label>"
+          }
+         ]
+        },
+        "Ledger": {
+         "count": 0,
+         "tokens": []
+        }
+       }
+      },
+      "progress": {
+       "step_count": 0,
+       "last_fired": null,
+       "fired_counts": {},
+       "last_progress_at": null
+      },
+      "path": [
+       {
+        "place": "Posts",
+        "token": "<id:post>",
+        "net": ""
+       }
+      ],
+      "nested_id": "<id:post_2>",
+      "template": "Post"
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "step",
+    "params": {}
+   },
+   "expect": [
+    {
+     "method": "launched",
+     "params": {
+      "transition": "Forge",
+      "consumed": [
+       [
+        "Forgeries",
+        "<id:iou>"
+       ],
+       [
+        "Posts",
+        "<id:post>"
+       ]
+      ],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "failed",
+     "params": {
+      "transition": "Forge",
+      "error": "<label>",
+      "restored": false,
+      "consumed": [
+       [
+        "Forgeries",
+        "<id:iou>"
+       ],
+       [
+        "Posts",
+        "<id:post>"
+       ]
+      ],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "method": "fireable",
+     "params": {
+      "transitions": [],
+      "marking_version": "<version>",
+      "running": false
+     }
+    },
+    {
+     "id": "11",
+     "result": {
+      "fired": true,
+      "transition": "Forge",
+      "failed": true,
+      "marking_version": "<version>",
+      "running": false
+     }
+    }
+   ]
+  },
+  {
+   "send": {
+    "method": "get_state",
+    "params": {}
+   },
+   "expect": [
+    {
+     "id": "12",
+     "result": {
+      "protocol_version": 2,
+      "runtime": "<label>",
+      "net": "post-office",
+      "generation": 1,
+      "marking_version": "<version>",
+      "running": false,
+      "topology": {
+       "places": [
+        {
+         "name": "Letters",
+         "type_name": "<label>",
+         "serializable": true
+        },
+        {
+         "name": "Forgeries",
+         "type_name": "<label>",
+         "serializable": true
+        },
+        {
+         "name": "Posts",
+         "type_name": "<label>",
+         "serializable": true,
+         "nested": true,
+         "stepping": "inner_first"
+        }
+       ],
+       "transitions": [
+        {
+         "name": "Deliver",
+         "detail": "<any>"
+        },
+        {
+         "name": "Forge",
+         "detail": "<any>"
+        }
+       ],
+       "edges": {
+        "<unordered>": [
+         {
+          "place": "Letters",
+          "transition": "Deliver",
+          "direction": "in",
+          "kind": "take"
+         },
+         {
+          "place": "Forgeries",
+          "transition": "Forge",
+          "direction": "in",
+          "kind": "take"
+         },
+         {
+          "place": "Posts",
+          "transition": "Forge",
+          "direction": "in",
+          "kind": "take"
+         },
+         {
+          "place": "Posts",
+          "transition": "Deliver",
+          "direction": "in",
+          "kind": "mutate",
+          "reaches": [
+           "Inbox"
+          ]
+         },
+         {
+          "place": "Posts",
+          "transition": "Forge",
+          "direction": "out"
+         }
+        ]
+       }
+      },
+      "transitions": {
+       "Deliver": {
+        "enabled": true,
+        "fireable": false,
+        "in_flight": false,
+        "priority": 0.0
+       },
+       "Forge": {
+        "enabled": true,
+        "fireable": false,
+        "in_flight": false,
+        "priority": 0.0
+       }
+      },
+      "marking": {
+       "places": {
+        "Letters": {
+         "count": 0,
+         "tokens": []
+        },
+        "Forgeries": {
+         "count": 0,
+         "tokens": []
+        },
+        "Posts": {
+         "count": 1,
+         "tokens": [
+          {
+           "id": "<id:open_post>",
+           "label": "<label>",
+           "nets": [
+            {
+             "name": "",
+             "nested_id": "<id:open_post_2>",
+             "path": [
+              {
+               "place": "Posts",
+               "token": "<id:open_post>",
+               "net": ""
+              }
+             ],
+             "template": "Open Post",
+             "count": 1
+            }
+           ]
+          }
+         ]
+        }
+       }
+      },
+      "progress": {
+       "step_count": 1,
+       "last_fired": "Deliver",
+       "fired_counts": {
+        "Deliver": 1
+       },
+       "last_progress_at": "<time>"
+      }
+     }
+    }
+   ]
+  }
+ ]
+}

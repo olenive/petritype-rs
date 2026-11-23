@@ -4,6 +4,7 @@
 
 use std::collections::BTreeMap;
 
+use crate::closed::IMPORT;
 use crate::error::{CommandError, NetError};
 use crate::event::Event;
 use crate::ids::{PlaceId, TransitionId};
@@ -267,7 +268,12 @@ impl Net {
     /// [`CommandError::InvalidToken`] for the first token that does not
     /// decode as its place's type and `CannotLoadSubnet` for a subnet
     /// place's entry that does not load into its subnet, saying why.
+    /// Before all of them, [`NetError::HeldByBody`] when a body of the net
+    /// around this one holds it and it marks a port (since 2026-11-23): an
+    /// import is a whole-state act, the program's, and goes round the rule
+    /// of [closed nets](Net::is_closed), which it is not for a body.
     pub fn import_marking(&mut self, marking: &Marking) -> Result<(), CommandError> {
+        self.admit_knob(IMPORT)?;
         let decoded = self.decode_marking(marking)?;
         self.load_marking(decoded);
         Ok(())

@@ -1074,6 +1074,543 @@ pub fn odd_names_registry() -> Vec<NetEntry> {
     vec![odd_names_entry()]
 }
 
+/// The protocol's conformance net `couriers` (PROTOCOL.md §11, §13.5):
+/// orders loaded onto the courier each names, and calls that send the
+/// courier they name out, so that a transcript shows a keyed edge that
+/// chooses its token by another input of the firing, in both forms, a
+/// source token with no match passed over, and a failed firing putting both
+/// tokens back. Its names, places, keys, transitions and seed are fixed by
+/// §11; the Python twin is `tests/protocol_nets/couriers.py`.
+pub mod couriers {
+    use std::fmt;
+
+    use petritype::{Filter, KeyValue, MutateWhereEdge, Net, NetBuilder, TakeEdge, TakeWhereEdge};
+    use petritype_runner::LoadError;
+    use serde::{Deserialize, Serialize};
+
+    /// A courier, and how many parcels it carries.
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+    pub struct Courier {
+        pub name: String,
+        pub parcels: i64,
+    }
+
+    /// An order for an item, naming the courier it is for.
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+    pub struct Order {
+        pub item: String,
+        pub courier: String,
+    }
+
+    /// A call for the courier it names.
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+    pub struct Call {
+        pub courier: String,
+    }
+
+    /// Why `Dispatch` failed: the courier it called carries nothing.
+    #[derive(Debug)]
+    pub struct NothingToCarry(pub String);
+
+    impl fmt::Display for NothingToCarry {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            write!(f, "{} has nothing to carry", self.0)
+        }
+    }
+
+    impl std::error::Error for NothingToCarry {}
+
+    fn courier(name: &str) -> Courier {
+        Courier {
+            name: name.to_owned(),
+            parcels: 0,
+        }
+    }
+
+    fn order(item: &str, courier: &str) -> Order {
+        Order {
+            item: item.to_owned(),
+            courier: courier.to_owned(),
+        }
+    }
+
+    /// The net as §11 seeds it: `Couriers` (keyed by `name`) holding Ada,
+    /// Ben and Dot, none carrying anything; `Orders` (keyed by `courier`)
+    /// holding a lamp for Cleo, a book for Ben and a kite for Ada; `Calls`
+    /// (keyed by `courier`), `Loaded` and `On Road` empty. `Load` takes an
+    /// order and hands its body the courier it names, which carries one
+    /// parcel more, the order going on to `Loaded`; `Dispatch` takes a call
+    /// and the courier it names, which goes on the road, or fails the
+    /// firing when it carries nothing. Both restore their inputs on
+    /// failure, as the Python net does for the whole net.
+    pub fn couriers(_: &petritype_runner::Params) -> Result<Net, LoadError> {
+        let mut b = NetBuilder::new();
+        let couriers = b.place::<Courier>("Couriers");
+        let orders = b.place::<Order>("Orders");
+        let calls = b.place::<Call>("Calls");
+        let loaded = b.place::<Order>("Loaded");
+        let on_road = b.place::<Courier>("On Road");
+        b.serializable(couriers);
+        b.serializable(orders);
+        b.serializable(calls);
+        b.serializable(loaded);
+        b.serializable(on_road);
+        b.keys(couriers, ["name"], |c: &Courier| {
+            [KeyValue::from(c.name.as_str())]
+        });
+        b.keys(orders, ["courier"], |o: &Order| {
+            [KeyValue::from(o.courier.as_str())]
+        });
+        b.keys(calls, ["courier"], |c: &Call| {
+            [KeyValue::from(c.courier.as_str())]
+        });
+        b.seed(couriers, [courier("Ada"), courier("Ben"), courier("Dot")]);
+        b.seed(
+            orders,
+            [
+                order("Lamp", "Cleo"),
+                order("Book", "Ben"),
+                order("Kite", "Ada"),
+            ],
+        );
+        b.transition(
+            "Load",
+            (
+                TakeEdge(orders),
+                MutateWhereEdge(
+                    couriers,
+                    Filter::new().key_is_input("name", orders, "courier"),
+                ),
+            ),
+            (loaded,),
+            |order: Order, courier: &mut Courier| {
+                courier.parcels += 1;
+                (order,)
+            },
+        )
+        .restore_tokens_on_failure();
+        b.transition(
+            "Dispatch",
+            (
+                TakeEdge(calls),
+                TakeWhereEdge(
+                    couriers,
+                    Filter::new().key_is_input("name", calls, "courier"),
+                ),
+            ),
+            (on_road,),
+            |_: Call, courier: Courier| -> Result<(Courier,), NothingToCarry> {
+                if courier.parcels == 0 {
+                    Err(NothingToCarry(courier.name))
+                } else {
+                    Ok((courier,))
+                }
+            },
+        )
+        .restore_tokens_on_failure();
+        Ok(b.build()?)
+    }
+}
+
+/// The protocol's conformance net `roll-call` (PROTOCOL.md §11, §5.1): a
+/// roll call that reads the squads in the barracks, tokens that are each a
+/// net, without taking or copying them, through each of the three read
+/// edges, so that a transcript shows them on the wire, firings that name no
+/// squad, and the squads' ids and their nets' ids unchanged. Its names,
+/// places, key, template, transitions, roll lines and seed are fixed by
+/// §11; the Python twin is `tests/protocol_nets/roll_call.py`.
+pub mod roll_call {
+    use petritype::{
+        Filter, KeyValue, Net, NetBuilder, Params, ReadAllEdge, ReadEdge, ReadWhereEdge, TakeEdge,
+        Templates,
+    };
+    use petritype_runner::LoadError;
+    use serde::{Deserialize, Serialize};
+
+    /// An inspection of the squad a leader leads.
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+    pub struct Inspection {
+        pub leader: String,
+    }
+
+    /// The template `Squad`: one place, `Members`, of strings and
+    /// serializable, holding no one, and no transition. No parameters.
+    fn squad(_: &Params) -> Result<Net, petritype::BuildError> {
+        let mut b = NetBuilder::new();
+        let members = b.place::<String>("Members");
+        b.serializable(members);
+        b.build()
+    }
+
+    /// `Squad`, under its name, which builds a squad's net and stamps it.
+    pub fn templates() -> Templates {
+        let mut templates = Templates::new();
+        templates.register("Squad", squad);
+        templates
+    }
+
+    /// The names in a squad's `Members`, front first.
+    fn members(squad: &Net) -> Vec<String> {
+        let Some(place) = squad.place_named("Members") else {
+            return Vec::new();
+        };
+        squad
+            .tokens(place)
+            .filter_map(|(id, _)| squad.token::<String>(place, id).cloned())
+            .collect()
+    }
+
+    /// A squad as a roll line writes it: its leader, the first name in its
+    /// `Members` (`""` for none), and its size, `Ada 2`.
+    fn line(squad: &Net) -> String {
+        let members = members(squad);
+        let leader = members.first().map_or("", String::as_str);
+        format!("{leader} {}", members.len())
+    }
+
+    /// A squad of these members, built from the template.
+    fn squad_of(templates: &Templates, names: &[&str]) -> Result<Net, LoadError> {
+        let mut squad = templates
+            .build("Squad", &Params::new())
+            .map_err(|error| LoadError::Other(error.to_string()))?;
+        let place = squad
+            .place_ref::<String>("Members")
+            .ok_or_else(|| LoadError::Other("a squad has Members".to_owned()))?;
+        squad.extend(place, names.iter().map(|name| (*name).to_owned()));
+        Ok(squad)
+    }
+
+    /// The net as §11 seeds it: `Barracks`, a place of nets keyed by
+    /// `leader`, holding a squad of Ada and Ben and a squad of Cy; `Calls`,
+    /// `Checks`, `Inspections` (keyed by `leader`) and `Roll`, empty. `Call
+    /// the Roll` reads every squad, `Check the Front` the front one, and
+    /// `Inspect` the one an inspection names, each taking its request and
+    /// writing one roll line.
+    pub fn roll_call(_: &petritype_runner::Params) -> Result<Net, LoadError> {
+        let templates = templates();
+        let squads = [
+            squad_of(&templates, &["Ada", "Ben"])?,
+            squad_of(&templates, &["Cy"])?,
+        ];
+        let mut b = NetBuilder::new();
+        b.templates(&templates);
+        let barracks = b.place_nested::<Net>("Barracks");
+        let calls = b.place::<String>("Calls");
+        let checks = b.place::<String>("Checks");
+        let inspections = b.place::<Inspection>("Inspections");
+        let roll = b.place::<String>("Roll");
+        b.serializable(barracks);
+        b.serializable(calls);
+        b.serializable(checks);
+        b.serializable(inspections);
+        b.serializable(roll);
+        b.keys(barracks, ["leader"], |squad: &Net| {
+            [KeyValue::from(
+                members(squad).first().cloned().unwrap_or_default(),
+            )]
+        });
+        b.keys(inspections, ["leader"], |inspection: &Inspection| {
+            [KeyValue::from(inspection.leader.as_str())]
+        });
+        b.seed(barracks, squads);
+        b.transition(
+            "Call the Roll",
+            (TakeEdge(calls), ReadAllEdge(barracks)),
+            (roll,),
+            |caller: String, squads: Vec<&Net>| {
+                let lines: Vec<String> = squads.iter().map(|squad| line(squad)).collect();
+                if lines.is_empty() {
+                    (format!("{caller}: nobody"),)
+                } else {
+                    (format!("{caller}: {}", lines.join(", ")),)
+                }
+            },
+        );
+        b.transition(
+            "Check the Front",
+            (TakeEdge(checks), ReadEdge(barracks)),
+            (roll,),
+            |checker: String, squad: &Net| (format!("{checker}: {}", line(squad)),),
+        );
+        b.transition(
+            "Inspect",
+            (
+                TakeEdge(inspections),
+                ReadWhereEdge(
+                    barracks,
+                    Filter::new().key_is_input("leader", inspections, "leader"),
+                ),
+            ),
+            (roll,),
+            |_: Inspection, squad: &Net| (format!("Inspected {}", line(squad)),),
+        );
+        Ok(b.build()?)
+    }
+}
+
+/// The protocol's conformance net `trays` (PROTOCOL.md §11, §5.1, §12): a
+/// unit, a token that is a net with two ports, handed an order through one
+/// and its shots collected from the other by the net around it, each outer
+/// edge naming the port it reaches. Its names, places, template,
+/// transitions, guard, shot and seed are fixed by §11; the Python twin is
+/// `tests/protocol_nets/trays.py`.
+pub mod trays {
+    use petritype::{MutateEdge, Net, NetBuilder, Params, TakeEdge, Templates};
+    use petritype_runner::LoadError;
+
+    /// The template `Unit`: `Orders In` and `Shots Out`, both of strings,
+    /// serializable and empty, both ports; `Fire` takes the front order and
+    /// produces `"Shot: <order>"`. No parameters.
+    fn unit(_: &Params) -> Result<Net, petritype::BuildError> {
+        let mut b = NetBuilder::new();
+        let orders_in = b.place::<String>("Orders In");
+        let shots_out = b.place::<String>("Shots Out");
+        b.serializable(orders_in);
+        b.serializable(shots_out);
+        b.port(orders_in);
+        b.port(shots_out);
+        b.transition(
+            "Fire",
+            (TakeEdge(orders_in),),
+            (shots_out,),
+            |order: String| (format!("Shot: {order}"),),
+        );
+        b.build()
+    }
+
+    /// `Unit`, under its name, which builds a unit's net and stamps it.
+    pub fn templates() -> Templates {
+        let mut templates = Templates::new();
+        templates.register("Unit", unit);
+        templates
+    }
+
+    /// Whether the front unit of `Field` has a shot in `Shots Out`:
+    /// `Collect`'s guard.
+    fn a_shot_waits(net: &Net) -> bool {
+        let Some(field) = net.place_named("Field") else {
+            return false;
+        };
+        net.tokens(field)
+            .next()
+            .and_then(|(token, _)| net.token::<Net>(field, token))
+            .is_some_and(|unit| {
+                unit.place_named("Shots Out")
+                    .is_some_and(|tray| unit.count(tray) > 0)
+            })
+    }
+
+    /// The net as §11 seeds it: `Orders` and `Reports` empty, and `Field`,
+    /// a place of nets holding one unit, empty, inner first. `Hand Over`
+    /// takes an order and puts it into the front unit's `Orders In`;
+    /// `Collect` takes every shot out of the front unit's `Shots Out` into
+    /// `Reports`, guarded on there being one.
+    pub fn trays(_: &petritype_runner::Params) -> Result<Net, LoadError> {
+        let templates = templates();
+        let the_unit = templates
+            .build("Unit", &Params::new())
+            .map_err(|error| LoadError::Other(error.to_string()))?;
+        let mut b = NetBuilder::new();
+        b.templates(&templates);
+        let orders = b.place::<String>("Orders");
+        let field = b.place_nested::<Net>("Field");
+        let reports = b.place::<String>("Reports");
+        b.serializable(orders);
+        b.serializable(field);
+        b.serializable(reports);
+        b.seed(field, [the_unit]);
+        b.transition(
+            "Hand Over",
+            (TakeEdge(orders), MutateEdge(field).reaching(["Orders In"])),
+            (),
+            |order: String, unit: &mut Net| {
+                if let Some(tray) = unit.place_ref::<String>("Orders In") {
+                    unit.put(tray, order);
+                }
+            },
+        );
+        b.transition(
+            "Collect",
+            (MutateEdge(field).reaching(["Shots Out"]),),
+            (reports,),
+            |unit: &mut Net| {
+                let Some(tray) = unit.place_ref::<String>("Shots Out") else {
+                    return (Vec::new(),);
+                };
+                let shots: Vec<(petritype::TokenId, String)> = unit
+                    .tokens(tray.id())
+                    .filter_map(|(id, _)| {
+                        unit.token::<String>(tray.id(), id)
+                            .map(|shot| (id, shot.clone()))
+                    })
+                    .collect();
+                for (id, _) in &shots {
+                    // The id was just read from the tray, so it is there.
+                    let _ = unit.remove(tray.id(), *id);
+                }
+                (shots.into_iter().map(|(_, shot)| shot).collect::<Vec<_>>(),)
+            },
+        )
+        .guard(a_shot_waits);
+        Ok(b.build()?)
+    }
+}
+
+/// The protocol's conformance net `post-office` (PROTOCOL.md §11, §12,
+/// DESIGN §6.9): posts, tokens that are each a net, one closed (it marks
+/// its inbox a port) and one the same but declared open, so that a
+/// transcript shows a body's write at a port landing, an `inject` by path
+/// landing at a port, refused at a private place of the closed post, and
+/// landing there in the open one, and last a body's write into a private
+/// place failing its firing. Its names, places, templates, transitions and
+/// seed follow §11; the Python twin is `tests/protocol_nets/post_office.py`.
+///
+/// Neither transition restores its inputs: a transition that consumes a
+/// place of nets cannot, in this core, whose nets have no cloner
+/// (`BuildError::RestoreOfNoClonePlace`), so the refused `Forge` loses the
+/// forgery and the post it took, as any failure without a restore does.
+pub mod post_office {
+    use petritype::{MutateEdge, Net, NetBuilder, NetError, Params, TakeEdge, Templates};
+    use petritype_runner::LoadError;
+
+    /// A post: `Inbox` and `Ledger`, both of strings, serializable and
+    /// empty, `Inbox` a port, and no transitions; declared open when
+    /// `open` is.
+    fn post(open: bool) -> Result<Net, petritype::BuildError> {
+        let mut b = NetBuilder::new();
+        let inbox = b.place::<String>("Inbox");
+        let ledger = b.place::<String>("Ledger");
+        b.serializable(inbox);
+        b.serializable(ledger);
+        b.port(inbox);
+        if open {
+            b.open();
+        }
+        b.build()
+    }
+
+    /// `Post`, closed since it marks a port, and `Open Post`, the same
+    /// declared open, each under its name. No parameters.
+    pub fn templates() -> Templates {
+        let mut templates = Templates::new();
+        templates.register("Post", |_: &Params| post(false));
+        templates.register("Open Post", |_: &Params| post(true));
+        templates
+    }
+
+    /// The net as §11 seeds it: `Letters` holding `"Dear Ada"`,
+    /// `Forgeries` holding `"IOU"`, and `Posts`, a place of nets, inner
+    /// first, holding a `Post` and then an `Open Post`, both empty. The net
+    /// marks no port, so it is open. `Deliver` takes a letter and puts it
+    /// into the front post's `Inbox`, the port its edge reaches; `Forge`
+    /// takes a forgery and the front post, writes the forgery into the
+    /// post's `Ledger` and returns the post to `Posts`, and the closed post
+    /// refuses the write, failing the firing. Neither restores its inputs.
+    pub fn post_office(_: &petritype_runner::Params) -> Result<Net, LoadError> {
+        let templates = templates();
+        let build = |name: &str| {
+            templates
+                .build(name, &Params::new())
+                .map_err(|error| LoadError::Other(error.to_string()))
+        };
+        let posts_seed = [build("Post")?, build("Open Post")?];
+        let mut b = NetBuilder::new();
+        b.templates(&templates);
+        let letters = b.place::<String>("Letters");
+        let forgeries = b.place::<String>("Forgeries");
+        let posts = b.place_nested::<Net>("Posts");
+        b.serializable(letters);
+        b.serializable(forgeries);
+        b.serializable(posts);
+        b.seed(letters, ["Dear Ada".to_owned()]);
+        b.seed(forgeries, ["IOU".to_owned()]);
+        b.seed(posts, posts_seed);
+        b.transition(
+            "Deliver",
+            (TakeEdge(letters), MutateEdge(posts).reaching(["Inbox"])),
+            (),
+            |letter: String, post: &mut Net| -> Result<(), NetError> {
+                if let Some(inbox) = post.place_ref::<String>("Inbox") {
+                    post.try_put(inbox, letter)?;
+                }
+                Ok(())
+            },
+        );
+        b.transition(
+            "Forge",
+            (TakeEdge(forgeries), TakeEdge(posts)),
+            (posts,),
+            |forgery: String, mut post: Net| -> Result<(Net,), NetError> {
+                if let Some(ledger) = post.place_ref::<String>("Ledger") {
+                    post.try_put(ledger, forgery)?;
+                }
+                Ok((post,))
+            },
+        );
+        Ok(b.build()?)
+    }
+}
+
+/// The `post-office` entry, as PROTOCOL.md §11 names and describes it.
+fn post_office_entry() -> NetEntry {
+    NetEntry::new("post-office", post_office::post_office)
+        .description(
+            "Letters are delivered to a post's inbox, and a forgery written into its ledger is refused",
+        )
+        .hosting(Hosting::Manual)
+}
+
+/// The `post-office` net alone, for the transcripts over it (PROTOCOL.md
+/// §11).
+#[allow(dead_code)]
+pub fn post_office_registry() -> Vec<NetEntry> {
+    vec![post_office_entry()]
+}
+
+/// The `trays` entry, as PROTOCOL.md §11 names and describes it.
+fn trays_entry() -> NetEntry {
+    NetEntry::new("trays", trays::trays)
+        .description(
+            "A unit is handed an order through one tray and its shots are collected from another",
+        )
+        .hosting(Hosting::Manual)
+}
+
+/// The `trays` net alone, for the transcripts over it (PROTOCOL.md §11).
+#[allow(dead_code)]
+pub fn trays_registry() -> Vec<NetEntry> {
+    vec![trays_entry()]
+}
+
+/// The `roll-call` entry, as PROTOCOL.md §11 names and describes it.
+fn roll_call_entry() -> NetEntry {
+    NetEntry::new("roll-call", roll_call::roll_call)
+        .description("A roll call reads the squads in the barracks without taking them")
+        .hosting(Hosting::Manual)
+}
+
+/// The `roll-call` net alone, for the transcripts over it (PROTOCOL.md
+/// §11).
+#[allow(dead_code)]
+pub fn roll_call_registry() -> Vec<NetEntry> {
+    vec![roll_call_entry()]
+}
+
+/// The `couriers` entry, as PROTOCOL.md §11 names and describes it.
+fn couriers_entry() -> NetEntry {
+    NetEntry::new("couriers", couriers::couriers)
+        .description(
+            "Orders are loaded onto the courier they name, and a call sends that courier out",
+        )
+        .hosting(Hosting::Manual)
+}
+
+/// The `couriers` net alone, for the transcripts over it (PROTOCOL.md §11).
+#[allow(dead_code)]
+pub fn couriers_registry() -> Vec<NetEntry> {
+    vec![couriers_entry()]
+}
+
 /// The conformance net's entry, as PROTOCOL.md §11 names and describes it.
 fn conformance_entry() -> NetEntry {
     NetEntry::new("parcel-distribution", conformance::parcel_distribution)
@@ -1111,5 +1648,9 @@ pub fn registry() -> Vec<NetEntry> {
         cellar_entry(),
         harbour_entry(),
         odd_names_entry(),
+        couriers_entry(),
+        roll_call_entry(),
+        trays_entry(),
+        post_office_entry(),
     ]
 }

@@ -24,3 +24,11 @@ fmt:
 # The API docs with warnings denied
 docs:
     RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --features serde
+
+# Report on free space, build output and dependencies; deletes nothing
+housekeeping *FLAGS:
+    @python3 scripts/housekeeping.py check --free-limit-gb 50 --cargo-limit-gb 40 --stale-limit-gb 5 {{FLAGS}}
+
+# List the build output this Rust can never use again; --yes deletes it
+housekeeping-clean *FLAGS:
+    @python3 scripts/housekeeping.py clean {{FLAGS}}

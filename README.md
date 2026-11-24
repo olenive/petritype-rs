@@ -44,6 +44,36 @@ one) or from the directory in `PETRITYPE_PROTOCOL_TRANSCRIPTS`. With neither, th
 passes with a note and replays nothing; CI checks out both repositories side by side, so
 it runs there.
 
+## Housekeeping
+
+`just housekeeping` looks at the checkout and prints one line per check: the free space on
+the disk, the size of `target`, how much of `target` was built by an earlier Rust and so can
+never be used again, Time Machine's local snapshots, newer versions of the dependencies
+(`cargo update --dry-run`), whether rustup knows of a newer Rust, and the advisory audit
+when `cargo audit` is installed. It deletes nothing and changes nothing, and should a dry run
+touch `Cargo.lock` it puts the file back byte for byte. It exits with 1 when something needs
+attention and with 0 otherwise, so a scheduled run can stay quiet until then.
+`just housekeeping --offline` skips the checks that need the network.
+
+The limits are in the recipe: attention below 50 GB free, above 40 GB in `target`, and above
+5 GB built by an earlier Rust. To change one for a single run, pass it again, as in
+`just housekeeping --cargo-limit-gb 60`; to change it for good, edit the recipe in the
+`Justfile`.
+
+`just housekeeping-clean` lists the build output in `target` that the active Rust can never
+use, because it was built before that Rust was installed, with its size, and deletes nothing.
+`just housekeeping-clean --yes` deletes it. Adding `--older-than-days N` also takes the
+per-variant folders, `target/<profile>/build/<crate>/<hash>/`, whose newest file is older than
+N days; cargo builds them again when it needs them. The clean deletes files only inside the
+profile folders of the build folder and never follows a link out of them. It stops while cargo
+or rustc is running with the build folder (`--ignore-running` goes on anyway), and when the
+build folder is outside the repository (`--outside-repo` allows that where `CARGO_TARGET_DIR`
+names the folder). Time Machine snapshots are yours to delete: the report prints the command
+when it counts some.
+
+Both recipes run `scripts/housekeeping.py`, which needs Python 3.9 or newer and nothing else.
+The same file serves the Python repository.
+
 ## Documentation
 
 ```sh

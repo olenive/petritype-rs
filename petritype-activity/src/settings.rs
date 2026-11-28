@@ -28,16 +28,31 @@ pub enum Clock {
 ///
 /// Both half-lives are kept, one per [`Clock`], so that switching the clock
 /// back and forth keeps each value as it was tuned.
+///
+/// With the `serde` feature it is `Serialize` and `Deserialize`, and
+/// reading refuses a number that is negative or not finite.
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct LayerSettings {
     /// How much one hit adds to the level, which then clamps at 1.
+    #[cfg_attr(
+        feature = "serde",
+        serde(deserialize_with = "crate::checked::finite_non_negative_f32")
+    )]
     pub jump: f32,
     /// The clock the level decays against.
     pub clock: Clock,
     /// The half-life in seconds, used under [`Clock::Wall`].
+    #[cfg_attr(
+        feature = "serde",
+        serde(deserialize_with = "crate::checked::finite_non_negative_f32")
+    )]
     pub half_life_secs: f32,
     /// The half-life in firings, used under [`Clock::Firings`].
+    #[cfg_attr(
+        feature = "serde",
+        serde(deserialize_with = "crate::checked::finite_non_negative_f32")
+    )]
     pub half_life_firings: f32,
 }
 
@@ -106,8 +121,14 @@ pub enum GlowMode {
 }
 
 impl GlowMode {
-    /// The glow from a pulse and an ember, in 0 to 1.
+    /// The glow from a pulse and an ember, in 0 to 1. A level that is not a
+    /// number counts as 0, so that one bad level cannot light a node or
+    /// make its glow not a number (since 2026-11-28; until then
+    /// [`Sum`](GlowMode::Sum) drew such a node at full glow and
+    /// [`Peak`](GlowMode::Peak) of two gave not a number).
     pub fn combine(self, pulse: f32, ember: f32) -> f32 {
+        let level = |value: f32| if value.is_nan() { 0.0 } else { value };
+        let (pulse, ember) = (level(pulse), level(ember));
         match self {
             GlowMode::Peak => pulse.max(ember),
             GlowMode::Sum => (pulse + ember).min(1.0),
@@ -158,7 +179,10 @@ pub enum HueMode {
 /// With the `serde` feature it is `Serialize` and `Deserialize`, and a field
 /// left out of the input takes its default, so a file need only name what it
 /// changes: `{"glow": "sum"}` is the defaults with the glow adding up. A
-/// layer that is given is given whole.
+/// layer that is given is given whole. Reading refuses a number that is
+/// negative or not finite, in a layer or here, since none of them means
+/// anything below 0. A file that says `1e39` for an `f32` reads it as
+/// infinite, and so refuses it too.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(default))]
@@ -183,16 +207,28 @@ pub struct ActivitySettings {
     pub ember: LayerSettings,
     /// The hit a transition takes when it distributes, as a fraction of each
     /// layer's jump: 0.5 by default.
+    #[cfg_attr(
+        feature = "serde",
+        serde(deserialize_with = "crate::checked::finite_non_negative_f32")
+    )]
     pub distribute_hit: f32,
     /// The staleness dim's half-life in seconds: while some layer runs on
     /// the [firings clock](Clock::Firings), the whole thumbnail fades toward
     /// its [floor](ActivitySettings::stale_floor) at this rate, and the next
     /// fire, launch, distribute or failure restores it. `None` turns the dim
     /// off. 30 s by default.
+    #[cfg_attr(
+        feature = "serde",
+        serde(deserialize_with = "crate::checked::finite_non_negative_f32_option")
+    )]
     pub stale_half_life_secs: Option<f32>,
     /// The fraction of its glow the staleness dim leaves however long the
     /// stall, 0 to 1: a quarter by default, so a stalled net reads as
     /// stalled and its pattern is still there.
+    #[cfg_attr(
+        feature = "serde",
+        serde(deserialize_with = "crate::checked::finite_non_negative_f32")
+    )]
     pub stale_floor: f32,
     /// How the two levels make a glow.
     pub glow: GlowMode,
@@ -200,12 +236,24 @@ pub struct ActivitySettings {
     pub count_curve: CountCurve,
     /// The count at which [`CountCurve::Halving`] gives half brightness: 1
     /// by default.
+    #[cfg_attr(
+        feature = "serde",
+        serde(deserialize_with = "crate::checked::finite_non_negative_f32")
+    )]
     pub half_count: f32,
     /// The count at which [`CountCurve::Log`] reaches full brightness: 16 by
     /// default.
+    #[cfg_attr(
+        feature = "serde",
+        serde(deserialize_with = "crate::checked::finite_non_negative_f32")
+    )]
     pub count_cap: f32,
     /// How far each token added raises a place's flow, and each token taken
     /// lowers it: 0.25 by default.
+    #[cfg_attr(
+        feature = "serde",
+        serde(deserialize_with = "crate::checked::finite_non_negative_f32")
+    )]
     pub flow_gain: f32,
     /// What the thumbnail's cells are tinted by.
     pub hue: HueMode,

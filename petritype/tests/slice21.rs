@@ -114,21 +114,25 @@ fn the_cursor_moves_only_when_a_default_choice_is_taken() {
 
     // `select` reports and moves nothing.
     assert_eq!(
-        net.select(),
+        net.select().unwrap(),
         Some(left),
         "no cursor yet: the first declared"
     );
-    assert_eq!(net.select(), Some(left));
+    assert_eq!(net.select().unwrap(), Some(left));
 
     // `choose` is the choice taken, for a firing in stages.
-    assert_eq!(net.choose(), Some(left));
+    assert_eq!(net.choose().unwrap(), Some(left));
     let firing = net.launch(left).expect("Left is fireable");
     net.distribute(firing.run()).expect("it lands");
-    assert_eq!(net.select(), Some(middle), "the next in turn");
+    assert_eq!(net.select().unwrap(), Some(middle), "the next in turn");
 
     // Firing by name is not the default selector's choice.
     net.fire(right).expect("Right is fireable");
-    assert_eq!(net.select(), Some(middle), "the cursor stayed on Left");
+    assert_eq!(
+        net.select().unwrap(),
+        Some(middle),
+        "the cursor stayed on Left"
+    );
 
     // A custom selector neither reads nor moves it.
     net.set_selector(|_, fireable| fireable.last().copied());
@@ -143,7 +147,7 @@ fn the_cursor_moves_only_when_a_default_choice_is_taken() {
     assert_eq!(net.step().expect("fires"), Some(left));
     net.set_tie_break(TieBreak::RoundRobin);
     assert_eq!(
-        net.select(),
+        net.select().unwrap(),
         Some(middle),
         "after Left, the last choice taken"
     );
@@ -199,18 +203,22 @@ mod saved {
         let left = net.transition_named("Left").expect("Left");
         let right = net.transition_named("Right").expect("Right");
         assert_eq!(net.step().expect("fires"), Some(left));
-        assert_eq!(net.select(), Some(right), "the cursor is on Left");
+        assert_eq!(net.select().unwrap(), Some(right), "the cursor is on Left");
 
         let saved = serde_json::to_value(&net).expect("a stamped net saves");
         let restored = templates.restore(saved).expect("and restores");
-        assert_eq!(restored.select(), Some(left), "the cursor is not saved");
+        assert_eq!(
+            restored.select().unwrap(),
+            Some(left),
+            "the cursor is not saved"
+        );
         assert_eq!(restored.tie_break(), TieBreak::RoundRobin, "the factory's");
 
         let desk = net.place_named("Desk").expect("Desk");
         net.set_stepping(desk, Stepping::Passive)
             .expect("Desk holds nets");
         let fork = net.fork().expect("a fork");
-        assert_eq!(fork.select(), Some(left), "nor forked");
+        assert_eq!(fork.select().unwrap(), Some(left), "nor forked");
         assert_eq!(
             (fork.tie_break(), fork.stepping(desk)),
             (TieBreak::RoundRobin, Some(Stepping::Passive)),
@@ -227,7 +235,7 @@ mod saved {
 
         // A reset is a rebuild, and a rebuilt net has no cursor either.
         let rebuilt = templates.build("Rivals", &Params::new()).expect("built");
-        assert_eq!(rebuilt.select(), Some(left));
+        assert_eq!(rebuilt.select().unwrap(), Some(left));
     }
 }
 
@@ -267,6 +275,8 @@ fn carousel(stepping: Stepping, workers: &[u32]) -> Carousel {
     b.seed(wheel, [0]);
     b.seed(desk, workers.iter().map(|&jobs| worker(jobs)));
     b.seed(shelf, [worker(5)]);
+    // Some tests take a token off the wheel or the desk from outside.
+    b.open();
     let spin = b
         .transition("Spin", (TakeEdge(wheel),), (wheel,), |n: u32| (n + 1,))
         .id();
@@ -606,7 +616,7 @@ fn a_failed_firing_moves_the_ring_s_cursor_too() {
     let outcomes: Vec<&str> = (0..4)
         .map(|_| match net.step_deep() {
             Ok(Some(DeepStep::Here { .. })) => "outer",
-            Err(failed) if !failed.path.is_empty() => "inner failed",
+            Err(failed) if !failed.path().is_empty() => "inner failed",
             other => panic!("{other:?}"),
         })
         .collect();

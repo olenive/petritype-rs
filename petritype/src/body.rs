@@ -164,7 +164,7 @@ impl<T> IntoTokens<T> for Vec<T> {
 ///
 /// The struct is the one `#[derive(Outputs)]` generates for a struct the
 /// body returns: the same field names, each wired to an output that
-/// [`Accepts`] that field's type (DESIGN §4.5). It is the whole of the
+/// [`Accepts`] that field's type. It is the whole of the
 /// outputs, never a position inside a tuple, and its fields are the
 /// transition's output edges in field order.
 #[diagnostic::on_unimplemented(
@@ -179,7 +179,7 @@ pub trait OutputPlaces: PlaceTupleSealed {}
 
 /// An output that can take a field of type `V` of a struct a body returns:
 /// the bound on every field of the struct of outputs `#[derive(Outputs)]`
-/// generates (DESIGN §4.5).
+/// generates.
 ///
 /// Outputs are edges too, of one kind today: a place handle, which puts the
 /// tokens a field is worth at the back of its place. A place of type `T`
@@ -286,7 +286,7 @@ pub trait PositionalOutputs<Outputs>: PositionalSealed<Outputs> {}
 /// What a transition body may return.
 ///
 /// One of the output forms, or `Result<Outputs, E>` of one. A `Result` always
-/// means failure, never routing (DESIGN §7): a body that wants to send a
+/// means failure, never routing: a body that wants to send a
 /// value to one place or another returns data that says so, not an `Err`.
 ///
 /// The four forms are told apart by the return type, and the outputs:
@@ -480,9 +480,13 @@ where
 #[diagnostic::on_unimplemented(
     message = "transition body parameters do not match its input edges",
     label = "this body cannot be called with what `{Edges}` produces",
-    note = "one parameter per edge, in order: `TakeEdge(p)` gives `T`, `TakeAllEdge(p)` gives \
-            `Vec<T>`, `SnapshotEdge(p)` gives `T`, `MutateEdge(p)` gives `&mut T`; a struct of \
-            edges from `#[derive(Inputs)]` gives the struct it was derived from",
+    note = "one parameter per input, in order: `TakeEdge(p)`, `TakeWhereEdge(p, f)` and \
+            `SnapshotEdge(p)` give `T`; `TakeAllEdge(p)`, `DrainEdge(p)` and `SurveyEdge(p)` \
+            give `Vec<T>`; `MutateEdge(p)` and `MutateWhereEdge(p, f)` give `&mut T`; \
+            `ReadEdge(p)` and `ReadWhereEdge(p, f)` give `&T`, and `ReadAllEdge(p)` gives \
+            `Vec<&T>`; `Param::<T>::new()` gives `T`; an edge's `.reaching(..)` gives what the \
+            edge gives; a struct of edges from `#[derive(Inputs)]` gives the struct it was \
+            derived from",
     note = "with `.output_distribution(f)`, the output distribution function `f` takes exactly \
             what the body returns (the value inside the `Ok` if that is a `Result`) and \
             returns the outputs in any form, usually a `Distribution`",
@@ -1151,9 +1155,9 @@ mod several_edges_per_position {
         assert_eq!(after, before, "every token back, ids kept");
     }
 
-    /// One edge per place per transition counts the edges inside a position
-    /// like any other, within it and across positions; the source rule
-    /// counts the edge inside it that always takes a token, and only that.
+    /// The shared-place check counts the edges inside a position like any
+    /// other, within it and across positions; the source rule counts the
+    /// edge inside it that always takes a token, and only that.
     #[test]
     fn the_build_checks_count_the_edges_inside_a_position() {
         /// Declares one transition over places `A` and `C`.
@@ -1165,7 +1169,8 @@ mod several_edges_per_position {
             declare(&mut b, a, c);
             matches!(
                 b.build(),
-                Err(BuildError::DuplicateInputPlace { ref place, .. }) if place == "A"
+                Err(BuildError::EdgeCannotSharePlace { ref place, kind: EdgeKind::Snapshot, .. })
+                    if place == "A"
             )
         };
         assert!(duplicate(|b, a, _| {

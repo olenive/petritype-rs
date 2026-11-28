@@ -240,7 +240,8 @@ fn a_body_may_have_no_inputs_or_twelve() {
 fn a_body_may_have_no_outputs_or_twelve() {
     let mut b = NetBuilder::new();
     let p = b.place::<u32>("Numbers");
-    let sink = b.place::<u32>("Sink");
+    // Twelve places: a transition has one output edge to a place.
+    let s: Vec<PlaceRef<u32>> = (0..12).map(|i| b.place(format!("Sink {i}"))).collect();
 
     // Zero outputs: the body must return `()`, never a discarded value.
     b.transition("Sink it", (TakeEdge(p),), (), |_n: u32| {});
@@ -248,7 +249,7 @@ fn a_body_may_have_no_outputs_or_twelve() {
         "Fan out",
         (TakeEdge(p),),
         (
-            sink, sink, sink, sink, sink, sink, sink, sink, sink, sink, sink, sink,
+            s[0], s[1], s[2], s[3], s[4], s[5], s[6], s[7], s[8], s[9], s[10], s[11],
         ),
         |n: u32| (n, n, n, n, n, n, n, n, n, n, n, n),
     );
@@ -265,11 +266,13 @@ fn a_body_may_have_no_outputs_or_twelve() {
 #[test]
 fn a_slot_may_be_one_token_maybe_one_or_many() {
     let mut b = NetBuilder::new();
-    let numbers = b.place::<u32>("Numbers");
+    let one = b.place::<u32>("One");
+    let some = b.place::<u32>("Some");
+    let many = b.place::<u32>("Many");
     let maybe = b.place::<Option<u32>>("Maybe");
     let batches = b.place::<Vec<u32>>("Batches");
 
-    b.transition("Slots", (), (numbers, numbers, numbers), || {
+    b.transition("Slots", (), (one, some, many), || {
         (1_u32, None::<u32>, vec![2_u32, 3])
     });
     // A place whose type is itself an `Option` or a `Vec` takes such a value

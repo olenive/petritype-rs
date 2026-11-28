@@ -19,11 +19,13 @@ use petritype::{
 
 // ----- a few nets -----------------------------------------------------------------
 
-/// A bare inner net with `jobs` things to do: `Todo -Work-> Done`.
+/// A bare inner net with `jobs` things to do: `Todo -Work-> Done`. More
+/// jobs arrive at `Todo`, its port.
 fn worker(jobs: u32) -> Net {
     let mut b = NetBuilder::new();
     let todo = b.place::<u32>("Todo");
     let done = b.place::<u32>("Done");
+    b.port(todo);
     b.seed(todo, 0..jobs);
     b.transition("Work", (TakeEdge(todo),), (done,), |n: u32| (n,));
     b.build().expect("a worker")
@@ -86,7 +88,8 @@ fn story(net: &mut Net, n: usize, names: &[(NetId, &'static str)]) -> Vec<&'stat
 }
 
 /// An outer net with `inbox` jobs of its own (`Inbox -Forward-> Outbox`)
-/// and a `Desk` under `stepping` holding one worker with `jobs`.
+/// and a `Desk` under `stepping` holding one worker with `jobs`. Workers
+/// are seated at `Desk`, its port.
 struct Office {
     net: Net,
     desk: PlaceRef<Net>,
@@ -101,6 +104,7 @@ fn office(stepping: Option<Stepping>, inbox: u32, jobs: u32) -> Office {
     let outbox = b.place::<u32>("Outbox");
     let worker = worker(jobs);
     let id = worker.id();
+    b.port(desk);
     b.seed(desk, [worker]);
     b.seed(tray, 0..inbox);
     b.transition("Forward", (TakeEdge(tray),), (outbox,), |n: u32| (n,));
@@ -180,7 +184,9 @@ fn an_inner_net_that_never_rests_stops_the_net_around_it_under_inner_first_only(
 /// One net with a place of each rule, declared in the opposite order to the
 /// bands': `Late` (outer first) holding a worker with one job, `Ring` (take
 /// turns) one with two, `Early` (inner first) one with two, and `Shelf`
-/// (passive) one with five; and three jobs of its own.
+/// (passive) one with five; and three jobs of its own. Declared open, so
+/// that the program may hand its workers more jobs through `nested_scope`:
+/// a closed net shields the nets inside it.
 struct Bands {
     net: Net,
     late: PlaceRef<Net>,
@@ -197,6 +203,7 @@ fn bands() -> Bands {
     let shelf = b.place_nested::<Net>("Shelf");
     let inbox = b.place::<u32>("Inbox");
     let outbox = b.place::<u32>("Outbox");
+    b.port(inbox);
     let (l, t, e, s) = (worker(1), worker(2), worker(2), worker(5));
     let names = vec![
         (l.id(), "late"),
@@ -214,6 +221,7 @@ fn bands() -> Bands {
     b.stepping(ring, Stepping::TakeTurns);
     b.stepping(early, Stepping::InnerFirst);
     b.stepping(shelf, Stepping::Passive);
+    b.open();
     Bands {
         net: b.build().expect("one net, four rules"),
         late,
@@ -484,7 +492,12 @@ fn a_failed_turn_moves_the_cursor_and_a_set_rule_keeps_it() {
     o.net.put(o.desk, inner);
 
     assert!(matches!(o.net.step_deep(), Ok(Some(DeepStep::Here { .. }))));
-    let failed = o.net.step_deep().expect_err("the worker's turn fails");
+    let failed = o
+        .net
+        .step_deep()
+        .expect_err("the worker's turn fails")
+        .into_firing()
+        .unwrap();
     assert_eq!(failed.path.len(), 1);
     // The failure was the worker's turn, so the next is the net's. A rule
     // set meanwhile, and set back, leaves the cursor where it was.
@@ -529,7 +542,9 @@ fn outer_first_waits_for_a_body_in_flight_and_the_other_rules_do_not() {
 // ----- the drivers --------------------------------------------------------------
 
 /// What a concurrent run did, in log order: `F` for an outer firing that
-/// landed, `W` for a firing inside.
+/// landed, `W` for a firing inside. Since 0.4.0 the driver launches the
+/// firings inside beside the outer net's, so they land as the outer ones
+/// do, `Distributed`, rather than `Fired` inline.
 fn concurrent_story(net: &mut Net) -> (String, drivers::RunSummary) {
     net.drain_events().for_each(drop);
     let summary = drivers::run(net, Mode::Concurrent, Limits::default(), OnFailure::Stop)
@@ -538,7 +553,7 @@ fn concurrent_story(net: &mut Net) -> (String, drivers::RunSummary) {
         .drain_events()
         .filter_map(|event| match event {
             Event::Distributed { .. } => Some('F'),
-            Event::Nested { event, .. } if matches!(*event, Event::Fired { .. }) => Some('W'),
+            Event::Nested { event, .. } if matches!(*event, Event::Distributed { .. }) => Some('W'),
             _ => None,
         })
         .collect();
@@ -547,15 +562,24 @@ fn concurrent_story(net: &mut Net) -> (String, drivers::RunSummary) {
 
 #[test]
 fn the_concurrent_driver_follows_each_rule() {
+    // Take turns lets the worker and the outer net go together, so only
+    // the other rules fix an order; for it, what landed is what counts.
     for (stepping, expected, left) in [
-        (Stepping::InnerFirst, "WWFFF", 0),
-        (Stepping::TakeTurns, "FWFWF", 0),
-        (Stepping::OuterFirst, "FFFWW", 0),
-        (Stepping::Passive, "FFF", 2),
+        (Stepping::InnerFirst, Some("WWFFF"), 0),
+        (Stepping::TakeTurns, None, 0),
+        (Stepping::OuterFirst, Some("FFFWW"), 0),
+        (Stepping::Passive, Some("FFF"), 2),
     ] {
         let mut o = office(Some(stepping), 3, 2);
         let (story, summary) = concurrent_story(&mut o.net);
-        assert_eq!(story, expected, "{stepping:?}");
+        match expected {
+            Some(expected) => assert_eq!(story, expected, "{stepping:?}"),
+            None => {
+                let mut sorted: Vec<char> = story.chars().collect();
+                sorted.sort_unstable();
+                assert_eq!(sorted, ['F', 'F', 'F', 'W', 'W'], "{stepping:?}: {story}");
+            }
+        }
         assert!(summary.quiesced, "{stepping:?}");
         assert_eq!(todo(nets_in(&o.net, o.desk.id())[0]), left, "{stepping:?}");
         assert_eq!(o.net.count(o.inbox.id()), 0);

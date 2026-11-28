@@ -30,7 +30,7 @@ fn gauge(name: &str, level: i64) -> Gauge {
 }
 
 /// `Gauges`, declared with `place_no_clone` and keyed by `name`; `Asks`,
-/// strings; `Log`, strings.
+/// strings, a port where asks arrive; `Log`, strings.
 struct Panel {
     b: NetBuilder,
     gauges: PlaceRef<Gauge>,
@@ -43,6 +43,7 @@ fn panel(gauges: Vec<Gauge>) -> Panel {
     let gauges_place = b.place_no_clone::<Gauge>("Gauges");
     let asks = b.place::<String>("Asks");
     let log = b.place::<String>("Log");
+    b.port(asks);
     b.keys(gauges_place, ["name"], |g: &Gauge| [g.name.as_str().into()]);
     b.seed(gauges_place, gauges);
     Panel {
@@ -107,6 +108,8 @@ fn a_read_edge_lends_the_front_token_and_nothing_moves() {
 #[test]
 fn a_read_where_edge_lends_the_oldest_match() {
     let mut p = panel(vec![gauge("Oil", 3), gauge("Fuel", 7), gauge("Fuel", 9)]);
+    // The gauges are reset from outside below.
+    p.b.port(p.gauges);
     let look =
         p.b.transition(
             "Fuel",
@@ -142,6 +145,8 @@ fn a_read_where_edge_lends_the_oldest_match() {
 #[test]
 fn a_read_all_edge_lends_every_token_and_fires_on_an_empty_place() {
     let mut p = panel(vec![gauge("Oil", 3), gauge("Fuel", 7)]);
+    // The gauges are emptied from outside below.
+    p.b.port(p.gauges);
     let all =
         p.b.transition(
             "All",
@@ -213,6 +218,7 @@ fn a_place_of_nets_is_read_without_copying() {
     let barracks = b.place_nested::<Net>("Barracks");
     let calls = b.place::<String>("Calls");
     let roll = b.place::<String>("Roll");
+    b.port(calls);
     b.seed(barracks, [squad]);
     let call = b
         .transition(
@@ -374,8 +380,8 @@ fn read_edges_may_fill_the_fields_of_a_struct_of_inputs() {
     assert_eq!(lines(&net, log), ["Ada: Oil +2"]);
 }
 
-/// Two edges of one transition on one place are refused for a read edge as
-/// for any other, and a read-all gives every token, so it is no source.
+/// A read edge shares its place with no other edge of its transition, and a
+/// read-all gives every token, so it is no source.
 #[test]
 fn the_build_checks_hold_for_read_edges() {
     let mut p = panel(vec![]);
@@ -387,7 +393,8 @@ fn the_build_checks_hold_for_read_edges() {
     );
     assert!(matches!(
         p.b.build(),
-        Err(BuildError::DuplicateInputPlace { place, .. }) if place == "Gauges"
+        Err(BuildError::EdgeCannotSharePlace { place, kind: EdgeKind::Read, .. })
+            if place == "Gauges"
     ));
 
     let mut p = panel(vec![]);

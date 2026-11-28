@@ -236,21 +236,21 @@ fn main() -> Result<(), Box<dyn Error>> {
     let net = &light.net;
     println!("\nControls, as a viewer's legend lists them:");
     for control in net.controls() {
-        let hint = match &control.kind {
+        let hint = match control.kind() {
             ControlKind::Text {
                 placeholder: Some(hint),
             } => format!(", hint {hint:?}"),
             _ => String::new(),
         };
-        let widget = match control.kind.name() {
+        let widget = match control.kind().name() {
             "text" => "text box",
             other => other,
         };
         println!(
             "- {} ({}): a {widget}{hint}, acting on {}",
-            control.name,
-            control.label,
-            node_name(net, control.node),
+            control.name(),
+            control.label(),
+            node_name(net, control.node()),
         );
     }
     if let Err(refused) = light.net.press("car", Value::Number(7.0)) {
@@ -289,8 +289,8 @@ mod tests {
     use petritype::serde_json::{self, json};
     use petritype::style::{PlaceStyle, Rgb, TokenStyle};
     use petritype::{
-        BuildError, DrainEdge, EdgeKind, Event, JsonCommand, NetBuilder, PressError, SnapshotEdge,
-        TakeEdge,
+        BuildError, CommandError, DrainEdge, EdgeKind, Event, JsonCommand, NetBuilder, NetError,
+        PressError, SnapshotEdge, TakeEdge,
     };
 
     /// The table: after each step, each arrival and each press, `Light`,
@@ -337,9 +337,13 @@ mod tests {
             .collect()
     }
 
-    /// The light set to `colour`, as a host's `set_tokens` would.
-    fn set_colour(light: &mut TrafficLight, colour: Colour) {
-        light.net.set_tokens(light.light, [colour]);
+    /// The light brought round to `colour` by `Change`, fired by name, as
+    /// the `change` control fires it: `Light` is no port, so nothing from
+    /// outside the net puts a colour there.
+    fn set_colour(light: &mut TrafficLight, to: Colour) {
+        while colour(&light.net, light.light) != Some(to) {
+            light.net.fire(light.change).expect("Change always fires");
+        }
     }
 
     /// The colour the light's token is drawn in, as `#rrggbb`.
@@ -366,6 +370,13 @@ mod tests {
             ]
         );
         assert_eq!(colours(net, light.light), ["red"]);
+        let ports: Vec<&str> = net
+            .places()
+            .filter(|(_, info)| info.port)
+            .map(|(_, info)| info.name)
+            .collect();
+        assert_eq!(ports, ["Waiting"], "where cars come in");
+        assert!(net.is_closed());
 
         let transitions: Vec<(&str, &[_], &[_], bool)> = net
             .transitions()
@@ -422,15 +433,7 @@ mod tests {
             .net
             .controls()
             .iter()
-            .map(|c| {
-                (
-                    c.name.as_str(),
-                    c.label.as_str(),
-                    c.kind.clone(),
-                    c.node,
-                    c.action,
-                )
-            })
+            .map(|c| (c.name(), c.label(), c.kind().clone(), c.node(), c.action()))
             .collect();
         assert_eq!(
             controls,
@@ -453,7 +456,7 @@ mod tests {
                 ),
             ]
         );
-        assert!(light.net.controls().iter().all(|c| c.initial.is_none()));
+        assert!(light.net.controls().iter().all(|c| c.initial().is_none()));
     }
 
     /// The light's token is drawn as the lamp it lights, whatever the
@@ -490,8 +493,10 @@ mod tests {
     }
 
     /// A colour's JSON is the plain lower-case string, so the wire is as it
-    /// was when the token was a string, and an `inject` into `Light` of
-    /// `"green"` is a green light.
+    /// was when the token was a string. It comes in through a port of
+    /// colours, since `Light` is the light's own place and no port: a write
+    /// there from outside is refused, and only `Change` changes the light.
+    /// It is read out of `Light` as out of any place.
     #[test]
     fn a_colour_is_its_name_in_json() {
         for (colour, name) in [
@@ -513,19 +518,36 @@ mod tests {
         }
         assert!(serde_json::from_value::<Colour>(json!("blue")).is_err());
 
-        let mut light = build_traffic_light().expect("the net builds");
-        light
-            .net
-            .apply_json(JsonCommand::SetTokens {
-                place: "Light".to_owned(),
+        // Spare lamps, brought in from outside at their port.
+        let mut b = NetBuilder::new();
+        let spares = b.place::<Colour>("Spares");
+        b.serializable(spares);
+        b.port(spares);
+        let mut lamps = b.build().expect("the net builds");
+        lamps
+            .apply_json(JsonCommand::Extend {
+                place: "Spares".to_owned(),
                 tokens: vec![json!("green")],
             })
-            .expect("Light takes a colour by name");
-        assert_eq!(colour(&light.net, light.light), Some(Colour::Green));
+            .expect("a port takes a colour by name");
+        assert_eq!(colour(&lamps, spares), Some(Colour::Green));
+        let (token, _) = lamps.tokens(spares.id()).next().unwrap();
+        assert_eq!(lamps.json(spares.id(), token), Some(Ok(json!("green"))));
+
+        let mut light = build_traffic_light().expect("the net builds");
+        let refused = light.net.apply_json(JsonCommand::SetTokens {
+            place: "Light".to_owned(),
+            tokens: vec![json!("green")],
+        });
+        assert!(
+            matches!(refused, Err(CommandError::Net(NetError::ClosedNet { .. }))),
+            "{refused:?}"
+        );
+        assert_eq!(colour(&light.net, light.light), Some(Colour::Red));
         let (token, _) = light.net.tokens(light.light.id()).next().unwrap();
         assert_eq!(
             light.net.json(light.light.id(), token),
-            Some(json!("green"))
+            Some(Ok(json!("red")))
         );
     }
 
@@ -779,8 +801,8 @@ mod tests {
     }
 
     /// The wire's `inject` is a JSON `extend` of one string into a place,
-    /// which every place takes; the script driven that way ends as the table
-    /// does before the presses.
+    /// here `Waiting`, the net's port; the script driven that way ends as
+    /// the table does before the presses.
     #[test]
     fn the_script_through_json_commands() {
         let mut light = build_traffic_light().expect("the net builds");
@@ -791,7 +813,7 @@ mod tests {
                     place: "Waiting".to_owned(),
                     tokens: vec![json!(token)],
                 })
-                .expect("every place is serializable");
+                .expect("Waiting is a serializable port");
         };
         light.net.step().unwrap();
         light.net.step().unwrap();

@@ -67,6 +67,7 @@ fn a_place_ref_is_copy_and_usable_many_times() {
     let mut b = NetBuilder::new();
     let inbox = b.place::<u32>("Inbox");
     let also_inbox = inbox; // a move would make the next line fail to compile
+    b.port(inbox);
     b.seed(inbox, [1]);
     let mut net = b.build().unwrap();
     net.put(inbox, 2);
@@ -100,6 +101,7 @@ fn a_net_is_send_and_sync() {
 fn tokens_come_out_oldest_first() {
     let mut b = NetBuilder::new();
     let inbox = b.place::<u32>("Inbox");
+    b.port(inbox);
     b.seed(inbox, [1, 2]);
     b.seed(inbox, [3]); // repeated seeds append
     let mut net = b.build().unwrap();
@@ -119,6 +121,7 @@ fn seeding_is_setup_and_leaves_the_counters_at_zero() {
     let mut b = NetBuilder::new();
     let inbox = b.place::<u32>("Inbox");
     let spare = b.place::<u32>("Spare");
+    b.port(inbox);
     b.seed(inbox, [1, 2]);
     let mut net = b.build().unwrap();
 
@@ -150,6 +153,7 @@ fn seeding_is_setup_and_leaves_the_counters_at_zero() {
 fn external_input_emits_events_and_bumps_the_state_counter() {
     let mut b = NetBuilder::new();
     let inbox = b.place::<u32>("Inbox");
+    b.port(inbox);
     let mut net = b.build().unwrap();
     assert_eq!(net.state_counter(), 0);
 
@@ -214,6 +218,7 @@ fn external_input_emits_events_and_bumps_the_state_counter() {
 fn token_ids_are_monotonic_and_never_reused() {
     let mut b = NetBuilder::new();
     let inbox = b.place::<u32>("Inbox");
+    b.port(inbox);
     b.seed(inbox, [1]);
     let mut net = b.build().unwrap();
 
@@ -241,6 +246,7 @@ fn token_ids_are_monotonic_and_never_reused() {
 fn labels_are_truncated_on_a_character_boundary() {
     let mut b = NetBuilder::new();
     let notes = b.place::<String>("Notes");
+    b.port(notes);
     b.label_limit(5);
     let mut net = b.build().unwrap();
     let token = net.put(notes, String::from("日本語のメモ"));
@@ -260,6 +266,7 @@ fn labels_are_truncated_on_a_character_boundary() {
 fn debug_is_the_text_a_label_is_cut_from() {
     let mut b = NetBuilder::new();
     let notes = b.place::<String>("Notes");
+    b.port(notes);
     b.label_limit(5);
     let mut net = b.build().unwrap();
     let token = net.put(notes, String::from("日本語のメモ"));
@@ -273,6 +280,7 @@ fn debug_is_the_text_a_label_is_cut_from() {
 fn typed_reads_reject_the_wrong_type() {
     let mut b = NetBuilder::new();
     let inbox = b.place::<u32>("Inbox");
+    b.port(inbox);
     let mut net = b.build().unwrap();
     let token = net.put(inbox, 7);
 
@@ -285,6 +293,7 @@ fn typed_reads_reject_the_wrong_type() {
 fn missing_places_and_tokens_are_reported_not_guessed() {
     let mut b = NetBuilder::new();
     let inbox = b.place::<u32>("Inbox");
+    b.port(inbox);
     let mut net = b.build().unwrap();
     let token = net.put(inbox, 1);
 
@@ -336,6 +345,7 @@ fn missing_places_and_tokens_are_reported_not_guessed() {
 fn a_place_can_hold_tokens_that_cannot_be_cloned() {
     let mut b = NetBuilder::new();
     let connections = b.place_no_clone::<Connection>("Connections");
+    b.port(connections);
     b.seed(connections, [Connection { host: "a".into() }]);
     let mut net = b.build().unwrap();
     let token = net.put(connections, Connection { host: "b".into() });
@@ -372,12 +382,17 @@ fn json_is_available_only_for_places_marked_serializable() {
     let counts = b.place::<u32>("Counts");
     let notes = b.place::<String>("Notes");
     b.serializable(counts);
+    b.port(counts);
+    b.port(notes);
     let mut net = b.build().unwrap();
 
     let counted = net.put(counts, 7);
     let noted = net.put(notes, String::from("hi"));
 
-    assert_eq!(net.json(counts.id(), counted).unwrap().to_string(), "7");
+    assert_eq!(
+        net.json(counts.id(), counted),
+        Some(Ok(petritype::serde_json::json!(7)))
+    );
     assert_eq!(net.json(notes.id(), noted), None, "not marked serializable");
     assert_eq!(net.json(counts.id(), noted), None, "no such token here");
 }
@@ -388,6 +403,7 @@ fn ids_can_be_made_from_their_numbers_and_parsed_from_their_text() {
 
     let mut b = NetBuilder::new();
     let notes = b.place::<String>("Notes");
+    b.port(notes);
     let mut net = b.build().unwrap();
     let token = net.put(notes, String::from("a"));
 

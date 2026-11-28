@@ -35,25 +35,26 @@ use crate::place::ErasedToken;
 /// inputs, and which edges the position says it is.
 ///
 /// One position may bind several edges: it describes as many as it has and
-/// takes the same number of erased inputs back, in the same order. The eight
+/// takes the same number of erased inputs back, in the same order. The eleven
 /// edge kinds and [`Param<T>`](crate::Param) describe one each; a struct of
 /// edges describes one per field. Everything downstream of the builder sees
 /// only the flat list, so no other part of the engine knows that positions
 /// and edges can differ in number.
 ///
-/// No `Copy` bound since slice 19: a keyed edge
+/// No `Copy` bound: a keyed edge
 /// ([`TakeWhereEdge`](crate::TakeWhereEdge),
-/// [`MutateWhereEdge`](crate::MutateWhereEdge)) holds a
+/// [`MutateWhereEdge`](crate::MutateWhereEdge),
+/// [`ReadWhereEdge`](crate::ReadWhereEdge)) holds a
 /// [`Filter`](crate::Filter), and describes itself by reference.
 pub trait EdgeSealed {
     /// The body parameter this input produces, for a body called with tokens
     /// that live for `'a`.
     ///
-    /// A generic associated type, because [`MutateEdge`](crate::MutateEdge)
-    /// and [`MutateWhereEdge`](crate::MutateWhereEdge) produce `&'a mut T`:
-    /// the parameter borrows the token where it lies, for the duration of
-    /// one call. The other kinds, and [`Param<T>`](crate::Param), hand over
-    /// owned values and ignore `'a`.
+    /// A generic associated type, because the kinds that lend a token where
+    /// it lies borrow it for the duration of one call: the mutating kinds
+    /// produce `&'a mut T`, the read kinds `&'a T` or `Vec<&'a T>`. The
+    /// other kinds, and [`Param<T>`](crate::Param), hand over owned values
+    /// and ignore `'a`.
     type Arg<'a>;
 
     /// Takes this position's argument out of the inputs the engine

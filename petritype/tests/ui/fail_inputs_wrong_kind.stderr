@@ -56,7 +56,7 @@ error[E0277]: `TakeEdge<Promo>` cannot fill a field of type `Vec<Promo>`
 36 |         (PricingEdges { order: TakeEdge(orders), promos: TakeEdge(promos), prices: Param::new() },),
    |                                                          ^^^^^^^^^^^^^^^^ this input does not read `Vec<Promo>`
    |
-   = note: each kind of input reads one shape: `T` from `TakeEdge`, `SnapshotEdge`, `TakeWhereEdge` or `Param::<T>::new()`; `Vec<T>` from `TakeAllEdge`, `DrainEdge` or `SurveyEdge`; `&mut T` from `MutateEdge` or `MutateWhereEdge`
+   = note: each kind of input reads one shape: `T` from `TakeEdge`, `SnapshotEdge`, `TakeWhereEdge` or `Param::<T>::new()`; `Vec<T>` from `TakeAllEdge`, `DrainEdge` or `SurveyEdge`; `&mut T` from `MutateEdge` or `MutateWhereEdge`; `&T` from `ReadEdge` or `ReadWhereEdge`; `Vec<&T>` from `ReadAllEdge`
 help: the trait `Extract<'a, Vec<Promo>>` is not implemented for `TakeEdge<Promo>`
       but trait `Extract<'_, Promo>` is implemented for it
   --> src/edge.rs
@@ -74,7 +74,7 @@ note: required for `PricingEdges<TakeEdge<Order>, TakeEdge<Promo>, Param<Prices>
    |     ------ unsatisfied trait bound introduced here
    = note: required for `(PricingEdges<TakeEdge<Order>, TakeEdge<Promo>, Param<Prices>>,)` to implement `InputEdges`
 note: required by a bound in `NetBuilder::transition`
-  --> src/builder.rs
+  --> src/builder/mod.rs
    |
    | impl NetBuilder {
 ...
@@ -92,7 +92,7 @@ error[E0277]: `TakeEdge<Promo>` cannot fill a field of type `Vec<Promo>`
 38 |         price,
    |         ^^^^^ this input does not read `Vec<Promo>`
    |
-   = note: each kind of input reads one shape: `T` from `TakeEdge`, `SnapshotEdge`, `TakeWhereEdge` or `Param::<T>::new()`; `Vec<T>` from `TakeAllEdge`, `DrainEdge` or `SurveyEdge`; `&mut T` from `MutateEdge` or `MutateWhereEdge`
+   = note: each kind of input reads one shape: `T` from `TakeEdge`, `SnapshotEdge`, `TakeWhereEdge` or `Param::<T>::new()`; `Vec<T>` from `TakeAllEdge`, `DrainEdge` or `SurveyEdge`; `&mut T` from `MutateEdge` or `MutateWhereEdge`; `&T` from `ReadEdge` or `ReadWhereEdge`; `Vec<&T>` from `ReadAllEdge`
 help: the trait `Extract<'a, Vec<Promo>>` is not implemented for `TakeEdge<Promo>`
       but trait `Extract<'_, Promo>` is implemented for it
   --> src/edge.rs
@@ -110,7 +110,7 @@ note: required for `PricingEdges<TakeEdge<Order>, TakeEdge<Promo>, Param<Prices>
    |     ------ unsatisfied trait bound introduced here
    = note: required for `fn(Pricing) -> (Order,) {price}` to implement `TransitionBody<(PricingEdges<TakeEdge<Order>, TakeEdge<Promo>, Param<Prices>>,), (PlaceRef<Order>,), (Positional, (Order,))>`
 note: required by a bound in `NetBuilder::transition`
-  --> src/builder.rs
+  --> src/builder/mod.rs
    |
    | impl NetBuilder {
 ...

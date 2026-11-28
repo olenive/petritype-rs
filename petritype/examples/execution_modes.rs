@@ -13,16 +13,26 @@
 //!   runs to completion, and the loop asks again (branch A all the way down,
 //!   then branch B). Six stages, so about the **sum**, `6 × STEP`.
 //! - [`Mode::Concurrent`]: everything fireable is launched at once, each
-//!   detachable body on a thread of its own. The branches advance in
-//!   lockstep, so about the **max**, `3 × STEP`.
+//!   detachable body on a worker thread. A run spawns a worker only when no
+//!   other is free, up to the machine's parallelism, so two here, one per
+//!   branch. The branches advance in lockstep, so about the **max**,
+//!   `3 × STEP`.
 //!
 //! The final marking is the same either way, which is the other half of the
 //! point: the mode is a scheduling choice, not a semantic one.
+//!
+//! The same two branches can also ride inside a net, each the inner net of
+//! a token in one place, `Yard`, as a game's characters or a room's
+//! machines do (a part the Python notebooks do not have). The concurrent
+//! driver launches the bodies of the nets inside a net beside one another
+//! too, so the run inside takes about the max as well (since 0.4.0; until
+//! then the inner nets fired one transition at a time, and the run inside
+//! took the sum in both modes).
 
 use std::time::{Duration, Instant};
 
 use petritype::drivers::{self, Limits, Mode, OnFailure};
-use petritype::{BuildError, Net, NetBuilder, PlaceRef, TakeEdge};
+use petritype::{BuildError, Net, NetBuilder, PlaceId, PlaceRef, TakeEdge};
 
 /// How long one stage takes. Small enough to keep the test quick, large
 /// enough that thread overhead is noise beside it.
@@ -63,6 +73,62 @@ fn build() -> Result<Branches, BuildError> {
     })
 }
 
+/// One branch on its own, as an inner net: `Start -> s1 -> 1 -> s2 -> 2 ->
+/// s3 -> Done`, with one token at its start.
+fn branch() -> Result<Net, BuildError> {
+    let mut b = NetBuilder::new();
+    let start = b.place::<String>("Start");
+    let first = b.place::<String>("1");
+    let second = b.place::<String>("2");
+    let end = b.place::<String>("Done");
+    b.seed(start, [String::from("go")]);
+    for (name, from, to) in [
+        ("Slow1", start, first),
+        ("Slow2", first, second),
+        ("Slow3", second, end),
+    ] {
+        b.transition(name, (TakeEdge(from),), (to,), |token: String| {
+            std::thread::sleep(STEP);
+            (token,)
+        });
+    }
+    b.build()
+}
+
+/// A net whose place `Yard` holds the two branches, each as a token's net.
+fn build_inside() -> Result<(Net, PlaceId), BuildError> {
+    let mut b = NetBuilder::new();
+    let yard = b.place_nested::<Net>("Yard");
+    b.seed(yard, [branch()?, branch()?]);
+    Ok((b.build()?, yard.id()))
+}
+
+/// [`run_in`] for the branches inside the net: how long it took, and what
+/// each branch's `Done` holds.
+fn run_inside(mode: Mode) -> (Duration, Vec<Vec<String>>) {
+    let (mut net, yard) = build_inside().expect("the net builds");
+    let started = Instant::now();
+    let summary =
+        drivers::run(&mut net, mode, Limits::default(), OnFailure::Stop).expect("nothing fails");
+    let elapsed = started.elapsed();
+    assert!(summary.quiesced);
+    assert_eq!(summary.fired_count, 6);
+
+    let marking = net
+        .tokens(yard)
+        .map(|(token, _)| {
+            let inner = net.nested(yard, token).expect("a nested place")[0].1;
+            let done = inner.place_named("Done").expect("a branch has a Done");
+            inner
+                .tokens(done)
+                .filter_map(|(_, value)| value.downcast_ref::<String>())
+                .cloned()
+                .collect()
+        })
+        .collect();
+    (elapsed, marking)
+}
+
 /// Runs a fresh net in one mode, and reports how long it took and where the
 /// tokens ended up.
 fn run_in(mode: Mode) -> (Duration, Vec<Vec<String>>) {
@@ -100,12 +166,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("concurrent: {concurrent:?}, the longer of them");
     println!("both end with {sequential_marking:?}");
     assert_eq!(sequential_marking, concurrent_marking);
+
+    let (sequential, sequential_marking) = run_inside(Mode::Sequential);
+    let (concurrent, concurrent_marking) = run_inside(Mode::Concurrent);
+    println!("with the branches inside the net, as two tokens' nets:");
+    println!("sequential: {sequential:?}, the sum of the branches");
+    println!("concurrent: {concurrent:?}, the longer of them");
+    println!("both end with {sequential_marking:?}");
+    assert_eq!(sequential_marking, concurrent_marking);
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{STEP, build, run_in};
+    use super::{STEP, build, run_in, run_inside};
     use petritype::drivers::Mode;
 
     #[test]
@@ -150,6 +224,23 @@ mod tests {
         assert!(
             sequential >= STEP * 6,
             "six stages cannot take less than six steps: {sequential:?}",
+        );
+    }
+
+    #[test]
+    fn the_concurrent_run_overlaps_the_branches_inside_the_net_too() {
+        let (sequential, sequential_marking) = run_inside(Mode::Sequential);
+        let (concurrent, concurrent_marking) = run_inside(Mode::Concurrent);
+
+        assert_eq!(sequential_marking, concurrent_marking);
+        assert_eq!(
+            sequential_marking,
+            [[String::from("go")], [String::from("go")]]
+        );
+        // As for the branches out in the open: about `3 × STEP` apart.
+        assert!(
+            concurrent + STEP <= sequential,
+            "sequential {sequential:?} was not clear of concurrent {concurrent:?}",
         );
     }
 }

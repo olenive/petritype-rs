@@ -27,8 +27,8 @@ fn species(name: &str, class: &str, legs: i64) -> Species {
     }
 }
 
-/// `Forest` and `Wetland` declare keys, `Notes` holds strings and declares
-/// none.
+/// `Forest` and `Wetland` declare keys and are ports, where a species is
+/// brought in; `Notes` holds strings and declares none.
 struct Habitats {
     net: Net,
     forest: PlaceRef<Species>,
@@ -42,6 +42,7 @@ fn habitats() -> Habitats {
     let wetland = b.place::<Species>("Wetland");
     let notes = b.place::<String>("Notes");
     for place in [forest, wetland] {
+        b.port(place);
         b.keys(place, ["species", "class", "legs"], |s: &Species| {
             [
                 s.name.as_str().into(),

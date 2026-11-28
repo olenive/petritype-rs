@@ -89,6 +89,7 @@ fn a_panicking_body_fails_its_firing_and_comes_home() {
     let mut b = NetBuilder::new();
     let inbox = b.place::<u32>("Inbox");
     let out = b.place::<u32>("Out");
+    b.port(inbox);
     b.seed(inbox, [1]);
     let boom = b
         .transition("Boom", (TakeEdge(inbox),), (out,), |n: u32| {
@@ -101,7 +102,11 @@ fn a_panicking_body_fails_its_firing_and_comes_home() {
     let mut net = b.build().unwrap();
     let consumed = pairs(&net, inbox.id());
 
-    let failure = net.step().expect_err("the body panicked");
+    let failure = net
+        .step()
+        .expect_err("the body panicked")
+        .into_firing()
+        .unwrap();
 
     assert_eq!(failure.transition, boom);
     assert!(
@@ -166,7 +171,11 @@ fn an_inline_body_that_panics_after_mutating_keeps_the_mutation() {
     let consumed = pairs(&net, ticks.id());
 
     // The body runs inside `launch`, so the catch has to be there too.
-    let failure = net.step().expect_err("the body panicked");
+    let failure = net
+        .step()
+        .expect_err("the body panicked")
+        .into_firing()
+        .unwrap();
 
     assert_eq!(failure.transition, bump);
     assert_eq!(failure.error.to_string(), "panicked: boom");
@@ -224,7 +233,7 @@ fn a_panic_on_a_worker_thread_kills_neither_the_thread_nor_the_transition() {
     assert_eq!(net.in_flight(), [boom], "still airborne until distributed");
     net.drain_events().for_each(drop);
 
-    match net.distribute(completed) {
+    match net.distribute(completed).map_err(NetError::from) {
         Err(NetError::FiringFailed(failure)) => {
             assert_eq!(failure.transition, boom);
             assert_eq!(failure.error.to_string(), "panicked: boom 1");
@@ -260,7 +269,11 @@ fn a_formatted_panic_message_reaches_the_failure() {
     });
     let mut net = b.build().unwrap();
 
-    let failure = net.step().expect_err("the body panicked");
+    let failure = net
+        .step()
+        .expect_err("the body panicked")
+        .into_firing()
+        .unwrap();
 
     assert_eq!(
         failure
@@ -283,7 +296,11 @@ fn a_panic_payload_that_is_not_a_string_still_makes_a_message() {
     });
     let mut net = b.build().unwrap();
 
-    let failure = net.step().expect_err("the body panicked");
+    let failure = net
+        .step()
+        .expect_err("the body panicked")
+        .into_firing()
+        .unwrap();
 
     assert_eq!(
         failure
@@ -328,7 +345,11 @@ fn restoring_puts_every_consumed_token_back_in_front_with_its_id() {
     // One edge takes the front token, the other takes the lot.
     let consumed: Vec<(PlaceId, TokenId)> = [&before_jobs[..1], &before_batch[..]].concat();
 
-    let failure = net.step().expect_err("the body refuses");
+    let failure = net
+        .step()
+        .expect_err("the body refuses")
+        .into_firing()
+        .unwrap();
 
     assert_eq!(failure.transition, work);
     assert!(failure.restored, "this transition restores its inputs");
@@ -365,7 +386,11 @@ fn restoring_puts_every_consumed_token_back_in_front_with_its_id() {
 
     // Undone, not recorded: the net is exactly where it was, so the same
     // firing happens again and fails again.
-    let failure = net.step().expect_err("and again, with the same tokens");
+    let failure = net
+        .step()
+        .expect_err("and again, with the same tokens")
+        .into_firing()
+        .unwrap();
     assert!(failure.restored);
     assert_eq!(pairs(&net, jobs.id()), before_jobs);
     assert_eq!(pairs(&net, batch.id()), before_batch);
@@ -395,7 +420,11 @@ fn restoring_undoes_a_firing_whose_body_panicked() {
     let mut net = b.build().unwrap();
     let before = pairs(&net, inbox.id());
 
-    let failure = net.step().expect_err("the body panicked");
+    let failure = net
+        .step()
+        .expect_err("the body panicked")
+        .into_firing()
+        .unwrap();
 
     assert!(
         failure.restored,
@@ -436,7 +465,11 @@ fn restoring_undoes_a_firing_that_named_a_place_it_may_not_write_to() {
     let mut net = b.build().expect("a distribution needs no routing table");
     let before = pairs(&net, inbox.id());
 
-    let failure = net.step().expect_err("the pair names a place it may not");
+    let failure = net
+        .step()
+        .expect_err("the pair names a place it may not")
+        .into_firing()
+        .unwrap();
 
     assert!(
         failure.restored,
@@ -484,7 +517,11 @@ fn a_snapshot_place_is_untouched_by_a_restore() {
     let before_jobs = pairs(&net, jobs.id());
     let before_config = pairs(&net, config.id());
 
-    let failure = net.step().expect_err("the body refuses");
+    let failure = net
+        .step()
+        .expect_err("the body refuses")
+        .into_firing()
+        .unwrap();
 
     assert!(failure.restored);
     assert_eq!(
@@ -631,7 +668,11 @@ fn a_transition_that_does_not_restore_clones_nothing() {
     );
     let mut net = b.build().unwrap();
 
-    let failure = net.step().expect_err("the body refuses");
+    let failure = net
+        .step()
+        .expect_err("the body refuses")
+        .into_firing()
+        .unwrap();
 
     assert!(!failure.restored);
     assert_eq!(
@@ -705,7 +746,11 @@ fn a_mutating_edge_from_a_no_clone_place_may_restore_all_the_same() {
     let before_jobs = pairs(&net, jobs.id());
     let file = pairs(&net, files.id());
 
-    let failure = net.step().expect_err("the body refuses");
+    let failure = net
+        .step()
+        .expect_err("the body refuses")
+        .into_firing()
+        .unwrap();
 
     assert!(failure.restored);
     assert_eq!(
@@ -749,6 +794,7 @@ fn restoring_works_through_the_staged_path_too() {
     let mut b = NetBuilder::new();
     let jobs = b.place::<u32>("Jobs");
     let out = b.place::<u32>("Out");
+    b.port(jobs);
     b.seed(jobs, [10, 20]);
     let work = b
         .transition(
@@ -774,7 +820,7 @@ fn restoring_works_through_the_staged_path_too() {
 
     let completed = firing.run();
     assert!(!completed.succeeded());
-    match net.distribute(completed) {
+    match net.distribute(completed).map_err(NetError::from) {
         Err(NetError::FiringFailed(failure)) => assert!(failure.restored),
         other => panic!("expected a wrapped firing failure, got {other:?}"),
     }

@@ -1078,48 +1078,10 @@
    },
    "expect": [
     {
-     "method": "added",
-     "params": {
-      "place": "Level 1",
-      "port": "Lobby",
-      "id": "<id:level_1_bram>",
-      "label": "<label>",
-      "subnet_marking_versions": {
-       "Level 1": "<version>"
-      },
-      "marking_version": "<version>",
-      "running": false
-     }
-    },
-    {
-     "method": "nested",
-     "params": {
-      "path": [
-       {
-        "place": "Level 1"
-       }
-      ],
-      "nested_id": "<id:level_1>",
-      "event": {
-       "method": "fireable",
-       "params": {
-        "transitions": [
-         "Walk In"
-        ],
-        "marking_version": "<version>",
-        "running": false
-       }
-      },
-      "marking_version": "<version>",
-      "running": false
-     }
-    },
-    {
      "id": "14",
-     "result": {
-      "status": "injected",
-      "id": "<id:level_1_bram>",
-      "marking_version": "<version>"
+     "error": {
+      "message": "<label>",
+      "code": "closed_net"
      }
     }
    ]
@@ -1142,51 +1104,10 @@
    },
    "expect": [
     {
-     "method": "nested",
-     "params": {
-      "path": [
-       {
-        "place": "Level 2"
-       }
-      ],
-      "nested_id": "<id:level_2>",
-      "event": {
-       "method": "added",
-       "params": {
-        "place": "Exit Hall",
-        "id": "<id:level_2_cato>",
-        "label": "<label>",
-        "outer_marking_version": "<version>",
-        "marking_version": "<version>",
-        "running": false
-       }
-      },
-      "marking_version": "<version>",
-      "running": false
-     }
-    },
-    {
-     "method": "fireable",
-     "params": {
-      "transitions": [
-       "Leave"
-      ],
-      "marking_version": "<version>",
-      "running": false
-     }
-    },
-    {
      "id": "15",
-     "result": {
-      "status": "injected",
-      "id": "<id:level_2_cato>",
-      "marking_version": "<version>",
-      "path": [
-       {
-        "place": "Level 2"
-       }
-      ],
-      "nested_id": "<id:level_2>"
+     "error": {
+      "message": "<label>",
+      "code": "closed_net"
      }
     }
    ]
@@ -1200,20 +1121,8 @@
      "id": "16",
      "result": {
       "marking_version": "<version>",
-      "count": 3,
+      "count": 1,
       "matches": [
-       {
-        "place": "Level 1",
-        "port": "Lobby",
-        "token": {
-         "id": "<id:level_1_bram>",
-         "label": "<label>"
-        },
-        "json": {
-         "name": "Bram",
-         "fought": false
-        }
-       },
        {
         "place": "Level 2",
         "port": "Lobby",
@@ -1223,18 +1132,6 @@
         },
         "json": {
          "name": "Ada",
-         "fought": true
-        }
-       },
-       {
-        "place": "Level 2",
-        "port": "Exit Hall",
-        "token": {
-         "id": "<id:level_2_cato>",
-         "label": "<label>"
-        },
-        "json": {
-         "name": "Cato",
          "fought": true
         }
        }

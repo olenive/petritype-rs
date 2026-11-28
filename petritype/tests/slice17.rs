@@ -87,7 +87,7 @@ fn step_inside_reports_an_inner_failure_with_its_path() {
     let shelf = b.place_nested::<Net>("Shelf");
     b.seed(shelf, [bin(&[13])]);
     let mut net = b.build().unwrap();
-    let failed = net.step_inside().unwrap_err();
+    let failed = net.step_inside().unwrap_err().into_firing().unwrap();
     assert_eq!(failed.name, "Move");
     assert!(
         matches!(&failed.path[..], [PathStep::Token { place, net, .. }] if *place == shelf.id() && net.is_empty()),

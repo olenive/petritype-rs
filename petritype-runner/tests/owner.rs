@@ -35,7 +35,8 @@ struct Limit(u32);
 
 /// `Inbox -Double-> Mid -Tally(mutates Total)-> Done`, plus `Bad -Fail->`,
 /// `Panics -Boom->`, `Odd -Odd->` (a priority that panics), a long `Notes`
-/// token and a `limit` parameter.
+/// token and a `limit` parameter. `Inbox`, `Bad` and `Panics` are its
+/// ports, where the tests inject.
 fn pipeline(_: &Params) -> Result<Net, LoadError> {
     let mut b = NetBuilder::new();
     let inbox = b.place::<u32>("Inbox");
@@ -49,6 +50,9 @@ fn pipeline(_: &Params) -> Result<Net, LoadError> {
     b.serializable(inbox);
     b.serializable(bad);
     b.serializable(panics);
+    b.port(inbox);
+    b.port(bad);
+    b.port(panics);
     b.seed(inbox, [1, 2]);
     b.seed(total, [0]);
     b.seed(notes, ["z".repeat(1500)]);
@@ -83,12 +87,13 @@ fn pipeline(_: &Params) -> Result<Net, LoadError> {
     Ok(b.build()?)
 }
 
-/// `Inbox -Echo-> Out`, empty, hosted 24/7.
+/// `Inbox -Echo-> Out`, empty, hosted 24/7, `Inbox` its port.
 fn watcher(_: &Params) -> Result<Net, LoadError> {
     let mut b = NetBuilder::new();
     let inbox = b.place::<u32>("Inbox");
     let out = b.place::<u32>("Out");
     b.serializable(inbox);
+    b.port(inbox);
     b.transition("Echo", (TakeEdge(inbox),), (out,), |n: u32| (n,));
     Ok(b.build()?)
 }
@@ -484,7 +489,7 @@ fn get_state_has_the_protocol_shape() {
     assert!(s["topology"].get("hints").is_none());
     assert_eq!(
         s["topology"]["places"][0],
-        json!({"name": "Inbox", "type_name": "u32", "serializable": true})
+        json!({"name": "Inbox", "type_name": "u32", "serializable": true, "port": true})
     );
     assert_eq!(
         s["topology"]["transitions"][0],
@@ -538,6 +543,7 @@ fn get_state_has_the_protocol_shape() {
 
 /// `Tickets -Serve(surveys Notices, drains Bin)-> Served`: a transition
 /// whose two zero-or-more edges read places that start empty (slice 22).
+/// The three it reads are its ports, where the test injects.
 fn desk(_: &Params) -> Result<Net, LoadError> {
     let mut b = NetBuilder::new();
     let tickets = b.place::<u32>("Tickets");
@@ -547,6 +553,9 @@ fn desk(_: &Params) -> Result<Net, LoadError> {
     b.serializable(tickets);
     b.serializable(notices);
     b.serializable(bin);
+    b.port(tickets);
+    b.port(notices);
+    b.port(bin);
     b.transition(
         "Serve",
         (TakeEdge(tickets), SurveyEdge(notices), DrainEdge(bin)),
@@ -699,6 +708,41 @@ fn get_token_as_json_or_text() {
     assert_eq!(h.error("get_token", json!({"id": "99"})), "unknown_token");
     assert_eq!(h.error("get_token", json!({"id": "x"})), "unknown_token");
     assert_eq!(h.error("get_token", json!({})), "invalid_params");
+}
+
+/// `Readings`, a serializable place of `f64` holding 2.5, NaN, infinity and
+/// minus infinity.
+fn gauges(_: &Params) -> Result<Net, LoadError> {
+    let mut b = NetBuilder::new();
+    let readings = b.place::<f64>("Readings");
+    b.serializable(readings);
+    b.seed(readings, [2.5, f64::NAN, f64::INFINITY, f64::NEG_INFINITY]);
+    Ok(b.build()?)
+}
+
+#[test]
+fn a_token_that_holds_a_nan_or_an_infinity_is_text_and_has_no_json() {
+    let mut h = H::over(vec![NetEntry::new("gauges", gauges)]);
+    h.send("load", json!({"net": "gauges"}));
+    let t = h.result("get_token", json!({"id": "0"}));
+    assert_eq!(t["kind"], "json");
+    assert_eq!(t["value"], 2.5);
+    for (id, text) in [("1", "NaN"), ("2", "inf"), ("3", "-inf")] {
+        let t = h.result("get_token", json!({ "id": id }));
+        assert_eq!(
+            t,
+            json!({"id": id, "place": "Readings", "type_name": "f64", "kind": "text", "text": text}),
+            "no JSON form, where it was json with a null"
+        );
+    }
+    let found = h.result("query", json!({}));
+    let json: Vec<Option<&Value>> = found["matches"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|found| found.get("json"))
+        .collect();
+    assert_eq!(json, [Some(&json!(2.5)), None, None, None]);
 }
 
 // ----- the firing cycle ------------------------------------------------------
@@ -964,6 +1008,44 @@ fn reads_are_answered_while_a_body_runs_and_the_rest_wait() {
     assert_eq!(lines[2]["result"]["transition"], "Double");
 }
 
+/// `reset` and `load` build a new net, and import no marking into the one
+/// a body is airborne in: each waits for the landing, as every request but
+/// a read does, and then builds its generation.
+#[test]
+fn reset_and_load_wait_for_a_body_to_land_and_then_build_anew() {
+    let mut h = H::loaded("pipeline");
+    h.auto = false;
+    assert_eq!(tags(&h.send("step", json!({}))), ["launched"]); // #2
+    assert!(h.send("reset", json!({})).is_empty(), "#3 waits");
+    assert!(
+        h.send("load", json!({"net": "pipeline"})).is_empty(),
+        "#4 waits"
+    );
+
+    let lines = h.land();
+    assert_eq!(
+        tags(&lines),
+        [
+            "distributed",
+            "fireable",
+            "#2",
+            "reloaded",
+            "#3",
+            "load_progress",
+            "reloaded",
+            "#4"
+        ]
+    );
+    assert_eq!(lines[4]["result"]["generation"], 2);
+    assert_eq!(lines[7]["result"]["generation"], 3);
+    let state = h.result("get_state", json!({}));
+    assert_eq!(
+        state["marking"]["places"]["Inbox"]["count"], 2,
+        "built anew"
+    );
+    assert_eq!(state["transitions"]["Double"]["in_flight"], false);
+}
+
 #[test]
 fn start_runs_to_quiescence_and_stops() {
     let mut h = H::loaded("pipeline");
@@ -1120,6 +1202,67 @@ fn a_failing_body_stops_a_run() {
     );
     let s = h.result("get_state", json!({}));
     assert_eq!(s["progress"]["step_count"], 0, "a failure is not progress");
+}
+
+/// `In` holding one token and feeding `T1` to `T4`, whose priorities are
+/// NaN, infinity, minus infinity and 3.5, each putting into `Out`: the
+/// Python runner's `wild-priorities`.
+fn wild_priorities(_: &Params) -> Result<Net, LoadError> {
+    let mut b = NetBuilder::new();
+    let inbox = b.place::<u32>("In");
+    let out = b.place::<u32>("Out");
+    b.seed(inbox, [1]);
+    for (name, priority) in [
+        ("T1", f64::NAN),
+        ("T2", f64::INFINITY),
+        ("T3", f64::NEG_INFINITY),
+        ("T4", 3.5),
+    ] {
+        b.transition(name, (TakeEdge(inbox),), (out,), |n: u32| (n,))
+            .priority(move |_| priority);
+    }
+    Ok(b.build()?)
+}
+
+#[test]
+fn nan_and_infinite_priorities_are_left_out_and_a_nan_is_an_error() {
+    let mut h = H::over(vec![NetEntry::new("wild-priorities", wild_priorities)]);
+    h.send("load", json!({"net": "wild-priorities"}));
+    let lines = h.send("get_state", json!({}));
+    let transitions = &lines[0]["result"]["transitions"];
+    for name in ["T1", "T2", "T3"] {
+        assert_eq!(
+            transitions[name],
+            json!({"enabled": true, "fireable": true, "in_flight": false}),
+            "{name}: no priority that JSON cannot carry, and no null"
+        );
+    }
+    assert_eq!(transitions["T4"]["priority"], 3.5);
+
+    // A NaN priority is an error, where it counted as 0.0 and T2 fired.
+    let lines = h.send("step", json!({}));
+    assert_eq!(tags(&lines), ["#3"], "nothing fired, nothing told");
+    assert_eq!(lines[0]["error"]["code"], "internal");
+    let message = lines[0]["error"]["message"].as_str().unwrap();
+    assert!(
+        message.contains("\"T1\"") && message.contains("is NaN"),
+        "{message}"
+    );
+    let s = h.result("get_state", json!({}));
+    assert_eq!(s["marking"]["places"]["In"]["count"], 1);
+    assert_eq!(s["progress"]["step_count"], 0);
+
+    // A run stops on it, as on a failed firing, and the runner serves on.
+    let lines = h.send("start", json!({}));
+    assert_eq!(tags(&lines), ["#5", "execution_stopped"]);
+    let stopped = &lines[1]["params"];
+    assert_eq!(stopped["reason"], "transition_failed");
+    assert_eq!(stopped["error_type"], "selection");
+    assert_eq!(stopped["running"], false);
+    assert!(stopped["message"].as_str().unwrap().contains("is NaN"));
+    let s = h.result("get_state", json!({}));
+    assert_eq!(s["running"], false);
+    assert_eq!(s["marking"]["places"]["In"]["count"], 1);
 }
 
 #[test]
@@ -1289,14 +1432,17 @@ fn shutdown_answers_then_exits_even_with_a_body_airborne() {
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 struct Lid(bool);
 
-/// The template `Bin`: `In -Move-> Out`, numbers, both serializable, and a
-/// `lid` parameter. `Move` refuses 13.
+/// The template `Bin`: `In -Move-> Out`, numbers, both serializable and
+/// both ports, where parcels are put in from outside, and a `lid`
+/// parameter. `Move` refuses 13.
 fn bin(_: &Params) -> Result<Net, LoadError> {
     let mut b = NetBuilder::new();
     let input = b.place::<u32>("In");
     let output = b.place::<u32>("Out");
     b.serializable(input);
     b.serializable(output);
+    b.port(input);
+    b.port(output);
     b.param(Lid(false));
     b.serializable_param::<Lid>("lid");
     b.transition(
@@ -1344,11 +1490,14 @@ impl Nested for Truck {
 
 /// `depot`: `Lot` holds the truck T1 (token 0), its bin holding 1 and 2;
 /// `Gate` none; `Yard`, passive, one bare bin holding 5 (token 1); `Parcels`
-/// none. `Load` takes a parcel into the front truck's bin (a mutate edge, so
+/// none. `Parcels` and `Gate` are its ports, where the tests inject. `Load`
+/// takes a parcel into the front truck's bin (a mutate edge, so
 /// inline), `Drive` moves a truck from `Lot` to `Gate` (a new token id, the
 /// same bin), and `Crush` consumes one at `Gate`, and its bin with it.
 /// `Lot` and `Gate` are outer first, so a step drives a truck before its
-/// bin moves anything.
+/// bin moves anything. The depot is declared open, since the tests inject
+/// into its bins by path and by nested id: a closed net shields the nets
+/// inside it.
 fn depot(_: &Params) -> Result<Net, LoadError> {
     let mut templates = Templates::new();
     templates.register("Bin", bin);
@@ -1362,6 +1511,8 @@ fn depot(_: &Params) -> Result<Net, LoadError> {
     b.serializable(lot);
     b.serializable(gate);
     b.serializable(yard);
+    b.port(parcels);
+    b.port(gate);
     b.stepping(lot, Stepping::OuterFirst);
     b.stepping(gate, Stepping::OuterFirst);
     b.stepping(yard, Stepping::Passive);
@@ -1375,7 +1526,7 @@ fn depot(_: &Params) -> Result<Net, LoadError> {
     b.seed(yard, [filled(&templates, &[5])]);
     b.transition(
         "Load",
-        (TakeEdge(parcels), MutateEdge(lot)),
+        (TakeEdge(parcels), MutateEdge(lot).reaching(["In"])),
         (),
         |n: u32, truck: &mut Truck| {
             let input = truck.bin.place_ref::<u32>("In").expect("a bin has an In");
@@ -1384,13 +1535,15 @@ fn depot(_: &Params) -> Result<Net, LoadError> {
     );
     b.transition("Drive", (TakeEdge(lot),), (gate,), |truck: Truck| (truck,));
     b.transition("Crush", (TakeEdge(gate),), (), |_: Truck| {});
+    b.open();
     Ok(b.build()?)
 }
 
 /// `deep`, two levels down: `Shelf` holds a bare net (the middle one) with
 /// `In` holding 2 (token 0) and, in its `Box` (token 1), a bare bin
 /// holding 1. Nothing fires out here. `Shelf` and `Box` are outer first, so
-/// the middle net's own `Move` goes before its bin's.
+/// the middle net's own `Move` goes before its bin's. Both nets around the
+/// bin are declared open, since the tests inject into it by path.
 fn deep(_: &Params) -> Result<Net, LoadError> {
     let mut templates = Templates::new();
     templates.register("Bin", bin);
@@ -1404,6 +1557,32 @@ fn deep(_: &Params) -> Result<Net, LoadError> {
     let boxes = b.place_nested::<Net>("Box");
     b.seed(boxes, [filled(&templates, &[1])]);
     b.stepping(boxes, Stepping::OuterFirst);
+    b.open();
+    let middle = b.build()?;
+    let mut b = NetBuilder::new();
+    let shelf = b.place_nested::<Net>("Shelf");
+    b.seed(shelf, [middle]);
+    b.stepping(shelf, Stepping::OuterFirst);
+    b.open();
+    Ok(b.build()?)
+}
+
+/// `nursery`, two levels down: `Shelf` holds a bare net (the middle one)
+/// whose own `Spawn` takes a seed and puts a bin holding it into its own
+/// nested place `Box`, outer first, so the middle net spawns before the bin
+/// moves.
+fn nursery(_: &Params) -> Result<Net, LoadError> {
+    let mut templates = Templates::new();
+    templates.register("Bin", bin);
+    let mut b = NetBuilder::new();
+    let seeds = b.place::<u32>("Seeds");
+    let boxes = b.place_nested::<Net>("Box");
+    b.seed(seeds, [4]);
+    b.stepping(boxes, Stepping::OuterFirst);
+    let made = templates.clone();
+    b.transition("Spawn", (TakeEdge(seeds),), (boxes,), move |n: u32| {
+        (filled(&made, &[n]),)
+    });
     let middle = b.build()?;
     let mut b = NetBuilder::new();
     let shelf = b.place_nested::<Net>("Shelf");
@@ -1413,7 +1592,11 @@ fn deep(_: &Params) -> Result<Net, LoadError> {
 }
 
 fn nested_registry() -> Vec<NetEntry> {
-    vec![NetEntry::new("depot", depot), NetEntry::new("deep", deep)]
+    vec![
+        NetEntry::new("depot", depot),
+        NetEntry::new("deep", deep),
+        NetEntry::new("nursery", nursery),
+    ]
 }
 
 fn loaded_over(net: &str) -> H {
@@ -1447,7 +1630,7 @@ fn nested_places_say_so_and_their_tokens_list_their_nets() {
     let places = &state["topology"]["places"];
     assert_eq!(
         places[0],
-        json!({"name": "Parcels", "type_name": "u32", "serializable": true}),
+        json!({"name": "Parcels", "type_name": "u32", "serializable": true, "port": true}),
         "a plain place says nothing of nesting"
     );
     assert_eq!(
@@ -1629,6 +1812,25 @@ fn an_address_that_names_no_live_net_says_which_step_failed() {
         h.error("get_state", json!({"nested_id": "999999"})),
         "unknown_net"
     );
+    // The id is read as a number, and only as it is spelled: another
+    // spelling of the same number names no net, and neither does a number
+    // past `u32::MAX` that no net has (the id is a `u64` since 0.4.0).
+    let spelled = id.as_str().expect("a nested id is a string").to_owned();
+    let state = h.result("get_state", json!({ "nested_id": spelled }));
+    assert_eq!(state["nested_id"], json!(spelled), "{state}");
+    for other in [
+        format!("0{spelled}"),
+        format!("+{spelled}"),
+        format!(" {spelled}"),
+        "4294967296".to_owned(),
+        "18446744073709551616".to_owned(),
+    ] {
+        assert_eq!(
+            h.error("get_state", json!({ "nested_id": other })),
+            "unknown_net",
+            "{other:?}"
+        );
+    }
     assert_eq!(
         h.error("get_state", json!({"nested_id": 3})),
         "invalid_params",
@@ -1736,14 +1938,17 @@ impl Nested for Crate {
 }
 
 /// `odd`: names a text address could not have spelt. `#Bay/1` holds a
-/// crate whose net, `#a/b`, has `In/Out -Move-> #Done`, holding 4; `Bay/2`
-/// holds a bare net with the same inside, holding 5, under an empty name.
+/// crate whose net, `#a/b`, has `In/Out -Move-> #Done`, holding 4, `In/Out`
+/// its port; `Bay/2` holds a bare net with the same inside, holding 5,
+/// under an empty name. Declared open, since the test injects inside by
+/// path.
 fn odd(_: &Params) -> Result<Net, LoadError> {
     fn inside(n: u32) -> Net {
         let mut b = NetBuilder::new();
         let input = b.place::<u32>("In/Out");
         let done = b.place::<u32>("#Done");
         b.serializable(input);
+        b.port(input);
         b.seed(input, [n]);
         b.transition("Move/On", (TakeEdge(input),), (done,), |n: u32| (n,));
         b.build().unwrap()
@@ -1761,6 +1966,7 @@ fn odd(_: &Params) -> Result<Net, LoadError> {
         }],
     );
     b.seed(bare, [inside(5)]);
+    b.open();
     Ok(b.build()?)
 }
 
@@ -2093,6 +2299,39 @@ fn an_inner_fireable_set_follows_the_outer_one_and_only_when_it_changed() {
 }
 
 #[test]
+fn a_net_an_inner_firing_puts_in_an_inner_place_is_known_from_that_firing_on() {
+    // Spawned inside the middle net, the bin has its fireable set taken
+    // silently by the step that spawned it, before the step's lines are
+    // told, as an inner net that arrives by any other way does: the bin's
+    // `added`, lifted with the spawning, announces no set, and its first
+    // firing announces the set it left behind. A step that moves plain
+    // tokens inside, the commonest, looks for no new net (since
+    // 2026-11-28); this one put a token in a place that holds nets, and is
+    // looked through.
+    let mut h = loaded_over("nursery");
+    let lines = h.send("step", json!({}));
+    assert_eq!(tags(&lines), ["nested", "nested", "nested", "#2"]);
+    assert_eq!(lines[0]["params"]["event"]["params"]["transition"], "Spawn");
+    assert_eq!(lines[1]["params"]["event"]["method"], "added", "the bin's");
+    assert_eq!(
+        lines[2]["params"]["event"]["params"]["transitions"],
+        json!([]),
+        "the middle net's set, and none for the bin"
+    );
+    let bin = &lines[1]["params"]["nested_id"];
+    let lines = h.send("step", json!({}));
+    assert_eq!(tags(&lines), ["nested", "nested", "#3"]);
+    assert_eq!(&lines[0]["params"]["nested_id"], bin);
+    assert_eq!(lines[0]["params"]["event"]["params"]["transition"], "Move");
+    assert_eq!(&lines[1]["params"]["nested_id"], bin);
+    assert_eq!(
+        lines[1]["params"]["event"]["params"]["transitions"],
+        json!([]),
+        "Move was fireable from the spawning on"
+    );
+}
+
+#[test]
 fn an_injected_tokens_inner_nets_are_known_from_the_inject_on() {
     // An inner net that arrives with an injected token has its fireable set
     // taken silently, as the marking's are at `load`, so its first firing
@@ -2392,8 +2631,8 @@ fn animal(name: &str, class: &str, legs: i64) -> Animal {
 struct Wanted(String);
 
 /// `zoo`: `Pen` holds Robin (Bird), Fox (Mammal), Owl (Bird) and Hare
-/// (Mammal), tokens 0 to 3; `Yard` is empty; both are serializable and keyed
-/// by `name`, `class` and `legs`. `Notes` holds one string (token 4) and
+/// (Mammal), tokens 0 to 3; `Yard` is empty; both are serializable, keyed
+/// by `name`, `class` and `legs`, and ports, where the tests inject. `Notes` holds one string (token 4) and
 /// declares no keys. `Molt` turns the front animal of `Pen` into the other
 /// class (a mutate edge, so inline), `Move` takes the front animal of `Pen`
 /// into `Yard`, and `Bolt` takes it and fails, putting it back. Parameter
@@ -2405,6 +2644,7 @@ fn zoo(_: &Params) -> Result<Net, LoadError> {
     let notes = b.place::<String>("Notes");
     for place in [pen, yard] {
         b.serializable(place);
+        b.port(place);
         b.keys(place, ["name", "class", "legs"], |a: &Animal| {
             [
                 a.name.as_str().into(),
@@ -3080,9 +3320,9 @@ fn null_for_an_optional_field_counts_as_absent() {
     assert_eq!(lines.last().unwrap()["result"]["status"], "loaded");
 }
 
-/// `hatchery`: `Spawn` takes an order from `Orders` and puts a new truck on
-/// `Lot`, its bin built there and then, holding the order: a token whose
-/// net nobody has seen before it lands.
+/// `hatchery`: `Spawn` takes an order from `Orders`, its port, and puts a
+/// new truck on `Lot`, its bin built there and then, holding the order: a
+/// token whose net nobody has seen before it lands.
 fn hatchery(_: &Params) -> Result<Net, LoadError> {
     let mut templates = Templates::new();
     templates.register("Bin", bin);
@@ -3092,6 +3332,7 @@ fn hatchery(_: &Params) -> Result<Net, LoadError> {
     let lot = b.place_nested::<Truck>("Lot");
     b.serializable(orders);
     b.serializable(lot);
+    b.port(orders);
     b.transition("Spawn", (TakeEdge(orders),), (lot,), move |n: u32| {
         (Truck {
             name: format!("T{n}"),
@@ -3122,6 +3363,72 @@ fn a_produced_tokens_inner_nets_are_known_from_its_landing_on() {
 
     let lines = h.send("step", json!({}));
     assert_eq!(tags(&lines), ["nested", "nested", "#6"]);
+    assert_eq!(lines[0]["params"]["event"]["method"], "fired");
+    assert_eq!(
+        lines[1]["params"]["event"]["params"]["transitions"],
+        json!([]),
+        "Move was fireable from the landing on"
+    );
+}
+
+/// `swapper`: `Lot` holds the truck T1, its bin empty; `Swap` takes a
+/// number from `Go`, its port, and puts a new bin holding it in place of
+/// the truck's, through a mutate edge: a net nobody has seen before the
+/// firing lands, in a token that stays where it is.
+fn swapper(_: &Params) -> Result<Net, LoadError> {
+    let mut templates = Templates::new();
+    templates.register("Bin", bin);
+    let mut b = NetBuilder::new();
+    b.templates(&templates);
+    let go = b.place::<u32>("Go");
+    let lot = b.place_nested::<Truck>("Lot");
+    b.serializable(go);
+    b.serializable(lot);
+    b.port(go);
+    b.seed(
+        lot,
+        [Truck {
+            name: "T1".into(),
+            bin: filled(&templates, &[]),
+        }],
+    );
+    b.transition(
+        "Swap",
+        (TakeEdge(go), MutateEdge(lot)),
+        (),
+        move |n: u32, truck: &mut Truck| truck.bin = filled(&templates, &[n]),
+    );
+    Ok(b.build()?)
+}
+
+#[test]
+fn a_net_swapped_into_a_lent_token_is_known_from_its_landing_on() {
+    // As for a produced token (PROTOCOL.md §7.2, §12.3, the Python runner
+    // alike): the new net's baseline is taken at the landing of the firing
+    // that put it there, nothing is sent for it, and the first `fireable`
+    // reports the first change. No token line carries `nets` (§12.2).
+    let mut h = H::over(vec![NetEntry::new("swapper", swapper)]);
+    h.send("load", json!({"net": "swapper"}));
+    let old = held(&h.result("get_state", json!({})), "Lot")["nested_id"].clone();
+    h.send("inject", json!({"place": "Go", "token": 4}));
+    let lines = h.send("step", json!({}));
+    // The body put 4 into the new bin before it swapped it in: that is the
+    // new net's own first event, told under its own id, and no `fireable`
+    // follows for it.
+    assert_eq!(
+        tags(&lines),
+        ["nested", "mutated", "fired", "fireable", "#4"]
+    );
+    assert_eq!(lines[0]["params"]["event"]["method"], "added");
+    assert!(lines[1]["params"].get("nets").is_none());
+    let bin = held(&h.result("get_state", json!({})), "Lot");
+    assert_ne!(bin["nested_id"], old, "a new net");
+    assert_eq!(lines[0]["params"]["nested_id"], bin["nested_id"]);
+    let inner = h.result("get_state", json!({"nested_id": bin["nested_id"]}));
+    assert_eq!(inner["transitions"]["Move"]["fireable"], true);
+
+    let lines = h.send("step", json!({}));
+    assert_eq!(tags(&lines), ["nested", "nested", "#7"]);
     assert_eq!(lines[0]["params"]["event"]["method"], "fired");
     assert_eq!(
         lines[1]["params"]["event"]["params"]["transitions"],
@@ -3381,9 +3688,9 @@ fn the_stepping_rule_is_written_on_every_place_that_holds_nets() {
 // ----- controls and styles (net-declared controls, 2026-10-16) -----------------
 
 /// A light that flips between red and green, styled and filled by its
-/// token; a queue whose names are keys; `Done`, keyed and styled; and one
-/// control of every kind and action, plus a handler that refuses and one
-/// that panics.
+/// token, and the net's port, where a test injects a colour; a queue whose
+/// names are keys; `Done`, keyed and styled; and one control of every kind
+/// and action, plus a handler that refuses and one that panics.
 fn panel(_: &Params) -> Result<Net, LoadError> {
     let mut b = NetBuilder::new();
     let light = b.place::<String>("Light");
@@ -3392,6 +3699,7 @@ fn panel(_: &Params) -> Result<Net, LoadError> {
     for place in [light, queue, done] {
         b.serializable(place);
     }
+    b.port(light);
     b.style(light, |colour: &String| match colour.as_str() {
         "red" => Style::default().with_colour(Rgb(0xff, 0x63, 0x47)),
         "green" => Style::default().with_colour(Rgb(0x32, 0xcd, 0x32)),
@@ -3420,7 +3728,7 @@ fn panel(_: &Params) -> Result<Net, LoadError> {
             })
             .with_kind(ControlKind::Text {
                 placeholder: Some("name".into()),
-            }),
+            })?,
         )
         .control(Control::fire("serve", "Serve", serve))
         .control(Control::enable("serving", "Serving", serve))
@@ -3432,10 +3740,10 @@ fn panel(_: &Params) -> Result<Net, LoadError> {
             0.5,
             1.0,
             |_, _| Ok(Pressed::Applied),
-        ))
+        )?)
         .control(Control::select("mode", "Mode", ["a", "b"], "a", |_, _| {
             Ok(Pressed::Nothing("already so".into()))
-        }))
+        })?)
         .control(Control::button("refuse", "Refuse", |_, _| {
             Err("not now".to_owned())
         }))
@@ -3800,4 +4108,209 @@ fn a_pressed_firing_carries_the_time_its_body_took() {
     assert!(ms(find(&lines, "fired")) >= nap_ms(), "{lines:#?}");
     let log = h.result("get_log", json!({}));
     assert!(ms(&log["entries"][0]) >= nap_ms(), "{log}");
+}
+
+// ----- the net's own code panicking ---------------------------------------------
+
+/// A parameter whose `Clone` panics: a parameter edge copies it while its
+/// transition launches, before the body runs.
+#[derive(Debug)]
+struct Brittle;
+
+impl Clone for Brittle {
+    fn clone(&self) -> Self {
+        panic!("brittle")
+    }
+}
+
+/// `In -Move-> Out`, holding 1 and 2, with a selector that panics.
+fn unselecting(_: &Params) -> Result<Net, LoadError> {
+    let mut b = NetBuilder::new();
+    let input = b.place::<u32>("In");
+    let output = b.place::<u32>("Out");
+    b.seed(input, [1, 2]);
+    b.transition("Move", (TakeEdge(input),), (output,), |n: u32| (n,));
+    let mut net = b.build()?;
+    net.set_selector(|_, _| panic!("no choice today"));
+    Ok(net)
+}
+
+/// `In -Move-> Out`, holding 1 and 2, whose guard panics.
+fn unguarded(_: &Params) -> Result<Net, LoadError> {
+    let mut b = NetBuilder::new();
+    let input = b.place::<u32>("In");
+    let output = b.place::<u32>("Out");
+    b.seed(input, [1, 2]);
+    b.transition("Move", (TakeEdge(input),), (output,), |n: u32| (n,))
+        .guard(|_| panic!("no guard today"));
+    Ok(b.build()?)
+}
+
+/// `In -Read-> Out`, holding 1, where `Read` is handed a `Brittle`
+/// parameter and so panics as it launches.
+fn brittle(_: &Params) -> Result<Net, LoadError> {
+    let mut b = NetBuilder::new();
+    let input = b.place::<u32>("In");
+    let output = b.place::<u32>("Out");
+    b.seed(input, [1]);
+    b.param(Brittle);
+    b.transition(
+        "Read",
+        (TakeEdge(input), Param::<Brittle>::new()),
+        (output,),
+        |n: u32, _: Brittle| (n,),
+    );
+    Ok(b.build()?)
+}
+
+/// An owner of the three nets above, `name` loaded, with its status cell.
+fn panicking(name: &str) -> H {
+    let mut h = H::over(vec![
+        NetEntry::new("unselecting", unselecting),
+        NetEntry::new("unguarded", unguarded),
+        NetEntry::new("brittle", brittle),
+    ]);
+    let lines = h.send("load", json!({ "net": name }));
+    assert_eq!(
+        lines.last().unwrap()["result"]["status"],
+        "loaded",
+        "{lines:?}"
+    );
+    h
+}
+
+/// What a `step` of `h` is answered with: the error's code and message.
+fn refused_step(h: &mut H) -> (String, String) {
+    let lines = h.send("step", json!({}));
+    let last = lines.last().expect("an answer");
+    assert_eq!(last["id"], h.next.to_string(), "{lines:#?}");
+    (
+        last["error"]["code"].as_str().expect("an error").to_owned(),
+        last["error"]["message"].as_str().unwrap().to_owned(),
+    )
+}
+
+/// The net's own code panicking in a `step`, in its selector, its guard or
+/// the launch of the transition it chose, is an `internal` answer naming
+/// the panic, the status cell is clear, nothing is left in flight, and the
+/// owner serves on; a run started then stops with `error_type` `panic`.
+/// Until 2026-11-28 each of these ended the process.
+#[test]
+fn the_nets_own_code_panicking_in_a_step_is_an_error_and_the_owner_serves_on() {
+    for (net, said, when, transition) in [
+        ("unselecting", "no choice today", "during a step", "Move"),
+        ("unguarded", "no guard today", "during a step", "Move"),
+        ("brittle", "brittle", "launching \"Read\"", "Read"),
+    ] {
+        let mut h = panicking(net);
+        let (code, message) = refused_step(&mut h);
+        assert_eq!(code, "internal", "{net}");
+        assert!(message.contains(said), "{net}: {message}");
+        assert!(
+            message.contains(&format!("panicked {when}")),
+            "{net}: {message}"
+        );
+        assert!(lock_status(&h).is_none(), "{net}: the status cell is clear");
+
+        let state = h.result("get_state", json!({}));
+        let shown = &state["transitions"][transition];
+        assert_eq!(shown["in_flight"], false, "{net}: {state}");
+        // A guard that panics says no.
+        let fireable = net != "unguarded";
+        assert_eq!(shown["fireable"], fireable, "{net}: {state}");
+
+        let lines = h.send("start", json!({}));
+        let stopped = find(&lines, "execution_stopped");
+        assert_eq!(stopped["reason"], "transition_failed", "{net}");
+        assert_eq!(stopped["error_type"], "panic", "{net}");
+        assert!(stopped["message"].as_str().unwrap().contains(said), "{net}");
+        assert!(lock_status(&h).is_none(), "{net}");
+        assert_eq!(h.result("get_state", json!({}))["running"], false);
+        assert_eq!(h.result("describe", json!({}))["runtime"], "rust");
+    }
+}
+
+/// `In -Move-> Out`, holding 1 and 13, both places keyed by the number:
+/// `Out`'s key panics on 13, so the landing of the firing that moves 13
+/// does, and `In`'s on 99, so an inject of 99 does. `In` is a port.
+fn unlucky(_: &Params) -> Result<Net, LoadError> {
+    let mut b = NetBuilder::new();
+    let input = b.place::<u32>("In");
+    let output = b.place::<u32>("Out");
+    b.serializable(input);
+    b.serializable(output);
+    b.port(input);
+    let keyed = |unlucky: u32| {
+        move |n: &u32| {
+            assert_ne!(*n, unlucky, "no key for {unlucky}");
+            [petritype::KeyValue::Int(i64::from(*n))]
+        }
+    };
+    b.keys(input, ["n"], keyed(99));
+    b.keys(output, ["n"], keyed(13));
+    b.seed(input, [1, 13]);
+    b.transition("Move", (TakeEdge(input),), (output,), |n: u32| (n,));
+    Ok(b.build()?)
+}
+
+/// The net's own code panicking as a firing lands, a key of what the body
+/// made, or as an inject puts its token in, a key of the token, is an
+/// `internal` answer naming the panic, nothing is left in flight, and the
+/// owner serves on; a run whose firing's landing panics stops with
+/// `error_type` `panic`. Until 2026-11-28 each of these ended the process,
+/// where a panic in a step's own choosing was already answered.
+#[test]
+fn the_nets_own_code_panicking_in_a_landing_or_an_inject_is_an_error_and_the_owner_serves_on() {
+    let mut h = H::over(vec![NetEntry::new("unlucky", unlucky)]);
+    h.send("load", json!({"net": "unlucky"}));
+    let lines = h.send("step", json!({}));
+    assert_eq!(lines.last().unwrap()["result"]["fired"], true, "1 lands");
+
+    let (code, message) = refused_step(&mut h);
+    assert_eq!(code, "internal");
+    assert!(message.contains("panicked landing \"Move\""), "{message}");
+    assert!(message.contains("no key for 13"), "{message}");
+    assert!(lock_status(&h).is_none(), "the status cell is clear");
+    let state = h.result("get_state", json!({}));
+    assert_eq!(state["transitions"]["Move"]["in_flight"], false, "{state}");
+    assert_eq!(state["marking"]["places"]["In"]["count"], 0);
+    assert_eq!(
+        state["marking"]["places"]["Out"]["count"], 1,
+        "13 placed nowhere"
+    );
+
+    let lines = h.send("inject", json!({"place": "In", "token": 99}));
+    let last = lines.last().unwrap();
+    assert_eq!(last["error"]["code"], "internal", "{lines:#?}");
+    let message = last["error"]["message"].as_str().unwrap();
+    assert!(message.contains("panicked during an inject"), "{message}");
+    assert!(message.contains("no key for 99"), "{message}");
+    let state = h.result("get_state", json!({}));
+    assert_eq!(
+        state["marking"]["places"]["In"]["count"], 0,
+        "99 put nowhere"
+    );
+
+    let lines = h.send("inject", json!({"place": "In", "token": 13}));
+    assert_eq!(lines.last().unwrap()["result"]["status"], "injected");
+    let lines = h.send("start", json!({}));
+    let stopped = find(&lines, "execution_stopped");
+    assert_eq!(stopped["reason"], "transition_failed");
+    assert_eq!(stopped["error_type"], "panic");
+    assert!(
+        stopped["message"]
+            .as_str()
+            .unwrap()
+            .contains("no key for 13")
+    );
+    assert_eq!(h.result("get_state", json!({}))["running"], false);
+    assert_eq!(h.result("describe", json!({}))["runtime"], "rust");
+}
+
+fn lock_status(h: &H) -> Option<String> {
+    h.status
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .as_ref()
+        .map(|(name, _, _)| name.clone())
 }

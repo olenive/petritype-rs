@@ -3,9 +3,9 @@
 //! calls, public so that a derive in another crate can reach them, and
 //! hidden because nothing else should.
 //!
-//! The derives are the documented way to bind a body to a net by field name
-//! (DESIGN §4.4, §4.5); [`Inputs`](crate::Inputs) and
-//! [`Outputs`](crate::Outputs) say what they generate and why.
+//! The derives are the documented way to bind a body to a net by field
+//! name; [`Inputs`](crate::Inputs) and [`Outputs`](crate::Outputs) say what
+//! they generate and why.
 //! This module is to them what [`routing`](crate::routing) is to
 //! [`Routed`](crate::Routed), with one difference: `routing` is a public
 //! API in its own right, and this is not. Nothing here is covered by the
@@ -33,22 +33,26 @@ pub type Specs = Vec<InputSpec>;
 /// The engine half of [`Reads<V>`](crate::Reads): takes a field's value out
 /// of the erased inputs, as the edge's own extractor does.
 ///
-/// Separate from `Reads` because of the two mutating kinds. A field of
-/// type `&'a mut T` borrows the token for the struct's lifetime `'a`, which
+/// Separate from `Reads` because of the kinds that lend their tokens where
+/// they lie, the mutating and the read kinds. A field of type `&'a mut T`,
+/// `&'a T` or `Vec<&'a T>` borrows for the struct's lifetime `'a`, which
 /// only the cursor's own lifetime can fill: `MutateEdge<T>` reads
 /// `&'a mut T` for every `'a`, and extracts `&'a mut T` at the cursor's
-/// `'a` alone. The derive asks for this trait `for<'a>`, with the struct's
-/// lifetime (or a fresh one) standing in for the cursor's, and for `Reads`
-/// on the wiring struct itself, where the message is written.
+/// `'a` alone, and a read edge likewise. The derive asks for this trait
+/// `for<'a>`, with the struct's lifetime (or a fresh one) standing in for
+/// the cursor's, and for `Reads` on the wiring struct itself, where the
+/// message is written.
 ///
-/// Implemented beside each `Reads` impl, for the eight edge kinds and
-/// [`Param<T>`](crate::Param), with the same bounds.
+/// Implemented beside each `Reads` impl, for the eleven edge kinds,
+/// [`Param<T>`](crate::Param) and [`Reaching`](crate::Reaching) around an
+/// edge, with the same bounds.
 #[diagnostic::on_unimplemented(
     message = "`{Self}` cannot fill a field of type `{V}`",
     label = "this input does not read `{V}`",
     note = "each kind of input reads one shape: `T` from `TakeEdge`, `SnapshotEdge`, \
             `TakeWhereEdge` or `Param::<T>::new()`; `Vec<T>` from `TakeAllEdge`, `DrainEdge` \
-            or `SurveyEdge`; `&mut T` from `MutateEdge` or `MutateWhereEdge`"
+            or `SurveyEdge`; `&mut T` from `MutateEdge` or `MutateWhereEdge`; `&T` from \
+            `ReadEdge` or `ReadWhereEdge`; `Vec<&T>` from `ReadAllEdge`"
 )]
 pub trait Extract<'a, V>: Reads<V> {
     /// Takes this field's value: one erased input, from the cursor.

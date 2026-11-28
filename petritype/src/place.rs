@@ -211,9 +211,22 @@ pub(crate) struct PlaceSlot {
 
 impl PlaceSlot {
     /// The index of `token` in this place, or `None` if it holds no such
-    /// token. Linear, because places are short and ordered.
+    /// token.
+    ///
+    /// A binary search first: a place is in id order almost always, since a
+    /// token joins at the back with the largest id yet, and a token's id is
+    /// its own in the place, so a search that finds it has the one index
+    /// it has. A place out of order (a failed firing that put its tokens
+    /// back at the front, see the key index's "Token order") can hide a
+    /// token from the search, and a token that is not there is never found,
+    /// so a miss reads the place through. Reading every token of a place by
+    /// id, as a walk of a nested place does, is then not quadratic in its
+    /// tokens.
     pub(crate) fn position(&self, token: TokenId) -> Option<usize> {
-        self.tokens.iter().position(|(id, _)| *id == token)
+        match self.tokens.binary_search_by_key(&token, |(id, _)| *id) {
+            Ok(at) => Some(at),
+            Err(_) => self.tokens.iter().position(|(id, _)| *id == token),
+        }
     }
 
     /// A deep copy of this place (the same tokens under the same ids), or
@@ -297,26 +310,34 @@ pub(crate) fn clone_of<T: Clone + Send + Sync + 'static>(value: &dyn Any) -> Era
 
 /// `to_json_of::<T>` renders an erased token as JSON.
 ///
-/// Fallible, because a `Serialize` impl may refuse: a token holding a
-/// [`Net`](crate::Net) that no template built, for one. Readers that only
-/// want something to show take [`json_or_message`]; a save takes the error.
+/// Fallible, because a token may have no JSON form: its `Serialize` may
+/// refuse, as a token holding a [`Net`](crate::Net) that no template built
+/// does, and since 2026-11-28 a token that holds a `NaN` or an infinity has
+/// none ([`json_form`](crate::json_form)), where it was written with `null`
+/// in its place. A save and a command take the error; a reader takes it as
+/// [`NoJsonForm`] through [`json_of`].
 #[cfg(feature = "serde")]
 pub(crate) fn to_json_of<T: serde::Serialize + 'static>(
     value: &dyn Any,
 ) -> Result<serde_json::Value, serde_json::Error> {
     match value.downcast_ref::<T>() {
-        Some(value) => serde_json::to_value(value),
+        Some(value) => crate::json_form::to_json(value),
         None => Ok(serde_json::Value::Null),
     }
 }
 
-/// A token as JSON for a reader rather than a save: a token whose
-/// `Serialize` refuses shows the refusal as a string, as it always has on
-/// [`Net::json`](crate::Net::json) and
-/// [`Command::to_json`](crate::Command::to_json).
+/// A token as JSON for a reader rather than a save, or why it has none
+/// (since 2026-11-28; until then the refusal's text stood in for the
+/// value), for [`Net::json`](crate::Net::json) and
+/// [`Match::json`](crate::Match::json).
 #[cfg(feature = "serde")]
-pub(crate) fn json_or_message(to_json: ToJsonFn, value: &dyn Any) -> serde_json::Value {
-    to_json(value).unwrap_or_else(|error| serde_json::Value::String(error.to_string()))
+pub(crate) fn json_of(
+    to_json: ToJsonFn,
+    value: &dyn Any,
+) -> Result<serde_json::Value, crate::NoJsonForm> {
+    to_json(value).map_err(|error| crate::NoJsonForm {
+        message: error.to_string(),
+    })
 }
 
 /// `from_json_of::<T>` parses a token from JSON, erasing it again.

@@ -30,6 +30,11 @@
 //! species to zero. Left alone, in autumn, the net fires nineteen times and
 //! stops.
 //!
+//! New species are brought in at any habitat: the five habitats are the
+//! net's ports, and `Migrating`, where a bird is between two of them, is its
+//! own. The net is closed, as every net not declared open is, so from
+//! outside it takes tokens only at the habitats.
+//!
 //! The first edition (2026-10-09) spread whatever stood first in `Savanna`
 //! (the zebra, onto the reef) and halved whatever stood first in `Forest`
 //! (the robin, down to nothing), and waited for autumn with summer the
@@ -295,7 +300,7 @@ fn decline(
 
 /// The net as seeded: twenty species-in-a-habitat in five habitats, nothing
 /// migrating, `season` `"Autumn"`, `spread_threshold` 200, every transition
-/// switched on.
+/// switched on. Every habitat is a port.
 pub fn build_wildlife() -> Result<Wildlife, BuildError> {
     let mut b = NetBuilder::new();
     let habitats = Habitat::ALL.map(|habitat| b.place::<Species>(habitat.to_string()));
@@ -303,6 +308,9 @@ pub fn build_wildlife() -> Result<Wildlife, BuildError> {
     for place in habitats.into_iter().chain([migrating]) {
         b.serializable(place);
         b.keys(place, KEY_NAMES, keys_of);
+    }
+    for habitat in habitats {
+        b.port(habitat);
     }
     b.param(Season("Autumn".to_owned()));
     b.serializable_param::<Season>("season");

@@ -17,6 +17,9 @@
 //! Both places stay non-empty throughout, which is what a read arc needs:
 //! all four edge kinds require their place to hold a token before the
 //! transition is fireable, including the two that consume nothing.
+//!
+//! Items arrive at `Inbox` and a new factor at `Multiplier` from outside,
+//! where the notebook's buttons put them, so those two places are ports.
 
 use petritype::drivers::{self, Limits, Mode, OnFailure};
 use petritype::{BuildError, Event, MutateEdge, Net, NetBuilder, PlaceRef, SnapshotEdge, TakeEdge};
@@ -43,6 +46,8 @@ fn build() -> Result<Scaler, BuildError> {
     let multiplier = b.place::<i64>("Multiplier");
     let processed = b.place::<Tally>("Processed");
     let outbox = b.place::<i64>("Outbox");
+    b.port(inbox);
+    b.port(multiplier);
     b.seed(multiplier, [2]);
     b.seed(processed, [Tally { n: 0 }]);
 

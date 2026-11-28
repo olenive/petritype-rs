@@ -80,12 +80,14 @@
         {
          "name": "Orders",
          "type_name": "<label>",
-         "serializable": true
+         "serializable": true,
+         "port": true
         },
         {
          "name": "Promotions",
          "type_name": "<label>",
-         "serializable": true
+         "serializable": true,
+         "port": true
         },
         {
          "name": "Priced",
@@ -443,12 +445,14 @@
         {
          "name": "Orders",
          "type_name": "<label>",
-         "serializable": true
+         "serializable": true,
+         "port": true
         },
         {
          "name": "Promotions",
          "type_name": "<label>",
-         "serializable": true
+         "serializable": true,
+         "port": true
         },
         {
          "name": "Priced",

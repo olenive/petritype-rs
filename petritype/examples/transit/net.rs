@@ -37,6 +37,19 @@
 //! vehicle closes up and moves on, so once everyone has arrived the vehicles
 //! go on circulating.
 //!
+//! **The city reaches a cabin only at its ports.** Every net is closed
+//! unless its definition declares it open, so from outside it takes tokens
+//! only at the places it marks as ports. A cabin's ports are `Door`, where
+//! `Board` puts a passenger in and `Alight` takes one out, and
+//! `Announcements`, `Doors Open` and `Doors Closed`, where `Arrive` opens
+//! the doors and puts the announcement up. Each edge of the city that hands
+//! a body a vehicle names the ports that body reaches, so a drawing of the
+//! city shows every way it reaches into a cabin. The city is closed too: its
+//! one port is `Depot`, where a vehicle comes into service from outside.
+//! Since 2026-11-28 no body sets a cabin's parameters, as no body may set
+//! the knobs of a net it holds; the parameter `stopped` that `Depart` and
+//! `Arrive` used to set, and nothing read, went with that.
+//!
 //! The net was built this way on 2026-10-10. Before, the city held back its
 //! own transitions under a script that fired them by hand; stepped with
 //! nothing held back, it boarded and alighted the same passengers for ever
@@ -205,12 +218,6 @@ pub const FRONT_DOOR: &[&str] = &["Front"];
 /// The doors of a `Deck`: the bow's, then the stern's.
 pub const BOW_AND_STERN: &[&str] = &["Bow", "Stern"];
 
-/// Inner parameter `stopped`: the vehicle stands at a station. `Depart`
-/// sets it false and `Arrive` true again, for a viewer to show; no guard
-/// reads it, since where the doors are says more.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Stopped(pub bool);
-
 /// Inner parameter `seats`: how many seats there are.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SeatCount(pub usize);
@@ -253,11 +260,19 @@ fn place(b: &mut NetBuilder, name: &str) -> PlaceRef<String> {
     place
 }
 
+/// A [`place`] the city reaches: one of the cabin's ports.
+fn port(b: &mut NetBuilder, name: &str) -> PlaceRef<String> {
+    let place = place(b, name);
+    b.port(place);
+    place
+}
+
 /// The places a template's phase is read from: `Announcements`, and the
 /// doors, `Doors Open` and `Doors Closed`, one token per door, the door's
 /// name. A door open and no announcement standing is boarding; a door open
 /// and an announcement standing is alighting; every door closed is under
-/// way.
+/// way. All three are ports, since `Arrive`, a body of the city, opens the
+/// doors and puts the announcement up.
 #[derive(Clone, Copy)]
 struct Control {
     announcements: PlaceRef<String>,
@@ -270,9 +285,9 @@ impl Control {
     /// places, built with every one of `doors` open: a vehicle starts at a
     /// station, boarding.
     fn declare(b: &mut NetBuilder, doors: &[&str]) -> Control {
-        let announcements = place(b, "Announcements");
-        let open = place(b, "Doors Open");
-        let closed = place(b, "Doors Closed");
+        let announcements = port(b, "Announcements");
+        let open = port(b, "Doors Open");
+        let closed = port(b, "Doors Closed");
         b.seed(open, doors.iter().map(|door| door.to_string()));
         Control {
             announcements,
@@ -294,12 +309,9 @@ impl Control {
     }
 }
 
-/// The parameters of a template, each saved under its wire name: `stopped`
-/// (starting true: a vehicle starts at a station), `seats` where the
-/// template has seats, and `capacity`.
+/// The parameters of a template, each saved under its wire name: `seats`
+/// where the template has seats, and `capacity`.
 fn parameters(b: &mut NetBuilder, seats: Option<usize>, capacity: usize) {
-    b.param(Stopped(true));
-    b.serializable_param::<Stopped>("stopped");
     if let Some(seats) = seats {
         b.param(SeatCount(seats));
         b.serializable_param::<SeatCount>("seats");
@@ -343,7 +355,8 @@ fn door_transitions(
 
 /// `Cabin`, for a bus or a tram: `Door`, `Seats`, `Standing`,
 /// `Announcements`, `Doors Open`, `Doors Closed`, one door, `Front`;
-/// parameters `seats` (2) and `capacity` (6).
+/// parameters `seats` (2) and `capacity` (6). `Door` and the last three are
+/// its ports.
 ///
 /// Passengers who come in at the `Door` sit while there are seats and stand
 /// once there are none, while the vehicle is boarding; while an
@@ -355,7 +368,7 @@ pub fn cabin(params: &Params) -> Result<Net, BoxedError> {
     let seats = number(params, "seats", 2)?;
     let capacity = number(params, "capacity", 6)?;
     let mut b = NetBuilder::new();
-    let door = place(&mut b, "Door");
+    let door = port(&mut b, "Door");
     let seated = place(&mut b, "Seats");
     let standing = place(&mut b, "Standing");
     let control = Control::declare(&mut b, FRONT_DOOR);
@@ -389,13 +402,14 @@ pub fn cabin(params: &Params) -> Result<Net, BoxedError> {
 
 /// `Deck`, for a ferry: `Door`, `Lower Deck`, `Upper Deck`,
 /// `Announcements`, `Doors Open`, `Doors Closed`, two doors, `Bow` and
-/// `Stern`; parameter `capacity` (40). Passengers go below while the ferry
-/// is boarding, may go up whenever, and come back to the door from either
-/// deck while an announcement stands.
+/// `Stern`; parameter `capacity` (40). `Door` and the last three are its
+/// ports. Passengers go below while the ferry is boarding, may go up
+/// whenever, and come back to the door from either deck while an
+/// announcement stands.
 pub fn deck(params: &Params) -> Result<Net, BoxedError> {
     let capacity = number(params, "capacity", 40)?;
     let mut b = NetBuilder::new();
-    let door = place(&mut b, "Door");
+    let door = port(&mut b, "Door");
     let lower = place(&mut b, "Lower Deck");
     let upper = place(&mut b, "Upper Deck");
     let control = Control::declare(&mut b, BOW_AND_STERN);
@@ -427,12 +441,13 @@ pub fn deck(params: &Params) -> Result<Net, BoxedError> {
 
 /// `Pod`, for a shuttle: `Door`, `Seats`, `Announcements`, `Doors Open`
 /// and `Doors Closed`, one door, `Front`, and nobody standing; parameters
-/// `seats` (4) and `capacity` (as many as the seats).
+/// `seats` (4) and `capacity` (as many as the seats). `Door` and the last
+/// three are its ports.
 pub fn pod(params: &Params) -> Result<Net, BoxedError> {
     let seats = number(params, "seats", 4)?;
     let capacity = number(params, "capacity", seats)?;
     let mut b = NetBuilder::new();
-    let door = place(&mut b, "Door");
+    let door = port(&mut b, "Door");
     let seated = place(&mut b, "Seats");
     let control = Control::declare(&mut b, FRONT_DOOR);
     parameters(&mut b, Some(seats), capacity);
@@ -567,7 +582,8 @@ pub fn front_cabin(net: &Net, place: PlaceRef<Vehicle>) -> Option<&Net> {
 /// The city as PROTOCOL §11 seeds it: one bus at `Depot` and one ferry at
 /// `Harbour`, each with nobody aboard and every door open, the
 /// passengers of [`WAITING`] on their platforms, `destination` unset and
-/// every transition switched on.
+/// every transition switched on. `Depot` is its one port, where a vehicle
+/// comes into service from outside.
 pub fn build_city() -> Result<City, BoxedError> {
     build_city_with(None)
 }
@@ -596,6 +612,7 @@ pub fn build_city_with(destination: Option<Location>) -> Result<City, BoxedError
     for place in platforms.places.into_iter().chain([arrived]) {
         b.serializable(place);
     }
+    b.port(stations.at(Location::Depot));
     b.param(Destination(destination));
     b.serializable_param::<Destination>("destination");
 
@@ -618,7 +635,10 @@ pub fn build_city_with(destination: Option<Location>) -> Result<City, BoxedError
         let station = stations.at(location);
         b.transition(
             format!("Board {location}"),
-            (TakeEdge(platforms.at(location)), MutateEdge(station)),
+            (
+                TakeEdge(platforms.at(location)),
+                MutateEdge(station).reaching(["Door"]),
+            ),
             (),
             |passenger: String, vehicle: &mut Vehicle| -> Result<(), TransitError> {
                 let door = vehicle.place("Door")?;
@@ -641,7 +661,7 @@ pub fn build_city_with(destination: Option<Location>) -> Result<City, BoxedError
         let station = stations.at(location);
         b.transition(
             format!("Alight {location}"),
-            (MutateEdge(station),),
+            (MutateEdge(station).reaching(["Door"]),),
             (arrived,),
             |vehicle: &mut Vehicle| -> Result<(Option<String>,), TransitError> {
                 let door = vehicle.place("Door")?;
@@ -668,10 +688,11 @@ pub fn build_city_with(destination: Option<Location>) -> Result<City, BoxedError
             format!("Depart {location}"),
             (TakeEdge(station), Param::<Destination>::new()),
             (in_transit,),
-            move |mut vehicle: Vehicle, to: Destination| -> Result<(Vehicle,), TransitError> {
-                vehicle.cabin.set_param(Stopped(false))?;
+            // The cabin is left as it is: every door is closed already,
+            // which is what lets it depart.
+            move |mut vehicle: Vehicle, to: Destination| {
                 vehicle.destination = Some(to.0.unwrap_or(location.next()));
-                Ok((vehicle,))
+                (vehicle,)
             },
         )
         // Every door closed: everyone who boarded has settled.
@@ -684,7 +705,7 @@ pub fn build_city_with(destination: Option<Location>) -> Result<City, BoxedError
     let arrive = b
         .transition(
             "Arrive",
-            (TakeEdge(in_transit),),
+            (TakeEdge(in_transit).reaching(["Doors Closed", "Doors Open", "Announcements"]),),
             (
                 stations.at(Location::Depot),
                 stations.at(Location::Central),
@@ -702,7 +723,6 @@ pub fn build_city_with(destination: Option<Location>) -> Result<City, BoxedError
                 let announcements = vehicle.place("Announcements")?;
                 let open = vehicle.place("Doors Open")?;
                 let closed = vehicle.place("Doors Closed")?;
-                vehicle.cabin.set_param(Stopped(true))?;
                 // The doors open here, in the city's own firing: opened by a
                 // transition inside, they would leave `Depart` fireable
                 // until the cabin had its turn, and the city goes first.

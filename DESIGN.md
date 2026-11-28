@@ -147,9 +147,9 @@ pub struct PlaceId(u32);        // erased; used in events and the read API
 pub struct TransitionId(u32);
 pub struct TokenId(u64);        // monotonic per Net
 
-pub struct NetId(u32);          // process-unique, minted per NetBuilder; also names an inner net (§6.6)
+pub struct NetId(u64);          // process-unique, minted per NetBuilder; also names an inner net (§6.6); u32 until 0.4.0
 
-pub struct PlaceRef<T> { place: PlaceId, net: NetId, _t: PhantomData<fn() -> T> }  // typed handle, 8 bytes
+pub struct PlaceRef<T> { place: PlaceId, net: NetId, _t: PhantomData<fn() -> T> }  // typed handle, 16 bytes
 ```
 
 - Ids are **never reused**. Consumed tokens retire their id. Removed places or
@@ -175,8 +175,9 @@ pub struct PlaceRef<T> { place: PlaceId, net: NetId, _t: PhantomData<fn() -> T> 
     (`Fired`) plus one per mutating edge, `MutateEdge` or `MutateWhereEdge`
     (`Mutated`); a failed firing likewise
     (`Mutated`s then `Failed`); a toggle by one.
-- `PlaceRef` is stamped with its net's `NetId` (an `AtomicU32` counter, one
-  per process; not stable across runs). Every method that
+- `PlaceRef` is stamped with its net's `NetId` (an `AtomicU64` counter, one
+  per process, an `AtomicU32` until 0.4.0, so that a process that builds
+  nets for years cannot wrap it; not stable across runs). Every method that
   takes a `PlaceRef` compares the stamp first, so a handle from another net
   cannot index this one: infallible methods (`put`, `seed`, `transition`, ..)
   panic with both net ids in the message; fallible ones return
@@ -187,7 +188,10 @@ pub struct PlaceRef<T> { place: PlaceId, net: NetId, _t: PhantomData<fn() -> T> 
   (§6.6), which a consumer follows a token by while its `TokenId` changes,
   so it has `get()`, prints as its bare number and, with `serde`, is
   `Serialize` (not `Deserialize`) as that number: an opaque, process-local
-  id, not something to store and read back.
+  id, not something to store and read back. A JSON reader that keeps
+  numbers as doubles, JavaScript's, reads it exactly below 2^53; the runner
+  spells it as a decimal string (`nested_id`), exact at any size, and reads
+  one back as a `u64` in that spelling alone.
 
 ### 4.2 Places and tokens
 
@@ -306,12 +310,75 @@ Input edge kinds and the body parameter each produces:
 | `DrainEdge(p)` | every token, zero or more | `Vec<T>`, possibly empty | no |
 | `SurveyEdge(p)` | no | `Vec<T>` (clones of every token, zero or more) | no |
 
-A transition reads each place through at most one input edge
-(`DuplicateInputPlace` at build), so fireability is exactly "every input
-place non-empty" (for a keyed edge, "holding a token the filter accepts";
-for a drain or a survey edge, nothing at all) and the borrows of the
-mutating edges are disjoint by construction. The two keyed edges (slice 19)
-are §8.3's; the two that require no presence (slice 22) are below.
+Fireability is "every input place non-empty" (for a keyed edge, "holding
+a token the filter accepts"; for a drain or a survey edge, nothing at all),
+with one widening since 0.4.0: take and take-where edges may share a place,
+below, and then the place must hold a token for each. Every other kind is
+alone on its place among its transition's edges, so the borrows of the
+mutating and the read edges are disjoint by construction. The two keyed
+edges (slice 19) are §8.3's; the two that require no presence (slice 22)
+are below.
+
+**Edges that share a place, 0.4.0** (the owner's decision D6; Python
+petritype has allowed it all along, and is the reference). Two or more
+input edges of one transition on one place are allowed when each takes a
+token of its own: `TakeEdge` and `TakeWhereEdge`, in any mix. Two oxygen
+radicals taken from one place by two take edges make one molecule, and
+with one radical the transition waits; from a ballroom one keyed edge takes
+a lady and another a gentleman, and the transition is fireable only while
+the ballroom holds one of each. There is no count on a single edge: an
+edge is what gives each token its argument.
+
+- **Which tokens.** The edges on a place choose in declaration order, each
+  the first token in queue order that no edge before it chose: a take the
+  front one left, a take-where the first left that its filter accepts.
+  This is Python's `plan_stage_1` (`_first_unconsumed_index`,
+  `_first_kept_unconsumed_index`). It is greedy as Python's is: when the
+  first of two filters takes the only token the second also accepts, the
+  transition is not fireable, though the other way round it would have
+  been, and a take declared before a take-where takes the front token
+  whatever the filter wanted. No search for another assignment: the rule
+  stays one pass and one answer, the same in both runtimes, and an author
+  who needs the other assignment declares the narrower filter first.
+- **Fireability and stage one** ask one function (`sharing::share`), which
+  asks the key index for a take-where's first match and reads on through
+  the matches only when an earlier edge chose that one. Stage one's three
+  passes stand: `plan` chooses every token before anything moves, the
+  positions as the marking stands, so a key extractor or a `Clone` that
+  panics leaves every token where it was; `take` counts past the tokens
+  taken ahead of a position from the same place. Each edge's token is in
+  `consumed` in edge order, each edge's `reaches` holds its own token's
+  nets, and the index forgets each token as it leaves.
+- **Restore.** A failed firing that restores puts the tokens back at the
+  front of the place they came from, a port's included, with their ids,
+  in edge order, the first edge's at the front, whatever order they stood
+  in, as Python's `restore_argument_tokens_to_places` does. A place left
+  out of id order is marked unordered, as before.
+- **Refused at build.** Every other kind beside another edge on its place
+  (`EdgeCannotSharePlace { transition, place, kind }`, `kind` the first
+  edge there that cannot share): a mutate or a read edge lends a token
+  another edge may take, a snapshot or a survey copies it, a take-all or a
+  drain takes every token. Python allows a take beside a snapshot, a drain
+  or a list-mode take; the Rust core refuses those, as the owner decided.
+  A bound edge or a source (§8.3) on a shared place is
+  `BoundPlaceShared { transition, place }`, as in Python: a source is one
+  edge, and a second edge could take the token a pair was found with.
+- **Outputs.** Two output edges of one transition to one place are
+  `DuplicateOutputPlace { transition, place }`, as in Python since
+  2026-11-28. Until then a positional body (`(out, out)`), a named one
+  (two fields on one place) and a distributing one built, and each slot
+  landed in the place; a routed one was `AmbiguousOutput`, and is this
+  error now, checked first. An output edge is one slot, and one slot of
+  `Vec<T>` already carries several tokens.
+- **Drawn.** `Net::edges`, the topology and the wire list each edge, so a
+  shared place has two edges to one transition; `petritype-dot` writes
+  two `p -> t` lines, which Graphviz draws apart, and `petritype-layout`
+  counts them (`Layout::edges_between`) and gives each a control point to
+  one side of the chord (`Layout::fan`). PROTOCOL.md §5.1 still says a
+  reader keys an edge by its endpoints, which two such edges share.
+- **Tests:** `tests/edges_sharing_a_place.rs`, the cases of Python's
+  `tests/test_edges_sharing_a_place.py` that both runtimes allow, and the
+  refusals.
 
 **Edges on empty places, 2026-10-14** (slice 22). The proposal
 `dev-docs/EDGES_ON_EMPTY_PLACES.md`, its R1 to R7 for this runtime (the
@@ -356,8 +423,9 @@ EdgeKind::Drain.consumes() == true;  EdgeKind::Survey.consumes() == false
   the front of the place, oldest first, with their ids, as every restore
   does (§7), ahead of anything put in while the firing was in flight. A
   survey has nothing to put back.
-- **Checks.** Both read their place through the one edge a transition may
-  have into it (`DuplicateInputPlace`). A survey of a place that cannot
+- **Checks.** Neither shares its place with another edge of its
+  transition (`EdgeCannotSharePlace` since 0.4.0, `DuplicateInputPlace`
+  until then). A survey of a place that cannot
   clone, a nested place among them, is `SnapshotOfNoClonePlace` (its
   message says the transition "snapshots" the place, which a survey of
   every token does; no sibling error was worth adding), and `SurveyEdge<T>`
@@ -448,6 +516,20 @@ PricingEdges {
   or `inputs = ".."`, renames it). It refuses enums, unions, tuple and
   empty structs, type and const parameters, a second lifetime and a `where`
   clause, each with a message saying what to write instead.
+- **Hygiene (since 0.4.0).** The three derives write every path in full,
+  `::core::clone::Clone` and the like for the wiring's derives and
+  `::petritype` for the rest, and mark their impls
+  `#[automatically_derived]`, so they compile in a `#[no_implicit_prelude]`
+  module and beside a caller's own `Clone` or `Debug`.
+  `#[binding(crate = "path")]` and `#[routed(crate = "path")]` name the
+  crate by another path, a renamed dependency or a re-export. The type
+  parameters avoid every name the expansion writes beside them, the
+  struct's and the wiring's included, so a struct called `F0` keeps its
+  name, and the lifetime avoids every lifetime in the field types, so a
+  `for<'a>` inside one is not shadowed. A key given twice in
+  `#[binding(..)]` or `#[routed(..)]` is a compile error. A field that
+  `#[cfg]` leaves out needs nothing of the derive: the compiler removes it
+  before the derive reads the struct.
 - **`Reads<V>`**, implemented in the core one line per kind: `TakeEdge`,
   `SnapshotEdge`, `TakeWhereEdge` and `Param` read `T`; `TakeAllEdge`,
   `DrainEdge` and `SurveyEdge` read `Vec<T>`; `MutateEdge` and
@@ -462,7 +544,7 @@ PricingEdges {
   `(PricingEdges { .. }, TakeEdge(stamps))`, and the body takes the struct
   there. Underneath, `EdgeSealed` describes into a vec and extracts from a
   cursor over the erased inputs, one per edge the position described; the
-  builder, launch, restore, the index, `DuplicateInputPlace`,
+  builder, launch, restore, the index, the shared-place check,
   `TransitionInfo::inputs`, the topology and the wire see the flat list, the
   fields' edges in field order, whatever order a literal writes them in,
   and nothing of the struct. `assert_no_source_transitions` counts the
@@ -723,7 +805,8 @@ Conventions:
 A transition is **fireable** iff its `enabled` switch is on, its body is in
 its slot (not in flight), every input place is non-empty (all four plain
 edge kinds need a token present, and a keyed edge one its filter accepts,
-§8.3) and its guard, if any, returns true. Guards run
+§8.3; take edges that share a place a token each, all different, since
+0.4.0, §4.4) and its guard, if any, returns true. Guards run
 during the scan, after the cheaper checks. `Net::fireable()` lists the
 fireable transitions in declaration order; `Net::is_fireable(t)` asks about
 one. The scan is linear each step; incremental tracking is a later
@@ -739,10 +822,14 @@ are drains and surveys is fireable whenever it is switched on and home,
 and is a source (§12).
 
 Selection among fireable transitions: the net's selector, default = highest
-priority (unset or NaN scores 0.0; `Net::priority_of(t)` exposes the score),
-ties broken by declaration order. Custom selector via `net.set_selector(f)`,
-`f: Fn(&Net, &[TransitionId]) -> Option<TransitionId>`, offered the fireable
-list in declaration order; returning `None` fires nothing this step.
+priority (unset scores 0.0, an infinity ranks as itself; `Net::priority_of(t)`
+exposes the score), ties broken by declaration order. Custom selector via
+`net.set_selector(f)`, `f: Fn(&Net, &[TransitionId]) -> Option<TransitionId>`,
+offered the fireable list in declaration order; returning `None` fires
+nothing this step. A choice that cannot be made is an error, `SelectionFailed`
+(since 2026-11-28, as Python's `ValueError`): a priority that is NaN, which
+ranks neither above nor below any other, or a selector's answer it was not
+offered. Nothing fires and the cursor stays.
 
 **Added 2026-10-02.** The tie-break is a setting, `TieBreak::FirstDeclared`
 (default, the Python rule) or `TieBreak::LastDeclared`, set with
@@ -764,9 +851,10 @@ nets included; it moves under any tie-break and only round robin reads it.
 `step` takes the choice, and so do `step_deep`, the drivers and the runner;
 `select()` reports it and moves nothing, so a driver that fires in stages
 takes it with `Net::choose()`, which is `select()` with the choice counted.
-A custom selector neither reads nor moves the cursor, nor do `fire` by name
-and a concurrent sweep; a switched-off transition is not fireable, so never
-a candidate. The cursor lives in memory only: a fresh net, a net restored
+A custom selector neither reads nor moves the cursor, nor does `fire` by
+name; a switched-off transition is not fireable, so never a candidate. Each
+launch of a concurrent sweep is a choice taken to be fired, and moves it
+(since 2026-11-28, §6.4; until then a sweep neither read nor moved it). The cursor lives in memory only: a fresh net, a net restored
 from JSON or forked, and a reset (a rebuild) start their round afresh.
 A FIFO pipeline alternates its stages under it, and transitions competing
 for one place take turns. No wire change: PROTOCOL.md §5 carries no
@@ -778,6 +866,7 @@ tie-break.
 let firing: Firing = net.launch(t)?;      // stage 1: consume per edge kind; body taken out of the net; Launched
 let done: Completed = firing.run();       // stage 2: call the body (no-op if launch ran it inline); catches panics
 net.distribute(done)?;                    // stage 3: put body back, check, push to places, Distributed or Failed
+                                          //   -> Result<(), DistributeError> (since 0.4.0; NetError until then)
 
 firing.transition(); firing.is_pending();   // false when launch ran the body inline (MutateEdge)
 done.transition(); done.succeeded();
@@ -792,6 +881,15 @@ net.in_flight() -> Vec<TransitionId>; net.is_in_flight(t)   // slots whose body 
   anything. Dropping a `Firing` or `Completed` instead of distributing it
   strands the transition in flight for good (the body never comes home);
   both types are `#[must_use]`. See §17.
+- `distribute`'s error is a `DistributeError` (since 0.4.0): the
+  `NetError` (`error()`) and, for the refusals that leave the firing as it
+  was (`HeldByBody`, `ForeignFiring`, `NotInFlight`), the `Completed`
+  itself (`completed()`, `into_completed()`, `into_parts()`), so that it
+  can still land in the net that launched it; `None` for `FiringFailed`,
+  whose body is home. Its message and `source()` are the `NetError`'s, it
+  is `Send + Sync`, and `?` turns it into a `NetError` (dropping the
+  `Completed`, as `distribute` did until then) or into a boxed error
+  (keeping it).
 - If the transition has a `MutateEdge` or `MutateWhereEdge` input, `launch`
   runs the body inline and returns an already-`Completed` firing. Derived
   from edge kinds, no user flag.
@@ -803,7 +901,7 @@ net.in_flight() -> Vec<TransitionId>; net.is_in_flight(t)   // slots whose body 
 ### 6.3 Sequential
 
 ```rust
-net.step() -> Result<Option<TransitionId>, FiringFailed>
+net.step() -> Result<Option<TransitionId>, StepError>   // FiringFailed or SelectionFailed
 ```
 
 Select, launch, run, distribute, inline. `Ok(None)` = nothing fireable, or
@@ -818,17 +916,33 @@ places give (§6.6, since 2026-11-21).
 
 ```
 loop:
-    for t in enabled, not in flight:
+    while t = the net's choice among fireable, not launched this sweep:
         firing = net.launch(t)          // tokens leave the place now; peers cannot take them
         hand firing to a worker         // or run inline if not detachable
     for done in finished:
         net.distribute(done)
-    stop when nothing enabled and nothing in flight
+    stop when nothing fireable and nothing in flight
 ```
 
 - Consuming synchronously in the launch sweep is the conflict resolver. No
   locks.
+- **Added 2026-11-28, by the owner's decision.** Each launch of a sweep is the
+  net's own choice, made as a sequential step makes it (§6.1): the custom
+  selector, else priority and the tie-break, the round robin's cursor
+  moving with each launch. It is offered the transitions fireable now that
+  the sweep has not launched yet, in declaration order, and after each
+  launch the choice is made afresh, guards and priorities asked again,
+  until nothing is offered or the selector declines. A net with no
+  selector, no priority and the default tie-break launches in declaration
+  order, as every sweep did before. An inline firing has one turn a sweep.
+  A choice that cannot be made stops the run after the firings in flight
+  have landed. Python's `_launch_sweep` asks its selector the same way.
 - One flight per transition at a time (`body` slot is `None` while airborne).
+- **Since 0.4.0** the nets inside the net, at any depth, launch beside it in
+  the same way, each by its own choice, onto the same bounded workers, as
+  the stepping rules let them go, and a token whose nets have a firing in
+  flight is passed over by every edge that takes or changes a token until
+  it lands (§13).
 - `Net::in_flight()` lists airborne transitions for visualisers.
 - Guards observe the marking *without* in-flight tokens.
 - Completion order is wall-clock dependent; no deterministic replay in this
@@ -862,9 +976,9 @@ b.place_nested::<T: Nested + Debug + Send + Sync + 'static>(name) -> PlaceRef<T>
 b.stepping(place, Stepping)                           // 2026-11-21; BuildError::NotNested on a place that holds no nets
 net.nested(place, token) -> Option<Vec<(&str, &Net)>>
 net.nested_scope(place, token, f: impl FnOnce(&mut [(&str, &mut Net)]) -> R) -> Option<R>
-net.step_deep() -> Result<Option<DeepStep>, FiringFailed>
-net.step_inside() -> Result<Option<DeepStep>, FiringFailed>   // slice 17: step_deep without this net's own turn
-net.step_deep_staged() -> Result<Option<StagedStep>, FiringFailed>   // slice 21: step_deep, this net's own choice handed back
+net.step_deep() -> Result<Option<DeepStep>, StepError>
+net.step_inside() -> Result<Option<DeepStep>, StepError>   // slice 17: step_deep without this net's own turn
+net.step_deep_staged() -> Result<Option<StagedStep>, StepError>   // slice 21: step_deep, this net's own choice handed back
 net.set_stepping(place, Stepping) -> Result<(), NetError>;  net.stepping(place) -> Option<Stepping>   // 2026-11-21
 net.is_quiescent_deep() -> bool
 net.place_ref::<T>(name) -> Option<PlaceRef<T>>       // a typed handle by name, checked by TypeId
@@ -936,7 +1050,9 @@ token's nets, except where §6.7 says otherwise.
   every place that holds vehicles. Its condition on what is in flight is
   what "nothing to fire" means for a driver with bodies airborne, whose
   landing may give the outer net more to fire; the sequential driver steps
-  between firings, and never meets it.
+  between firings, and never meets it. The concurrent driver keeps each
+  rule's meaning and lets the nets a band lets go launch together (§13,
+  since 0.4.0).
 
   The ring's *cursor* is the member that took the last turn in it, `N`'s
   own `NetId` or a take-turns net's nested id, kept per net in memory only:
@@ -966,10 +1082,13 @@ token's nets, except where §6.7 says otherwise.
   (`choose`, which makes `N` the cursor), and the turns behind
   (`take_turn(Part::Behind)`). It hands back `StagedStep::Chosen(t)` when
   the turn falls to this net and makes an inner firing inline otherwise
-  (`StagedStep::Inside`). Each part is worked out afresh from the marking
-  and the cursor, from one walk (`members`, each net with its place,
-  token, position and rule), so the part taken after an own turn that chose
-  nothing sees what the first part saw. On the wire the rule is
+  (`StagedStep::Inside`). Both parts are worked out from the cursor and
+  one walk, taken once per step (`members`, each net with its place,
+  token, position and rule; since 2026-11-28, where each part walked
+  afresh): a turn that fires nothing changes nothing, and nor does an own
+  turn that chose nothing, so the part behind sees what the part ahead
+  saw. A net none of whose own places holds nets, which is fixed at build,
+  walks nothing. On the wire the rule is
   `stepping`, which the runner writes on every place that holds nets since
   protocol version 2 (§19.3.16); version 1 had `passive`, which the runner
   wrote for a place whose rule is `Passive`.
@@ -1033,6 +1152,10 @@ token's nets, except where §6.7 says otherwise.
      place after the `Added` or `Mutated`; `remove`, `set_tokens`, `replace`
      of an outgoing token before the `Removed` or `Mutated`;
   6. `nested_scope`: when the closure returns.
+  7. a firing the concurrent driver launches inside (since 0.4.0, §13): its
+     `Launched`, or an inline firing's whole story, once that net's part of
+     the pass is over; its `Distributed` or `Failed` as it lands, through
+     every level on the way down to it.
 
   Every lifted event goes through `emit`, so `state_counter` moves once per
   lifted event. Seeds are setup: `build()` drops what a seeded token's inner
@@ -1044,7 +1167,9 @@ token's nets, except where §6.7 says otherwise.
   `TokenId`; a consumer follows a vehicle by it from station to station.
   Hence `NetId`'s new `Display` and `Serialize` (§4.1).
 - **Failures say where.** A failure inside is the inner net's
-  `FiringFailed`, its `path` filled in level by level on the way up (§7).
+  `FiringFailed`, its `path` filled in level by level on the way up (§7),
+  and since 0.4.0 its `nested_ids` beside it, the id of the net each step
+  leads to, which tells apart two nets of one name in one token.
 - **Limits** (the proposal's R10). No shared places: the outer net reaches
   in only through the token, and no inner guard or body sees the outer net.
   (A subnet place's ports are the one kind of shared place, §6.7.)
@@ -1223,6 +1348,7 @@ its `Exit Hall`.
 // The subnet's definition.
 let lobby = b.place::<Hero>("Lobby");
 b.port(lobby);                                          // BuildError::PortIsSubnetPlace for a port of a subnet place
+// keys, style, styled, place_style and serializable on a port of a subnet place: BuildError::PortOption (since 0.4.0; a panic until then)
 // The outer net.
 let level = b.subnet_place("Level 1", net) -> SubnetRef // not a PlaceRef: an edge on it does not compile (EdgeOnSubnetPlace behind that)
 let lobby = b.port_of::<Hero>(level, "Lobby") -> PlaceRef<Hero>   // NoSuchPort, PortTypeMismatch
@@ -1244,12 +1370,16 @@ snapshot.subnet(place) -> Option<&Snapshot>
   Every function that touches a place's tokens finds a window's port in the
   subnet and works on the port's queue, the subnet's key index and the
   subnet's token counter: `slot_of` for readers, `holder_mut` for writers,
-  and `resolve_mut` and the lending in `firing.rs` for a firing. The queue
+  and `resolve_mut` and the lending in `firing/launch.rs` for a firing. The queue
   never moves. A window is kept out of the duplicate-name check and out of
   `place_named`: it is named by its subnet place and the port's name, and
   `port_ref` finds it so. What a port is beyond its tokens (its keys, style,
   serialiser and stepping rule) is the subnet's to declare, so the per-place
-  options of the builder panic for a window.
+  options of the builder refuse a window: `keys`, `style`, `styled`,
+  `place_style` and `serializable` with `BuildError::PortOption` from
+  `build` (since 0.4.0; they panicked until then), `port` with
+  `PortIsSubnetPlace`, `in_group` with `PortInGroup` and `stepping` with
+  `NotNested`, all recorded and returned by `build`.
 - **Ids and keys.** A port has one queue and one set of token ids, minted by
   the subnet, whichever net puts a token there, so every id minted into a
   port is larger than those already in the subnet. A port's tokens are
@@ -1270,8 +1400,12 @@ snapshot.subnet(place) -> Option<&Snapshot>
   on one of a subnet's ports is in flight, launched and not yet landed, that
   subnet takes no turn (it keeps its place in the ring), and `subnet_scope`
   refuses it with `NetError::InFlight`. The builder records, per subnet,
-  which transitions reach it. One firing happens at a time across the tree,
-  except that an outer body may still run on its own thread.
+  which transitions reach it. One firing happens at a time across the tree
+  in a deep step, except that an outer body may still run on its own
+  thread. The concurrent driver runs the subnet's own firings beside the
+  outer net's since 0.4.0 (§13) and keeps this rule: a firing of the outer
+  net on a port holds the subnet still until it lands, and a firing of the
+  subnet's own lands whatever is in flight out here.
 - **Failure.** A failed outer firing restores what it took from a port as
   from any place, into the port. A failure inside a subnet comes up with
   `PathStep::Subnet { place }` at that level of `FiringFailed::path`, so a
@@ -1331,8 +1465,9 @@ snapshot.subnet(place) -> Option<&Snapshot>
   syntax, and an edge on a port ends at its cell (`tailport` from it,
   `headport` into it). The windows are not drawn as nodes, so the other
   places keep their `p<i>` ids, and the box is outlined when a firing
-  touched one of its ports. In a subnet's own drawing a port has a second
-  ring (`peripheries=2`). The title is the place's name alone, as a
+  touched one of its ports. In a subnet's own drawing a port is one dotted
+  ring (`style="filled,dotted"`; a second ring, `peripheries=2`, until
+  0.4.0, §6.9 says why). The title is the place's name alone, as a
   place's label here is its name and tokens, so a net and its snapshot
   draw the same text; the Python renderer adds the template under it. A
   net with no subnet places draws to the same text as before.
@@ -1402,7 +1537,8 @@ Topology { .., groups: Vec<String> };  TopologyPlace, TopologyTransition { .., g
   form to what the commit before wrote.
 - **Drawing.** `petritype-dot` draws a group as a Graphviz cluster,
   `subgraph cluster_<n>` with `n` its position in declared order, the
-  group's name as its label and a dashed outline, holding its places, a
+  group's name as its label and a dotted outline (dashed until 0.4.0,
+  when an open net's places took the dashes), holding its places, a
   subnet place with its box, and then its transitions. The nodes in no
   group come first, at the top level, so a net with no groups draws to the
   text it drew before, and every node keeps its `p<i>` or `t<i>` id.
@@ -1440,7 +1576,9 @@ Topology { .., groups: Vec<String> };  TopologyPlace, TopologyTransition { .., g
 
 **Decided and built 2026-11-23, stage one** (step 3c of the edges spec,
 with the Python track; the findings are in
-`dev-docs/refusing-a-reach-outside-the-ports.md`). The owner's words: "in
+`dev-docs/refusing-a-reach-outside-the-ports.md`), **stage two built
+2026-11-28**, with the reach enforced and the shield (rules 2, 3 and 8 of
+the Python track's note of 2026-11-27). The owner's words: "in
 general, we don't want to be injecting tokens arbitrarily into places in
 the Petri net... definitely the bodies should not be doing that. I'd say
 unless a net has been specifically flagged as one where we expect to
@@ -1449,23 +1587,51 @@ But if the user wants to override that by specifying that in the net
 definition, I think that's fine. I would rather err on the side of being
 too strict here."
 
-A net that marks any place as a port (`NetBuilder::port`) is **closed**:
-from outside it, tokens are put, taken, removed, replaced or set only at
-its ports. A net that marks no port stays open, as every net was. A net
-may declare itself **open** in its definition, and then anyone outside may
-write to any of its places. **Stage two**, announced and not built, closes
-every net that does not declare itself open; it is one constant in
-`closed.rs` (`UNDER_RULE_WITHOUT_PORTS`, read by `Net::is_under_rule`).
+Every net is **closed** unless its definition declares it **open**: from
+outside it, tokens are put, taken, removed, replaced or set only at its
+ports (`NetBuilder::port`), and a net that marks no port takes no token
+from outside at all. A net declared open lets anyone outside write to any
+of its places. Stage one (2026-11-23) closed only a net that marked a
+port, and left a net with none open as every net had been.
+
+**Why every net (stage two).** The owner, 2026-11-27, on learning that an
+edge's `reaches` was an unchecked label: it "goes against the most
+fundamental principle of this library - that code and visual
+representation can not disagree". Measured on the Python suite and
+notebooks, about nine in ten writes by a body into a net went into nets
+that marked no port, where `reaches` has nothing to name, so he approved
+stage two the same day. What a drawing now means: a place marked as a port
+is where tokens can enter a net from outside, the `reaches` on an edge is
+where its body goes inside a token's net, and a net declared `open` is the
+stated exception, which its topology shows and `petritype-dot` draws with a
+dashed outline on every place but a port and a subnet place (since 0.4.0,
+as the Python renderer). So a body is held to its edge's `reaches`, writes no
+closed net inside the one it holds, and a closed net shields the nets
+inside it from the program and the runner (the owner, on rule 8:
+"unexpected skipping sounds bad"): until then a token put into a subnet's
+port by addressing the subnet skipped whatever route the outer net draws
+to that port.
 
 ```rust
-b.port(inbox);                       // the net is closed from now on
+b.port(inbox);                       // where tokens enter from outside
 b.open() -> &mut Self                // the override: open, ports or not
 net.is_open() -> bool                // the declaration
-net.is_closed() -> bool              // the rule's answer: marks a port and is not open
+net.is_closed() -> bool              // the rule's answer: not declared open
 net.try_put(place, token) -> Result<TokenId, NetError>      // and try_extend, try_set_tokens
-NetError::ClosedNet { net: String, place: String, act: &'static str }
+NetError::ClosedNet { net: String, place: Option<String>, act: &'static str, why: ClosedRefusal }
+ClosedRefusal::{NotAPort, Undeclared, Deeper, Around { net: String }}
 NetError::HeldByBody { net: String, act: &'static str }
 ```
+
+**How a way in is drawn** (the owner, 2026-11-28, for both renderers). In
+the drawing of the net that marks it, a port is one dotted ring,
+`style="filled,dotted"`, and a port of an open net is dotted too, never
+dashed as well; an open net's other places are dashed, and a group's frame
+is dotted. Until then a port had a second ring (`peripheries=2`), which
+looked like a place nested inside a place, and only a nested net is to
+look nested. The marks stay light so that a firing and tokens moving are
+what catch the eye. Making ports stand out more is to be an option of a
+visualiser, not built yet; the default drawing keeps the one dotted ring.
 
 **Who is outside.** A body, guard or key function of a transition of the
 net around it, by any edge; the program and its drivers; a runner's
@@ -1486,9 +1652,24 @@ A read edge lends `&T` and has nothing to write with. The internal paths
 go round it: seeds (`insert_erased` in `build`), outputs (`push_produced`),
 restores (`restore_consumed`), imports (`load_marking`), forks and
 restores from a saved form (both through `import_marking` on a new net),
-and deep steps. Each net is under its own rule whoever reaches it, two
-levels down as one: the program reaching a closed net inside an open one
-writes only at the inner net's ports.
+and deep steps. The check, in `Net::admit`, in this order:
+
+1. A handler of the net's own control, while `press` runs it, writes
+   anywhere.
+2. A body that holds the net *by an edge* writes a closed net only at the
+   ports that edge names (`Undeclared` at another port, `NotAPort`
+   elsewhere), and an open net anywhere but at a window onto a closed
+   subnet (`Deeper`). Nothing around the net counts: the body is on its
+   side of it.
+3. A body that holds the net *deeper*, through a scope on a net it holds,
+   writes no place of a closed one (`Deeper`), and is judged on an open
+   one as in 4.
+4. Anyone else writes a closed net at its ports only (`NotAPort`) and an
+   open one anywhere, unless the net is *shielded*, when nothing lands
+   (`Around`, naming the nearest closed net around).
+
+The net's own rule is judged before the shield, as in Python: a private
+place of a net inside a closed net is `NotAPort`, its port `Around`.
 
 **Windows.** A window, the place a net has for a port of one of its subnet
 places (`port_of`), is a place of the net that holds it, and can never be
@@ -1504,42 +1685,87 @@ graph-tactics' `GameNet::deal` does, declares the map open.
 a stepping rule or a selector, firing by name (`fire`, `launch`,
 `distribute`, `step_inside`), pressing a control and importing a marking
 stay with the program, its drivers and the runner, whatever the net. They
-are refused only to a body of the net around it, and only on a net under
-the rule, one that marks a port, closed or declared open: the override
-opens the places, not the controls. A body that holds a net marking no
-port still sets its parameters and the rest in stage one, as the transit
-example's `Depart` and `Arrive` set a cabin's `stopped`. Stage two puts
-every net under the rule, and such a setting then goes to a transition of
-the net's own, which is inside it, or is left to the program: declaring a
-net open opens its places, not its knobs. Reading and stepping are
+are refused to a body of the net around it on every net it holds, closed
+or declared open: the override opens the places, not the controls. (Stage
+one refused them only on a net that marked a port, so the transit
+example's `Depart` and `Arrive` set a cabin's `stopped`.) A setting a body
+wants goes to a transition of the net's own, which is inside it, or is
+left to the program. Pressing a control is refused on every held net for
+the same reason: a control is the program's and the runner's, and its
+handler is inside the net. Reading and stepping are
 allowed for everyone, a body included: `step` and `step_deep` on a net a
 body holds run that net's own transitions, which are inside it.
 
+**What else a body leaves alone** (built 2026-11-28, the Python track's
+rows 32, 33 and 42). On a net it holds, by an edge or deeper, a body is
+also refused draining its events (`drain_events`: the net around lifts
+them as the firing ends), moving its tie-break cursor without a firing
+(`choose`; `select` reads only), a staged step (`step_deep_staged`,
+`step_deep_staged_with`, which leave a choice for `launch` and
+`distribute`), and a run of a driver with `OnFailure::Disable`, a switch,
+refused before anything fires with `DriverError::HeldByBody` in both modes
+and by `run` and `run_indefinitely` alike. Each is recorded on the hold as
+the other knobs are. Driving is stepping: a body may drive a net it holds
+with `drivers::run` in either mode, with the same marking. The engine's
+own moves go round these checks by internal paths: `take_events` for the
+lifting of an inner net's events, `choose_now` for a step's choice, and
+`launch_for_driver` and `distribute_for_driver` for the concurrent driver,
+which until then met the refusal of `launch` inside a body and panicked.
+
 **The mark.** A body is told apart from the program by a mark on the nets
-it holds, `Net::held`, a `Weak` to a `Hold` the firing owns
-(`Firing::hold`, `Completed::hold`). `consume` marks the nets of each
+it holds, `Net::held`, a `closed::Mark`: a `Weak` to a `Hold` the firing
+owns (`Firing::hold`, `Completed::hold`) and the reach, the edge's index
+or *deeper*. The hold keeps the transition's `reaches` (an `Arc`, shared
+with `TransitionSlot::reaches`). `consume` marks the nets of each
 token a consuming edge takes from a place of nets, through
-`Nested::nets_mut`, and they stay marked, wherever the body puts them,
-until the firing ends at the end of stage three, when the `Arc` is dropped
-and every `Weak` lapses by itself. `mark_lent` marks the nets of each
-token a mutating edge lends, around the inline call to the body, and
-`unmark_lent` puts back what was there. `nested_scope` and `subnet_scope`
-called on a marked net mark the nets they lend for the closure's time, so
-the mark travels down through the scopes to any depth. The program never
+`Nested::nets_mut`, with that edge, and they stay marked, wherever the
+body puts them, until the firing ends at the end of stage three, when the
+`Arc` is dropped and every `Weak` lapses by itself. `mark_lent` marks the
+nets of each token a mutating edge lends, around the inline call to the
+body, and `unmark_lent` puts back what was there. `nested_scope` and
+`subnet_scope` called on a marked net mark the nets they lend *deeper* for
+the closure's time, so the mark travels down through the scopes to any
+depth. A read edge lends `&T`, so it marks nothing. The program never
 holds a marked net: a token's nets are marked only while the body that
 has them runs, inline or owned by an airborne `Firing`. A body that puts a
 net it built in place of one it holds (`*unit = fresh`) has made a new
 net: the swap is let through, and the new net carries no mark, so its
 knobs are the body's; its tokens are under its own rule, as the program's
-are, and its seeds are inside. No global state, no unsafe code: the mark
+are, and its seeds are inside. The owner kept the swap on 2026-11-28 (a
+game that resets a character swaps its whole net), and it is told as a
+new net: its own `NetId`, the old id gone from the state, the token's
+`Mutated` in the log and every later event of its nets under the new id;
+on the wire a new `nested_id`, the old one answering `unknown_net`. No
+global state, no unsafe code: the mark
 is per firing, and `Hold` is `Send + Sync`, so it travels with a
 detachable body to a worker thread.
 
+**The shield.** The program reaches a net inside another only through
+`nested_scope` and `subnet_scope` (so do the drivers and the runner's
+`descend_mut`), so the chain of nets is in hand at each level and no net
+needs to know where it rests, as Python's notes do. A scope opened on a
+closed net, or on a shielded one, lends its nets with `Net::shield`, a
+`Weak<str>` to the name of the nearest closed net around, which the scope
+owns (`closed::Lending`). Opened through a window, the subnet behind it
+counts first. The scope restores what each net had after the closure,
+under a `catch_unwind` that resumes the panic afterwards, and drops the
+name, so a shield lapses when its scope ends however it ends and no fork,
+save or copy carries one. A handler of the net's own control is inside
+it, so a scope it opens on its own net shields nothing by that net, and
+the looking stops at a net a body holds by an edge. Imports
+(`admit_import`) are refused into a shielded net too, with no place. The
+knobs of a shielded net stay the program's: the drivers' `disable_at`
+reaches an inner transition through the same scopes.
+
 **A refusal.** `NetError::ClosedNet` names the net (by its template, or
-its id, `NetId(7)`, when no template built it), the place and the act
-(`"put a token into"`), and says the three ways to put it right: mark the
+its id, `NetId(7)`, when no template built it), the place (none for an
+import) and the act (`"put a token into"`), and its `why` which refusal
+it was; the message says how to put each right: for `NotAPort` mark the
 place as a port, start the net with the token in its definition, or
-declare the net open. `NetError::HeldByBody` names the net and the act
+declare the net open; for `Undeclared` name the port in the edge's
+`reaching`; for `Deeper` go through a port of the held net; for `Around`
+give the closed net a port and a transition that carries the token in, or
+declare it open. `NetError::HeldByBody` names the net and the act
 (`"set a parameter of"`) and says to do it from the program or give the
 net a transition of its own that does it.
 
@@ -1548,8 +1774,14 @@ net a transition of its own that does it.
   signatures and panic with the refusal's message, as they already panic
   on another net's handle, so a program in the right changes nothing; the
   `try_` forms return it. `set_tie_break`, `set_selector`,
-  `clear_selector` and `step_inside` panic for a body that holds a net
-  marking a port, which only a body can meet. `press` answers a body with
+  `clear_selector` and `drain_events` panic for a body that holds the
+  net, which only a body can meet, and since 0.4.0 the first three have
+  `try_set_tie_break`, `try_set_selector` and `try_clear_selector`, which
+  return `Result<(), NetError>`. `step_inside`, `step_deep_staged`,
+  `step_deep_staged_with` and `choose` return
+  `StepError::HeldByBody { net, act }` (since 0.4.0; until then they
+  panicked), which `?` turns into `NetError::HeldByBody`; `select`, which
+  only reads, keeps `SelectionFailed`. `press` answers a body with
   `PressError::Refused` carrying the message, the handler not run.
 - **For a body**, an ordinary failed firing with the named error as its
   error, not `BodyPanicked`. A net that refuses a body keeps the first
@@ -1565,12 +1797,32 @@ net a transition of its own that does it.
   since a place of nets has no cloner (`BuildError::RestoreOfNoClonePlace`),
   so a firing that takes such a token and is refused loses it.
 - **For the runner**, `inject` refused this way answers `closed_net`, at
-  the top level and by path, at a window as at any place (§19.3.23).
+  the top level and by path or nested id, at a window as at any place
+  (§19.3.23), after `unknown_place` and `invalid_token`: `Net::apply`
+  checks the place and the tokens' type before the rule.
+- **Rust cannot hold everything the same way.** A body that writes a net
+  no edge handed it (one it built, or reached through a captured
+  `Arc<Mutex<Net>>`) and meets a shield has no hold to record the refusal
+  on, there being no global state: it fails its firing only if it passes
+  the error on, as the program would.
+
+**A question changes no net** (the Python track's rule 7). A guard, a
+priority and a selector are given the net as `&Net`, a key function the
+token as `&T`, and `fireable` and `select` take `&self`, so the compiler
+refuses them every change through the library (a compile-fail case,
+`tests/ui/fail_guard_changes_its_net.rs`). It cannot close interior
+mutability inside a token (a `Mutex` or an atomic reached through `&T`),
+state a closure captured (an `Arc<Mutex<Net>>` of another net), or a net
+the closure builds and writes itself, which Python refuses. An output
+distribution function is given the body's result by value and runs inside
+the body's call, so it can change a net that result carries, under the
+body's mark; Python refuses it that.
 
 **Whole-state acts** stay allowed for the program: importing a marking
-(`import_marking`, refused to a body on a net marking a port, as a knob
-is), restoring from a saved form, forking, rebuilding as a reset, and
-saving. They replace the state as a whole, and are how a save is loaded.
+(`import_marking`, refused to a body on a net it holds, as a knob is, and
+to everyone on a shielded net), restoring from a saved form, forking,
+rebuilding as a reset, and saving. They replace the state as a whole, and
+are how a save is loaded.
 
 **What Rust enforces.** Every write to a place goes through a `Net`
 method, and a body has nothing else to write with, so the rule holds in
@@ -1579,19 +1831,30 @@ round it. (Python can enforce it only through its library's own functions
 and the runner, plus a before-and-after check for a body; its documents
 say so.)
 
-**What broke in this repository.** One test: the runner's
+**What broke in this repository.** Stage one broke one test: the runner's
 `a_subnet_place_s_entry_holds_its_subnet_and_its_ports_under_the_token_limit`
 injected into a level's `Arena`, which the level does not mark a port; its
 fourth hero now walks in from the lobby by a step. The conformance nets
 and the eighteen shared recorded fixtures replay unchanged, and the
 `post-office` net with the nineteenth, `19_closed_nets.json`, shows the
-rule on the wire.
+rule on the wire. Stage two broke 166 tests, doc tests and example tests
+in the core crate, nearly all of them the program putting a token into a
+net that marked no port. Most now mark that place a port, which is what
+their story said it was; a few seed the net, and the tests about writing
+anywhere from outside, or at a window, declare their net open. The tests
+of stage one that said a net with no port was open, and that a body kept
+its knobs on one, now say the opposite. The reach and the shield broke
+33 more: bodies whose edges now name the port they write, and tests that
+reach into a net inside a closed one from outside, whose outer nets are
+now declared open (one seeds the net instead, one uses the open
+`levels`). The conformance nets were changed as the Python track's note
+lists, and the shared transcripts re-recorded there replay.
 
 #### Closed nets: what a program changes
 
-How to tell that a net is closed: it marks a port and does not declare
-itself open. On the wire its topology shows `port: true` on some place and
-no `open`; in Rust, `Net::is_closed()`; in Python, `graph.is_closed`.
+How to tell that a net is closed: it does not declare itself open. On the
+wire its topology shows no `open`; in Rust, `Net::is_closed()`; in Python,
+`graph.is_closed`.
 
 A write from outside at a place that is not one of its ports is refused
 (Rust `NetError::ClosedNet`, Python `ClosedNetError`, the runner's
@@ -1603,15 +1866,24 @@ A write from outside at a place that is not one of its ports is refused
 3. or declare the net open (`b.open()`, Python `open=True`), which lets
    anyone outside write to any of its places.
 
+A body's write at a port its edge does not name is put right by naming
+the port in the edge's `reaching`; a body's write into a net inside the
+one it holds goes to a port of the held net instead, for a transition of
+that net to carry further in. A write or an import from outside into a net
+inside a closed net is put right by declaring every net around open, or by
+giving the closed net a port and a transition that carries the token in.
+
 Knobs (a parameter, a switch, the tie-break, the stepping rule, a
-selector) and firing by name stay with the program and the runner, on any
-net. A body of the net around a net that marks a port is refused them,
-open or closed; a body on a net with no port keeps them in stage one.
-Whole-state acts (loading or importing a marking, restoring, forking,
-resetting, saving) stay allowed. Stage two will close every net that does
-not declare itself open, and refuse a body the knobs of every net it
-holds: give such a setting to a transition of the net's own, or leave it
-to the program.
+selector, a control) and firing by name stay with the program and the
+runner, on any net, a net inside a closed net included. A body of the net
+around is refused them on every net it holds, open or closed: give such a
+setting to a transition of the net's own, or leave it to the program. So
+are draining a net's events, `choose`, a staged step and a driver's
+`OnFailure::Disable`: a body reads the marking instead, steps the net, or
+drives it with `OnFailure::Stop` or `OnFailure::Continue`.
+Whole-state acts (importing a marking, restoring, forking, resetting,
+saving) stay allowed for the program, except an import into a net inside
+a closed net.
 
 ## 7. Failure semantics
 
@@ -1681,7 +1953,9 @@ Error types (`thiserror`, all `#[non_exhaustive]`):
   token. `step_deep` fills it in on the way up, and the message names it
   (`transition "Sit" (TransitionId(0)) inside PlaceId(1) / PlaceId(0) #5
   "cabin" failed: ..`). It was a `(place, token, net name)` per level until
-  subnet places, which a level with no token could not use.
+  subnet places, which a level with no token could not use. Since 0.4.0
+  `nested_ids` holds, beside each step, the nested id of the net it leads
+  to, which `OnFailure::Disable` follows.
 - `CommandError`: external input rejected. Wraps `NetError` transparently
   (unknown place, transition or token; type mismatch); with `serde`, also
   `NotSerializable`, `InvalidToken`, `NoSuchPlaceName`,
@@ -1768,19 +2042,19 @@ net.nested_scope(place, token, f) -> Option<R>    // slice 15: the same, mutably
 net.subnet(place) -> Option<&Net>;  net.subnet_scope(place, f) -> Result<R, NetError>   // §6.7: a subnet place's subnet, to read, and to step or change
 net.port_ref::<T>(subnet, &str) -> Option<PlaceRef<T>>   // §6.7: this net's handle for a port, by its subnet place and its name
 net.is_quiescent_deep() -> bool                   // slice 15: quiescent here and in every inner net not in a passive place
-net.step_inside() -> Result<Option<DeepStep>, FiringFailed>   // slice 17: step_deep without this net's own turn, for a driver that asked select() itself (§6.6)
-net.step_deep_staged() -> Result<Option<StagedStep>, FiringFailed>   // slice 21: step_deep with this net's own choice handed back, in the stepping rules' order (§6.6)
-net.choose() -> Option<TransitionId>               // slice 21: select(), and the choice counts for the round robin (§6.1)
+net.step_inside() -> Result<Option<DeepStep>, StepError>   // slice 17: step_deep without this net's own turn, for a driver that asked select() itself (§6.6)
+net.step_deep_staged() -> Result<Option<StagedStep>, StepError>   // slice 21: step_deep with this net's own choice handed back, in the stepping rules' order (§6.6)
+net.choose() -> Result<Option<TransitionId>, StepError>   // slice 21: select(), and the choice counts for the round robin (§6.1); StepError since 0.4.0
 #[cfg(feature = "serde")]
 net.param_name(type_name) -> Option<&str>         // slice 17: the wire name behind a ParamChanged's type name, from serializable_param
-net.fireable() -> Vec<TransitionId>;  net.is_fireable(t) -> bool;  net.is_enabled(t) -> bool;  net.priority_of(t) -> f64
+net.fireable() -> Vec<TransitionId>;  net.is_fireable(t) -> bool;  net.is_enabled(t) -> bool;  net.priority_of(t) -> Result<f64, SelectionFailed>
 net.count(place)  -> usize
 net.tokens(place) -> impl Iterator<Item = (TokenId, &dyn Any)>
 net.label(place, token) -> Option<String>            // via PlaceMeta.debug; truncated to label_limit (default 100) + "..."
 net.debug(place, token) -> Option<String>            // the same Debug text untruncated: what label is cut from
 net.token::<T>(place, token) -> Option<&T>           // typed downcast for custom widgets
 #[cfg(feature = "serde")]
-net.json(place, token) -> Option<serde_json::Value>  // structured view, serializable places only
+net.json(place, token) -> Option<Result<serde_json::Value, NoJsonForm>>  // structured view, serializable places only; no JSON form for a NaN or an infinity
 #[cfg(feature = "serde")]
 net.export_marking() -> Result<Marking, NetError>    // slice 16: every place's tokens as JSON by place name (§9)
 #[cfg(feature = "serde")]
@@ -1945,11 +2219,14 @@ PlaceInfo::key_names: &[&'static str];  TopologyPlace::key_names: Vec<&'static s
   taken before the body runs and again after it (a panicking body included).
   No token's keys are stored: the extractor is pure, so a token's old
   entries are found by extracting from the value about to leave, or from the
-  value before the body changed it. The one change the net learns of only
-  afterwards is inside a nested token (an inner firing of `step_deep`, a
-  `nested_scope` closure), where a key may read the inner nets; there the
-  token's entries are found by looking through its keys' values, and it is
-  indexed afresh. `import_marking` empties the index and refills it as it
+  value before the body changed it. A `nested_scope` closure, where a key
+  may read the inner nets, is told as a body is: the token's keys are read
+  before the nets are lent and again after. The one change the net learns
+  of only afterwards is an inner firing of `step_deep`; there a key whose
+  new value already lists the token is left as it is, and a key the firing
+  changed is found by looking through that key's values (since 2026-11-28,
+  where every key was). Reading each member's keys before its turn would
+  cost more: most turns tried fire nothing. `import_marking` empties the index and refills it as it
   refills the places; nothing of it is ever saved (the proposal's R7). A
   `Net`'s `Debug` prints how many values each key has, never the values.
 - **Token order.** The index's sets are in place order then id order, and
@@ -1996,7 +2273,11 @@ BuildError::KeyedEdgeOnUnkeyedPlace { transition, place }
   edge or by `first_match` (a query still consults them). A
   `Clause::IsParam` reads the parameter's value whenever fireability is
   asked, so a `set_param` can make a keyed transition fireable or not
-  without a token moving. The guard runs after, as it always has, and so
+  without a token moving. The value's key is written from its JSON once
+  per value (since 2026-11-28, where every scan wrote it for every keyed
+  edge): the parameter's slot keeps it from the first clause that asks
+  until the value is set again, by `set_param`, a command, an import or a
+  fork. The guard runs after, as it always has, and so
   only when there is a token to be had; it reads that token with
   `Net::first_match`, as a guard on a plain edge reads the front one. A
   filter without clauses accepts every token, and the edge behaves as its
@@ -2034,8 +2315,9 @@ BuildError::KeyedEdgeOnUnkeyedPlace { transition, place }
   the id is kept, the position is not. It is then the first token the
   filter accepts, so a retry takes it again; a place it re-entered ahead
   of an older token is marked unordered, as before.
-- **Checks.** A keyed edge reads its place like any other
-  (`DuplicateInputPlace`). `TakeWhereEdge` consumes (`EdgeKind::consumes`),
+- **Checks.** A `TakeWhereEdge` may share its place with other takes
+  (since 0.4.0, §4.4); a `MutateWhereEdge` shares it with no edge
+  (`EdgeCannotSharePlace`). `TakeWhereEdge` consumes (`EdgeKind::consumes`),
   so it counts in `assert_acyclic`, in `assert_no_source_transitions` and
   in `RestoreOfNoClonePlace`; `MutateWhereEdge` consumes nothing and counts
   in none of them. A keyed edge on a place that declares no keys is
@@ -2132,7 +2414,9 @@ BuildError::{BoundSourceNotAnInput, BoundSourceGivesMany, BoundSourceIsBound,
   source and bound edge then takes its chosen position: a take source takes
   its token from wherever it stands, a snapshot source clones it, a mutate
   source lends it, each bound edge takes or lends its match. Positions stay
-  good because no two edges of a transition read one place. Ids, events,
+  good because a bound edge and its source read places no other edge of
+  the transition reads (`BoundPlaceShared`, since 0.4.0, when two takes
+  came to share a place). Ids, events,
   detachability and the restore are those of the edge kinds: a failed
   firing that restores puts both tokens back at the front of their places,
   with their ids.
@@ -2238,8 +2522,9 @@ kind.lends() -> bool                                      // a mutating or a rea
   that lends the `&mut`s (`borrow_mutated`) lends these too: it walks the
   places with `iter_mut`, a subnet's ports with the subnet's own, and for a
   read edge turns its slot's `&mut` into a shared borrow of the one token or
-  of every token. Every borrow it takes may be alive at once because no two
-  edges of a transition read one place (`DuplicateInputPlace`, which stays).
+  of every token. Every borrow it takes may be alive at once because a read
+  edge shares its place with no other edge of its transition
+  (`EdgeCannotSharePlace`).
   No unsafe code. The body cannot change what it is lent (`tests/ui/
   fail_read_edge_mutates.rs`, `fail_read_edge_writes.rs`), and nothing else
   can while it runs.
@@ -2277,8 +2562,9 @@ BuildError::{ReachIntoNoNets, EmptyReachName}
 - **Ports shown everywhere (3a).** `PlaceInfo::port` was always true on a
   marked place of any net; the runner now writes `port: true` on the
   topology of every net, the loaded net and a net a token carries as well
-  as a subnet (PROTOCOL.md §5.1). `petritype-dot` already rang a marked
-  place of a net drawn on its own (`peripheries=2`).
+  as a subnet (PROTOCOL.md §5.1). `petritype-dot` already marked such a
+  place in a net drawn on its own, with a second ring then and one dotted
+  ring since 0.4.0 (§6.9).
 - **No declaration on the place of nets.** A place whose tokens carry nets
   does not say which ports they offer: the nets arrive with their tokens at
   run time and may differ, each shows its own ports when read by path, and
@@ -2293,13 +2579,12 @@ BuildError::{ReachIntoNoNets, EmptyReachName}
   topology, a snapshot, the wire (`reaches`, written only when not empty)
   and a drawing (`petritype-dot` writes `reaches Orders In` as the label's
   last line). A `Reaching` field may stand in a struct of inputs.
-- **A declaration only.** It changes nothing about firing, like a group.
-  The build refuses only what can never be right: a reach on a place whose
-  tokens carry no nets (`ReachIntoNoNets`) and an empty name
-  (`EmptyReachName`). A name the token's net does not have as a port is
-  found out nowhere: the nets arrive at run time. Since 2026-11-23 a body
-  that writes outside the ports of a closed token's net fails its firing,
-  whatever its edge reaches (§6.9), so the reach stays a declaration.
+- **Enforced since 2026-11-28** (§6.9). A body writes a closed net its
+  edge hands it only at the ports the edge names. The names are an upper
+  bound: a name the token's net does not have as a port is found out
+  nowhere, the nets arriving at run time, and is no error. The build
+  refuses only what can never be right: a reach on a place whose tokens
+  carry no nets (`ReachIntoNoNets`) and an empty name (`EmptyReachName`).
   `EdgeInfo::Input` gained a field, so code that builds one by struct
   literal adds `reaches: vec![]`.
 - **The conformance net** `trays` and `18_ports_on_a_token.json`: a unit, a
@@ -2418,7 +2703,7 @@ implements `InputEdge`, the one implementor that reads no place; the sealed
 description of an input tuple yields `Edge { place, kind, net }` or
 `Param { type_id, type_name }` per position, and the transition keeps the
 body's argument order as a list of sources over its (edges-only) input list,
-so fireability, `edges()`, `DuplicateInputPlace`, the cycle and source walks
+so fireability, `edges()`, the shared-place check, the cycle and source walks
 and stage one see exactly the place edges they always did. Build checks:
 `MissingParam { transition, type_name }` (first offender), and with `serde`
 `DuplicateParamName { name }`. A registered value no transition declares is
@@ -2481,7 +2766,12 @@ Always:
   name }`), or a second `keys` declaration for one place
   (`KeysAlreadyDeclared { place }`); the first offender, after `NotNested`
   (slice 18, §8.3). `keys` itself is infallible.
-- One input edge per place per transition (`DuplicateInputPlace`).
+- Two or more input edges of one transition on one place only where each
+  is a take or a take-where (`EdgeCannotSharePlace { transition, place,
+  kind }`, since 0.4.0, §4.4; until then any two were `DuplicateInputPlace`),
+  checked for each transition before its edges one by one; two output
+  edges of one transition to one place (`DuplicateOutputPlace`, since
+  0.4.0), after its bound edges.
 - `SnapshotEdge` or `SurveyEdge` (slice 22) from a `no_clone` place, both
   `SnapshotOfNoClonePlace`.
 - `restore_tokens_on_failure` on a transition with a consuming (`TakeEdge`,
@@ -2496,8 +2786,10 @@ Always:
 - A keyed edge that chooses by another input (`Clause::IsInput`, §8.3,
   2026-11-23), after the transition's other input checks: a filter naming
   two sources (`BoundToTwoSources`), a source the transition does not read
-  (`BoundSourceNotAnInput`), one that gives every token
-  (`BoundSourceGivesMany`), one that is bound itself or the edge's own place
+  (`BoundSourceNotAnInput`), a bound edge or a source on a place another
+  edge of the transition reads (`BoundPlaceShared`, since 0.4.0), one that
+  gives every token (`BoundSourceGivesMany`), one that is bound itself or
+  the edge's own place
   (`BoundSourceIsBound`), and a key either place does not declare
   (`BoundKeyNotDeclared`); the first offender in transition order, then
   edge order.
@@ -2518,10 +2810,15 @@ Opt-in:
   (`TakeWhereEdge` among them) and output edges; non-consuming edges
   excluded (they move no tokens), and since slice 22 `DrainEdge` too, which
   consumes but may take nothing, so the proof does not lean on it (§4.4).
-  Roots are transitions in declaration order; the first cycle found is
-  reported as
+  Since 2026-11-28 a subnet place is followed through: a port leads to
+  every port of the same subnet place that the subnet's own flow reaches,
+  at any depth, itself included when a way leads back to it, so a cycle
+  through a subnet's ports is found; one wholly inside a subnet is the
+  subnet's own. Roots are transitions in declaration order, then places;
+  the first cycle found is reported as
   `BuildError::Cycle { path }`, node names from the repeated node round to
-  itself (first == last, so it normally starts at a transition), joined with
+  itself (first == last, so it normally starts at a transition), a port as
+  `S/In` with `(inside subnet place "S")` between two ports, joined with
   `" -> "` in the message.
 - `b.assert_no_source_transitions()`: every transition has at least one
   `TakeEdge`, `TakeAllEdge` or `TakeWhereEdge` input, an edge that always
@@ -2543,7 +2840,7 @@ types, `Distribution::to` argument types.
 Thin functions over the stages, in `petritype::drivers`:
 
 ```rust
-pub enum Mode { Sequential, Concurrent }                       // Default: Sequential
+pub enum Mode { Sequential, Concurrent, ConcurrentWith { workers: NonZeroUsize } } // Default: Sequential
 pub struct Limits { pub stop_after_n_firings: Option<u64>, pub error_after_n_firings: Option<u64> }
 pub enum OnFailure { Stop, Disable, Continue }                 // Default: Stop
 pub struct RunSummary { pub quiesced: bool, pub fired_count: u64, pub failed_count: u64 }
@@ -2585,10 +2882,51 @@ drivers::run_indefinitely(&mut net, mode, tick: Duration, stop: &AtomicBool, on_
   and the wait on the completion channel *is* the sleep, so a completion is
   distributed the moment it lands. A Bevy system per frame is this loop with
   the frame as the tick. No `Limits`: an indefinite run has no firing budget.
-- `Mode::Concurrent` uses `std::thread::scope`, one thread per launch, and an
-  `mpsc` channel of `Completed`. It launches *everything* fireable in
-  declaration order, so the selector and `priority` shape sequential runs
-  only. Non-detachable firings run inline and trigger another sweep.
+- `Mode::Concurrent` uses `std::thread::scope` and an `mpsc` channel of
+  `Completed`. It launches everything fireable, each launch the net's own
+  choice (§6.4, since 2026-11-28; until then in declaration order, the
+  selector and `priority` shaping sequential runs only). Non-detachable
+  firings run inline, have one turn a sweep, and trigger another sweep.
+- **Added 2026-11-28: bounded threads** (proposal 3.1, first piece). The
+  bodies run on a lazy pool of scoped worker threads, `std` only, where
+  each launch had a thread of its own before: a job queue
+  (`Mutex<Receiver<Firing>>`) the workers take from in turn, and a count of
+  the jobs queued or running that a worker counts down as its body returns.
+  A worker is spawned only when a job is queued, that count is above the
+  workers there are (no worker is free) and the cap is not reached. The cap
+  is `available_parallelism()` (1 if unknown) for `Mode::Concurrent`, asked
+  the first time a worker is wanted, and `workers` for
+  `Mode::ConcurrentWith`, a variant of `Mode` rather than a field of
+  `Limits` because `run_indefinitely` takes no `Limits`. With a cap of 1
+  the bodies run one at a time, in launch order, off the driver's thread.
+  A thread that cannot be spawned is no error: the job waits for a worker
+  there is, and with none the body runs on the driver's thread. The
+  workers go home when the driver drops its end of the queue, so every one
+  is joined before the driver returns. The reusable `WorkerPool` with
+  `run_with_pool` (the proposal's second piece) is not built.
+- **Added 2026-11-28: a panic on the driver's thread.** A guard, priority,
+  selector, key extractor, `Clone` or `each_tick` that panics stops the
+  launching as an error does: the loop runs under `catch_unwind`, every
+  firing airborne is then waited for and distributed (a landing that
+  panics is kept and the others still land), and the first panic goes on
+  with `resume_unwind`. So a driver never leaves a transition in flight,
+  panic or not. `launch` puts the body back when stage one panics, and
+  `nested_scope` and `subnet_scope` index, lift and check on a panic as on
+  a return (§17).
+- **Added 0.4.0: stage one takes all its tokens or none.** It runs in
+  three passes: `plan` reads the net and runs every key extractor and
+  `Clone` stage one needs (the keys of each token to be taken, the clones
+  a restoring transition keeps, a snapshot's, a survey's, a parameter's),
+  changing nothing; `lift_and_mark` and `mark_lent` run `Nested::nets_mut`
+  on the tokens where they lie; `take` moves the tokens and runs none of
+  the net's own code. So a panic of any of it leaves every token where it
+  was, with its id and its index entries; inner events already read out
+  are emitted as `Net::lift` emits them for a token at rest, and the marks
+  lapse with the firing's dropped hold. No token is cloned for it. Past
+  that point is only an inline body's own aftermath, the extractor that
+  reindexes a token a mutating edge lent and the `nets_mut` that unmarks
+  its nets: a panic there loses what the firing took, which the body
+  already owns.
 - A driver never returns with anything in flight, on the error path
   included: it stops launching, then distributes every completion it is
   still owed. So `in_flight()` is empty whenever a driver returns, and a
@@ -2607,6 +2945,7 @@ drivers::run_indefinitely(&mut net, mode, tick: Duration, stop: &AtomicBool, on_
   inline, as `step_deep` would choose it, and sweeps again (an outer guard
   may read an inner marking). Inner nets never get threads of their own in
   this version, and the ordering guarantee is the sequential driver's.
+  (Superseded in 0.4.0: inner nets launch beside the outer net, below.)
 - Both limits count every launch, inner ones included, and the fuse blames
   the first fireable transition at any depth. `RunSummary.fired_count`
   counts inner successes as well as the outer net's: an inner firing is not
@@ -2620,9 +2959,10 @@ rule since 2026-11-21**:
 - `Mode::Sequential` is `step_deep` in a loop, in `run` and
   `run_indefinitely`, so it follows the stepping rules as they stand; the
   loop did not change.
-- `Mode::Concurrent` takes a deep step's three parts as `step_deep` does, a
-  launch sweep being the outer net's own turn. Each time round the loop is
-  one turn: an inline firing among the turns ahead of the outer net's (its
+- (Superseded in 0.4.0 by deep concurrent firing, below; the rules kept
+  their meaning.) `Mode::Concurrent` takes a deep step's three parts as
+  `step_deep` does, a launch sweep being the outer net's own turn. Each
+  time round the loop is one turn: an inline firing among the turns ahead of the outer net's (its
   inner-first places, then the ring's members before it), else the sweep
   (which, when it launches anything, makes the outer net the ring's cursor,
   through `Net::took_own_turn` inside the crate), else an inline firing
@@ -2640,7 +2980,187 @@ rule since 2026-11-21**:
   `Net::inner_turn`) and a flag for the interleaved policy.
 - The fuse blames what the round would try next: `first_fireable_deep`
   takes the parts in the same order, each member's own first one level
-  down.
+  down. In the concurrent driver (since 2026-11-28) each turn blames its
+  own: an inner turn the first fireable of its part (`first_fireable_in`),
+  a sweep the transition it chose, so a selector that declines attempts
+  nothing and trips nothing, as in Python's concurrent loops. Since 0.4.0
+  every net's sweep blames the transition it chose, at whatever depth.
+
+**Added 0.4.0: deep concurrent firing** (proposal 3.2, built to the
+owner's answers to the questions it left). Asked for by programs whose
+inner nets are many and alike, a game's characters or a room's machines,
+whose bodies queued behind one another on the driver's thread while the
+outer net's ran in parallel.
+
+- **A pass.** Each time round its loop `Mode::Concurrent` makes one pass
+  over the whole tree (`Pass::round` in `drivers.rs`): every net takes its
+  round, and a net's own turn in it is a launch sweep of its own
+  transitions (`Pass::own`), each launch its own choice by its selector,
+  priorities and tie-break, its round robin's cursor moving, a detachable
+  body handed to the call's one crew of workers, an inline one landed on
+  the spot. The cap is the call's, for every level. `run_indefinitely`
+  makes one pass a tick.
+- **The rules keep their meaning** (§6.6); what changes is that the nets a
+  band lets go go together. A net is *at rest* in a pass when its round
+  launched nothing at any depth and nothing the driver launched inside it
+  is in flight. Band 1: every inner-first member's round; the rest waits
+  until every one is at rest, so the net around them fires only with the
+  inside at rest, as in a deep step. Band 2, the ring, from where its
+  cursor says: the net's own sweep and every take-turns member's round,
+  each in every pass, none waiting for another to come to rest; the cursor
+  moves to each that launched, so a member that could not go this pass
+  goes first in the next. Band 3: every outer-first member's round, once
+  the ring is at rest and nothing of the net's own is in flight, which is
+  the rule's condition on what is in flight, unchanged. Passive members,
+  and nets a body holds, are never entered. A subnet held still by the
+  in-flight rule of §6.7 takes no turn and keeps its place in the ring.
+- **Addressing.** A detachable firing goes to the crew with its *way*, one
+  `deep::Level` per net on the way down: the `PathStep` a path names it by
+  and the net's nested id. It lands by it (`Net::within_way`): each level
+  found by its place, its token's id and its net's id, the completion
+  distributed in the net at the end, and on the way back up what each net
+  logged lifted into the net around it (`Event::Nested`, `Event::Subnet`)
+  and each token indexed again, as a deep step lifts a member's firing.
+  The ids tell apart two nets of one name in one token. `PathStep` itself
+  is unchanged; `FiringFailed` carries the ids beside its path
+  (`nested_ids`, as `InnerBody` already did), which is what
+  `OnFailure::Disable` follows in both modes.
+- **Busy tokens.** The crew counts, per net id, the firings airborne that
+  were launched in that net or below it. A token one of whose nets is
+  counted is busy (`deep::Busy`) until every one has landed. Every edge
+  that takes or changes a token (`EdgeKind::takes_or_changes`) minds it.
+  A take, a take-where, a mutate or a mutate-where edge passes it over as
+  if it were not in its place, through fireability, the pairing of bound
+  edges, shared places and stage one alike, and a transition that could
+  only use busy tokens is not fireable for now. A take-all or a drain
+  (`EdgeKind::takes_every`) takes every token of its place, as it is
+  drawn, so its transition is not fireable while any of them is busy, and
+  fires once they have all landed, holding the place meanwhile (below); a
+  drain on a place of busy tokens alone waits for them too. Read edges and
+  guards see the token as it stands, the firing in flight and all, as a
+  guard already sees its own net while one of its own firings is in
+  flight. The rule is what keeps a way good and keeps a net with a firing
+  in flight out of a body's hands. It is the concurrent driver's alone:
+  `fireable`, `launch`, the sequential driver and the protocol runner
+  choose with no busy set, and so as they always did.
+- **A take-all or a drain holds its place** (the owner's decision,
+  0.4.0). A transition that would be fireable but for the busy tokens of a
+  place it takes every token of, its switch, its guard and its other
+  inputs all letting it (`Net::waiting_with`), holds every place of nets
+  it takes every token of: the driver launches nothing new inside the nets
+  their tokens carry, at any depth, until the transition has had its turn.
+  What is in flight there lands, the place comes to rest, and the
+  transition is fireable and offered to the net's ordinary choice, its
+  selector, priorities and tie-break, among whatever else is fireable
+  then. A net sets what it holds at the end of each of its own sweeps
+  (`deep::Holds`, kept on the call's crew from pass to pass): a transition
+  that was offered in that sweep, chosen or not, holds nothing, and
+  neither does one that is no longer fireable otherwise (its guard false,
+  another input taken, switched off), so its hold lapses there and the
+  nets go on. A subnet's port, reached through its window, is held in the
+  subnet, whose round steps the nets there. Only those nets are held: the
+  net's other transitions, readers, guards and takes of that very place
+  among them, its other places and the nets inside them go on as before,
+  and a pass in which a hold kept nets from their round is never the one
+  that calls the net quiescent.
+- **Why the hold.** The firings that make a token busy are bodies on the
+  crew, which land without the waiting transition, so the wait ends once
+  they have landed, unless a token is made busy again before the net's own
+  sweep looks. Without the hold that was what happened to a take-all or a
+  drain on a take-turns or an outer-first place whose nets never come to
+  rest by themselves, two or more of them or one with two firings in
+  flight at once: one net landed and launched again while another was in
+  flight, a token of the place was busy at every sweep, and the transition
+  waited for as long as they ran, where the sequential driver fires it
+  between their steps. With the hold no token of its place becomes busy
+  again before its turn. An inner-first place needs none: the net's own
+  sweep comes only once every net there is at rest.
+- **What the hold leaves to the program.** A wait can still last for good
+  if a body in flight waits, by some means of the program's own, for the
+  waiting transition or for a launch the hold keeps back. A selector that
+  declines the transition when it is offered ends the hold as surely as
+  one that chooses it: the nets go on, and the next time the transition
+  waits they are held again. Under a selector that never chooses it, those
+  nets come to rest at each of its waits and go on after each offer,
+  slower but never stopped for good, and the pause is the selector's doing.
+  A net that leaves the tree while it holds a place sets nothing again;
+  what it held is dropped once such entries pile up (`Holds::prune`).
+- **Closed nets.** The firings of an inner net are its own moves (§6.9):
+  the pass and the landing reach the nets inside directly, as a deep step
+  does, not through `nested_scope` or `subnet_scope`, so no shield and no
+  body's mark stands in their way, and they launch and land with
+  `launch_for_driver` and `distribute_for_driver`. A body that drives a net
+  it holds with the concurrent driver gets the same deep firing in that
+  net, on its own call's crew.
+- **Failures and limits.** `stop_after_n_firings` and
+  `error_after_n_firings` count every launch at every level, checked before
+  each; the fuse blames the transition the net chose. A failure inside
+  carries its way as its path and ids; `Stop` keeps the first,
+  `Disable` switches the transition off where it is as it lands,
+  `Continue` counts it. A choice an inner net cannot make stops the run
+  under any `OnFailure`, its path naming the net. Whatever ends the loop,
+  an error or a panic of the net's own code at any depth, everything in
+  flight lands first (`Crew::land_all`). A panic inside a member's round,
+  or inside a deep step's member turn, goes on only once what that net had
+  logged is lifted into the net around it, at every level; a member's
+  events are lifted before its token is indexed again, so a key extractor
+  that panics loses none of them. Until then such events stayed in the
+  inner net's log.
+- **Waiting.** After a pass that landed a firing on the spot, at any
+  level, the driver passes again at once, taking what has landed meanwhile,
+  rather than waiting for a body in flight: the marking moved. Until 0.4.0
+  only an inner turn did so; an outer inline firing waited for a landing.
+- **A token moved under a firing in flight.** Only `each_tick` of
+  `run_indefinitely` could move one, since no edge chooses a busy token. A
+  completion whose way no longer leads to its net is landed in the net
+  found by its id anywhere in the tree (`Net::find_way`); a net no longer
+  in the tree has gone with its token, and the completion with it.
+- **Evidence.** `tests/deep_concurrent.rs`: sibling nets, subnets and nets
+  three levels down whose bodies wait for each other to start, under each
+  rule, on a deadline rather than a sleep; the cap holding across levels;
+  the busy rule for each kind of edge, readers and guards included, a
+  take-all and a drain waiting for every token of their place, a drain on
+  busy tokens alone among them; the hold, on take-turns and outer-first
+  places of two nets that never rest or of one with two firings in flight,
+  under each mode, on a clock and through a subnet's port, each ending with
+  the drain taking the whole place, where before the hold each concurrent
+  run went on to its firing limit; a drain
+  whose guard is false holding nothing, a hold lapsing when the guard
+  turns false or another transition takes the drain's other input, two
+  drains holding their own places while a third place's net goes on, the
+  held place read and taken from meanwhile, a selector that declines the
+  drain three times and one that never chooses it, and the limits and
+  failures while a place is held; each
+  rule's order beside the sequential driver's and no member starved, a
+  take-turns subnet and the net around it sharing a port included; a
+  confluent net three levels deep with ports, ending with the sequential
+  driver's marking and firings under caps 1, 2, 3, 8 and the default, and
+  sixty times more; two nets of one name under `Disable`; a failure, a
+  choice and a panic inside, each landing what is in flight; the limits;
+  and a body driving a net it holds. The protocol runner does its own
+  stepping, and its shared transcripts replay unchanged.
+- **Considered and not done.** Letting the net around inner-first nets
+  launch once their launches were handed over (the proposal's second
+  reading): the outer net would fire with the inside not at rest, which is
+  what inner first rules out. Holding busy tokens back from readers and
+  guards too: the owner kept them readable. Letting a take-all or a drain
+  take the tokens that are not busy and leave the others, as first built:
+  it took part of its place, which is not what it draws, and a drain on
+  busy tokens alone fired and took nothing. Holding, of a transition with
+  two such places, only the one whose tokens are busy: the nets of the
+  other could launch meanwhile and keep it waiting in turn. Keeping a hold
+  past an offer the selector declined, until the transition fires: a
+  selector that never chooses it would stop those nets for good. Limiting
+  a ring member's turn
+  to one launch, as a deep step's turn is one firing: every net would then
+  wait for every other's landings, which is what the change is for
+  avoiding; where two members take from one port the cursor makes them
+  alternate. A lock per inner net or per token: a launch takes its tokens
+  at once on the driver's thread, which is the whole of the conflict
+  resolution, as at the top. A switch back to the old inline stepping: not
+  built; `ConcurrentWith { workers: MIN }` keeps the bodies from
+  overlapping but not the old order, and `Sequential` keeps a fixed one.
+  The reusable `WorkerPool` (proposal 3.1, second piece) is still not built.
 
 ## 14. Crate layout
 
@@ -2653,7 +3173,7 @@ Cargo workspace, edition 2024, MSRV = current stable minus two (must be
 | `petritype-derive` | `#[derive(Routed)]` on enums (variants) and structs (leaf); `#[derive(Inputs)]` and `#[derive(Outputs)]` on structs (slice 23, §4.4) | `syn` 2, `quote`, `proc-macro2`; re-exported by `petritype` unconditionally as `petritype::Routed`, `petritype::Inputs` and `petritype::Outputs` |
 | `petritype-dot` | Graphviz DOT text of a net and its marking (**done, slice 12**) | `petritype` only |
 | `petritype-layout` | the layered layout: ranks, orders, groups open in frames or closed as one box each (§6.8), ghosted hubs, and subnet places as one box each holding its ports' circles (§6.7), in its own `Point` and `Bounds` (moved out of `petritype-bevy` 2026-10-19, so a renderer that is not Bevy can share it) | `petritype` only |
-| `petritype-activity` | the activity model behind the viewer's thumbnail: a pulse and an ember per place and transition, decaying on wall time or on firings, with flow, failure and a base glow from the token count; `ActivitySettings`; the `Grid` of cells from a whole-net layout; the `Thumbnail`'s colour per cell and its SVG (2026-10-19; a record of activity over time comes later) | `petritype`, `petritype-layout`; feature `serde` adds `serde`, `serde_json` |
+| `petritype-activity` | the activity model behind the viewer's thumbnail: a pulse and an ember per place and transition, decaying on wall time or on firings, with flow, failure and a base glow from the token count; `ActivitySettings`; the `Grid` of cells from a whole-net layout; the `Thumbnail`'s colour per cell and its SVG (2026-10-19; since then a record of activity over time and an event log, each with a player) | `petritype`, `petritype-layout`; feature `serde` adds `serde`, `serde_json` |
 | `petritype-bevy` | `NetRes`, mirror systems, token entities, in-flight highlighting, task-pool driver | pins one Bevy version |
 | `petritype-tokio` | only if a need appears | |
 | `petritype-runner` | turns a user's binary into a net process speaking the shared protocol (**done, slice 14**, §19.3) | `petritype` with `serde`, `serde_json`, `rustix` on Unix |
@@ -2707,7 +3227,9 @@ restores it, so it needs `serde`.
   last firing via `Highlight::from_event(&Event)`, dashed for `SnapshotEdge`,
   dotted-both-ends for `MutateEdge`) with four additions: disabled
   transitions grey and dashed, `*` on a `TakeAllEdge`, return positions numbered on a
-  transition with more than one output, red for a `Failed` event. A
+  transition with more than one output, red for a `Failed` event. Since
+  0.4.0 the places of a net declared open are dashed, a port and a group's
+  frame dotted, in both renderers (§6.9). A
   highlighted non-consuming edge keeps its shape and only changes colour. A subnet
   place is one `Mrecord` box, its ports cells of it (§6.7).
 - The examples live in `petritype/examples/` as cargo examples with
@@ -2853,16 +3375,17 @@ effects, which the viewer attributes; 232 tests with `http`.
   and a "descend" view in the Bevy adapter are phases 3 and 4 of the
   proposal.
 - Stranded in-flight transitions: a `Firing`/`Completed` dropped without
-  being distributed, or a rejected `distribute` (`ForeignFiring`,
-  `NotInFlight`, which consume their argument), loses the body for good.
-  Panics no longer strand (caught since slice 7), and the drivers (slice 9)
-  never drop one: they drain everything airborne before returning, on the
-  error path too. The misuse rejections could hand the value back.
-  **Decided 2026-09-20: deferred, and when it comes it is additive**: a
-  second method `try_distribute(done) -> Result<(), (NetError, Completed)>`
-  beside the plain `distribute`, so net authors and ordinary drivers keep
-  the simple shape and a hand-written driver that juggles several nets opts
-  in. Add it when the Bevy adapter or a user asks.
+  being distributed loses the body for good. Panics no longer strand
+  (caught since slice 7), and the drivers (slice 9) never drop one: they
+  drain everything airborne before returning, on the error path too, and
+  since 2026-11-28 on a panic of the net's own code on the driver's thread
+  as well; a launch whose stage one panics puts the body back, and since
+  0.4.0 takes none of its tokens (§13). **Done 0.4.0**: a rejected
+  `distribute` (`HeldByBody`, `ForeignFiring`, `NotInFlight`) hands the
+  `Completed` back in its `DistributeError` (§6.2). It changed
+  `distribute`'s error type rather than adding the `try_distribute`
+  decided 2026-09-20: one method keeps one shape, and `?` into a
+  `NetError` reads as before.
 - Interop follow-ups (§19), deferred until a user asks, except the first,
   **done 2026-10-03**: explicit `PlaceId`/`TransitionId`/`TokenId`
   constructors for a remote mirror (§4.1), instead of going through their
@@ -3195,7 +3718,7 @@ The decisions that shape it, all of 2026-10-03:
 | keyed edges, `kind: "take_where"` / `"mutate_where"` with `filter` (§5.1, §13.5) | `EdgeKind::{TakeWhere, MutateWhere}` and `EdgeInfo::Input::filter` (slice 19), the filter's `places` mapped from ids to names by the runner (slice 20; sent without `kind` before it) |
 | edges an empty place satisfies, `kind: "drain"` / `"survey"` (§5.1) | `EdgeKind::{Drain, Survey}` (slice 22, §4.4, §19.3.14), no `filter` |
 | `topology.places[].nested`, `stepping` (§5.1, §12.2, §12.3) | `TopologyPlace::nested`, written only when true; `TopologyPlace::stepping` as `protocol::Stepping`, written for every place that holds nets, the default included (protocol version 2, §19.3.16; version 1 had `passive`, written when the rule was `Stepping::Passive`) |
-| `path`, `nested_id` (§12.1) | a path is a list of steps (`protocol::PathStep`, since protocol version 2), read by `protocol::parse_path` and resolved one step at a time through `net.nested(place, token)`; a nested id is the inner net's `NetId` printed with its `Display`, found by walking every nested place at every depth; mutable reach (`inject`) through `nested_scope` at each level (§19.3.15) |
+| `path`, `nested_id` (§12.1) | a path is a list of steps (`protocol::PathStep`, since protocol version 2), read by `protocol::parse_path` and resolved one step at a time through `net.nested(place, token)`; a nested id is the inner net's `NetId` printed with its `Display`, read back as a `u64` in that spelling alone (since 0.4.0; compared as text until then) and found by walking every nested place at every depth; mutable reach (`inject`) through `nested_scope` at each level (§19.3.15) |
 | a token's `nets` (§12.2) | `net.nested(place, token)`: each net's name, `id()`, its path (the path of the net the token is in and one step more), `template()`, and the sum of its own places' counts, ports included and the places it has for its subnets' ports not (`translate::own_count`, §19.3.17) |
 | a subnet place, its `ports`, `subnet` and `port` (§5.1, §12.7) | `TopologyPlace::subnet`; its `type_name` is `net.subnet(place)?.template()`, or `""`; its `ports` are the subnet's own places with `TopologyPlace::port`; the places the net has for them (`TopologyPlace::port_of`, its windows) are not listed, and an edge on one names `place` and `port`; `port: true` only in a subnet's own topology (§19.3.17) |
 | `topology.groups`, a place's, subnet place's and transition's `group` (§5.1) | `Topology::groups`, `TopologyPlace::group` and `TopologyTransition::group` of the net read, each written only when set; a port in a subnet place's `ports` carries none (§6.8, §19.3.18) |
@@ -3223,7 +3746,7 @@ The decisions that shape it, all of 2026-10-03:
 | `inject {place, token}` | `apply_json` of `JsonCommand::Extend` with one token; the new id is read off the `Added` event. Needs a `serializable` place, else `not_serializable`. Into an inner net through `nested_scope` at each level, answered with that net's version, `path` and `nested_id` (slice 21) |
 | `enable`, `disable` | `net.enable(t)`, `net.disable(t)` (`Toggled`) |
 | `set_param {param, value}` | `JsonCommand::SetParam`; `transition` ignored; `invalid_params` for a name the net has no parameter under (slice 17; `unsupported` before), `unsupported` for a parameter with no wire name |
-| `get_token {id}` | `net.json()` gives `kind: "json"`; otherwise `debug()` gives `kind: "text"`, untruncated |
+| `get_token {id}` | `net.json()` gives `kind: "json"`; otherwise, or for a token with no JSON form (a NaN or an infinity in it), `debug()` gives `kind: "text"`, untruncated |
 | `reset` | rebuild from the same factory and parameters |
 
 The runner owns the `Net` on one thread and is its only writer, which is
@@ -3419,7 +3942,7 @@ protocol's §13 puts on a token entry as `keys: {name: value}` (from
 `TopologyPlace::key_names`), and the runner writes them since slice 20
 (§19.3.12). A transition's `detail` is
 `{params, detachable}`; `priority` is `priority_of` behind `catch_unwind`
-and omitted if the closure panicked.
+and omitted if the closure panicked, returned NaN or an infinity.
 
 #### 19.3.5 The firing cycle
 
@@ -3468,7 +3991,9 @@ Input::Completed:    distribute(done) -> Distributed or Failed written;
   2026-11-22, below).
 - `heartbeat` (default every 30 s) is written by a thread of its own, not
   by `Owner`, so it keeps going while an inline body has the owner blocked,
-  which is exactly when a host most wants it. The owner records the
+  which is exactly when a host most wants it. Its `marking_version` is
+  stamped by the writer, since only the writer knows which lines went out
+  before it (since 2026-11-28). The owner records the
   airborne or inline transition and its start time in a shared status cell
   before any launch and clears it on landing. A firing inside an inner net
   runs inside the deep step, so the owner steps with
@@ -3654,8 +4179,10 @@ runner change.
   (2026-11-21, §19.3.15) it was text: the entry's name, then per level the
   place, `#` and the token id, and the net's name in the token, joined with
   `/`; since then it is a list of steps, `[]` the outer net. A
-  nested id is the inner net's `NetId` as its `Display` prints it, found by
-  walking every nested place, passive ones included, at every depth. No
+  nested id is the inner net's `NetId` as its `Display` prints it, read
+  back as a `u64` in that spelling alone (since 0.4.0), so `"07"` names no
+  net, and found by walking every nested place, passive ones included, at
+  every depth. No
   match is `unknown_net`, and the message names the step that failed (by
   its index from 0) or the id. `step`,
   `start`, `stop`, `reset`, `enable`, `disable` and `set_param` act on the
@@ -3677,7 +4204,16 @@ runner change.
   Dropped eagerly, at the first landing or inner firing after which its id
   no longer resolves: one walk of the nested places per landing, never
   while a body holds a token, so a vehicle in transit keeps its record and
-  its version. `load` and `reset` drop them all.
+  its version. Since 2026-11-28 the walk that makes records for new nets
+  and drops those of nets gone is one walk, and a step, a landing or an
+  inject takes it only when its events, at some depth, put, took, added,
+  removed or changed a token of a place that holds nets; a firing that
+  moves plain tokens inside an inner net walks nothing. A press and the
+  host program's changes walk every time, since their code can put a net
+  in place of another through `nested_scope` and log nothing of it. An
+  inner net whose fireable set is compared is looked for by the path its
+  record last saw it at, and by a walk only when that path no longer leads
+  to it. `load` and `reset` drop them all.
 - **Versions are per net.** A `nested` line carries the outer
   `marking_version`, unchanged; the inner net's is inside its `event`.
   `nets[].count` is a hint read with the outer state.
@@ -3947,8 +4483,9 @@ here by the sections they amend) and B (the engine policies, §6.1 and
   it was not. A net a body
   built arrived through its lifted events, its record made with an empty
   set, and its first `fireable` announced the baseline. `land`, and the
-  report of an inner firing, now call `Loaded::know_new` before the flush,
-  so the set is taken there, silently; the test's `hatchery` has a body
+  report of an inner firing, now call `Loaded::know_new` before the flush
+  (since 2026-11-28 only when the flush's events touch a place that holds
+  nets), so the set is taken there, silently; the test's `hatchery` has a body
   build a truck and its bin. No transcript has such a firing.
 - **A8, a parameter value decodes by its declared type** (§6.4, §11):
   `set_param` goes through the decoder registered for the wire name
@@ -4435,12 +4972,17 @@ new shape shown as declared (PROTOCOL.md §13.2).
   net is never one of its ports, so an `inject` with `port` beside `place`
   into a closed net's subnet place is `closed_net` too. An older client
   sees a code it does not know, which PROTOCOL.md §3 tells it to treat as a
-  failed request. The other requests that change a net (`enable`,
-  `disable`, `set_param`, `press`) take no path and act on the loaded net
-  as the program would, so the rule refuses none of them.
+  failed request. Since 2026-11-28 an `inject` by `path` or `nested_id`
+  into a net inside a closed net is `closed_net` at any place, a port
+  included: `descend_mut` reaches it through `nested_scope` and
+  `subnet_scope`, which shield it, so the runner needs no check of its
+  own. `unknown_place` and `invalid_token` are answered first. The other
+  requests that change a net (`enable`, `disable`, `set_param`, `press`)
+  are knobs, which the rule leaves to the program and the runner.
 - **`open`.** `protocol::Topology::open`, written as `open: true` only for
   a net whose definition declares it open, from `Net::is_open`. A reader
-  knows a net is closed when its topology shows a `port` and no `open`.
+  knows a net is closed when its topology shows no `open` (since
+  2026-11-28; from 2026-11-23, a `port` and no `open`).
   `protocol::Topology` gained a field, so code that builds one by struct
   literal adds `open: false`. The `fireable`, `launched` and `failed`
   reporting is unchanged: a body's refusal is an ordinary `failed` firing

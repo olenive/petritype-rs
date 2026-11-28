@@ -124,10 +124,16 @@ pub struct TransitionActivity {
 /// The ids and names of its places and transitions, from the [`Topology`]
 /// it was built from, and nothing else: it holds no reference to the net.
 /// An event naming a node it does not know is ignored, so a net whose
-/// topology changed wants a new `Activity`.
+/// topology changed wants a new `Activity`. Its memory follows the nodes it
+/// knows, whatever their ids: a model of a few nodes with large ids, read
+/// from a record's grid, is as small as their number.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Activity {
     settings: ActivitySettings,
+    /// Which slot of the tables below holds each place.
+    place_slots: Slots,
+    /// Which slot of the tables below holds each transition.
+    transition_slots: Slots,
     place_names: Vec<String>,
     transition_names: Vec<String>,
     places: Vec<PlaceActivity>,
@@ -144,8 +150,53 @@ pub struct Activity {
     launch_taken: Vec<Vec<(PlaceId, TokenId)>>,
     /// What the model applied since the account was last taken. Each
     /// entry's count and in-flight state are read off the model when it is
-    /// taken.
-    account: Delta,
+    /// taken. `None` for a model a replay or a player folds, which nobody
+    /// takes an account of.
+    account: Option<Delta>,
+}
+
+/// Which slot of a model's tables holds each node: the ids it was given,
+/// in order. A net's ids run from 0 with no gap, which is the common case
+/// and finds a slot with no search.
+#[derive(Debug, Clone, PartialEq)]
+enum Slots {
+    /// The ids `0..n`, each in the slot of its own index.
+    Dense(usize),
+    /// Any other ids, in order, each in the slot of its place among them.
+    Sparse(Vec<u32>),
+}
+
+impl Slots {
+    /// The slots of `ids`, which are in order with no repeat.
+    fn of(ids: Vec<u32>) -> Slots {
+        if ids
+            .iter()
+            .enumerate()
+            .all(|(slot, &id)| id as usize == slot)
+        {
+            Slots::Dense(ids.len())
+        } else {
+            Slots::Sparse(ids)
+        }
+    }
+
+    /// The slot of the node of index `index`, or `None` for one not given.
+    fn slot(&self, index: u32) -> Option<usize> {
+        match self {
+            Slots::Dense(len) => ((index as usize) < *len).then_some(index as usize),
+            Slots::Sparse(ids) => ids.binary_search(&index).ok(),
+        }
+    }
+
+    /// The index of the node in `slot`.
+    fn index(&self, slot: usize) -> u32 {
+        match self {
+            // A dense table of more than `u32::MAX` slots cannot be made:
+            // its ids are `u32`s.
+            Slots::Dense(_) => slot as u32,
+            Slots::Sparse(ids) => ids[slot],
+        }
+    }
 }
 
 impl Activity {
@@ -169,18 +220,25 @@ impl Activity {
     /// [`new`](Activity::new) reads off a [`Topology`], for a feed that has
     /// none, such as a mirror of a net in another process.
     ///
-    /// An id is an index, so the model makes room up to the largest id
-    /// given; a gap below it is a node with no name, which nothing names.
+    /// The model knows exactly the nodes given, in any order, and room is
+    /// made for those alone, so a few nodes with large ids, or with gaps
+    /// between their ids, cost no more than their number. An id given twice
+    /// takes the later name. An id not given is a node the model does not
+    /// know (since 2026-11-28; until then the model made room up to the
+    /// largest id given, and knew every id below it).
     pub fn named(
         places: impl IntoIterator<Item = (PlaceId, String)>,
         transitions: impl IntoIterator<Item = (TransitionId, String)>,
         settings: ActivitySettings,
     ) -> Activity {
-        let place_names = by_index(places.into_iter().map(|(id, name)| (id.index(), name)));
-        let transition_names =
+        let (place_slots, place_names) =
+            by_index(places.into_iter().map(|(id, name)| (id.index(), name)));
+        let (transition_slots, transition_names) =
             by_index(transitions.into_iter().map(|(id, name)| (id.index(), name)));
         Activity {
             settings,
+            place_slots,
+            transition_slots,
             places: vec![PlaceActivity::default(); place_names.len()],
             transitions: vec![TransitionActivity::default(); transition_names.len()],
             launch_taken: vec![Vec::new(); transition_names.len()],
@@ -188,8 +246,16 @@ impl Activity {
             transition_names,
             fade: 1.0,
             firings: 0,
-            account: Delta::default(),
+            account: Some(Delta::default()),
         }
+    }
+
+    /// The same model, keeping no account: what a replay or a player folds,
+    /// which nobody takes a delta of, so that a fold does not build one up
+    /// and a checkpoint does not copy it.
+    pub(crate) fn without_account(mut self) -> Activity {
+        self.account = None;
+        self
     }
 
     /// An activity for `net` as it stands: its topology, each place's count
@@ -339,7 +405,8 @@ impl Activity {
     fn on_launched(&mut self, transition: TransitionId, consumed: &[(PlaceId, TokenId)]) {
         self.launched(transition);
         self.move_tokens(consumed, &[]);
-        if let Some(held) = self.launch_taken.get_mut(transition.index() as usize) {
+        if let Some(slot) = self.transition_slot(transition) {
+            let held = &mut self.launch_taken[slot];
             held.clear();
             held.extend_from_slice(consumed);
         }
@@ -465,7 +532,7 @@ impl Activity {
     /// The standing count of a place, as read from the net or the wire. No
     /// hit: the base glow follows the count at once.
     pub fn set_count(&mut self, place: PlaceId, total: usize) {
-        if let Some(p) = self.places.get_mut(place.index() as usize)
+        if let Some(p) = self.place_mut(place)
             && p.count != total
         {
             p.count = total;
@@ -498,17 +565,13 @@ impl Activity {
     pub fn tick(&mut self, dt: Duration) {
         let seconds = dt.as_secs_f32();
         let ms = dt.as_secs_f64() * 1000.0;
-        if ms > 0.0 {
-            for (index, t) in self.transitions.iter().enumerate() {
-                if t.in_flight
-                    && let Ok(index) = u32::try_from(index)
-                {
-                    let e = self
-                        .account
-                        .transitions
-                        .entry(TransitionId::new(index))
-                        .or_default();
-                    e.in_flight_ms += ms;
+        if ms > 0.0
+            && let Some(account) = &mut self.account
+        {
+            for (slot, t) in self.transitions.iter().enumerate() {
+                if t.in_flight {
+                    let id = TransitionId::new(self.transition_slots.index(slot));
+                    account.transitions.entry(id).or_default().in_flight_ms += ms;
                 }
             }
         }
@@ -526,9 +589,14 @@ impl Activity {
     /// What the model applied since the account was last taken, handed
     /// over, and a fresh account started: the [`Delta`] a recorder bins.
     /// Each place in it carries its count as it stands now and each
-    /// transition its in-flight state.
+    /// transition its in-flight state. A model a replay or a player folds
+    /// keeps no account, and hands over an empty delta.
     pub fn take_delta(&mut self) -> Delta {
-        let mut delta = std::mem::take(&mut self.account);
+        let mut delta = self
+            .account
+            .as_mut()
+            .map(std::mem::take)
+            .unwrap_or_default();
         for (place, e) in &mut delta.places {
             if let Some(p) = self.place(*place) {
                 e.count = p.count;
@@ -558,21 +626,21 @@ impl Activity {
     /// takes it as its base, so that a replay of the log starts from the
     /// counts that stood.
     pub fn standing_state(&self) -> Standing {
-        let ids = |index: usize| u32::try_from(index).ok();
+        // The slots are in the order of their ids, so the lists are too.
         Standing {
             counts: self
                 .places
                 .iter()
                 .enumerate()
                 .filter(|(_, p)| p.count > 0)
-                .filter_map(|(index, p)| Some((PlaceId::new(ids(index)?), p.count)))
+                .map(|(slot, p)| (PlaceId::new(self.place_slots.index(slot)), p.count))
                 .collect(),
             in_flight: self
                 .transitions
                 .iter()
                 .enumerate()
                 .filter(|(_, t)| t.in_flight)
-                .filter_map(|(index, _)| Some(TransitionId::new(ids(index)?)))
+                .map(|(slot, _)| TransitionId::new(self.transition_slots.index(slot)))
                 .collect(),
         }
     }
@@ -594,9 +662,11 @@ impl Activity {
     /// account takes what was applied, as it does for any other feed.
     pub fn apply_delta(&mut self, delta: &Delta) {
         if delta.firings > 0 {
-            self.firings += u64::from(delta.firings);
+            self.firings = self.firings.saturating_add(u64::from(delta.firings));
             self.decay(Clock::Firings, delta.firings as f32);
-            self.account.firings = self.account.firings.saturating_add(delta.firings);
+            if let Some(account) = &mut self.account {
+                account.firings = account.firings.saturating_add(delta.firings);
+            }
         }
         let distribute = self.settings.distribute_hit;
         for (&transition, e) in &delta.transitions {
@@ -644,13 +714,14 @@ impl Activity {
     /// A place's levels, flow and count, or `None` for a place the model
     /// does not know.
     pub fn place(&self, place: PlaceId) -> Option<PlaceActivity> {
-        self.places.get(place.index() as usize).copied()
+        self.place_slot(place).map(|slot| self.places[slot])
     }
 
     /// A transition's levels, failure and in-flight state, or `None` for a
     /// transition the model does not know.
     pub fn transition(&self, transition: TransitionId) -> Option<TransitionActivity> {
-        self.transitions.get(transition.index() as usize).copied()
+        self.transition_slot(transition)
+            .map(|slot| self.transitions[slot])
     }
 
     /// A place's base glow, from its count by the
@@ -709,58 +780,77 @@ impl Activity {
 
     /// A place's name, from the topology the model was built from.
     pub fn place_name(&self, place: PlaceId) -> Option<&str> {
-        self.place_names
-            .get(place.index() as usize)
-            .map(String::as_str)
+        self.place_slot(place)
+            .map(|slot| self.place_names[slot].as_str())
     }
 
     /// A transition's name, from the topology the model was built from.
     pub fn transition_name(&self, transition: TransitionId) -> Option<&str> {
-        self.transition_names
-            .get(transition.index() as usize)
-            .map(String::as_str)
+        self.transition_slot(transition)
+            .map(|slot| self.transition_names[slot].as_str())
     }
 
     /// The place with this name, for a feed that knows nodes by name.
     pub fn place_named(&self, name: &str) -> Option<PlaceId> {
-        let index = self.place_names.iter().position(|n| n == name)?;
-        Some(PlaceId::new(u32::try_from(index).ok()?))
+        let slot = self.place_names.iter().position(|n| n == name)?;
+        Some(PlaceId::new(self.place_slots.index(slot)))
     }
 
     /// The transition with this name, for a feed that knows nodes by name.
     pub fn transition_named(&self, name: &str) -> Option<TransitionId> {
-        let index = self.transition_names.iter().position(|n| n == name)?;
-        Some(TransitionId::new(u32::try_from(index).ok()?))
+        let slot = self.transition_names.iter().position(|n| n == name)?;
+        Some(TransitionId::new(self.transition_slots.index(slot)))
     }
 
     // ----- inside -----------------------------------------------------------
 
     fn transition_mut(&mut self, transition: TransitionId) -> Option<&mut TransitionActivity> {
-        self.transitions.get_mut(transition.index() as usize)
+        let slot = self.transition_slot(transition)?;
+        Some(&mut self.transitions[slot])
     }
 
-    /// A known place's entry in the account, made if it has none.
+    fn place_mut(&mut self, place: PlaceId) -> Option<&mut PlaceActivity> {
+        let slot = self.place_slot(place)?;
+        Some(&mut self.places[slot])
+    }
+
+    /// The slot of a place the model knows.
+    fn place_slot(&self, place: PlaceId) -> Option<usize> {
+        self.place_slots.slot(place.index())
+    }
+
+    /// The slot of a transition the model knows.
+    fn transition_slot(&self, transition: TransitionId) -> Option<usize> {
+        self.transition_slots.slot(transition.index())
+    }
+
+    /// A known place's entry in the account, made if it has none; `None`
+    /// for a place the model does not know, or a model with no account.
     fn note_place(&mut self, place: PlaceId) -> Option<&mut PlaceDelta> {
-        if (place.index() as usize) < self.places.len() {
-            Some(self.account.places.entry(place).or_default())
-        } else {
-            None
-        }
+        self.place_slot(place)?;
+        Some(self.account.as_mut()?.places.entry(place).or_default())
     }
 
-    /// A known transition's entry in the account, made if it has none.
+    /// A known transition's entry in the account, made if it has none;
+    /// `None` for a transition the model does not know, or a model with no
+    /// account.
     fn note_transition(&mut self, transition: TransitionId) -> Option<&mut TransitionDelta> {
-        if (transition.index() as usize) < self.transitions.len() {
-            Some(self.account.transitions.entry(transition).or_default())
-        } else {
-            None
-        }
+        self.transition_slot(transition)?;
+        Some(
+            self.account
+                .as_mut()?
+                .transitions
+                .entry(transition)
+                .or_default(),
+        )
     }
 
     /// The staleness dim lifted by an end of a firing, and the account told.
     fn lift(&mut self) {
         self.fade = 1.0;
-        self.account.lifted = true;
+        if let Some(account) = &mut self.account {
+            account.lifted = true;
+        }
     }
 
     /// A hit of `fraction` times each layer's jump on a transition. A pulse
@@ -781,7 +871,9 @@ impl Activity {
     /// and the staleness dim is lifted.
     fn firing(&mut self) {
         self.firings += 1;
-        self.account.firings = self.account.firings.saturating_add(1);
+        if let Some(account) = &mut self.account {
+            account.firings = account.firings.saturating_add(1);
+        }
         self.lift();
         self.decay(Clock::Firings, 1.0);
     }
@@ -812,10 +904,10 @@ impl Activity {
     /// What a transition's launch took, no longer held: empty for one not
     /// in flight, or one whose launch the model did not see.
     fn take_launch(&mut self, transition: TransitionId) -> Vec<(PlaceId, TokenId)> {
-        self.launch_taken
-            .get_mut(transition.index() as usize)
-            .map(std::mem::take)
-            .unwrap_or_default()
+        match self.transition_slot(transition) {
+            Some(slot) => std::mem::take(&mut self.launch_taken[slot]),
+            None => Vec::new(),
+        }
     }
 
     /// The tokens of one event leave and land: each place touched once, with
@@ -859,7 +951,7 @@ impl Activity {
             return;
         }
         let (pulse, ember) = (self.settings.pulse.jump, self.settings.ember.jump);
-        if let Some(p) = self.places.get_mut(place.index() as usize) {
+        if let Some(p) = self.place_mut(place) {
             p.pulse = raise(p.pulse, pulse_hits as f32 * pulse);
             p.ember = raise(p.ember, ember_hits as f32 * ember);
         }
@@ -880,7 +972,7 @@ impl Activity {
     /// A place's count after it lost `taken` tokens and gained `added`,
     /// never below 0.
     fn recount(&mut self, place: PlaceId, taken: usize, added: usize) {
-        if let Some(p) = self.places.get_mut(place.index() as usize) {
+        if let Some(p) = self.place_mut(place) {
             let count = p.count.saturating_sub(taken).saturating_add(added);
             if count != p.count {
                 p.count = count;
@@ -903,7 +995,7 @@ impl Activity {
             return;
         }
         let gain = self.settings.flow_gain;
-        if let Some(p) = self.places.get_mut(place.index() as usize) {
+        if let Some(p) = self.place_mut(place) {
             p.flow = (p.flow + balance as f32 * gain).clamp(-1.0, 1.0);
         }
         if let Some(e) = self.note_place(place) {
@@ -935,18 +1027,23 @@ fn tally(
     tally
 }
 
-/// Names by index: each one at the index it comes with, and an empty name
-/// in any gap below the largest.
-fn by_index(named: impl Iterator<Item = (u32, String)>) -> Vec<String> {
-    let mut names: Vec<String> = Vec::new();
+/// The slots of the nodes given by index, and their names in slot order:
+/// each index once, with the last name it came with.
+fn by_index(named: impl Iterator<Item = (u32, String)>) -> (Slots, Vec<String>) {
+    let mut named: Vec<(u32, String)> = named.collect();
+    // Stable, so that of two names for one index the later stays later.
+    named.sort_by_key(|(index, _)| *index);
+    let mut ids: Vec<u32> = Vec::with_capacity(named.len());
+    let mut names: Vec<String> = Vec::with_capacity(named.len());
     for (index, name) in named {
-        let index = index as usize;
-        if names.len() <= index {
-            names.resize(index + 1, String::new());
+        if ids.last() == Some(&index) {
+            *names.last_mut().expect("a name for each id") = name;
+        } else {
+            ids.push(index);
+            names.push(name);
         }
-        names[index] = name;
     }
-    names
+    (Slots::of(ids), names)
 }
 
 /// A level raised by `by` and clamped to 0 to 1.
@@ -1292,16 +1389,54 @@ mod tests {
             ActivitySettings::default(),
         );
         assert_eq!(named, activity(ActivitySettings::default()));
-        // Out of order, with a gap: each name at its id.
+        // Out of order, with a gap: each name at its id, and the gap no
+        // node the model knows.
         let a = Activity::named(
             [(OUT, "Out".to_owned()), (IN, "In".to_owned())],
             [(OTHER, "Other".to_owned())],
             ActivitySettings::default(),
         );
-        assert_eq!((a.place_count(), a.transition_count()), (2, 2));
+        assert_eq!((a.place_count(), a.transition_count()), (2, 1));
         assert_eq!(a.place_named("Out"), Some(OUT));
         assert_eq!(a.transition_name(OTHER), Some("Other"));
-        assert_eq!(a.transition_name(GO), Some(""));
+        assert_eq!(a.transition_name(GO), None);
+        assert_eq!(a.transition(GO), None);
+        // An id given twice takes the later name.
+        let twice = Activity::named(
+            [(IN, "First".to_owned()), (IN, "Second".to_owned())],
+            [],
+            ActivitySettings::default(),
+        );
+        assert_eq!(twice.place_count(), 1);
+        assert_eq!(twice.place_name(IN), Some("Second"));
+    }
+
+    #[test]
+    fn a_model_of_a_few_nodes_with_large_ids_is_as_small_as_their_number() {
+        // As a record's grid read back can name them.
+        let far = PlaceId::new(1_000_000);
+        let near = PlaceId::new(7);
+        let late = TransitionId::new(3_000_000);
+        let mut a = Activity::named(
+            [(far, "Far".to_owned()), (near, "Near".to_owned())],
+            [(late, "Late".to_owned())],
+            ActivitySettings::default(),
+        );
+        assert_eq!((a.place_count(), a.transition_count()), (2, 1));
+        assert_eq!(a.place(PlaceId::new(8)), None, "an id between is unknown");
+        assert_eq!(a.place_named("Far"), Some(far));
+        assert_eq!(a.transition_named("Late"), Some(late));
+        // Every feed reaches them by their ids.
+        a.added(far, 2);
+        a.launched(late);
+        a.tick(ms(50));
+        assert_eq!(a.place(far).map(|p| p.count), Some(2));
+        assert!(a.transition(late).is_some_and(|t| t.in_flight));
+        assert_eq!(a.standing_state(), Standing::new([(far, 2)], [late]));
+        let delta = a.take_delta();
+        assert_eq!(delta.places[&far].count, 2);
+        assert_eq!(delta.transitions[&late].in_flight_ms, 50.0);
+        assert!(delta.transitions[&late].in_flight);
     }
 
     #[test]

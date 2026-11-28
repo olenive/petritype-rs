@@ -89,7 +89,8 @@
          "type_name": "<label>",
          "serializable": true,
          "nested": true,
-         "stepping": "outer_first"
+         "stepping": "outer_first",
+         "port": true
         },
         {
          "name": "Central",
@@ -253,55 +254,84 @@
           "place": "In Transit",
           "transition": "Arrive",
           "direction": "in",
-          "kind": "take"
+          "kind": "take",
+          "reaches": [
+           "Doors Closed",
+           "Doors Open",
+           "Announcements"
+          ]
          },
          {
           "place": "Depot",
           "transition": "Board Depot",
           "direction": "in",
-          "kind": "mutate"
+          "kind": "mutate",
+          "reaches": [
+           "Door"
+          ]
          },
          {
           "place": "Central",
           "transition": "Board Central",
           "direction": "in",
-          "kind": "mutate"
+          "kind": "mutate",
+          "reaches": [
+           "Door"
+          ]
          },
          {
           "place": "Harbour",
           "transition": "Board Harbour",
           "direction": "in",
-          "kind": "mutate"
+          "kind": "mutate",
+          "reaches": [
+           "Door"
+          ]
          },
          {
           "place": "Airport",
           "transition": "Board Airport",
           "direction": "in",
-          "kind": "mutate"
+          "kind": "mutate",
+          "reaches": [
+           "Door"
+          ]
          },
          {
           "place": "Depot",
           "transition": "Alight Depot",
           "direction": "in",
-          "kind": "mutate"
+          "kind": "mutate",
+          "reaches": [
+           "Door"
+          ]
          },
          {
           "place": "Central",
           "transition": "Alight Central",
           "direction": "in",
-          "kind": "mutate"
+          "kind": "mutate",
+          "reaches": [
+           "Door"
+          ]
          },
          {
           "place": "Harbour",
           "transition": "Alight Harbour",
           "direction": "in",
-          "kind": "mutate"
+          "kind": "mutate",
+          "reaches": [
+           "Door"
+          ]
          },
          {
           "place": "Airport",
           "transition": "Alight Airport",
           "direction": "in",
-          "kind": "mutate"
+          "kind": "mutate",
+          "reaches": [
+           "Door"
+          ]
          },
          {
           "place": "Arrived",
@@ -603,7 +633,6 @@
          "Doors Closed": []
         },
         "params": {
-         "stopped": true,
          "seats": 2,
          "capacity": 6
         },
@@ -658,7 +687,8 @@
         {
          "name": "Door",
          "type_name": "<label>",
-         "serializable": true
+         "serializable": true,
+         "port": true
         },
         {
          "name": "Seats",
@@ -673,17 +703,20 @@
         {
          "name": "Announcements",
          "type_name": "<label>",
-         "serializable": true
+         "serializable": true,
+         "port": true
         },
         {
          "name": "Doors Open",
          "type_name": "<label>",
-         "serializable": true
+         "serializable": true,
+         "port": true
         },
         {
          "name": "Doors Closed",
          "type_name": "<label>",
-         "serializable": true
+         "serializable": true,
+         "port": true
         }
        ],
        "transitions": [
@@ -897,7 +930,8 @@
         {
          "name": "Door",
          "type_name": "<label>",
-         "serializable": true
+         "serializable": true,
+         "port": true
         },
         {
          "name": "Seats",
@@ -912,17 +946,20 @@
         {
          "name": "Announcements",
          "type_name": "<label>",
-         "serializable": true
+         "serializable": true,
+         "port": true
         },
         {
          "name": "Doors Open",
          "type_name": "<label>",
-         "serializable": true
+         "serializable": true,
+         "port": true
         },
         {
          "name": "Doors Closed",
          "type_name": "<label>",
-         "serializable": true
+         "serializable": true,
+         "port": true
         }
        ],
        "transitions": [
@@ -1130,7 +1167,8 @@
         {
          "name": "Door",
          "type_name": "<label>",
-         "serializable": true
+         "serializable": true,
+         "port": true
         },
         {
          "name": "Lower Deck",
@@ -1145,17 +1183,20 @@
         {
          "name": "Announcements",
          "type_name": "<label>",
-         "serializable": true
+         "serializable": true,
+         "port": true
         },
         {
          "name": "Doors Open",
          "type_name": "<label>",
-         "serializable": true
+         "serializable": true,
+         "port": true
         },
         {
          "name": "Doors Closed",
          "type_name": "<label>",
-         "serializable": true
+         "serializable": true,
+         "port": true
         }
        ],
        "transitions": [
@@ -2145,29 +2186,6 @@
    },
    "expect": [
     {
-     "method": "nested",
-     "params": {
-      "path": [
-       {
-        "place": "In Transit",
-        "token": "<id>",
-        "net": "cabin"
-       }
-      ],
-      "nested_id": "<id:bus_cabin>",
-      "event": {
-       "method": "param_changed",
-       "params": {
-        "param": "stopped",
-        "marking_version": "<version>",
-        "running": false
-       }
-      },
-      "marking_version": "<version>",
-      "running": false
-     }
-    },
-    {
      "method": "fired",
      "params": {
       "transition": "Depart Depot",
@@ -2233,7 +2251,8 @@
         {
          "name": "Door",
          "type_name": "<label>",
-         "serializable": true
+         "serializable": true,
+         "port": true
         },
         {
          "name": "Seats",
@@ -2248,17 +2267,20 @@
         {
          "name": "Announcements",
          "type_name": "<label>",
-         "serializable": true
+         "serializable": true,
+         "port": true
         },
         {
          "name": "Doors Open",
          "type_name": "<label>",
-         "serializable": true
+         "serializable": true,
+         "port": true
         },
         {
          "name": "Doors Closed",
          "type_name": "<label>",
-         "serializable": true
+         "serializable": true,
+         "port": true
         }
        ],
        "transitions": [
@@ -2494,7 +2516,6 @@
          ]
         },
         "params": {
-         "stopped": false,
          "seats": 2,
          "capacity": 6
         },
@@ -2532,29 +2553,6 @@
     "method": "step"
    },
    "expect": [
-    {
-     "method": "nested",
-     "params": {
-      "path": [
-       {
-        "place": "Central",
-        "token": "<id>",
-        "net": "cabin"
-       }
-      ],
-      "nested_id": "<id:bus_cabin>",
-      "event": {
-       "method": "param_changed",
-       "params": {
-        "param": "stopped",
-        "marking_version": "<version>",
-        "running": false
-       }
-      },
-      "marking_version": "<version>",
-      "running": false
-     }
-    },
     {
      "method": "nested",
      "params": {
@@ -2735,7 +2733,6 @@
          "Doors Closed": []
         },
         "params": {
-         "stopped": true,
          "seats": 2,
          "capacity": 6
         },
@@ -4424,29 +4421,6 @@
    },
    "expect": [
     {
-     "method": "nested",
-     "params": {
-      "path": [
-       {
-        "place": "In Transit",
-        "token": "<id>",
-        "net": "cabin"
-       }
-      ],
-      "nested_id": "<id:bus_cabin>",
-      "event": {
-       "method": "param_changed",
-       "params": {
-        "param": "stopped",
-        "marking_version": "<version>",
-        "running": false
-       }
-      },
-      "marking_version": "<version>",
-      "running": false
-     }
-    },
-    {
      "method": "fired",
      "params": {
       "transition": "Depart Central",
@@ -4494,29 +4468,6 @@
     "method": "step"
    },
    "expect": [
-    {
-     "method": "nested",
-     "params": {
-      "path": [
-       {
-        "place": "Harbour",
-        "token": "<id>",
-        "net": "cabin"
-       }
-      ],
-      "nested_id": "<id:bus_cabin>",
-      "event": {
-       "method": "param_changed",
-       "params": {
-        "param": "stopped",
-        "marking_version": "<version>",
-        "running": false
-       }
-      },
-      "marking_version": "<version>",
-      "running": false
-     }
-    },
     {
      "method": "nested",
      "params": {
@@ -5179,29 +5130,6 @@
    },
    "expect": [
     {
-     "method": "nested",
-     "params": {
-      "path": [
-       {
-        "place": "In Transit",
-        "token": "<id>",
-        "net": "cabin"
-       }
-      ],
-      "nested_id": "<id:ferry_cabin>",
-      "event": {
-       "method": "param_changed",
-       "params": {
-        "param": "stopped",
-        "marking_version": "<version>",
-        "running": false
-       }
-      },
-      "marking_version": "<version>",
-      "running": false
-     }
-    },
-    {
      "method": "fired",
      "params": {
       "transition": "Depart Harbour",
@@ -5249,29 +5177,6 @@
     "method": "step"
    },
    "expect": [
-    {
-     "method": "nested",
-     "params": {
-      "path": [
-       {
-        "place": "Airport",
-        "token": "<id>",
-        "net": "cabin"
-       }
-      ],
-      "nested_id": "<id:ferry_cabin>",
-      "event": {
-       "method": "param_changed",
-       "params": {
-        "param": "stopped",
-        "marking_version": "<version>",
-        "running": false
-       }
-      },
-      "marking_version": "<version>",
-      "running": false
-     }
-    },
     {
      "method": "nested",
      "params": {
@@ -5981,29 +5886,6 @@
    },
    "expect": [
     {
-     "method": "nested",
-     "params": {
-      "path": [
-       {
-        "place": "In Transit",
-        "token": "<id>",
-        "net": "cabin"
-       }
-      ],
-      "nested_id": "<id:bus_cabin>",
-      "event": {
-       "method": "param_changed",
-       "params": {
-        "param": "stopped",
-        "marking_version": "<version>",
-        "running": false
-       }
-      },
-      "marking_version": "<version>",
-      "running": false
-     }
-    },
-    {
      "method": "fired",
      "params": {
       "transition": "Depart Harbour",
@@ -6051,29 +5933,6 @@
     "method": "step"
    },
    "expect": [
-    {
-     "method": "nested",
-     "params": {
-      "path": [
-       {
-        "place": "Airport",
-        "token": "<id>",
-        "net": "cabin"
-       }
-      ],
-      "nested_id": "<id:bus_cabin>",
-      "event": {
-       "method": "param_changed",
-       "params": {
-        "param": "stopped",
-        "marking_version": "<version>",
-        "running": false
-       }
-      },
-      "marking_version": "<version>",
-      "running": false
-     }
-    },
     {
      "method": "nested",
      "params": {
@@ -6616,67 +6475,10 @@
    },
    "expect": [
     {
-     "method": "nested",
-     "params": {
-      "path": [
-       {
-        "place": "Airport",
-        "token": "<id:bus_airport>",
-        "net": "cabin"
-       }
-      ],
-      "nested_id": "<id:bus_cabin>",
-      "event": {
-       "method": "added",
-       "params": {
-        "place": "Door",
-        "id": "<id:bus_hal>",
-        "label": "<label>",
-        "marking_version": "<version>",
-        "running": false
-       }
-      },
-      "marking_version": "<version>",
-      "running": false
-     }
-    },
-    {
-     "method": "nested",
-     "params": {
-      "path": [
-       {
-        "place": "Airport",
-        "token": "<id:bus_airport>",
-        "net": "cabin"
-       }
-      ],
-      "nested_id": "<id:bus_cabin>",
-      "event": {
-       "method": "fireable",
-       "params": {
-        "transitions": [],
-        "marking_version": "<version>",
-        "running": false
-       }
-      },
-      "marking_version": "<version>",
-      "running": false
-     }
-    },
-    {
      "id": "63",
-     "result": {
-      "status": "injected",
-      "id": "<id:bus_hal>",
-      "marking_version": "<version>",
-      "path": [
-       {
-        "place": "Airport",
-        "token": "<id:bus_airport>",
-        "net": "cabin"
-       }
-      ],
-      "nested_id": "<id:bus_cabin>"
+     "error": {
+      "message": "<label>",
+      "code": "closed_net"
      }
     }
    ]
@@ -6760,7 +6562,6 @@
          "Doors Closed": []
         },
         "params": {
-         "stopped": true,
          "seats": 4,
          "capacity": 4
         },
@@ -7050,29 +6851,6 @@
    },
    "expect": [
     {
-     "method": "nested",
-     "params": {
-      "path": [
-       {
-        "place": "In Transit",
-        "token": "<id>",
-        "net": "cabin"
-       }
-      ],
-      "nested_id": "<id:shuttle_cabin>",
-      "event": {
-       "method": "param_changed",
-       "params": {
-        "param": "stopped",
-        "marking_version": "<version>",
-        "running": false
-       }
-      },
-      "marking_version": "<version>",
-      "running": false
-     }
-    },
-    {
      "method": "fired",
      "params": {
       "transition": "Depart Depot",
@@ -7148,7 +6926,6 @@
          ]
         },
         "params": {
-         "stopped": false,
          "seats": 4,
          "capacity": 4
         },
@@ -7184,29 +6961,6 @@
     "method": "step"
    },
    "expect": [
-    {
-     "method": "nested",
-     "params": {
-      "path": [
-       {
-        "place": "Airport",
-        "token": "<id>",
-        "net": "cabin"
-       }
-      ],
-      "nested_id": "<id:shuttle_cabin>",
-      "event": {
-       "method": "param_changed",
-       "params": {
-        "param": "stopped",
-        "marking_version": "<version>",
-        "running": false
-       }
-      },
-      "marking_version": "<version>",
-      "running": false
-     }
-    },
     {
      "method": "nested",
      "params": {

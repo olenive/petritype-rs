@@ -471,8 +471,9 @@ pub(crate) fn topology(net: &Net, topology: &Topology, names: &Names) -> protoco
         groups: topology.groups.clone(),
         // From the net, not its topology: see `controls`.
         controls: Vec::new(),
-        // The definition's declaration, which a reader puts beside the
-        // ports it shows to know whether the net is closed (§5.1).
+        // The definition's declaration: a net is closed unless it shows
+        // this, and then takes tokens from outside only at its ports
+        // (§5.1).
         open: net.is_open(),
     }
 }
@@ -509,10 +510,10 @@ pub(crate) fn controls(net: &Net, names: &Names) -> Vec<protocol::Control> {
         .iter()
         .map(|control| {
             let mut config = protocol::ControlConfig {
-                value: control.initial.as_ref().and_then(control_value),
+                value: control.initial().and_then(control_value),
                 ..protocol::ControlConfig::default()
             };
-            match &control.kind {
+            match control.kind() {
                 ControlKind::Slider { start, stop, step } => {
                     config.start = Some(*start);
                     config.stop = Some(*stop);
@@ -523,14 +524,14 @@ pub(crate) fn controls(net: &Net, names: &Names) -> Vec<protocol::Control> {
                 _ => {}
             }
             protocol::Control {
-                name: control.name.clone(),
-                label: control.label.clone(),
-                kind: control.kind.name().to_owned(),
-                node: control.node.map(|node| match node {
+                name: control.name().to_owned(),
+                label: control.label().to_owned(),
+                kind: control.kind().name().to_owned(),
+                node: control.node().map(|node| match node {
                     Node::Place(place) => names.place(place),
                     Node::Transition(transition) => names.transition(transition),
                 }),
-                action: control.action.map(|action| action.name().to_owned()),
+                action: control.action().map(|action| action.name().to_owned()),
                 config: (!config.is_empty()).then_some(config),
             }
         })

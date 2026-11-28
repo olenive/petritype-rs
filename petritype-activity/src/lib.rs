@@ -101,6 +101,9 @@
 #![warn(missing_docs, missing_debug_implementations, unreachable_pub)]
 #![forbid(unsafe_code)]
 
+#[cfg(feature = "serde")]
+mod checked;
+mod checkpoints;
 mod delta;
 mod grid;
 mod log;

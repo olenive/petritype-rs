@@ -11,7 +11,7 @@ error[E0631]: type mismatch in closure arguments
               found closure signature `fn(u32, Scale) -> _`
    = note: required for `{closure@$DIR/tests/ui/fail_param_type.rs:24:9: 24:31}` to implement `TransitionBody<(TakeEdge<u32>, Param<ApiToken>), (PlaceRef<u32>,), (_, _)>`
 note: required by a bound in `NetBuilder::transition`
-  --> src/builder.rs
+  --> src/builder/mod.rs
    |
    | impl NetBuilder {
 ...

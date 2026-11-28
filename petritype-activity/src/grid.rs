@@ -43,9 +43,11 @@ pub struct Cell {
 /// thumbnail draws them in the page colour.
 ///
 /// With the `serde` feature it is written as its columns, its rows and its
-/// cells, and reading it back refuses a cell outside the grid or on another
-/// cell's position.
-#[derive(Debug, Clone, PartialEq)]
+/// cells, and reading it back refuses a cell outside the grid, on another
+/// cell's position or for another cell's node, and a grid of more than
+/// [`MAX_POSITIONS`](Grid::MAX_POSITIONS) positions, which a thumbnail
+/// would draw a pixel each.
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(
     feature = "serde",
     derive(serde::Serialize, serde::Deserialize),
@@ -62,6 +64,12 @@ pub struct Grid {
 }
 
 impl Grid {
+    /// The most positions, columns times rows, a grid read back may have:
+    /// 2^22, a square 2048 cells on a side, a thumbnail larger than most
+    /// screens at a pixel a cell. A grid made from a layout is not held to
+    /// it.
+    pub const MAX_POSITIONS: usize = 1 << 22;
+
     /// The grid of the net `topology` describes, from a `layout` computed
     /// over that same net, whole.
     ///
@@ -169,13 +177,17 @@ impl Grid {
         let columns = cells.iter().map(|c| c.column + 1).max().unwrap_or(0);
         let rows = cells.iter().map(|c| c.row + 1).max().unwrap_or(0);
         Grid::of_cells(columns, rows, cells)
-            .expect("every cell is inside, and alone on its position")
+            .expect("every cell is inside, alone on its position, and in memory")
     }
 
     /// The grid of `cells` in `columns` by `rows`, or why there is none: a
-    /// cell outside it, or two on one position or for one node.
+    /// size whose positions a `usize` cannot count, a cell outside it, or
+    /// two on one position or for one node.
     fn of_cells(columns: usize, rows: usize, cells: Vec<Cell>) -> Result<Grid, String> {
-        let mut at = vec![None; columns * rows];
+        let positions = columns.checked_mul(rows).ok_or_else(|| {
+            format!("a grid of {columns} by {rows} has more positions than a usize counts")
+        })?;
+        let mut at = vec![None; positions];
         let mut by_node = HashMap::with_capacity(cells.len());
         for (i, cell) in cells.iter().enumerate() {
             if cell.column >= columns || cell.row >= rows {
@@ -263,6 +275,18 @@ impl TryFrom<GridData> for Grid {
     type Error = String;
 
     fn try_from(data: GridData) -> Result<Self, Self::Error> {
+        if data
+            .columns
+            .checked_mul(data.rows)
+            .is_none_or(|positions| positions > Grid::MAX_POSITIONS)
+        {
+            return Err(format!(
+                "a grid of {} by {} has more than the {} positions a grid read back may",
+                data.columns,
+                data.rows,
+                Grid::MAX_POSITIONS
+            ));
+        }
         Grid::of_cells(data.columns, data.rows, data.cells)
     }
 }
@@ -576,6 +600,12 @@ mod tests {
         let in_b = |cell: &Cell| cell.name.ends_with(" B");
         assert!(grid.cells().iter().all(|c| !in_b(c)), "{:?}", grid.cells());
         assert_eq!(grid.cells().len(), 4, "In A, Out A, Hub and Go A");
+    }
+
+    #[test]
+    fn a_grid_is_eq() {
+        fn eq<T: Eq>() {}
+        eq::<Grid>();
     }
 
     #[test]

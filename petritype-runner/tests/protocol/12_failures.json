@@ -181,7 +181,8 @@
         {
          "name": "Bench",
          "type_name": "<label>",
-         "serializable": true
+         "serializable": true,
+         "port": true
         },
         {
          "name": "Kiln",
@@ -238,7 +239,8 @@
           "direction": "out"
          }
         ]
-       }
+       },
+       "open": true
       },
       "transitions": {
        "Glaze": {
@@ -298,21 +300,35 @@
    "send": {
     "method": "inject",
     "params": {
-     "place": "Kiln",
-     "port": "Hatch",
+     "place": "Hatch",
+     "path": [
+      {
+       "place": "Kiln"
+      }
+     ],
      "token": "Cracked jug"
     }
    },
    "expect": [
     {
-     "method": "added",
+     "method": "nested",
      "params": {
-      "place": "Kiln",
-      "port": "Hatch",
-      "id": "<id:kiln_cracked_jug>",
-      "label": "<label>",
-      "subnet_marking_versions": {
-       "Kiln": "<version>"
+      "path": [
+       {
+        "place": "Kiln"
+       }
+      ],
+      "nested_id": "<id:kiln>",
+      "event": {
+       "method": "added",
+       "params": {
+        "place": "Hatch",
+        "id": "<id:kiln_cracked_jug>",
+        "label": "<label>",
+        "outer_marking_version": "<version>",
+        "marking_version": "<version>",
+        "running": false
+       }
       },
       "marking_version": "<version>",
       "running": false
@@ -333,7 +349,13 @@
      "result": {
       "status": "injected",
       "id": "<id:kiln_cracked_jug>",
-      "marking_version": "<version>"
+      "marking_version": "<version>",
+      "path": [
+       {
+        "place": "Kiln"
+       }
+      ],
+      "nested_id": "<id:kiln>"
      }
     }
    ]
@@ -421,7 +443,8 @@
         {
          "name": "Bench",
          "type_name": "<label>",
-         "serializable": true
+         "serializable": true,
+         "port": true
         },
         {
          "name": "Kiln",
@@ -478,7 +501,8 @@
           "direction": "out"
          }
         ]
-       }
+       },
+       "open": true
       },
       "transitions": {
        "Glaze": {
@@ -756,7 +780,8 @@
         {
          "name": "Bench",
          "type_name": "<label>",
-         "serializable": true
+         "serializable": true,
+         "port": true
         },
         {
          "name": "Kiln",
@@ -813,7 +838,8 @@
           "direction": "out"
          }
         ]
-       }
+       },
+       "open": true
       },
       "transitions": {
        "Glaze": {
@@ -915,21 +941,35 @@
    "send": {
     "method": "inject",
     "params": {
-     "place": "Kiln",
-     "port": "Hatch",
+     "place": "Hatch",
+     "path": [
+      {
+       "place": "Kiln"
+      }
+     ],
      "token": "Cracked vase"
     }
    },
    "expect": [
     {
-     "method": "added",
+     "method": "nested",
      "params": {
-      "place": "Kiln",
-      "port": "Hatch",
-      "id": "<id:kiln_cracked_vase>",
-      "label": "<label>",
-      "subnet_marking_versions": {
-       "Kiln": "<version>"
+      "path": [
+       {
+        "place": "Kiln"
+       }
+      ],
+      "nested_id": "<id:kiln_2>",
+      "event": {
+       "method": "added",
+       "params": {
+        "place": "Hatch",
+        "id": "<id:kiln_cracked_vase>",
+        "label": "<label>",
+        "outer_marking_version": "<version>",
+        "marking_version": "<version>",
+        "running": false
+       }
       },
       "marking_version": "<version>",
       "running": false
@@ -950,7 +990,13 @@
      "result": {
       "status": "injected",
       "id": "<id:kiln_cracked_vase>",
-      "marking_version": "<version>"
+      "marking_version": "<version>",
+      "path": [
+       {
+        "place": "Kiln"
+       }
+      ],
+      "nested_id": "<id:kiln_2>"
      }
     }
    ]
@@ -1033,7 +1079,8 @@
         {
          "name": "Bench",
          "type_name": "<label>",
-         "serializable": true
+         "serializable": true,
+         "port": true
         },
         {
          "name": "Kiln",
@@ -1090,7 +1137,8 @@
           "direction": "out"
          }
         ]
-       }
+       },
+       "open": true
       },
       "transitions": {
        "Glaze": {

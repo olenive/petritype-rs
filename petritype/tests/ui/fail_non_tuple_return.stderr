@@ -27,7 +27,7 @@ help: the following other types implement trait `IntoOutcome<Outputs, Marker>`
    |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `petritype::Distribution` implements `IntoOutcome<Outputs, petritype::marker::Distributed>`
    = note: required for `{closure@$DIR/tests/ui/fail_non_tuple_return.rs:17:60: 17:68}` to implement `TransitionBody<(TakeEdge<u32>,), (PlaceRef<u32>,), (_, u32)>`
 note: required by a bound in `NetBuilder::transition`
-  --> src/builder.rs
+  --> src/builder/mod.rs
    |
    | impl NetBuilder {
 ...

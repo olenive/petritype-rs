@@ -1,5 +1,5 @@
 //! Controls: the buttons a net declares, as data a viewer renders and code
-//! the net runs (DESIGN §18, 2026-10-16, net-declared controls).
+//! the net runs.
 //!
 //! A [`Control`] is a widget of one [`ControlKind`] (a button, a toggle, a
 //! slider, a select or a text box) with a name, a label, and a handler written
@@ -30,7 +30,7 @@
 //! b.control(Control::fire("double", "Double", double));
 //! let mut net = b.build()?;
 //!
-//! let names: Vec<&str> = net.controls().iter().map(|c| c.name.as_str()).collect();
+//! let names: Vec<&str> = net.controls().iter().map(|c| c.name()).collect();
 //! assert_eq!(names, ["add", "double"]);
 //!
 //! assert_eq!(net.press("double", Value::None)?, Pressed::Nothing("Double is not fireable".into()));
@@ -49,7 +49,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 use std::sync::Arc;
 
 use crate::closed::PRESS;
-use crate::error::{NetError, PressError};
+use crate::error::{ControlError, NetError, PressError};
 use crate::ids::{PlaceId, PlaceRef, TransitionId, foreign_place};
 use crate::net::Net;
 
@@ -66,7 +66,8 @@ pub enum ControlKind {
     Toggle,
     /// A number between `start` and `stop`, both included, in steps of
     /// `step`: a press carries [`Value::Number`]. The step is the widget's;
-    /// the net checks only the bounds.
+    /// the net checks only the bounds. A control of this kind has finite
+    /// numbers, `start <= stop` and `step > 0` ([`ControlError`]).
     Slider {
         /// The smallest value.
         start: f64,
@@ -75,7 +76,8 @@ pub enum ControlKind {
         /// The widget's increment.
         step: f64,
     },
-    /// One of `options`: a press carries [`Value::Text`], one of them.
+    /// One of `options`: a press carries [`Value::Text`], one of them. A
+    /// control of this kind has at least one ([`ControlError`]).
     Select {
         /// The choices, in the order shown.
         options: Vec<String>,
@@ -97,6 +99,31 @@ impl ControlKind {
             ControlKind::Slider { .. } => "slider",
             ControlKind::Select { .. } => "select",
             ControlKind::Text { .. } => "text",
+        }
+    }
+
+    /// Why no control can be of this kind, if none can: a slider whose
+    /// numbers are not finite, whose `start` is above its `stop` or whose
+    /// `step` is not above zero, and a select with no option.
+    fn problem(&self) -> Option<String> {
+        match self {
+            ControlKind::Slider { start, stop, step } => {
+                for (what, number) in [("start", start), ("stop", stop), ("step", step)] {
+                    if !number.is_finite() {
+                        return Some(format!(
+                            "a slider's {what} is a finite number, not {number}"
+                        ));
+                    }
+                }
+                if start > stop {
+                    return Some(format!("a slider's start {start} is above its stop {stop}"));
+                }
+                (*step <= 0.0).then(|| format!("a slider's step is above zero, not {step}"))
+            }
+            ControlKind::Select { options } if options.is_empty() => {
+                Some("a select has at least one option".to_owned())
+            }
+            _ => None,
         }
     }
 
@@ -197,35 +224,108 @@ type Handler = Arc<dyn Fn(&mut Net, Value) -> Result<Pressed, String> + Send + S
 /// A control a net declares: a widget, the node it acts on, and the code a
 /// press runs. See the [module](self).
 ///
-/// The fields are data, for a viewer or a runner to read from
-/// [`Net::controls`]; the handler is the net's, run by [`Net::press`]. The
-/// constructors cover the kinds ([`button`](Control::button),
-/// [`toggle`](Control::toggle), [`slider`](Control::slider),
-/// [`select`](Control::select), [`text`](Control::text)) with a handler
-/// of the author's, and the three actions ([`inject`](Control::inject),
-/// [`fire`](Control::fire), [`enable`](Control::enable)) with one written
-/// for them. A handler returns `Ok(`[`Pressed`]`)`, or `Err` with a message
-/// when it cannot do what it was asked, which [`Net::press`] gives back as
+/// What it is, for a viewer or a runner to read from [`Net::controls`], is
+/// read through its accessors; the handler is the net's, run by
+/// [`Net::press`]. The constructors cover the kinds
+/// ([`button`](Control::button), [`toggle`](Control::toggle),
+/// [`slider`](Control::slider), [`select`](Control::select),
+/// [`text`](Control::text)) with a handler of the author's, and the three
+/// actions ([`inject`](Control::inject), [`fire`](Control::fire),
+/// [`enable`](Control::enable)) with one written for them. A handler
+/// returns `Ok(`[`Pressed`]`)`, or `Err` with a message when it cannot do
+/// what it was asked, which [`Net::press`] gives back as
 /// [`PressError::Refused`].
+///
+/// # Checked as it is made
+///
+/// A control is one a widget can show (since 2026-11-28): a slider's
+/// numbers are finite, its `start` is no more than its `stop` and its
+/// `step` is above zero; a select has at least one option; and an initial
+/// value is one a press of the kind could carry, a slider's within its
+/// range and a select's among its options. The constructors and the two
+/// `with_` methods that could make one otherwise return a [`ControlError`]
+/// instead, which converts into a [`BuildError`](crate::BuildError) for
+/// `?` in a function that builds a net. The fields are private, so a
+/// control stays as it was checked. Its name is checked with the net's
+/// other names, at [`build`](crate::NetBuilder::build): unique, and not
+/// empty.
+///
+/// ```
+/// use petritype::control::{Control, Pressed};
+///
+/// let speed = Control::slider("speed", "Speed", 0.0, 10.0, 0.5, 1.0, |_, _| Ok(Pressed::Applied))?;
+/// assert_eq!(speed.name(), "speed");
+/// let refused = Control::slider("speed", "Speed", 10.0, 0.0, 0.5, 1.0, |_, _| Ok(Pressed::Applied));
+/// assert_eq!(
+///     refused.unwrap_err().to_string(),
+///     "control \"speed\": a slider's start 10 is above its stop 0",
+/// );
+/// # Ok::<(), petritype::ControlError>(())
+/// ```
 #[derive(Clone)]
 pub struct Control {
-    /// Unique within the net: what [`Net::press`] names.
-    pub name: String,
-    /// What the viewer shows.
-    pub label: String,
-    /// The widget, and so the value a press carries.
-    pub kind: ControlKind,
-    /// The place or transition the control acts on, if it acts on one.
-    pub node: Option<Node>,
-    /// What kind of thing a press does, if the control says.
-    pub action: Option<Action>,
-    /// The widget's value before anyone touches it, for the kinds that
-    /// have one: a toggle's state, a slider's number, a select's option.
-    pub initial: Option<Value>,
+    name: String,
+    label: String,
+    kind: ControlKind,
+    node: Option<Node>,
+    action: Option<Action>,
+    initial: Option<Value>,
     handler: Handler,
 }
 
 impl Control {
+    /// Unique within the net: what [`Net::press`] names.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// What the viewer shows.
+    pub fn label(&self) -> &str {
+        &self.label
+    }
+
+    /// The widget, and so the value a press carries.
+    pub fn kind(&self) -> &ControlKind {
+        &self.kind
+    }
+
+    /// The place or transition the control acts on, if it acts on one.
+    pub fn node(&self) -> Option<Node> {
+        self.node
+    }
+
+    /// What kind of thing a press does, if the control says.
+    pub fn action(&self) -> Option<Action> {
+        self.action
+    }
+
+    /// The widget's value before anyone touches it, for the kinds that
+    /// have one: a toggle's state, a slider's number, a select's option.
+    pub fn initial(&self) -> Option<&Value> {
+        self.initial.as_ref()
+    }
+
+    /// This control as it is, or why no widget can show it: its kind's
+    /// [problem](ControlKind::problem), then an initial value a press of
+    /// the kind could not carry.
+    fn checked(self) -> Result<Control, ControlError> {
+        let refuse = |reason: String| ControlError {
+            control: self.name.clone(),
+            reason,
+        };
+        if let Some(reason) = self.kind.problem() {
+            return Err(refuse(reason));
+        }
+        if let Some(initial) = &self.initial
+            && let Err(reason) = self.kind.check(initial)
+        {
+            return Err(refuse(format!(
+                "its initial value cannot be its own: {reason}"
+            )));
+        }
+        Ok(self)
+    }
+
     /// A control of `kind` with the author's handler and nothing else.
     fn new(
         name: impl Into<String>,
@@ -287,6 +387,12 @@ impl Control {
 
     /// A slider from `start` to `stop` in steps of `step`, at `initial`: `f`
     /// runs with [`Value::Number`], within the bounds.
+    ///
+    /// # Errors
+    ///
+    /// [`ControlError`] for a number that is not finite, a `start` above
+    /// `stop`, a `step` that is not above zero, or an `initial` outside
+    /// `start..=stop` (since 2026-11-28).
     pub fn slider(
         name: impl Into<String>,
         label: impl Into<String>,
@@ -295,24 +401,29 @@ impl Control {
         step: f64,
         initial: f64,
         f: impl Fn(&mut Net, Value) -> Result<Pressed, String> + Send + Sync + 'static,
-    ) -> Control {
+    ) -> Result<Control, ControlError> {
         let kind = ControlKind::Slider { start, stop, step };
-        Control::new(name, label, kind, Some(Value::Number(initial)), f)
+        Control::new(name, label, kind, Some(Value::Number(initial)), f).checked()
     }
 
     /// A select of `options`, at `initial`: `f` runs with [`Value::Text`],
     /// one of the options.
+    ///
+    /// # Errors
+    ///
+    /// [`ControlError`] for no option, or an `initial` that is none of them
+    /// (since 2026-11-28).
     pub fn select<S: Into<String>>(
         name: impl Into<String>,
         label: impl Into<String>,
         options: impl IntoIterator<Item = S>,
         initial: impl Into<String>,
         f: impl Fn(&mut Net, Value) -> Result<Pressed, String> + Send + Sync + 'static,
-    ) -> Control {
+    ) -> Result<Control, ControlError> {
         let kind = ControlKind::Select {
             options: options.into_iter().map(Into::into).collect(),
         };
-        Control::new(name, label, kind, Some(Value::Text(initial.into())), f)
+        Control::new(name, label, kind, Some(Value::Text(initial.into())), f).checked()
     }
 
     /// Puts `make(value, net)` into `place`: a button by default, another
@@ -335,7 +446,7 @@ impl Control {
     ///         Value::Text(name) if !name.is_empty() => name,
     ///         _ => format!("Guest {}", net.count(queue.id()) + 1),
     ///     })
-    ///     .with_kind(ControlKind::Text { placeholder: Some("name".into()) }),
+    ///     .with_kind(ControlKind::Text { placeholder: Some("name".into()) })?,
     /// );
     /// let mut net = b.build()?;
     ///
@@ -415,15 +526,28 @@ impl Control {
 
     /// This control with another kind: how an [`inject`](Control::inject)
     /// becomes a text box or a select. The initial value is left as it was.
-    pub fn with_kind(mut self, kind: ControlKind) -> Control {
+    ///
+    /// # Errors
+    ///
+    /// [`ControlError`] for a kind no control can be, a slider's or a
+    /// select's as [`slider`](Control::slider) and
+    /// [`select`](Control::select) refuse them, and for an initial value the
+    /// new kind cannot take (since 2026-11-28).
+    pub fn with_kind(mut self, kind: ControlKind) -> Result<Control, ControlError> {
         self.kind = kind;
-        self
+        self.checked()
     }
 
     /// This control with an initial value.
-    pub fn with_initial(mut self, initial: Value) -> Control {
+    ///
+    /// # Errors
+    ///
+    /// [`ControlError`] for a value a press of the control's kind could not
+    /// carry: the wrong type, a number outside a slider's range, a select's
+    /// option it does not list (since 2026-11-28).
+    pub fn with_initial(mut self, initial: Value) -> Result<Control, ControlError> {
         self.initial = Some(initial);
-        self
+        self.checked()
     }
 }
 
@@ -463,9 +587,9 @@ impl Net {
     /// [`PressError::Refused`] with the handler's message when it returns
     /// `Err`. Also `Refused`, with the message of a
     /// [`NetError::HeldByBody`], the handler not run, when a body of the net
-    /// around this one holds it and it marks a port (since 2026-11-23): a
-    /// net's controls are the program's and the runner's, and the body's
-    /// firing fails with that error.
+    /// around this one holds it, whatever the net: a net's controls are the
+    /// program's and the runner's, and the body's firing fails with that
+    /// error.
     ///
     /// # Closed nets
     ///
@@ -545,6 +669,102 @@ mod tests {
         for (kind, value, ok) in cases {
             assert_eq!(kind.check(&value).is_ok(), ok, "{kind:?} with {value:?}");
         }
+    }
+
+    fn noop(_: &mut Net, _: Value) -> Result<Pressed, String> {
+        Ok(Pressed::Applied)
+    }
+
+    fn reason(made: Result<Control, ControlError>) -> String {
+        made.expect_err("refused").reason
+    }
+
+    /// Python's `ControlSpec.validate`, where the kinds correspond.
+    #[test]
+    fn a_control_no_widget_can_show_is_refused_as_it_is_made() {
+        let slider = |start, stop, step, initial| {
+            Control::slider("s", "S", start, stop, step, initial, noop)
+        };
+        assert!(slider(0.0, 10.0, 0.5, 10.0).is_ok());
+        assert!(slider(3.0, 3.0, 1.0, 3.0).is_ok(), "a range of one value");
+        assert_eq!(
+            reason(slider(f64::NAN, 10.0, 1.0, 1.0)),
+            "a slider's start is a finite number, not NaN"
+        );
+        assert_eq!(
+            reason(slider(0.0, f64::INFINITY, 1.0, 1.0)),
+            "a slider's stop is a finite number, not inf"
+        );
+        assert_eq!(
+            reason(slider(5.0, 1.0, 1.0, 1.0)),
+            "a slider's start 5 is above its stop 1"
+        );
+        assert_eq!(
+            reason(slider(0.0, 1.0, 0.0, 1.0)),
+            "a slider's step is above zero, not 0"
+        );
+        assert_eq!(
+            reason(slider(0.0, 1.0, -1.0, 1.0)),
+            "a slider's step is above zero, not -1"
+        );
+        assert_eq!(
+            reason(slider(0.0, 1.0, 0.5, 2.0)),
+            "its initial value cannot be its own: 2 is outside 0..1"
+        );
+        assert!(reason(slider(0.0, 1.0, 0.5, f64::NAN)).starts_with("its initial value"));
+
+        let select = |options: &[&str], initial| {
+            Control::select("m", "M", options.iter().copied(), initial, noop)
+        };
+        assert!(select(&["a", "b"], "b").is_ok());
+        assert_eq!(reason(select(&[], "a")), "a select has at least one option");
+        assert_eq!(
+            reason(select(&["a", "b"], "c")),
+            "its initial value cannot be its own: \"c\" is not one of its options"
+        );
+
+        // The `with_` methods are held to the same.
+        let button = || Control::button("b", "B", noop);
+        assert!(button().with_initial(Value::None).is_ok());
+        assert!(
+            reason(button().with_initial(Value::Bool(true))).ends_with("a button takes no value")
+        );
+        let toggle = Control::toggle("t", "T", false, noop);
+        assert!(
+            reason(toggle.clone().with_initial(Value::Number(1.0)))
+                .ends_with("a toggle takes a boolean")
+        );
+        assert!(
+            reason(toggle.with_kind(ControlKind::Text { placeholder: None }))
+                .ends_with("a text control takes a string"),
+            "a toggle's initial state is no text"
+        );
+        let text = Control::text("x", "X", Some("hint"), noop);
+        assert!(
+            text.clone()
+                .with_initial(Value::Text(String::new()))
+                .is_ok()
+        );
+        assert_eq!(
+            reason(text.with_kind(ControlKind::Select { options: vec![] })),
+            "a select has at least one option"
+        );
+        let inject = button()
+            .with_kind(ControlKind::Slider {
+                start: 0.0,
+                stop: 1.0,
+                step: 0.1,
+            })
+            .expect("no initial value: the widget's own");
+        assert!(inject.initial().is_none());
+        assert_eq!(
+            ControlError {
+                control: "s".into(),
+                reason: "why".into()
+            }
+            .to_string(),
+            "control \"s\": why"
+        );
     }
 
     #[test]

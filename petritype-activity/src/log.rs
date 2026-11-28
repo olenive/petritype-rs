@@ -6,14 +6,15 @@
 //! and [`EventPlayer`] replays the log one entry at a time, each shown for a
 //! fixed dwell.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::VecDeque;
 #[cfg(feature = "serde")]
 use std::io::{self, Write};
-use std::mem::size_of;
+use std::mem::{size_of, size_of_val};
 use std::time::{Duration, SystemTime};
 
 use petritype::{Event, PlaceId, TokenId, TransitionId};
 
+use crate::checkpoints::CheckpointCache;
 use crate::delta::{Delta, PlaceDelta, TransitionDelta};
 use crate::grid::Grid;
 use crate::model::Activity;
@@ -36,7 +37,7 @@ use crate::tokens::{Look, Roster, staged_failures};
 /// form the core writes its events in: a [`Fired`](Entry::Fired) reads
 /// `{"event":"fired","transition":0,"consumed":[[0,17]],"produced":[[1,18]]}`
 /// and a [`Count`](Entry::Count) `{"event":"count","place":2,"count":3}`.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(tag = "event", rename_all = "snake_case"))]
 pub enum Entry {
@@ -178,19 +179,107 @@ impl Entry {
 /// [`Activity::standing_state`] reads it off a model, an [`EventLog`] keeps
 /// the one its oldest kept entry starts from as its
 /// [`base`](EventLog::base), and [`advance`](Standing::advance) moves it on
-/// by an entry, by the model's count rule. With the `serde` feature it is
-/// `Serialize` and `Deserialize`.
+/// by an entry, by the model's count rule. [`new`](Standing::new) makes one
+/// from counts and flights in any order. The lists are private, so that
+/// they stay in order and the lookups that search them stay right
+/// ([`counts`](Standing::counts) and [`in_flight`](Standing::in_flight)
+/// read them).
+///
+/// With the `serde` feature it is `Serialize` and `Deserialize`, and
+/// reading refuses a list out of the order of its ids or naming an id
+/// twice; a place written at a count of 0 is left out.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(default))]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Serialize, serde::Deserialize),
+    serde(try_from = "StandingData")
+)]
 pub struct Standing {
     /// Each place holding tokens, with its count, in the order of their ids.
-    pub counts: Vec<(PlaceId, usize)>,
+    pub(crate) counts: Vec<(PlaceId, usize)>,
     /// Each transition in flight, in the order of their ids.
-    pub in_flight: Vec<TransitionId>,
+    pub(crate) in_flight: Vec<TransitionId>,
+}
+
+/// A standing state as written, checked on reading.
+#[cfg(feature = "serde")]
+#[derive(Default, serde::Deserialize)]
+#[serde(default)]
+struct StandingData {
+    counts: Vec<(PlaceId, usize)>,
+    in_flight: Vec<TransitionId>,
+}
+
+#[cfg(feature = "serde")]
+impl TryFrom<StandingData> for Standing {
+    type Error = String;
+
+    fn try_from(data: StandingData) -> Result<Self, Self::Error> {
+        if !data.counts.is_sorted_by(|a, b| a.0 < b.0) {
+            return Err(
+                "a standing state's counts are out of the order of their places, \
+                        or name a place twice"
+                    .to_owned(),
+            );
+        }
+        if !data.in_flight.is_sorted_by(|a, b| a < b) {
+            return Err(
+                "a standing state's transitions in flight are out of order, \
+                        or name a transition twice"
+                    .to_owned(),
+            );
+        }
+        let mut counts = data.counts;
+        counts.retain(|&(_, count)| count > 0);
+        Ok(Standing {
+            counts,
+            in_flight: data.in_flight,
+        })
+    }
 }
 
 impl Standing {
+    /// The state of these counts and these transitions in flight, given in
+    /// any order: each count set in turn, as a [`Count`](Entry::Count)
+    /// entry sets it, so that a later count for a place replaces an earlier
+    /// one and a count of 0 names nothing, and each transition in flight
+    /// once.
+    ///
+    /// ```
+    /// use petritype::{PlaceId, TransitionId};
+    /// use petritype_activity::Standing;
+    ///
+    /// let (a, b) = (PlaceId::new(0), PlaceId::new(1));
+    /// let standing = Standing::new([(b, 2), (a, 1), (b, 3)], [TransitionId::new(0)]);
+    /// assert_eq!(standing.counts(), [(a, 1), (b, 3)]);
+    /// assert_eq!(standing.count(b), 3);
+    /// assert!(standing.is_in_flight(TransitionId::new(0)));
+    /// ```
+    pub fn new(
+        counts: impl IntoIterator<Item = (PlaceId, usize)>,
+        in_flight: impl IntoIterator<Item = TransitionId>,
+    ) -> Standing {
+        let mut standing = Standing::default();
+        for (place, count) in counts {
+            standing.set_count(place, count);
+        }
+        for transition in in_flight {
+            standing.set_in_flight(transition, true);
+        }
+        standing
+    }
+
+    /// Each place holding tokens, with its count, in the order of their
+    /// ids, none at a count of 0.
+    pub fn counts(&self) -> &[(PlaceId, usize)] {
+        &self.counts
+    }
+
+    /// Each transition in flight, in the order of their ids.
+    pub fn in_flight(&self) -> &[TransitionId] {
+        &self.in_flight
+    }
+
     /// Moves the state on by one entry, by the count rule
     /// [`Activity::apply_entry`] follows, and nothing of its levels:
     ///
@@ -250,7 +339,9 @@ impl Standing {
                 }
                 self.set_in_flight(*transition, false);
             }
-            Entry::Added { place, .. } => self.set_count(*place, self.count(*place) + 1),
+            Entry::Added { place, .. } => {
+                self.set_count(*place, self.count(*place).saturating_add(1));
+            }
             Entry::Removed { place, .. } => {
                 self.set_count(*place, self.count(*place).saturating_sub(1));
             }
@@ -289,7 +380,7 @@ impl Standing {
     ///     consumed: vec![(queue, TokenId::new(1))],
     ///     produced: vec![(done, TokenId::new(2))],
     /// };
-    /// let before = Standing { counts: vec![(queue, 2)], in_flight: vec![] };
+    /// let before = Standing::new([(queue, 2)], []);
     /// let mut after = before.clone();
     /// after.advance(&fired);
     /// assert_eq!(after.worked_back(&[fired]), before);
@@ -385,16 +476,16 @@ impl Standing {
     }
 
     /// A model run by `settings` on `grid`'s nodes, every level at 0, with
-    /// these counts and flights set and its account empty.
+    /// these counts and flights set and no account kept: what a player
+    /// folds from.
     fn model_on(&self, grid: &Grid, settings: ActivitySettings) -> Activity {
-        let mut activity = model_on(grid, settings);
+        let mut activity = model_on(grid, settings).without_account();
         for &(place, count) in &self.counts {
             activity.set_count(place, count);
         }
         for &transition in &self.in_flight {
             activity.set_in_flight(transition, true);
         }
-        activity.take_delta();
         activity
     }
 
@@ -441,7 +532,7 @@ impl Standing {
 /// several nets, a net and the nets inside it, numbers every entry of every
 /// one on one sequence, so that a position in one log names the same moment
 /// in every other ([`EventLog::index_at`]).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Logged {
     /// The host's position for the entry, the number a
@@ -511,7 +602,11 @@ impl Logged {
 /// a hundred thousand take some 15 MB; [`bytes`](EventLog::bytes) counts
 /// what a log holds, labels included, for a host that bounds its logs by
 /// memory. With the `serde` feature the log is written as JSON by
-/// `write_json` and read back by `read_json`.
+/// `write_json` and read back by `read_json`. Reading refuses a log that no
+/// log could have become: a capacity of 0, more entries kept than its
+/// capacity, positions that go down from one entry to the next, a base or
+/// a roster out of the order of its ids, or more than
+/// [`MAX_COUNTED`](EventLog::MAX_COUNTED) entries counted.
 ///
 /// ```
 /// use std::time::Duration;
@@ -545,7 +640,11 @@ impl Logged {
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
 #[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Serialize, serde::Deserialize),
+    serde(try_from = "EventLogData")
+)]
 pub struct EventLog {
     /// How many entries the ring keeps, or `None` for every one.
     capacity: Option<usize>,
@@ -555,7 +654,6 @@ pub struct EventLog {
     base: Standing,
     /// The tokens named at the oldest kept entry, and their looks. A log
     /// written before it existed reads with none.
-    #[cfg_attr(feature = "serde", serde(default))]
     tokens: Roster,
     /// How many entries are no longer kept.
     dropped: u64,
@@ -563,9 +661,86 @@ pub struct EventLog {
     /// What the kept entries hold, counted as they come and go.
     #[cfg_attr(feature = "serde", serde(skip))]
     held: usize,
+    /// How many times the log was cleared since it was made or read, so
+    /// that a player following it starts afresh after a clear. Not
+    /// written.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    clears: u64,
+}
+
+/// A log as written, checked on reading.
+#[cfg(feature = "serde")]
+#[derive(serde::Deserialize)]
+struct EventLogData {
+    capacity: Option<usize>,
+    start_unix_ms: Option<u64>,
+    base: Standing,
+    #[serde(default)]
+    tokens: Roster,
+    dropped: u64,
+    entries: VecDeque<Logged>,
+}
+
+#[cfg(feature = "serde")]
+impl TryFrom<EventLogData> for EventLog {
+    type Error = String;
+
+    fn try_from(data: EventLogData) -> Result<Self, Self::Error> {
+        if let Some(capacity) = data.capacity {
+            if capacity == 0 {
+                return Err("an event log keeps at least one entry, not 0".to_owned());
+            }
+            if data.entries.len() > capacity {
+                return Err(format!(
+                    "an event log of capacity {capacity} keeps {} entries",
+                    data.entries.len()
+                ));
+            }
+        }
+        if let Some(at) = data
+            .entries
+            .iter()
+            .zip(data.entries.iter().skip(1))
+            .position(|(a, b)| b.seq < a.seq)
+        {
+            return Err(format!(
+                "an event log's positions go down, from {} to {} at entry {}",
+                data.entries[at].seq,
+                data.entries[at + 1].seq,
+                at + 1
+            ));
+        }
+        if data
+            .dropped
+            .checked_add(data.entries.len() as u64)
+            .is_none_or(|counted| counted > EventLog::MAX_COUNTED)
+        {
+            return Err(format!(
+                "an event log counts {} entries dropped and {} kept, past the {} a log can",
+                data.dropped,
+                data.entries.len(),
+                EventLog::MAX_COUNTED
+            ));
+        }
+        Ok(EventLog {
+            held: data.entries.iter().map(Logged::bytes).sum(),
+            capacity: data.capacity,
+            start_unix_ms: data.start_unix_ms,
+            base: data.base,
+            tokens: data.tokens,
+            dropped: data.dropped,
+            entries: data.entries,
+            clears: 0,
+        })
+    }
 }
 
 impl EventLog {
+    /// The most entries a log read back may count, dropped and kept
+    /// together: 2^63, more than any log can take in, which leaves its
+    /// absolute indices room to grow without overflow.
+    pub const MAX_COUNTED: u64 = 1 << 63;
+
     /// A log keeping the last `capacity` entries (at least one), or every
     /// entry for `None`, begun at `start`, for its file name and the
     /// entries' times (`None` leaves it undated), on `base`, the counts and
@@ -581,6 +756,7 @@ impl EventLog {
             dropped: 0,
             entries: VecDeque::new(),
             held: 0,
+            clears: 0,
         }
     }
 
@@ -594,13 +770,21 @@ impl EventLog {
     /// Adds an entry at the host's position `seq`, `at` after the log's
     /// start, with no look. Past the capacity the oldest entry is dropped
     /// and the base advanced by it.
+    ///
+    /// The positions are the host's to give, and must not go down from one
+    /// entry to the next: two entries of one moment may share one.
+    /// [`index_at`](EventLog::index_at) and
+    /// [`position_at`](EventLog::position_at) search the entries by their
+    /// positions, and read a log whose positions go down wrongly, and
+    /// reading one back from JSON refuses it.
     pub fn push(&mut self, entry: Entry, seq: u64, at: Duration) {
         self.push_with(entry, seq, at, Vec::new());
     }
 
     /// Adds an entry as [`push`](EventLog::push) does, with how each token
     /// it put down or changed looked after it: the looks a reader names
-    /// those tokens by ([`Logged::looks`]).
+    /// those tokens by ([`Logged::looks`]). Its position must not be below
+    /// the last entry's, as for [`push`](EventLog::push).
     pub fn push_with(&mut self, entry: Entry, seq: u64, at: Duration, looks: Vec<(TokenId, Look)>) {
         let logged = Logged {
             seq,
@@ -617,7 +801,7 @@ impl EventLog {
             self.held = self.held.saturating_sub(oldest.bytes());
             self.base.advance(&oldest.entry);
             self.tokens.advance(&oldest);
-            self.dropped += 1;
+            self.dropped = self.dropped.saturating_add(1);
         }
     }
 
@@ -627,7 +811,8 @@ impl EventLog {
         size_of::<EventLog>()
             + self.held
             + self.tokens.bytes()
-            + (self.base.counts.len() + self.base.in_flight.len()) * 16
+            + size_of_val(self.base.counts())
+            + size_of_val(self.base.in_flight())
     }
 
     /// The tokens named at the oldest kept entry, with their looks: the
@@ -693,14 +878,16 @@ impl EventLog {
     /// Drops every entry kept and sets the base to `standing`, the counts
     /// and flights that stand now, naming no token. The capacity and the
     /// start stay, and the entries cleared count as dropped, so that an
-    /// absolute index is never used twice and an [`EventPlayer`] following
-    /// the log sees them go.
+    /// absolute index is never used twice. An [`EventPlayer`] following the
+    /// log starts afresh from the new base at its next
+    /// [`follow`](EventPlayer::follow), whether or not any entry was kept.
     pub fn clear(&mut self, standing: Standing) {
-        self.dropped += self.entries.len() as u64;
+        self.dropped = self.dropped.saturating_add(self.entries.len() as u64);
         self.entries.clear();
         self.held = 0;
         self.base = standing;
         self.tokens = Roster::default();
+        self.clears = self.clears.wrapping_add(1);
     }
 
     /// The standing state the oldest kept entry starts from: the state the
@@ -738,12 +925,11 @@ impl EventLog {
         w.flush()
     }
 
-    /// Reads a log written by [`write_json`](EventLog::write_json). The
-    /// reader is buffered here.
+    /// Reads a log written by [`write_json`](EventLog::write_json), or one
+    /// written by an earlier version, refusing one no log could have become
+    /// (see [`EventLog`]). The reader is buffered here.
     pub fn read_json(r: impl io::Read) -> io::Result<EventLog> {
-        let mut log: EventLog = serde_json::from_reader(io::BufReader::new(r))?;
-        log.held = log.entries.iter().map(Logged::bytes).sum();
-        Ok(log)
+        Ok(serde_json::from_reader(io::BufReader::new(r))?)
     }
 }
 
@@ -751,14 +937,14 @@ impl EventLog {
 /// absolute index `first`, at or after position `seq`.
 fn position_at(entries: &VecDeque<Logged>, first: u64, seq: u64) -> Option<u64> {
     let at = entries.partition_point(|logged| logged.seq < seq);
-    (at < entries.len()).then(|| first + at as u64)
+    (at < entries.len()).then(|| first.saturating_add(at as u64))
 }
 
 /// The absolute index of the last of `entries`, the first of which has
 /// absolute index `first`, at or before position `seq`.
 fn index_at(entries: &VecDeque<Logged>, first: u64, seq: u64) -> Option<u64> {
     let after = entries.partition_point(|logged| logged.seq <= seq);
-    (after > 0).then(|| first + after as u64 - 1)
+    (after > 0).then(|| first.saturating_add(after as u64 - 1))
 }
 
 /// A replay of an [`EventLog`] by entry rather than by time: each entry is
@@ -797,24 +983,20 @@ pub struct EventPlayer {
     entries: VecDeque<Logged>,
     /// The absolute index of the first entry held.
     first: u64,
+    /// The clears of the log followed, as it last counted them.
+    clears: u64,
     base: Standing,
     settings: ActivitySettings,
     dwell: Duration,
-    every: usize,
-    /// The model before the entry of each absolute index, folded.
-    checkpoints: BTreeMap<u64, Activity>,
-    /// The model after the entry of an absolute index, as `at` last left it.
-    current: Option<(u64, Activity)>,
+    /// The model after each entry, folded.
+    levels: CheckpointCache<Activity>,
     /// The model before the first entry held: the base's counts and flights,
     /// every level at 0.
     fresh: Activity,
     /// The tokens named before the first entry held.
     tokens: Roster,
-    /// The roster before the entry of each absolute index, folded.
-    token_checkpoints: BTreeMap<u64, Roster>,
-    /// The roster after the entry of an absolute index, as `tokens_at` last
-    /// left it.
-    token_current: Option<(u64, Roster)>,
+    /// The roster after each entry, folded.
+    rosters: CheckpointCache<Roster>,
 }
 
 impl EventPlayer {
@@ -836,15 +1018,13 @@ impl EventPlayer {
             grid: grid.clone(),
             entries: log.entries.clone(),
             first: log.first(),
+            clears: log.clears,
             base: log.base.clone(),
             settings,
             dwell,
-            every: checkpoint_every.max(1),
-            checkpoints: BTreeMap::new(),
-            current: None,
+            levels: CheckpointCache::new(checkpoint_every),
             tokens: log.tokens.clone(),
-            token_checkpoints: BTreeMap::new(),
-            token_current: None,
+            rosters: CheckpointCache::new(checkpoint_every),
         }
     }
 
@@ -861,45 +1041,25 @@ impl EventPlayer {
         &self.tokens
     }
 
+    /// The absolute index of the last entry held, or `None` when none is.
+    fn last(&self) -> Option<u64> {
+        let held = u64::try_from(self.entries.len()).ok()?.checked_sub(1)?;
+        Some(self.first.saturating_add(held))
+    }
+
     /// The tokens named after the entry at absolute index `index`, clamped
     /// to the entries held, with how each looked then; the roster before the
     /// first entry when none is held. Folded from the nearest checkpoint, as
     /// [`at`](EventPlayer::at) folds the levels.
     pub fn tokens_at(&mut self, index: u64) -> &Roster {
-        if self.entries.is_empty() {
+        let Some(last) = self.last() else {
             return &self.tokens;
-        }
-        let last = self.first + self.entries.len() as u64 - 1;
-        let target = index.clamp(self.first, last);
-        let from_current = self
-            .token_current
-            .as_ref()
-            .is_some_and(|(after, _)| *after <= target && *after + 1 >= self.first);
-        let checkpoint = self
-            .token_checkpoints
-            .range(self.first..=target + 1)
-            .next_back()
-            .map(|(&before, _)| before);
-        let current_next = self.token_current.as_ref().map_or(0, |c| c.0 + 1);
-        let (mut next, mut roster) = match (from_current, checkpoint) {
-            (true, Some(before)) if before > current_next => {
-                (before, self.token_checkpoints[&before].clone())
-            }
-            (true, _) => {
-                let (after, roster) = self.token_current.take().expect("checked above");
-                (after + 1, roster)
-            }
-            (false, Some(before)) => (before, self.token_checkpoints[&before].clone()),
-            (false, None) => (self.first, self.tokens.clone()),
         };
-        while next <= target {
-            roster.advance(&self.entries[(next - self.first) as usize]);
-            next += 1;
-            if next % self.every as u64 == 0 && !self.token_checkpoints.contains_key(&next) {
-                self.token_checkpoints.insert(next, roster.clone());
-            }
-        }
-        &self.token_current.insert((target, roster)).1
+        let (first, entries) = (self.first, &self.entries);
+        self.rosters
+            .fold(first, last, index, &self.tokens, |roster, k| {
+                roster.advance(&entries[(k - first) as usize]);
+            })
     }
 
     /// The absolute index of the last entry held at or before the host's
@@ -913,64 +1073,35 @@ impl EventPlayer {
     /// The model after the entry at absolute index `index`, clamped to the
     /// entries held; the fresh model on the base when there is none.
     pub fn at(&mut self, index: u64) -> &Activity {
-        if self.entries.is_empty() {
+        let Some(last) = self.last() else {
             return &self.fresh;
-        }
-        let last = self.first + self.entries.len() as u64 - 1;
-        let target = index.clamp(self.first, last);
-        // Where to fold from: the model as `at` last left it, if it stands
-        // at or before the target with every entry after it held; else the
-        // nearest checkpoint; else the fresh model at the first entry.
-        let from_current = self
-            .current
-            .as_ref()
-            .is_some_and(|(after, _)| *after <= target && *after + 1 >= self.first);
-        let checkpoint = self
-            .checkpoints
-            .range(self.first..=target + 1)
-            .next_back()
-            .map(|(&before, _)| before);
-        let (mut next, mut activity) = match (from_current, checkpoint) {
-            (true, Some(before)) if before > self.current.as_ref().map_or(0, |c| c.0 + 1) => {
-                (before, self.checkpoints[&before].clone())
-            }
-            (true, _) => {
-                let (after, activity) = self.current.take().expect("checked above");
-                (after + 1, activity)
-            }
-            (false, Some(before)) => (before, self.checkpoints[&before].clone()),
-            (false, None) => (self.first, self.fresh.clone()),
         };
-        while next <= target {
-            let logged = &self.entries[(next - self.first) as usize];
-            if next > 0 {
-                activity.tick(self.dwell);
-            }
-            activity.apply_entry(&logged.entry);
-            next += 1;
-            if next % self.every as u64 == 0 && !self.checkpoints.contains_key(&next) {
-                self.checkpoints.insert(next, activity.clone());
-            }
-        }
-        &self.current.insert((target, activity)).1
+        let (first, entries, dwell) = (self.first, &self.entries, self.dwell);
+        self.levels
+            .fold(first, last, index, &self.fresh, |activity, k| {
+                if k > 0 {
+                    activity.tick(dwell);
+                }
+                activity.apply_entry(&entries[(k - first) as usize].entry);
+            })
     }
 
     /// Brings the entries up to `log`'s: those it took since are added, and
     /// those it dropped are dropped here too, with the checkpoints before
     /// them, the base taken from the log. The entries held keep their
-    /// absolute indices. A log whose first entry is older than the player's,
-    /// another log, gives its entries afresh.
+    /// absolute indices. A log cleared since, or whose first entry is older
+    /// than the player's, another log, gives its entries afresh, on its
+    /// base, with every fold dropped.
     pub fn follow(&mut self, log: &EventLog) {
-        let (theirs, end) = (log.first(), log.first() + log.len() as u64);
-        if theirs < self.first {
+        let (theirs, end) = (log.first(), log.first().saturating_add(log.len() as u64));
+        if log.clears != self.clears || theirs < self.first {
             self.entries = log.entries.clone();
             self.first = theirs;
+            self.clears = log.clears;
             self.rebase(log.base.clone());
             self.tokens = log.tokens.clone();
-            self.checkpoints.clear();
-            self.current = None;
-            self.token_checkpoints.clear();
-            self.token_current = None;
+            self.levels.clear();
+            self.rosters.clear();
             return;
         }
         if theirs > self.first {
@@ -979,25 +1110,10 @@ impl EventPlayer {
             self.first = theirs;
             self.rebase(log.base.clone());
             self.tokens = log.tokens.clone();
-            let first = self.first;
-            self.checkpoints.retain(|&before, _| before >= first);
-            self.token_checkpoints.retain(|&before, _| before >= first);
-            if self
-                .current
-                .as_ref()
-                .is_some_and(|(after, _)| *after + 1 < first)
-            {
-                self.current = None;
-            }
-            if self
-                .token_current
-                .as_ref()
-                .is_some_and(|(after, _)| *after + 1 < first)
-            {
-                self.token_current = None;
-            }
+            self.levels.forget_before(theirs);
+            self.rosters.forget_before(theirs);
         }
-        let have = self.first + self.entries.len() as u64;
+        let have = self.first.saturating_add(self.entries.len() as u64);
         for index in have..end {
             if let Some(logged) = log.get(index) {
                 self.entries.push_back(logged.clone());
@@ -1044,7 +1160,7 @@ impl EventPlayer {
 
     /// How many entries apart the checkpoints are.
     pub fn checkpoint_every(&self) -> usize {
-        self.every
+        self.levels.every()
     }
 
     /// Folds under new settings from now on: a change drops every
@@ -1071,10 +1187,10 @@ impl EventPlayer {
         self.base = base;
     }
 
-    /// Every fold made so far dropped, and the fresh model made again.
+    /// Every fold of the levels made so far dropped, and the fresh model
+    /// made again. The rosters do not hang on the settings or the dwell.
     fn refold(&mut self) {
-        self.checkpoints.clear();
-        self.current = None;
+        self.levels.clear();
         self.fresh = self.base.model_on(&self.grid, self.settings.clone());
     }
 }
@@ -1156,7 +1272,8 @@ mod tests {
     /// `Stage` in turn, a truck that takes the whole staging area, leaves
     /// every fourth parcel for the next and counts its loads in a fleet it
     /// changes in place, an inspection that refuses a heavy parcel and puts
-    /// it back, and a scale that loses one.
+    /// it back, and a scale that loses one. `Inspection` and `Scale` are its
+    /// ports, where the run puts parcels in and takes one out.
     fn parcel_run() -> Run {
         let mut b = NetBuilder::new();
         let receiving = b.place::<u32>("Receiving");
@@ -1166,6 +1283,8 @@ mod tests {
         let fleet = b.place::<u32>("Fleet");
         let inspection = b.place::<u32>("Inspection");
         let scale = b.place::<u32>("Scale");
+        b.port(inspection);
+        b.port(scale);
         b.seed(receiving, [5, 12, 30, 8]);
         b.seed(fleet, [0]);
         let sort = b
@@ -1698,7 +1817,7 @@ mod tests {
             // failure of it from one in one go, which it reads it as; so
             // every start with nothing in flight.
             let mut tried = 0;
-            for from in (0..entries.len()).filter(|&from| states[from].in_flight.is_empty()) {
+            for from in (0..entries.len()).filter(|&from| states[from].in_flight().is_empty()) {
                 for to in from..=entries.len() {
                     assert_eq!(
                         states[to].worked_back(&entries[from..to]),
@@ -1713,10 +1832,7 @@ mod tests {
         // A correction of a flight was the other way before; one of a count
         // keeps the count.
         let (place, transition) = (PlaceId::new(0), TransitionId::new(0));
-        let after = Standing {
-            counts: vec![(place, 3)],
-            in_flight: vec![transition],
-        };
+        let after = Standing::new([(place, 3)], [transition]);
         let back = after.worked_back(&[
             Entry::Count { place, count: 3 },
             Entry::InFlight {
@@ -1724,13 +1840,7 @@ mod tests {
                 on: true,
             },
         ]);
-        assert_eq!(
-            back,
-            Standing {
-                counts: vec![(place, 3)],
-                in_flight: vec![]
-            }
-        );
+        assert_eq!(back, Standing::new([(place, 3)], []));
     }
 
     #[test]
@@ -1849,6 +1959,53 @@ mod tests {
     }
 
     #[test]
+    fn a_log_whose_indices_end_at_the_largest_u64_plays_to_its_last_entry() {
+        // Reading refuses a log this far on, so it is set here by hand.
+        let mut b = NetBuilder::new();
+        let inbox = b.place::<u32>("Inbox");
+        let net = b.build().expect("the net builds");
+        let mut log = EventLog::new(None, None, Standing::default());
+        log.dropped = u64::MAX - 2;
+        let look = Look::new("last", None, 200);
+        for seq in 0..3 {
+            let token = TokenId::new(seq);
+            let entry = Entry::Added {
+                place: inbox.id(),
+                token,
+            };
+            log.push_with(entry, seq, Duration::ZERO, vec![(token, look.clone())]);
+        }
+        assert_eq!(log.index_at(2), Some(u64::MAX));
+        assert_eq!(log.position_at(2), Some(u64::MAX));
+        let mut player =
+            EventPlayer::new(&log, &grid_of(&net), ActivitySettings::default(), ms(1), 1);
+        for index in [u64::MAX, 0, u64::MAX - 1, u64::MAX] {
+            let expected = (index.max(u64::MAX - 2) - (u64::MAX - 3)) as usize;
+            assert_eq!(
+                player.at(index).place(inbox.id()).map(|p| p.count),
+                Some(expected),
+                "{index}"
+            );
+            assert_eq!(player.tokens_at(index).tokens(inbox.id()).len(), expected);
+        }
+        assert_eq!(
+            player.tokens_at(u64::MAX).look(TokenId::new(2)),
+            Some(&look)
+        );
+        player.follow(&log);
+        assert_eq!((player.first(), player.len()), (u64::MAX - 2, 3));
+        assert_eq!(player.index_at(9), Some(u64::MAX));
+    }
+
+    #[test]
+    fn entries_and_logged_entries_are_eq() {
+        fn eq<T: Eq>() {}
+        eq::<Entry>();
+        eq::<Logged>();
+        eq::<Standing>();
+    }
+
+    #[test]
     fn a_file_name_shares_the_records_stem() {
         let start = std::time::UNIX_EPOCH + Duration::from_millis(1_792_499_696_789);
         let dated = EventLog::new(None, Some(start), Standing::default());
@@ -1860,12 +2017,10 @@ mod tests {
         let undated = EventLog::new(None, None, Standing::default());
         assert_eq!(undated.file_name("parcel"), "parcel-undated.events.json");
         assert_eq!(undated.file_name("a/b"), "a_b-undated.events.json");
-        let record = |start_unix_ms| crate::Record {
-            grid: empty_grid(),
-            bin_width_ms: 100,
-            start_unix_ms,
-            settings: None,
-            bins: Vec::new(),
+        let record = |start_unix_ms| {
+            let mut record = crate::Record::new(empty_grid(), ms(100));
+            record.start_unix_ms = start_unix_ms;
+            record
         };
         for (log, record) in [
             (&dated, record(Some(1_792_499_696_789))),
@@ -1910,7 +2065,7 @@ mod tests {
             };
             log.push_with(entry, seq as u64, ms(37 * seq as u64), looks);
         }
-        assert!(log.dropped() > 0 && !log.base().counts.is_empty());
+        assert!(log.dropped() > 0 && !log.base().counts().is_empty());
         let mut text = Vec::new();
         log.write_json(&mut text).expect("it writes");
         let back = EventLog::read_json(text.as_slice()).expect("and reads back");

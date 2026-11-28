@@ -25,8 +25,7 @@ use crate::transition::TransitionInfo;
 
 impl Net {
     /// A consistent, owned copy of everything a reader can see: the marking,
-    /// the switches, the in-flight set, the parameters and the counters
-    /// (DESIGN §8.2).
+    /// the switches, the in-flight set, the parameters and the counters.
     ///
     /// Taking one changes nothing: no event is emitted and no counter moves,
     /// including [`state_counter`](Net::state_counter). Reading is not a
@@ -76,12 +75,18 @@ impl Net {
     /// [`NetError::NoClonePlace`] if any place was declared with
     /// [`place_no_clone`](crate::NetBuilder::place_no_clone) (or, without
     /// `serde`, with `place_nested`), since its tokens cannot be copied, and
-    /// half a state is no state. Nothing is cloned before every place has
-    /// been checked, so that refusal costs nothing. With `serde`,
-    /// `NetError::CannotFork` naming the place and the first token whose
-    /// fork failed, and why: a token type that keeps the default `fork`, an
-    /// inner net that no template built. A subnet's own refusal is either
-    /// of these, naming the subnet's place.
+    /// half a state is no state. With `serde`, `NetError::CannotFork` naming
+    /// the place and the first token whose fork failed, and why: a token
+    /// type that keeps the default `fork`, an inner net that no template
+    /// built. A subnet's own refusal is either of these, naming the
+    /// subnet's place.
+    ///
+    /// Every place of this net is checked before anything is cloned, so a
+    /// `NoClonePlace` of its own costs nothing. A subnet's places are
+    /// checked by the subnet's own snapshot, once this net's places have
+    /// been copied, and a fork fails as it is made, after the places before
+    /// it have been copied: those refusals come after that work, which is
+    /// then dropped.
     pub fn snapshot(&self) -> Result<Snapshot, NetError> {
         // Checked first, all of it, so that a net with a `no_clone` place in
         // the middle does not pay for copying the places before it. A subnet
@@ -133,6 +138,7 @@ impl Net {
             subnets,
             transitions,
             groups: self.groups.clone(),
+            open: self.open,
             params: self.params.clone(),
             label_limit: self.label_limit,
             topology_counter: self.topology_counter,
@@ -255,7 +261,7 @@ struct SnapshotTransition {
     name: String,
     inputs: Vec<(PlaceId, crate::EdgeKind)>,
     filters: Vec<Option<crate::Filter>>,
-    reaches: Vec<Vec<String>>,
+    reaches: Arc<[Vec<String>]>,
     params: Vec<&'static str>,
     outputs: Vec<PlaceId>,
     positional: bool,
@@ -283,8 +289,8 @@ struct SnapshotTransition {
 ///
 /// # Why it is not a `Net`
 ///
-/// DESIGN §8.2 wrote `snapshot() -> Result<Net, NetError>`, a deep copy of
-/// the net. That cannot be built. A transition's body is a
+/// The obvious design, `snapshot() -> Result<Net, NetError>`, a deep copy
+/// of the net, cannot be built. A transition's body is a
 /// `Box<dyn FnMut ..>`, which has no `Clone`, and the body of a transition
 /// that is [in flight](Net::in_flight) is not in the net at all. It is
 /// travelling with a [`Firing`](crate::Firing) somewhere else. So a snapshot
@@ -297,7 +303,8 @@ struct SnapshotTransition {
 /// JSON read exactly as they do on the net; each transition's name, wiring,
 /// switch, in-flight mark, detachability and declared parameter types; the
 /// net's groups and which group each node is in; the parameter *values*,
-/// cloned; the label limit; and the three counters.
+/// cloned; the label limit; the three counters; and each subnet place's
+/// subnet, as a snapshot of its own.
 ///
 /// What is **not** here is the fireable set. Fireability depends on guards,
 /// which are closures over the live net (`Fn(&Net) -> bool`): they cannot be
@@ -308,7 +315,7 @@ struct SnapshotTransition {
 ///
 /// `Debug` prints place names with counts and transition names. It never
 /// prints a token's contents in bulk, and never a parameter value, which has
-/// no `Debug` bound at all (DESIGN §10).
+/// no `Debug` bound at all.
 pub struct Snapshot {
     id: NetId,
     /// Each place in an `Arc`: a nested place's tokens were forked once,
@@ -323,6 +330,9 @@ pub struct Snapshot {
     /// The net's group names, in declared order: part of the definition,
     /// carried so that the snapshot reads and draws as the net does.
     groups: Vec<String>,
+    /// Whether the net's definition declared it open, carried for the same
+    /// reason.
+    open: bool,
     params: Vec<ParamSlot>,
     label_limit: usize,
     topology_counter: u64,
@@ -349,6 +359,11 @@ impl Snapshot {
     /// The names of the net's groups, in declared order: [`Net::groups`].
     pub fn groups(&self) -> impl Iterator<Item = &str> {
         self.groups.iter().map(String::as_str)
+    }
+
+    /// Whether the net's definition declared it open: [`Net::is_open`].
+    pub fn is_open(&self) -> bool {
+        self.open
     }
 
     /// Every transition, in declaration order: [`Net::transitions`].
@@ -437,18 +452,22 @@ impl Snapshot {
         debug_in(&self.places, place, token)
     }
 
-    /// One token as JSON: [`Net::json`], for a place marked
-    /// [`serializable`](crate::NetBuilder::serializable).
+    /// One token as JSON, or why it has none: [`Net::json`], for a place
+    /// marked [`serializable`](crate::NetBuilder::serializable).
     #[cfg(feature = "serde")]
-    pub fn json(&self, place: PlaceId, token: TokenId) -> Option<serde_json::Value> {
+    pub fn json(
+        &self,
+        place: PlaceId,
+        token: TokenId,
+    ) -> Option<Result<serde_json::Value, crate::NoJsonForm>> {
         json_in(&self.places, place, token)
     }
 
     /// The inner nets of one token of a nested place, as they were:
     /// [`Net::nested`]. Read-only, as everything on a snapshot is.
     ///
-    /// They are the forks [`Net::snapshot`] made of the live ones (DESIGN
-    /// §6.6), so they have their own [`NetId`]s; their markings, parameters
+    /// They are the forks [`Net::snapshot`] made of the live ones, so they
+    /// have their own [`NetId`]s; their markings, parameters
     /// and switches are the live nets' at that moment. Without the `serde`
     /// feature a net with a nested place cannot be snapshotted, and this is
     /// always `None`.
@@ -475,6 +494,7 @@ impl Snapshot {
     /// let mut b = NetBuilder::new();
     /// let level_3 = b.subnet_place("Level 3", level);
     /// let door = b.port_of::<String>(level_3, "Lobby");
+    /// b.open(); // so that the program may put a hero at the door
     /// let mut world = b.build()?;
     /// let ada = world.put(door, "Ada".to_owned());
     ///
@@ -630,6 +650,7 @@ impl Clone for Snapshot {
                 })
                 .collect(),
             groups: self.groups.clone(),
+            open: self.open,
             params: self.params.clone(),
             label_limit: self.label_limit,
             topology_counter: self.topology_counter,
@@ -664,6 +685,7 @@ impl fmt::Debug for Snapshot {
                     .collect::<Vec<_>>(),
             )
             .field("groups", &self.groups)
+            .field("open", &self.open)
             .field("params", &self.params)
             .field("state_counter", &self.state_counter)
             .field("topology_counter", &self.topology_counter)
@@ -706,6 +728,7 @@ mod tests {
         let mut b = NetBuilder::new();
         let inbox = b.place::<u32>("Inbox");
         let out = b.place::<u32>("Out");
+        b.port(inbox);
         b.seed(inbox, [1]);
         b.transition("Copy", (TakeEdge(inbox),), (out,), |n: u32| (n,));
         let mut net = b.build().expect("a one-transition net");

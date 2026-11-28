@@ -2,14 +2,18 @@
 //! since 2026-11-23), `Owner` driven directly with a fixed clock: `inject`
 //! answers `closed_net` at a place of a closed net that is not one of its
 //! ports, at the top level and by path, and lands at a port and in a net
-//! declared open, whose topology says `open: true`; and the `post-office`
-//! conformance net, step by step, as the nineteenth shared recorded
-//! fixture goes.
+//! declared open, whose topology says `open: true`; inside a closed net
+//! (since 2026-11-28) it answers `closed_net` at any place of the nets
+//! inside, by path and by nested id alike, and a body's write at a port its
+//! edge does not name fails its firing; and the `post-office` conformance
+//! net, step by step, as the nineteenth shared recorded fixture goes.
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use petritype::{Net, NetBuilder, TakeEdge};
+use petritype::{
+    MutateEdge, Nested, Net, NetBuilder, NetError, Params, Stepping, TakeEdge, Templates,
+};
 use petritype_runner::protocol::Request;
 use petritype_runner::{Input, LoadError, NetEntry, Outgoing, Owner};
 use serde_json::{Value, json};
@@ -173,7 +177,7 @@ fn an_inject_at_the_top_level_lands_at_a_port_and_is_closed_net_anywhere_else() 
     );
     assert_eq!(
         state["topology"]["places"][0]["port"], true,
-        "a reader knows it is closed by its port"
+        "Inbox, its port, where a write from outside lands"
     );
 }
 
@@ -189,8 +193,10 @@ fn an_inject_into_a_net_declared_open_lands_anywhere_and_its_topology_says_so() 
 
 #[test]
 fn an_inject_by_path_into_a_subnet_is_held_to_its_ports() {
-    // `levels`: the world marks no port and is open; each level is closed.
-    let mut h = H::loaded(nets::levels_registry(), "levels");
+    // The world of `levels` declared open, so that the subnet's own rule
+    // is what holds the inject; each level is closed.
+    let levels = vec![NetEntry::new("open-levels", nets::levels::open_levels)];
+    let mut h = H::loaded(levels, "open-levels");
     let level = json!([{"place": "Level 1"}]);
     let landed = h.result(
         "inject",
@@ -207,15 +213,298 @@ fn an_inject_by_path_into_a_subnet_is_held_to_its_ports() {
     assert_eq!(inside["marking"]["places"]["Arena"]["count"], 0);
 }
 
+// ----- a closed net shields the nets inside it (since 2026-11-28) --------------
+
+/// The template `Post`: `Inbox`, its port, and `Ledger`, both of strings
+/// and serializable, and no transitions.
+fn post_templates() -> Templates {
+    let mut templates = Templates::new();
+    templates.register("Post", |_: &Params| {
+        let mut b = NetBuilder::new();
+        let inbox = b.place::<String>("Inbox");
+        let ledger = b.place::<String>("Ledger");
+        b.serializable(inbox);
+        b.serializable(ledger);
+        b.port(inbox);
+        b.build()
+    });
+    templates
+}
+
+/// A sorting office: `Sacks`, a place of nets (passive), holding a `Post`,
+/// and the subnet place `Branch`, holding another. Declared open when
+/// `open` is.
+fn sorting_office(open: bool) -> Result<Net, LoadError> {
+    let templates = post_templates();
+    let build = || {
+        templates
+            .build("Post", &petritype::Params::new())
+            .map_err(|error| LoadError::Other(error.to_string()))
+    };
+    let mut b = NetBuilder::new();
+    b.templates(&templates);
+    let sacks = b.place_nested::<Net>("Sacks");
+    b.serializable(sacks);
+    b.stepping(sacks, Stepping::Passive);
+    b.seed(sacks, [build()?]);
+    b.subnet_place("Branch", build()?);
+    if open {
+        b.open();
+    }
+    Ok(b.build()?)
+}
+
+fn offices() -> Vec<NetEntry> {
+    vec![
+        NetEntry::new("sorting-office", |_| sorting_office(false)),
+        NetEntry::new("open-sorting-office", |_| sorting_office(true)),
+    ]
+}
+
+#[test]
+fn an_inject_by_path_and_by_nested_id_lands_inside_an_open_net_only() {
+    // Into the post in a sack and the post in the subnet place, each
+    // addressed both ways: inside the closed office each answers
+    // `closed_net`, naming the office, and nothing is added; inside the
+    // open one each lands.
+    for open in [false, true] {
+        let name = if open {
+            "open-sorting-office"
+        } else {
+            "sorting-office"
+        };
+        let mut h = H::loaded(offices(), name);
+        let places = h.result("get_state", json!({}))["marking"]["places"].clone();
+        let carried = places["Sacks"]["tokens"][0]["nets"][0].clone();
+        let subnet = places["Branch"]["subnet"].clone();
+        for net in [carried, subnet] {
+            for address in [
+                json!({"path": net["path"]}),
+                json!({"nested_id": net["nested_id"]}),
+            ] {
+                let mut params = json!({"place": "Inbox", "token": "Letter"});
+                params
+                    .as_object_mut()
+                    .unwrap()
+                    .extend(address.as_object().unwrap().clone());
+                if open {
+                    let landed = h.result("inject", params);
+                    assert_eq!(landed["status"], "injected", "{address}");
+                } else {
+                    let (error, lines) = h.error("inject", params);
+                    assert_eq!(error["code"], "closed_net", "{address}");
+                    let message = error["message"].as_str().expect("a message");
+                    assert!(
+                        message.contains("of net \"Post\": the net is inside net")
+                            && message.contains("which is closed"),
+                        "{message}"
+                    );
+                    assert!(lines.is_empty(), "nothing was told: {lines:#?}");
+                }
+            }
+            // The place and the token are answered first, inside a closed
+            // net as anywhere.
+            let (error, _) = h.error(
+                "inject",
+                json!({"place": "Nowhere", "token": "Letter", "path": net["path"]}),
+            );
+            assert_eq!(error["code"], "unknown_place");
+            let (error, _) = h.error(
+                "inject",
+                json!({"place": "Inbox", "token": 7, "path": net["path"]}),
+            );
+            assert_eq!(error["code"], "invalid_token");
+            let inside = h.result("get_state", json!({"nested_id": net["nested_id"]}));
+            assert_eq!(
+                inside["marking"]["places"]["Inbox"]["count"],
+                if open { 2 } else { 0 }
+            );
+        }
+    }
+}
+
+/// A unit: `Orders In` and `Shots Out`, both serializable ports.
+fn unit_templates() -> Templates {
+    let mut templates = Templates::new();
+    templates.register("Unit", |_: &Params| {
+        let mut b = NetBuilder::new();
+        let orders_in = b.place::<String>("Orders In");
+        let shots_out = b.place::<String>("Shots Out");
+        b.serializable(orders_in);
+        b.serializable(shots_out);
+        b.port(orders_in);
+        b.port(shots_out);
+        b.build()
+    });
+    templates
+}
+
+/// `use`: `Orders` holding `"Hold"`, and `Field` holding a unit; `Use`
+/// takes the order and lends the body the unit through an edge that names
+/// `Orders In`, and the body puts the order into `Shots Out`, which its
+/// edge does not name. Declared open when `open` is.
+fn field(open: bool) -> Result<Net, LoadError> {
+    let templates = unit_templates();
+    let unit = templates
+        .build("Unit", &petritype::Params::new())
+        .map_err(|error| LoadError::Other(error.to_string()))?;
+    let mut b = NetBuilder::new();
+    b.templates(&templates);
+    let orders = b.place::<String>("Orders");
+    let field = b.place_nested::<Net>("Field");
+    b.serializable(orders);
+    b.serializable(field);
+    b.seed(orders, ["Hold".to_owned()]);
+    b.seed(field, [unit]);
+    b.stepping(field, Stepping::Passive);
+    if open {
+        b.open();
+    }
+    b.transition(
+        "Use",
+        (TakeEdge(orders), MutateEdge(field).reaching(["Orders In"])),
+        (),
+        |order: String, unit: &mut Net| -> Result<(), NetError> {
+            let shots = unit.place_ref::<String>("Shots Out").expect("a unit");
+            unit.try_put(shots, order).map(drop)
+        },
+    );
+    Ok(b.build()?)
+}
+
+#[test]
+fn the_runner_fails_the_body_s_write_and_injects_at_the_same_port_inside_an_open_net_only() {
+    for open in [false, true] {
+        let entries = vec![NetEntry::new("use", move |_| field(open))];
+        let mut h = H::loaded(entries, "use");
+        let lines = h.send("step", json!({}));
+        let failed = lines
+            .iter()
+            .find(|line| line["method"] == "failed")
+            .unwrap_or_else(|| panic!("a failed firing: {lines:#?}"));
+        let error = failed["params"]["error"].as_str().expect("an error");
+        assert!(
+            error.contains("\"Shots Out\"") && error.contains(".reaching([\"Shots Out\"])"),
+            "{error}"
+        );
+        let state = h.result("get_state", json!({}));
+        let held = state["marking"]["places"]["Field"]["tokens"][0]["nets"][0].clone();
+        let params = json!({"place": "Shots Out", "path": held["path"], "token": "Shot"});
+        if open {
+            assert_eq!(h.result("inject", params)["status"], "injected");
+        } else {
+            let (error, _) = h.error("inject", params);
+            assert_eq!(error["code"], "closed_net");
+            assert!(
+                error["message"]
+                    .as_str()
+                    .is_some_and(|message| message.contains("is inside net")),
+                "{error}"
+            );
+        }
+        let inside = h.result("get_state", json!({"path": held["path"]}));
+        assert_eq!(
+            inside["marking"]["places"]["Shots Out"]["count"],
+            if open { 1 } else { 0 }
+        );
+    }
+}
+
+// ----- a body replaces the net of a token it was lent ----------------------------
+
+/// A courier, a token that carries a net, its round.
+#[derive(Debug)]
+struct Courier {
+    round: Net,
+}
+
+impl Nested for Courier {
+    fn nets(&self) -> Vec<(&str, &Net)> {
+        vec![("round", &self.round)]
+    }
+    fn nets_mut(&mut self) -> Vec<(&str, &mut Net)> {
+        vec![("round", &mut self.round)]
+    }
+}
+
+/// A round: `Inbox`, its port, started with `inbox`, and `File`, the
+/// round's own move, from there to `Ledger`.
+fn round(inbox: &[&str]) -> Result<Net, petritype::BuildError> {
+    let mut b = NetBuilder::new();
+    let inbox_place = b.place::<String>("Inbox");
+    let ledger = b.place::<String>("Ledger");
+    b.serializable(inbox_place);
+    b.serializable(ledger);
+    b.port(inbox_place);
+    b.seed(inbox_place, inbox.iter().map(|letter| (*letter).to_owned()));
+    b.transition(
+        "File",
+        (TakeEdge(inbox_place),),
+        (ledger,),
+        |letter: String| (letter,),
+    );
+    b.build()
+}
+
+/// `test-depot`: a closed depot whose `Restart` gives the courier it is
+/// lent a new round, with a parcel in its inbox.
+fn depot(_: &petritype_runner::Params) -> Result<Net, LoadError> {
+    let mut b = NetBuilder::new();
+    let couriers = b.place_nested::<Courier>("Couriers");
+    let orders = b.place::<String>("Orders");
+    let done = b.place::<String>("Done");
+    b.serializable(orders);
+    b.serializable(done);
+    b.port(orders);
+    b.seed(couriers, [Courier { round: round(&[])? }]);
+    b.seed(orders, ["Restart".to_owned()]);
+    b.transition(
+        "Restart",
+        (MutateEdge(couriers), TakeEdge(orders)),
+        (done,),
+        |courier: &mut Courier, order: String| {
+            courier.round = round(&["Parcel"]).expect("a round");
+            (order,)
+        },
+    );
+    Ok(b.build()?)
+}
+
+#[test]
+fn a_net_a_body_puts_in_a_token_it_was_lent_has_a_new_nested_id_and_the_old_one_is_unknown() {
+    let mut h = H::loaded(vec![NetEntry::new("test-depot", depot)], "test-depot");
+    let round_of_the_courier = |h: &mut H| {
+        let state = h.result("get_state", json!({}));
+        let nets = &state["marking"]["places"]["Couriers"]["tokens"][0]["nets"];
+        assert_eq!(nets.as_array().map(Vec::len), Some(1), "{nets:#}");
+        nets[0].clone()
+    };
+    let before = round_of_the_courier(&mut h);
+    assert_eq!(h.result("step", json!({}))["transition"], "Restart");
+    let after = round_of_the_courier(&mut h);
+    assert_ne!(after["nested_id"], before["nested_id"]);
+    assert_eq!(
+        after["path"], before["path"],
+        "the same token, the same net name"
+    );
+    let (error, _) = h.error("get_state", json!({"nested_id": before["nested_id"]}));
+    assert_eq!(error["code"], "unknown_net");
+    let new = h.result("get_state", json!({"nested_id": after["nested_id"]}));
+    assert_eq!(new["marking"]["places"]["Inbox"]["count"], 1);
+    let stepped = h.result("step", json!({}));
+    assert_eq!(stepped["nested_id"], after["nested_id"]);
+    assert_eq!(stepped["transition"], "File");
+}
+
 // ----- post-office ---------------------------------------------------------------
 
 #[test]
 fn the_post_office_delivers_at_a_port_refuses_an_inject_into_its_ledger_and_a_forgery() {
     let mut h = H::loaded(nets::post_office_registry(), "post-office");
     let state = h.result("get_state", json!({}));
-    assert!(
-        state["topology"].get("open").is_none(),
-        "it marks no port, and is open without saying so"
+    assert_eq!(
+        state["topology"]["open"], true,
+        "declared open, so that each post is judged by its own rule"
     );
     let tokens = state["marking"]["places"]["Posts"]["tokens"]
         .as_array()

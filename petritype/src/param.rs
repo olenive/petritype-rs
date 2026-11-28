@@ -35,17 +35,21 @@
 use std::any::{TypeId, type_name};
 use std::fmt;
 use std::marker::PhantomData;
+#[cfg(feature = "serde")]
+use std::sync::OnceLock;
 
 use crate::binding::Extract;
 use crate::edge::{InputEdge, InputSpec, Reads, owned_token};
 use crate::erased::ErasedCursor;
+#[cfg(feature = "serde")]
+use crate::keys::KeyValue;
 use crate::place::{CloneFn, ErasedToken};
 #[cfg(feature = "serde")]
 use crate::place::{FromJsonFn, ToJsonFn};
 use crate::sealed::EdgeSealed;
 
 /// One input position of a transition that is not a place: the body is handed
-/// a clone of the net's current value of type `T` (DESIGN §10).
+/// a clone of the net's current value of type `T`.
 ///
 /// Written `Param::<T>::new()` in an input tuple, beside the edges:
 ///
@@ -66,11 +70,10 @@ use crate::sealed::EdgeSealed;
 /// # Ok::<(), petritype::BuildError>(())
 /// ```
 ///
-/// DESIGN §10 writes the bare `Param::<ApiToken>`; a struct with a
-/// [`PhantomData`] field needs a value, so the spelling here is
-/// `Param::<ApiToken>::new()` (or `Param::default()` where the type can be
-/// inferred). Like the edge handles it is `Copy` and carries no data at all:
-/// the type parameter *is* the declaration.
+/// The `::new()` is what makes the value, since a struct with a
+/// [`PhantomData`] field has to be constructed; `Param::default()` does the
+/// same where the type can be inferred. Like the edge handles it is `Copy`
+/// and carries no data at all: the type parameter *is* the declaration.
 ///
 /// # What the body receives
 ///
@@ -190,13 +193,66 @@ pub(crate) struct ParamSlot {
     /// `from_json_of::<T>`, `Some` exactly when [`name`](ParamSlot::name) is.
     #[cfg(feature = "serde")]
     pub(crate) from_json: Option<FromJsonFn>,
+    /// The value as a [`Clause::IsParam`](crate::Clause::IsParam) reads it,
+    /// once it has been read: its JSON is written the first time a clause
+    /// asks for it, and again only after the value is [set](ParamSlot::set),
+    /// where every scan of [`fireable`](crate::Net::fireable) wrote it for
+    /// every keyed edge that names it.
+    #[cfg(feature = "serde")]
+    pub(crate) key: OnceLock<Option<KeyValue>>,
 }
 
 impl ParamSlot {
+    /// A slot holding `value`, its key not read yet.
+    pub(crate) fn new(
+        type_id: TypeId,
+        type_name: &'static str,
+        value: ErasedToken,
+        clone: CloneFn,
+    ) -> ParamSlot {
+        ParamSlot {
+            type_id,
+            type_name,
+            value,
+            clone,
+            #[cfg(feature = "serde")]
+            name: None,
+            #[cfg(feature = "serde")]
+            to_json: None,
+            #[cfg(feature = "serde")]
+            from_json: None,
+            #[cfg(feature = "serde")]
+            key: OnceLock::new(),
+        }
+    }
+
     /// A copy of the current value, for a body about to run or for a
     /// [`Snapshot`](crate::Snapshot).
     pub(crate) fn clone_value(&self) -> ErasedToken {
         (self.clone)(&*self.value)
+    }
+
+    /// Replaces the value: the one way it changes, so that the key read
+    /// from the old one goes with it.
+    pub(crate) fn set(&mut self, value: ErasedToken) {
+        self.value = value;
+        #[cfg(feature = "serde")]
+        {
+            self.key = OnceLock::new();
+        }
+    }
+
+    /// The value as a key value, read from its JSON: `None` for a
+    /// parameter without a wire name, or whose JSON is not a string, an
+    /// integer or a boolean. Read once per value.
+    #[cfg(feature = "serde")]
+    pub(crate) fn key(&self) -> Option<&KeyValue> {
+        self.key
+            .get_or_init(|| {
+                let json = (self.to_json?)(&*self.value).ok()?;
+                KeyValue::from_json(&json)
+            })
+            .as_ref()
     }
 }
 
@@ -215,6 +271,9 @@ impl Clone for ParamSlot {
             to_json: self.to_json,
             #[cfg(feature = "serde")]
             from_json: self.from_json,
+            // The copy's key is read from the copy, when a clause asks.
+            #[cfg(feature = "serde")]
+            key: OnceLock::new(),
         }
     }
 }

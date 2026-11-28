@@ -81,6 +81,8 @@ fn depot() -> Depot {
     );
     b.seed(shelf, [parcel("Lamp", true, 5)]);
     b.seed(bin, [parcel("Book", false, 9)]);
+    // The tests change every place from outside, by every method.
+    b.open();
     b.transition("Shelve", (TakeEdge(inbox),), (shelf,), |p: Parcel| (p,));
     b.transition(
         "Clear",

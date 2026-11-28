@@ -170,6 +170,13 @@ fn till() -> (Net, Till) {
         ("rice", 180),
     ]));
     b.seed(till_open, [s("open")]);
+    // Orders come in, shelves are stocked and the till is closed from
+    // outside: each is a port.
+    b.port(orders);
+    b.port(till_open);
+    for shelf in shelves {
+        b.port(shelf);
+    }
 
     let [s1, s2, s3, s4, s5, s6, s7, s8, s9, s10, s11] = shelves;
     let [r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11] = restock;

@@ -29,6 +29,7 @@ struct Speed(u64);
 struct Note(String);
 
 /// `Queue`: `Todo -> Work -> Done`, numbers, `speed` from its parameters.
+/// Work arrives at `Todo`, its port.
 fn queue(params: &Params) -> Result<Net, Box<dyn std::error::Error + Send + Sync>> {
     let speed = params
         .get("speed")
@@ -39,6 +40,7 @@ fn queue(params: &Params) -> Result<Net, Box<dyn std::error::Error + Send + Sync
     let done = b.place::<u64>("Done");
     b.serializable(todo);
     b.serializable(done);
+    b.port(todo);
     b.param(Speed(speed));
     b.serializable_param::<Speed>("speed");
     b.param(Note(String::from("as built")));
@@ -95,12 +97,14 @@ impl Nested for Crate {
     }
 }
 
-/// A depot of buses, its queues rebuilt from `templates`.
+/// A depot of buses, its queues rebuilt from `templates`. Buses arrive at
+/// `Yard`, its port.
 fn depot(templates: &Templates, buses: Vec<Bus>) -> (Net, petritype::PlaceRef<Bus>) {
     let mut b = NetBuilder::new();
     b.templates(templates);
     let yard = b.place_nested::<Bus>("Yard");
     b.serializable(yard);
+    b.port(yard);
     b.seed(yard, buses);
     (b.build().expect("builds"), yard)
 }
@@ -127,6 +131,8 @@ fn a_plain_net_round_trips_its_marking_through_json_text() {
         b.serializable(names);
         b.serializable(ages);
         b.serializable(empty);
+        b.port(names);
+        b.port(ages);
         (b.build().expect("builds"), names, ages)
     }
     let (mut net, names, ages) = build();
@@ -568,6 +574,7 @@ mod depth_two {
         let mut b = NetBuilder::new();
         let items = b.place::<String>("Items");
         b.serializable(items);
+        b.port(items);
         b.build()
     }
 
@@ -581,6 +588,7 @@ mod depth_two {
             }
             let seats = b.place_nested::<Passenger>("Seats");
             b.serializable(seats);
+            b.port(seats);
             b.build()
         }
     }

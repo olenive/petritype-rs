@@ -25,6 +25,7 @@
 //! let inbox = b.place::<String>("Inbox");
 //! let parsed = b.place::<Parsed>("Parsed");
 //! let rejected = b.place::<Rejected>("Rejected");
+//! b.port(inbox);
 //!
 //! b.transition(
 //!     "Parse",
@@ -58,7 +59,7 @@
 //! - `Vec<T>` where `T: RoutedOutput`: every element emits, so a `Vec` is
 //!   always a batch;
 //! - `Result<T, E>` where `T: RoutedOutput`: `Err` is a failure, as in every
-//!   other output form (DESIGN §7), never a route.
+//!   other output form, never a route.
 //!
 //! There is deliberately **no** impl for a bare `T`: it would overlap
 //! `Option<T>` and `Vec<T>`, and a std type has no place of its own to be

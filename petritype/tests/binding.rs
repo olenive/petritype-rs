@@ -373,10 +373,10 @@ fn a_failing_body_restores_what_the_fields_consumed() {
     assert_eq!(net.count(names.id()), 1);
 }
 
-/// One edge per place per transition counts the edges inside a struct as
-/// any others, within it and against the rest of the tuple.
+/// The shared-place check counts the edges inside a struct as any others,
+/// within it and against the rest of the tuple.
 #[test]
-fn a_place_read_twice_through_a_struct_is_a_duplicate() {
+fn a_snapshot_beside_another_edge_on_its_place_through_a_struct_is_refused() {
     let mut b = NetBuilder::new();
     let accounts = b.place::<u32>("Accounts");
     let notes = b.place::<String>("Notes");
@@ -392,7 +392,7 @@ fn a_place_read_twice_through_a_struct_is_a_duplicate() {
     );
     assert!(matches!(
         b.build(),
-        Err(BuildError::DuplicateInputPlace { ref transition, ref place })
+        Err(BuildError::EdgeCannotSharePlace { ref transition, ref place, kind: EdgeKind::Snapshot })
             if transition == "Self Transfer" && place == "Accounts"
     ));
 
@@ -415,7 +415,8 @@ fn a_place_read_twice_through_a_struct_is_a_duplicate() {
     );
     assert!(matches!(
         b.build(),
-        Err(BuildError::DuplicateInputPlace { ref place, .. }) if place == "Notes"
+        Err(BuildError::EdgeCannotSharePlace { ref place, kind: EdgeKind::Snapshot, .. })
+            if place == "Notes"
     ));
 }
 
@@ -656,7 +657,7 @@ fn a_result_of_a_named_return_is_failure_or_outputs() {
     assert_eq!(values(&net, lines), ["tea"]);
     assert!(matches!(
         net.step(),
-        Err(ref failure) if failure.restored
+        Err(ref failure) if failure.firing().is_some_and(|failure| failure.restored)
     ));
     assert_eq!(net.count(totals.id()), 1, "the failure wrote nothing");
     assert_eq!(
@@ -874,6 +875,11 @@ fn till(jammed: bool) -> TillNet {
             .collect(),
     ));
     b.seed(open, [s("open")]);
+    // Orders come in and shelves are stocked from outside: ports.
+    b.port(orders);
+    for shelf in shelves {
+        b.port(shelf);
+    }
 
     let [s1, s2, s3, s4, s5, s6, s7, s8, s9, s10, s11] = shelves;
     let [r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11] = restocks;

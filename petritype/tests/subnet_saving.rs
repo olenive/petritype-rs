@@ -89,17 +89,23 @@ fn level(params: &Params) -> Result<Net, BuildError> {
     b.build()
 }
 
-/// The `World` template: a `Door`, an `Outside`, and as many levels as its
-/// `"levels"` parameter says (two by default), `Level 1` to `Level n`, each
-/// built by the `Level` template with its number as its depth, heroes
-/// passing from the door through each level in turn and out.
-fn world_net(levels: &Templates, params: &Params) -> Result<Net, BoxedError> {
+/// The `World` template: a `Door`, its port, an `Outside`, and as many
+/// levels as its `"levels"` parameter says (two by default), `Level 1` to
+/// `Level n`, each built by the `Level` template with its number as its
+/// depth, heroes passing from the door through each level in turn and out.
+/// The `Open World` template is the same world declared open, so that the
+/// program may put a hero at a level's lobby from out here.
+fn world_net(levels: &Templates, params: &Params, open: bool) -> Result<Net, BoxedError> {
     let count = params.get("levels").and_then(Value::as_u64).unwrap_or(2);
     let mut b = NetBuilder::new();
     let door = b.place::<Hero>("Door");
     let outside = b.place::<Hero>("Outside");
     b.serializable(door);
     b.serializable(outside);
+    b.port(door);
+    if open {
+        b.open();
+    }
     b.param(Levels(count));
     b.serializable_param::<Levels>("levels");
     let mut from = door;
@@ -121,20 +127,31 @@ fn world_net(levels: &Templates, params: &Params) -> Result<Net, BoxedError> {
     Ok(b.build()?)
 }
 
-/// A registry with `Level` and `World`.
+/// A registry with `Level`, `World` and `Open World`.
 fn templates() -> Templates {
     let mut levels = Templates::new();
     levels.register("Level", level);
     let mut templates = levels.clone();
-    templates.register("World", move |params: &Params| world_net(&levels, params));
+    let closed = levels.clone();
+    templates.register("World", move |params: &Params| {
+        world_net(&closed, params, false)
+    });
+    templates.register("Open World", move |params: &Params| {
+        world_net(&levels, params, true)
+    });
     templates
 }
 
 /// A world of `levels` levels, with these heroes at the door.
 fn world(templates: &Templates, levels: u64, heroes: &[&str]) -> Net {
+    world_of(templates, "World", levels, heroes)
+}
+
+/// [`world`], built by the template called `template`.
+fn world_of(templates: &Templates, template: &str, levels: u64, heroes: &[&str]) -> Net {
     let mut params = Params::new();
     params.insert("levels".into(), levels.into());
-    let mut net = templates.build("World", &params).expect("a world");
+    let mut net = templates.build(template, &params).expect("a world");
     let door = net.place_ref::<Hero>("Door").expect("a door");
     net.extend(door, heroes.iter().map(|name| hero(name)));
     net.drain_events().for_each(drop);
@@ -262,7 +279,8 @@ fn a_subnet_place_is_saved_as_a_list_of_one_and_a_port_once() {
 #[test]
 fn a_restored_net_steps_as_the_original_would_at_every_level() {
     let templates = templates();
-    let mut original = world(&templates, 2, &["Ada", "Bram", "Cato"]);
+    // Open, for the puts at a level's lobby at the end.
+    let mut original = world_of(&templates, "Open World", 2, &["Ada", "Bram", "Cato"]);
     // Part of the way, so that both levels and their ports hold someone.
     for _ in 0..6 {
         original.step_deep().unwrap().expect("something to do");
@@ -536,7 +554,7 @@ fn a_fork_copies_every_level_and_is_independent_of_the_original() {
 // ----- a tree of subnets ------------------------------------------------------------
 
 /// `Room`: a `Den` port where a hero sits down. `Floor`: a `Stairs` port up
-/// to a room. `Tower`: a `Gate` up to a floor. Each built by the template
+/// to a room. `Tower`: a `Gate` port up to a floor. Each built by the template
 /// below it; `Bare Tower` is a tower whose floor holds a room no template
 /// built.
 fn tower_templates() -> Templates {
@@ -564,6 +582,7 @@ fn tower_templates() -> Templates {
         let mut b = NetBuilder::new();
         let gate = b.place::<Hero>("Gate");
         b.serializable(gate);
+        b.port(gate);
         let floor = b.subnet_place("Floor", floor);
         let stairs = b.port_of::<Hero>(floor, "Stairs");
         b.transition("In", (TakeEdge(gate),), (stairs,), |h: Hero| (h,));

@@ -36,11 +36,33 @@ impl Session {
         Session::start(common::example_named("slow_bodies"), &[], HEARTBEAT_MS)
     }
 
+    /// The binary with `PETRITYPE_RUNNER_MAX_LINE_BYTES` set to `bytes`.
+    fn capped(bytes: &str) -> Session {
+        Session::start_with(
+            binary(),
+            &[],
+            "100",
+            &[("PETRITYPE_RUNNER_MAX_LINE_BYTES", bytes)],
+        )
+    }
+
     /// `program` started with `args`, its heartbeat every `heartbeat_ms`.
     fn start(program: std::path::PathBuf, args: &[&str], heartbeat_ms: &str) -> Session {
+        Session::start_with(program, args, heartbeat_ms, &[])
+    }
+
+    /// [`start`](Session::start), with `env` set besides.
+    fn start_with(
+        program: std::path::PathBuf,
+        args: &[&str],
+        heartbeat_ms: &str,
+        env: &[(&str, &str)],
+    ) -> Session {
         let mut child = Command::new(program)
             .args(args)
             .env("PETRITYPE_RUNNER_HEARTBEAT_MS", heartbeat_ms)
+            .env_remove("PETRITYPE_RUNNER_MAX_LINE_BYTES")
+            .envs(env.iter().copied())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -584,6 +606,132 @@ fn a_malformed_line_gets_an_invalid_params_answer() {
     drop(s.stdin);
     assert!(s.child.wait().unwrap().success());
     assert!(s.lines.recv_timeout(Duration::from_secs(10)).is_err());
+}
+
+/// A request line of exactly `bytes` bytes without its newline: a
+/// `describe` padded with a parameter the method does not read.
+fn padded(id: &str, bytes: usize) -> Vec<u8> {
+    let head = format!(r#"{{"id": "{id}", "method": "describe", "params": {{"pad": ""#);
+    let tail = r#""}}"#;
+    let mut line = head.into_bytes();
+    line.resize(bytes - tail.len(), b'y');
+    line.extend_from_slice(tail.as_bytes());
+    line.push(b'\n');
+    line
+}
+
+/// Since 2026-11-28; until then a line of any length was read whole. As
+/// the Python runner's
+/// `test_a_line_over_the_cap_gets_invalid_params_and_the_runner_keeps_serving`.
+#[test]
+fn a_line_over_the_cap_gets_invalid_params_and_the_runner_keeps_serving() {
+    for (mut s, cap) in [(Session::spawn(), 4 << 20), (Session::capped("1000"), 1000)] {
+        s.stdin.write_all(&padded("1", cap + 1)).unwrap();
+        s.stdin.flush().unwrap();
+        let refused = s.response("");
+        assert_eq!(refused["error"]["code"], "invalid_params");
+        assert_eq!(
+            refused["error"]["message"],
+            format!(
+                "a request line is at most {cap} bytes long; a longer one was discarded unread"
+            )
+        );
+        s.stdin.write_all(&padded("2", cap)).unwrap();
+        s.stdin.flush().unwrap();
+        let answer = s.response("2");
+        assert!(
+            answer["result"]["nets"].is_array(),
+            "a line at the cap is read"
+        );
+        s.stdin
+            .write_all(b"{\"id\": \"3\", \"x\": \"\xff\"}\n")
+            .unwrap();
+        s.stdin.flush().unwrap();
+        let refused = s.response("");
+        assert_eq!(refused["error"]["message"], "a request line must be UTF-8");
+        assert!(s.call("4", "describe", json!({}))["result"].is_object());
+        drop(s.stdin);
+        assert!(s.child.wait().unwrap().success());
+    }
+}
+
+/// A host that reads none of the process's output and closes its input
+/// does not keep the process alive: the process writes what the pipe
+/// takes, waits five seconds at most for the rest, and exits 0. Until
+/// 2026-11-28 it waited for its writer without end.
+#[test]
+fn a_process_whose_output_nobody_reads_exits_when_its_input_closes() {
+    let mut child = Command::new(binary())
+        .env("PETRITYPE_RUNNER_HEARTBEAT_MS", "100")
+        .env_remove("PETRITYPE_RUNNER_MAX_LINE_BYTES")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("the example starts");
+    let mut stdin = child.stdin.take().unwrap();
+    // Held open and never read.
+    let _stdout = child.stdout.take().unwrap();
+    // Each answer is a few kilobytes: far more than a pipe holds.
+    let describe = format!("{}\n", json!({"id": "d", "method": "describe"}));
+    stdin.write_all(describe.repeat(200).as_bytes()).unwrap();
+    drop(stdin);
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        if std::time::Instant::now() >= deadline {
+            let _ = child.kill();
+            panic!("the process never exited");
+        }
+        thread::sleep(Duration::from_millis(20));
+    };
+    assert!(status.success(), "{status}");
+}
+
+/// Every heartbeat carries the `marking_version` of the lines written
+/// before it, the highest any of them carried, so the versions a host
+/// reads never go back and no heartbeat is ahead of a notification. A run
+/// of quick inline bodies moves the version thousands of times while the
+/// heartbeat beats every millisecond. Until 2026-11-28 the heartbeat read
+/// the version on its own thread, and could be written before the lines
+/// of the version it carried, or after lines of a later one.
+#[test]
+fn every_heartbeat_carries_the_version_of_the_lines_before_it() {
+    let mut s = Session::start(common::example_named("slow_bodies"), &[], "1");
+    s.call(
+        "1",
+        "load",
+        json!({"net": "slow-office", "params": {"ms": 0, "jobs": 0, "tallies": 10_000}}),
+    );
+    let mark = s.seen.len();
+    s.call("2", "start", json!({}));
+    while s.next_line()["method"] != "execution_stopped" {}
+    let mut highest = 0;
+    let mut beats = 0;
+    for line in &s.seen[mark..] {
+        let version = line["params"]["marking_version"]
+            .as_u64()
+            .or_else(|| line["result"]["marking_version"].as_u64());
+        let Some(version) = version else {
+            continue;
+        };
+        if line["method"] == "heartbeat" {
+            beats += 1;
+            assert_eq!(
+                version, highest,
+                "a heartbeat after lines up to {highest}: {line}"
+            );
+        } else {
+            assert!(version >= highest, "{line}");
+            highest = version;
+        }
+    }
+    assert_eq!(highest, 20_000, "two state lines per tally");
+    assert!(beats > 0, "no heartbeat during the run");
+    let shutdown = s.call("3", "shutdown", json!({}));
+    assert_eq!(shutdown["result"]["status"], "ok");
 }
 
 #[test]

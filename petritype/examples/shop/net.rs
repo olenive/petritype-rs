@@ -8,8 +8,10 @@
 //! replay against this one. It depends on `petritype` only, so that a
 //! runner's example binary can include this file as it is.
 //!
-//! Every place holds strings and starts empty; every place is serializable,
-//! so that a host can `inject` into any of them. `Price Order` takes the
+//! Every place holds strings and starts empty; every place is serializable.
+//! What happens is what is put in, at the two ports, `Orders` and
+//! `Promotions`: the net is closed, as every net not declared open is, so
+//! from outside it takes tokens only there. `Price Order` takes the
 //! front of `Orders` and *surveys* `Promotions` (every promotion running,
 //! zero or more, none consumed) and writes the order to `Priced` and one
 //! `"{promotion} on {order}"` per promotion to `Discounts Applied`.
@@ -50,18 +52,21 @@ pub fn apply_promotions(order: String, promotions: Vec<String>) -> (String, Vec<
 }
 
 /// The shop as §11 seeds it: empty everywhere, its transition switched on,
-/// no parameters.
+/// no parameters, `Orders` and `Promotions` its ports.
 pub fn build_shop() -> Result<Shop, BuildError> {
     let mut b = NetBuilder::new();
     let orders = b.place::<String>("Orders");
     let promotions = b.place::<String>("Promotions");
     let priced = b.place::<String>("Priced");
     let discounts_applied = b.place::<String>("Discounts Applied");
-    // Every place takes a token injected over the wire: the two the
+    // Every place's tokens go over the wire as JSON: the two the
     // transition reads, and the two it writes.
     for place in [orders, promotions, priced, discounts_applied] {
         b.serializable(place);
     }
+    // Orders and promotions come in from outside.
+    b.port(orders);
+    b.port(promotions);
 
     let price_order = b
         .transition(

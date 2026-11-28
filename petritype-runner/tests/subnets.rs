@@ -172,10 +172,11 @@ fn hero(name: &str, fought: bool) -> Hero {
 
 // ----- the nets ----------------------------------------------------------------
 
-/// The conformance net `levels` (PROTOCOL.md §11), and the template it is
-/// built from loaded alone.
+/// The conformance net `levels` (PROTOCOL.md §11), the same world declared
+/// open, and the template it is built from loaded alone.
 fn levels() -> Vec<NetEntry> {
     let mut entries = nets::levels_registry();
+    entries.push(NetEntry::new("open-levels", nets::levels::open_levels));
     entries.push(NetEntry::new("lone-level", |_: &Params| {
         nets::levels::templates()
             .build("Level", &Params::new())
@@ -186,6 +187,13 @@ fn levels() -> Vec<NetEntry> {
 
 fn loaded_levels() -> H {
     H::loaded(levels(), "levels", json!({}))
+}
+
+/// The world of `levels` declared open, so that a host may put a hero into
+/// a level's port by the pair on the world: the conformance net is closed,
+/// and refuses that (`closed_net`).
+fn loaded_open_levels() -> H {
+    H::loaded(levels(), "open-levels", json!({}))
 }
 
 /// A knight, keyed by `name` and `role`.
@@ -213,7 +221,8 @@ fn keyed(b: &mut NetBuilder, place: petritype::PlaceRef<Knight>) {
 /// `Lobby` port of `Level`, whose ports are keyed; `Promote` mutates the
 /// front knight of the lobby into a lord, through a mutate edge on the port,
 /// each time it takes one of `Ticks`; the control `clear` empties the lobby
-/// from the world.
+/// from the world. The world is declared open, so that a host may put a
+/// knight into a port of the level by the pair.
 fn keyed_world(_: &Params) -> Result<Net, LoadError> {
     let mut templates = Templates::new();
     templates.register("Keyed Level", |_: &Params| {
@@ -230,6 +239,7 @@ fn keyed_world(_: &Params) -> Result<Net, LoadError> {
         .build("Keyed Level", &Params::new())
         .map_err(|error| LoadError::Other(error.to_string()))?;
     let mut b = NetBuilder::new();
+    b.open();
     let door = b.place::<Knight>("Door");
     keyed(&mut b, door);
     let ticks = b.place::<u32>("Ticks");
@@ -408,12 +418,15 @@ impl Error for Refused {}
 /// hero from its lobby and fails, putting the hero back; `Look` reads the
 /// lobby through a snapshot
 /// edge; `Sweep` drains its exit hall. Each but `Refuse` takes a tick of its
-/// own, so that it can fire with nothing to take from a port.
+/// own, so that it can fire with nothing to take from a port. The net is
+/// declared open, so that a host may put a hero into the level's lobby by
+/// the pair.
 fn edges(_: &Params) -> Result<Net, LoadError> {
     let level = nets::levels::templates()
         .build("Level", &Params::new())
         .map_err(|error| LoadError::Other(error.to_string()))?;
     let mut b = NetBuilder::new();
+    b.open();
     let level = b.subnet_place("Level", level);
     let looks = b.place::<u32>("Looks");
     let sweeps = b.place::<u32>("Sweeps");
@@ -916,16 +929,16 @@ fn hidden_names_a_port_under_its_subnet_s_filter() {
 
 #[test]
 fn a_subnet_place_s_entry_holds_its_subnet_and_its_ports_under_the_token_limit() {
-    let mut h = loaded_levels();
+    let mut h = loaded_open_levels();
     for name in ["Bram", "Cato", "Dara", "Eve"] {
         h.result(
             "inject",
             json!({"place": "Level 2", "port": "Lobby", "token": {"name": name, "fought": false}}),
         );
     }
-    // A level is closed (it marks its lobby and exit hall as ports), so a
-    // hero reaches its arena by walking in, not by an inject (DESIGN §6.9,
-    // since 2026-11-23): level 2 is inner first, and Bram walks in.
+    // A level is closed, as every net not declared open is, and its arena
+    // is no port, so a hero reaches it by walking in, not by an inject
+    // (DESIGN §6.9): level 2 is inner first, and Bram walks in.
     h.send("step", json!({}));
     let state = h.result("get_state", json!({"token_limit": 2}));
     let entry = &state["marking"]["places"]["Level 2"];
@@ -1035,7 +1048,7 @@ fn a_filter_on_the_net_around_projects_its_own_places_alone() {
 
 #[test]
 fn a_port_s_tokens_are_read_and_put_both_ways_with_the_subnet_s_ids() {
-    let mut h = loaded_levels();
+    let mut h = loaded_open_levels();
     let by_pair = h.result(
         "inject",
         json!({"place": "Level 1", "port": "Lobby", "token": {"name": "Bram", "fought": false}}),
@@ -1230,7 +1243,7 @@ fn a_change_is_told_once_by_the_net_through_which_it_was_made() {
 
 #[test]
 fn after_a_change_of_a_port_both_nets_fireable_sets_are_compared_the_outer_first() {
-    let mut h = loaded_levels();
+    let mut h = loaded_open_levels();
     let lines = h.send(
         "inject",
         json!({"place": "Exit Hall", "path": l2(), "token": {"name": "Cy", "fought": true}}),
@@ -1414,7 +1427,9 @@ fn a_read_edge_and_a_drain_of_an_empty_port_change_nothing_there() {
 
 #[test]
 fn a_reader_that_follows_one_net_sees_a_change_told_by_the_other_as_a_gap() {
-    let mut h = loaded_levels();
+    // The open world: the closed one shields its levels from the inject by
+    // path at the end.
+    let mut h = loaded_open_levels();
     let level = h.nested_id(&l1());
     let (mut world_lines, mut level_lines) = (Vec::new(), Vec::new());
     let mut sends = vec![("step", json!({})); 5]; // Enter, Walk In, Fight, Win, Climb
@@ -1524,9 +1539,10 @@ fn a_subnet_is_read_after_the_landing_of_an_outer_firing_on_its_port() {
 
 // ----- a hosted net ------------------------------------------------------------
 
-/// A hosted `levels` world, and its two subnets' nested ids.
+/// A hosted `levels` world, declared open so that the program may put a
+/// hero into a level's port by the pair, and its two subnets' nested ids.
 fn hosted() -> (Host, Vec<String>) {
-    let net = nets::levels::levels(&Params::new()).expect("the world builds");
+    let net = nets::levels::open_levels(&Params::new()).expect("the world builds");
     let ids = ["Level 1", "Level 2"]
         .map(|name| {
             net.subnet(net.place_named(name).unwrap())

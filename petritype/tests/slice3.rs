@@ -8,8 +8,8 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 use petritype::{
-    BuildError, Event, MutateEdge, Net, NetBuilder, NetError, PlaceId, SnapshotEdge, TakeAllEdge,
-    TakeEdge, TokenId,
+    BuildError, EdgeKind, Event, MutateEdge, Net, NetBuilder, NetError, PlaceId, SnapshotEdge,
+    TakeAllEdge, TakeEdge, TokenId,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -409,6 +409,7 @@ fn a_guard_may_read_the_marking() {
     let mut b = NetBuilder::new();
     let inbox = b.place::<u32>("Inbox");
     let total = b.place::<u32>("Total");
+    b.port(inbox);
     b.seed(inbox, [1]);
     let pairs_up = b
         .transition(
@@ -608,6 +609,7 @@ fn firing_a_transition_that_cannot_fire_is_an_error() {
     let mut b = NetBuilder::new();
     let inbox = b.place::<u32>("Inbox");
     let out = b.place::<u32>("Out");
+    b.port(inbox);
     let copy = b
         .transition("Copy", (TakeEdge(inbox),), (out,), |n: u32| (n,))
         .id();
@@ -671,7 +673,11 @@ fn a_body_that_returns_err_loses_its_inputs_and_leaves_the_net_usable() {
     let mut net = b.build().unwrap();
     let consumed = vec![pairs(&net, inbox.id())[0]];
 
-    let failure = net.step().expect_err("the first token is refused");
+    let failure = net
+        .step()
+        .expect_err("the first token is refused")
+        .into_firing()
+        .unwrap();
     assert_eq!(failure.transition, fussy);
     assert!(
         !failure.restored,
@@ -767,26 +773,32 @@ fn a_quiescent_net_fires_nothing() {
     assert_eq!(net.drain_events().count(), 0);
 }
 
+/// Two takes on one place take a token each (since 0.4.0, when this was a
+/// build error); a take beside an edge that lends the token where it lies
+/// is still refused. `tests/edges_sharing_a_place.rs` holds the rest.
 #[test]
-fn two_input_edges_into_one_place_are_a_build_error() {
+fn two_takes_share_a_place_and_a_take_and_a_mutate_do_not() {
     let mut b = NetBuilder::new();
     let inbox = b.place::<u32>("Inbox");
     let out = b.place::<u32>("Out");
-    b.transition(
-        "Twice",
-        (TakeEdge(inbox), TakeEdge(inbox)),
-        (out,),
-        |a: u32, c: u32| (a + c,),
-    );
-    match b.build() {
-        Err(BuildError::DuplicateInputPlace { transition, place }) => {
-            assert_eq!(transition, "Twice");
-            assert_eq!(place, "Inbox");
-        }
-        other => panic!("expected a duplicate input place error, got {other:?}"),
-    }
+    b.port(inbox);
+    let twice = b
+        .transition(
+            "Twice",
+            (TakeEdge(inbox), TakeEdge(inbox)),
+            (out,),
+            |a: u32, c: u32| (a * 10 + c,),
+        )
+        .id();
+    let mut net = b.build().expect("two takes share a place");
+    net.put(inbox, 1);
+    assert!(!net.is_fireable(twice), "one token for two edges");
+    net.put(inbox, 2);
+    net.fire(twice).unwrap();
+    assert_eq!(net.count(inbox.id()), 0);
+    let (_, value) = net.tokens(out.id()).next().unwrap();
+    assert_eq!(value.downcast_ref::<u32>(), Some(&12), "front first");
 
-    // Any two kinds, not only two of the same.
     let mut b = NetBuilder::new();
     let inbox = b.place::<u32>("Inbox");
     let out = b.place::<u32>("Out");
@@ -799,10 +811,18 @@ fn two_input_edges_into_one_place_are_a_build_error() {
             (*live,)
         },
     );
-    assert!(matches!(
-        b.build(),
-        Err(BuildError::DuplicateInputPlace { .. })
-    ));
+    match b.build() {
+        Err(BuildError::EdgeCannotSharePlace {
+            transition,
+            place,
+            kind,
+        }) => {
+            assert_eq!(transition, "Take and mutate");
+            assert_eq!(place, "Inbox");
+            assert_eq!(kind, EdgeKind::Mutate);
+        }
+        other => panic!("expected a refusal of the shared place, got {other:?}"),
+    }
 }
 
 /// DESIGN §6.6: a body is an ordinary closure, so it may own a whole net,
@@ -810,10 +830,13 @@ fn two_input_edges_into_one_place_are_a_build_error() {
 /// support at all.
 #[test]
 fn a_net_can_be_the_body_of_a_transition() {
-    // The inner net triples whatever is put into its input place.
+    // The inner net triples whatever is put into its input place. The body
+    // that owns it is outside it, putting in and taking out at its ports.
     let mut inner_b = NetBuilder::new();
     let inner_in = inner_b.place::<u32>("Inner in");
     let inner_out = inner_b.place::<u32>("Inner out");
+    inner_b.port(inner_in);
+    inner_b.port(inner_out);
     inner_b.transition("Triple", (TakeEdge(inner_in),), (inner_out,), |n: u32| {
         (n * 3,)
     });

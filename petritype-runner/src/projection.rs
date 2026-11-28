@@ -240,13 +240,12 @@ impl Projection {
         for pair in &gone {
             self.shown.remove(pair);
         }
+        // Compared against every token kept now, what was shown loses what
+        // is gone and gains what came, and is then exactly what is kept now,
+        // every token of it live: a token the connection was shown that
+        // left without an event the projection saw is among the gone, and
+        // told of.
         self.shown.extend(came.iter().copied());
-        // A token the connection was shown that has left without an event
-        // the projection saw cannot be told of: forget it.
-        if only.is_none() {
-            self.shown
-                .retain(|&(place, token)| net.tokens(place).any(|(t, _)| t == token));
-        }
         (gone, came)
     }
 }
@@ -413,10 +412,12 @@ mod tests {
     use super::*;
     use petritype::NetBuilder;
 
-    /// `Pond` of numbers keyed by parity, holding 1, 2, 3 and 4.
+    /// `Pond` of numbers keyed by parity, holding 1, 2, 3 and 4, the net's
+    /// port, where the tests change tokens from outside.
     fn pond() -> (Net, PlaceId, Vec<TokenId>) {
         let mut b = NetBuilder::new();
         let pond = b.place::<i64>("Pond");
+        b.port(pond);
         b.keys(pond, ["even"], |n: &i64| [(n % 2 == 0).into()]);
         b.seed(pond, [1, 2, 3, 4]);
         let net = b.build().unwrap();

@@ -44,6 +44,7 @@
 //! let inbox = b.place::<Parcel>("Inbox");                 // PlaceRef<Parcel>
 //! let heavy = b.place::<Parcel>("Heavy");
 //! let config = b.place::<Config>("Config");
+//! b.port(inbox);                                          // where parcels come in
 //! b.seed(inbox, [Parcel { id: 1, weight: 3.0 }]);
 //! b.seed(config, [Config { max_weight: 10.0 }]);
 //!
@@ -158,7 +159,8 @@
 //! [`distribute`](Net::distribute) touches a place. Taking the tokens at
 //! launch is also what resolves conflicts: a peer transition that wanted one
 //! of them is simply not fireable any more, with no locks anywhere. A
-//! transition whose body borrows a token in its place ([`MutateEdge`]) cannot
+//! transition whose body borrows a token in its place (through a mutating
+//! edge such as [`MutateEdge`], or a read edge such as [`ReadEdge`]) cannot
 //! leave the net, so `launch` runs it inline and hands back a `Firing` that
 //! is already done. A driver can then treat every transition alike.
 //!
@@ -173,18 +175,19 @@
 //!   [`TakeWhereEdge`] and [`MutateWhereEdge`] do what `TakeEdge` and
 //!   `MutateEdge` do to the oldest token a [`Filter`] accepts rather than to
 //!   the front one, leaving every other token where it is (*keyed* edges,
-//!   DESIGN §8.3); [`DrainEdge`] and [`SurveyEdge`] take or copy every
-//!   token there is, zero or more, and never hold their transition back
-//!   (DESIGN §4.4); the read edges [`ReadEdge`], [`ReadWhereEdge`] and
-//!   [`ReadAllEdge`] lend the body the front token, the oldest a filter
-//!   accepts, or every token, to look at where they lie, taking and copying
-//!   nothing, so they ask no `Clone` and read a place of net-carrying tokens
-//!   (DESIGN §8.4, since 2026-11-23); [`EdgeKind`] is the same thing with
-//!   the type forgotten. Every edge but the takes and the drain leaves its
-//!   token in its place: these are the *non-consuming* edges. Any edge on a
-//!   place of net-carrying tokens may name the ports it reaches in their
-//!   nets, `.reaching(["Orders In"])` ([`Reaching`], DESIGN §8.5): a
-//!   declaration a drawing shows, which changes nothing about firing.
+//!   with [`ReadWhereEdge`] below);
+//!   [`DrainEdge`] and [`SurveyEdge`] take or copy every token there is,
+//!   zero or more, and never hold their transition back; the read edges
+//!   [`ReadEdge`], [`ReadWhereEdge`] and [`ReadAllEdge`] lend the body the
+//!   front token, the oldest a filter accepts, or every token, to look at
+//!   where they lie, taking and copying nothing, so they ask no `Clone` and
+//!   read a place of net-carrying tokens (since 2026-11-23); [`EdgeKind`] is
+//!   the same thing with the type forgotten. Every edge but the takes and
+//!   the drain leaves its token in its place: these are the *non-consuming*
+//!   edges. Any edge on a place of net-carrying tokens may name the ports it
+//!   reaches in their nets, `.reaching(["Orders In"])` ([`Reaching`]): a
+//!   drawing shows them, and the body writes a closed net it is handed at
+//!   those ports alone.
 //! - [`#[derive(Inputs)]`](Inputs) binds a body's inputs **by name**
 //!   rather than by position: on a struct with one field per input, it
 //!   generates a struct of edges with the same field names, each field
@@ -220,26 +223,30 @@
 //!   [`Net::replace`] change the marking from outside, and
 //!   [`Net::try_extend`], [`Net::try_put`] and [`Net::try_set_tokens`] are
 //!   the first three for a caller that handles a refusal.
-//! - A net that marks a [port](NetBuilder::port) is **closed** (DESIGN §6.9,
-//!   since 2026-11-23): from outside it (a body of the net around it, the
-//!   program and its drivers, a runner's `inject`), tokens are written only
-//!   at its ports, and a write anywhere else is [`NetError::ClosedNet`],
-//!   which says the three ways to make it land: mark the place as a port,
-//!   start the net with the token in its definition, or declare the net
-//!   open with [`NetBuilder::open`]. [`Net::is_closed`] and
-//!   [`Net::is_open`] read it. Its own transitions, controls and seeds are
-//!   inside. A body that holds such a net, closed or open, is refused its
-//!   knobs and firing by name ([`NetError::HeldByBody`]), which stay the
-//!   program's; reading, stepping and the whole-state acts stay allowed.
+//! - Every net is **closed** unless its definition declares it open
+//!   (since 2026-11-28): from outside it (a body of the net around it, the
+//!   program and its drivers, a runner's `inject`), tokens are written
+//!   only at its [ports](NetBuilder::port), and a write anywhere
+//!   else is [`NetError::ClosedNet`], which says the three ways to make it
+//!   land: mark the place as a port, start the net with the token in its
+//!   definition, or declare the net open with [`NetBuilder::open`].
+//!   [`Net::is_closed`] and [`Net::is_open`] read it. Its own transitions,
+//!   controls and seeds are inside. A body writes a closed net it holds
+//!   only at the ports its edge names, and no closed net inside it; a
+//!   closed net shields the nets inside it from the program and the runner
+//!   ([`ClosedRefusal`] says which refusal it was). A body that holds a
+//!   net, closed or open, is refused its knobs and firing by name
+//!   ([`NetError::HeldByBody`]), which stay the program's; reading,
+//!   stepping and the whole-state acts stay allowed.
 //! - [`Command`] is that same input with the types forgotten, for a sender
 //!   that holds no `&mut Net`, across a channel from a UI thread, or from a
-//!   source that never knew the types. [`Net::apply`] carries one out, and is
-//!   the one place in the engine where a type is checked at run time; it is
-//!   all-or-nothing, so a [`CommandError`] means the net neither changed nor
-//!   said anything. With the `serde` feature, `JsonCommand` is the same
-//!   instruction addressed by name and carrying `serde_json` values, which
-//!   `Command::from_json`, `Command::to_json` and `Net::apply_json`
-//!   translate.
+//!   source that never knew the types. [`Net::apply`] carries one out,
+//!   checking at run time the types that the typed calls have checked when
+//!   they compile; it is all-or-nothing, so a [`CommandError`] means the
+//!   net neither changed nor said anything. With the `serde` feature,
+//!   `JsonCommand` is the same instruction addressed by name and carrying
+//!   `serde_json` values, which `Command::from_json`, `Command::to_json`
+//!   and `Net::apply_json` translate.
 //! - [`Param<T>`](Param) is an input that reads no place: a run-varying value
 //!   (a secret, a tuning constant, this run's configuration) declared
 //!   beside the edges as `Param::<T>::new()` and handed to the body as a
@@ -266,9 +273,9 @@
 //!   lets through, as [`Match`]es in place order then token order, from an
 //!   index the net keeps up to date as tokens come, go and change; and
 //!   [`Net::distinct_values`] lists the values a key takes, in order of
-//!   first appearance, which is what a viewer makes its tabs of (DESIGN
-//!   §8.3). A [`Snapshot`] answers the same questions by scanning. The same
-//!   index lets a keyed edge find its token, and [`Net::first_match`] asks
+//!   first appearance, which is what a viewer makes its tabs of. A
+//!   [`Snapshot`] answers the same questions by scanning. The same index
+//!   lets a keyed edge find its token, and [`Net::first_match`] asks
 //!   which token that is, as a guard may want to know. A keyed edge may
 //!   choose its token by another input of the same firing, "the unit this
 //!   order names", with [`Filter::key_is_input`] ([`Clause::IsInput`], an
@@ -286,7 +293,10 @@
 //!   saying yes.
 //! - [`Net::fireable`] and [`Net::is_fireable`] say what could fire now;
 //!   [`Net::step`] fires one transition, [`Net::fire`] fires a named one,
-//!   and a body that returns `Err` or panics gives [`FiringFailed`].
+//!   and a body that returns `Err` or panics gives [`FiringFailed`]. A step
+//!   returns a [`StepError`], which is that or a [`SelectionFailed`]: a
+//!   priority that is `NaN`, or a selector that named a transition it was
+//!   not offered.
 //! - [`TransitionBuilder::restore_tokens_on_failure`] is the one dial on
 //!   failure: with it, a failed firing puts the tokens it consumed back where
 //!   it found them; without it they are gone. [`BodyPanicked`] is what a
@@ -297,8 +307,8 @@
 //!   Dropping a [`Firing`] or a [`Completed`] instead of distributing it
 //!   strands its transition in flight for good.
 //! - [`Nested`] is a token type that carries Petri nets of its own, and
-//!   [`NetBuilder::place_nested`] the place that holds such tokens (DESIGN
-//!   §6.6). [`Net::nested`] reads a token's inner nets, [`Net::step_deep`]
+//!   [`NetBuilder::place_nested`] the place that holds such tokens.
+//!   [`Net::nested`] reads a token's inner nets, [`Net::step_deep`]
 //!   fires one transition, in the net or in one of its inner nets, with a
 //!   [`DeepStep`] saying where, in the order each nested place's
 //!   [`Stepping`] rule gives ([`NetBuilder::stepping`]: inner first, the
@@ -324,9 +334,9 @@
 //!   drawings read, for a large flat net that is read by its parts:
 //!   [`NetBuilder::group`] declares one, [`NetBuilder::in_group`] and
 //!   [`TransitionBuilder::group`] put a node in it, and [`Net::groups`],
-//!   [`PlaceInfo::group`] and [`TransitionInfo::group`] read them back
-//!   (DESIGN §6.8). Firing, stepping, ids, saving and the events are those
-//!   of the same net with no groups.
+//!   [`PlaceInfo::group`] and [`TransitionInfo::group`] read them back.
+//!   Firing, stepping, ids, saving and the events are those of the same net
+//!   with no groups.
 //! - The [`control`] module is the buttons a net declares:
 //!   [`NetBuilder::control`] adds a [`Control`](control::Control),
 //!   [`Net::controls`] lists them for a viewer's legend, and [`Net::press`]
@@ -335,7 +345,9 @@
 //!   [`drivers::run_indefinitely`] drives it on a clock until a flag says
 //!   stop. [`Mode`](drivers::Mode) picks the loop: sequential, where the
 //!   selector chooses one transition at a time, or concurrent, where
-//!   everything fireable is launched at once on threads of its own;
+//!   everything fireable is launched at once, each launch the selector's
+//!   choice, in the net and in the nets inside it as their stepping rules
+//!   let them go, and the bodies run on a bounded pool of worker threads;
 //!   [`Limits`](drivers::Limits) paces a run or blows a fuse on one that will
 //!   not stop; [`OnFailure`](drivers::OnFailure) says whether a failed firing
 //!   ends the run, switches its transition off, or is merely counted; and
@@ -400,6 +412,7 @@ mod builder;
 mod closed;
 mod command;
 pub mod control;
+mod deep;
 mod distribution;
 pub mod drivers;
 mod edge;
@@ -409,6 +422,8 @@ mod event;
 mod firing;
 mod ids;
 mod index;
+#[cfg(feature = "serde")]
+mod json_form;
 mod keys;
 #[cfg(feature = "serde")]
 mod marking;
@@ -419,6 +434,7 @@ mod param;
 mod place;
 pub mod routing;
 mod sealed;
+mod sharing;
 mod snapshot;
 pub mod style;
 #[cfg(feature = "serde")]
@@ -441,11 +457,13 @@ pub use edge::{
     ReadAllEdge, ReadEdge, ReadWhereEdge, Reads, SnapshotEdge, SurveyEdge, TakeAllEdge, TakeEdge,
     TakeWhereEdge,
 };
-#[cfg(feature = "serde")]
-pub use error::TemplateError;
 pub use error::{
-    BodyPanicked, BuildError, CommandError, FiringFailed, NetError, PathStep, PressError,
+    BodyPanicked, BuildError, ClosedRefusal, CommandError, ControlError, DistributeError,
+    FiringFailed, Named, NetError, PathStep, PressError, SelectionFailed, SelectionFault,
+    StepError,
 };
+#[cfg(feature = "serde")]
+pub use error::{NoJsonForm, TemplateError};
 pub use event::Event;
 pub use firing::{Completed, Firing, Selector, TieBreak};
 pub use ids::{GroupRef, NetId, PlaceHandle, PlaceId, PlaceRef, SubnetRef, TokenId, TransitionId};
@@ -467,13 +485,13 @@ pub use transition::{TransitionBuilder, TransitionInfo};
 pub use petritype_derive::Routed;
 
 /// Binds a body's inputs to a net by field name: generates, for a struct
-/// with one field per input, the struct of edges that wires it (DESIGN
-/// §4.4); see [`Reads`].
+/// with one field per input, the struct of edges that wires it; see
+/// [`Reads`].
 pub use petritype_derive::Inputs;
 
 /// Binds a body's outputs to a net by field name: generates, for a struct
-/// the body returns, the struct of outputs that wires each field to a place
-/// (DESIGN §4.5); see [`Accepts`].
+/// the body returns, the struct of outputs that wires each field to a place;
+/// see [`Accepts`].
 pub use petritype_derive::Outputs;
 
 /// The `serde_json` this crate was built against, re-exported so that callers

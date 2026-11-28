@@ -4,7 +4,6 @@
 
 use std::collections::BTreeMap;
 
-use crate::closed::IMPORT;
 use crate::error::{CommandError, NetError};
 use crate::event::Event;
 use crate::ids::{PlaceId, TransitionId};
@@ -90,8 +89,7 @@ impl Marking {
 }
 
 impl Net {
-    /// Every place's tokens as JSON, by place name, oldest first (DESIGN
-    /// §9).
+    /// Every place's tokens as JSON, by place name, oldest first.
     ///
     /// What a save writes and [`import_marking`](Net::import_marking) reads
     /// back, into this net or into a fresh build of the same one. Every
@@ -203,7 +201,7 @@ impl Net {
     }
 
     /// Replaces the whole marking with `marking`: every place emptied, then
-    /// filled with the marking's tokens for it, oldest first (DESIGN §9).
+    /// filled with the marking's tokens for it, oldest first.
     ///
     /// The inverse of [`export_marking`](Net::export_marking). A place the
     /// marking does not mention loads empty. Every token gets a **fresh
@@ -269,11 +267,45 @@ impl Net {
     /// decode as its place's type and `CannotLoadSubnet` for a subnet
     /// place's entry that does not load into its subnet, saying why.
     /// Before all of them, [`NetError::HeldByBody`] when a body of the net
-    /// around this one holds it and it marks a port (since 2026-11-23): an
-    /// import is a whole-state act, the program's, and goes round the rule
-    /// of [closed nets](Net::is_closed), which it is not for a body.
+    /// around this one holds it, open or closed: an import is a whole-state
+    /// act, the program's, and goes round the rule of
+    /// [closed nets](Net::is_closed), which it is not for a body. Then
+    /// [`NetError::InFlight`] while a firing is [in flight](Net::in_flight)
+    /// in this net, or in one of its subnets at any depth, its `path`
+    /// naming the subnet places down to it (since 2026-11-28): the firing
+    /// would land into the marking imported, as a fork and a save refuse
+    /// for the same reason. Distribute it first. A net a token carries is
+    /// replaced by an import, not filled, so its firings are not asked
+    /// about. A firing of the net around a subnet, on one of the subnet's
+    /// ports, keeps the subnet out of reach until it lands
+    /// ([`subnet_scope`](Net::subnet_scope) refuses it), so no import into
+    /// a subnet meets one. Then [`NetError::ClosedNet`] with no place while
+    /// a scope lends this net from inside a closed net.
+    ///
+    /// ```
+    /// use petritype::{CommandError, Marking, NetBuilder, NetError, TakeEdge};
+    ///
+    /// let mut b = NetBuilder::new();
+    /// let inbox = b.place::<u32>("Inbox");
+    /// let done = b.place::<u32>("Done");
+    /// b.serializable(inbox);
+    /// b.serializable(done);
+    /// b.seed(inbox, [1]);
+    /// let work = b.transition("Work", (TakeEdge(inbox),), (done,), |n: u32| (n,)).id();
+    /// let mut net = b.build()?;
+    ///
+    /// let firing = net.launch(work)?;
+    /// let refused = net.import_marking(&Marking::new());
+    /// assert!(matches!(
+    ///     refused,
+    ///     Err(CommandError::Net(NetError::InFlight { transition, .. })) if transition == work
+    /// ));
+    /// net.distribute(firing.run())?;
+    /// net.import_marking(&Marking::new())?;
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
     pub fn import_marking(&mut self, marking: &Marking) -> Result<(), CommandError> {
-        self.admit_knob(IMPORT)?;
+        self.admit_import()?;
         let decoded = self.decode_marking(marking)?;
         self.load_marking(decoded);
         Ok(())
@@ -402,14 +434,14 @@ impl Net {
             // Set where they are, as the marking is: the subnet's
             // `Resynced` tells them with it.
             for (param, value) in decoded.params {
-                subnet.params[param].value = value;
+                subnet.params[param].set(value);
             }
             for (transition, enabled) in decoded.enabled {
                 subnet.transitions[transition.0 as usize].enabled = enabled;
             }
             let nested_id = subnet.id();
             let lifted: Vec<Event> = subnet
-                .drain_events()
+                .take_events()
                 .map(|event| Event::Subnet {
                     place,
                     nested_id,

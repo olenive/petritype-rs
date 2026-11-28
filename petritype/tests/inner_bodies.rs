@@ -65,10 +65,7 @@ fn worker(jobs: u32, diary: &Diary) -> (Net, TransitionId) {
 fn step_told(
     net: &mut Net,
     diary: &Diary,
-) -> (
-    Result<Option<StagedStep>, petritype::FiringFailed>,
-    Vec<Told>,
-) {
+) -> (Result<Option<StagedStep>, petritype::StepError>, Vec<Told>) {
     let mut told = Vec::new();
     let step = net.step_deep_staged_with(|body| {
         diary.lock().unwrap().push(format!("told {}", body.name));
@@ -302,7 +299,7 @@ fn a_failed_body_was_told_of_with_the_path_its_failure_carries() {
     let mut net = b.build().unwrap();
 
     let (step, told) = step_told(&mut net, &Diary::default());
-    let failed = step.expect_err("Glaze fails");
+    let failed = step.expect_err("Glaze fails").into_firing().unwrap();
     assert_eq!(failed.transition, glaze);
     assert_eq!(told.len(), 1);
     assert_eq!(told[0].transition, glaze);

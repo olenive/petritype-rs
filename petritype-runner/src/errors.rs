@@ -59,8 +59,11 @@ pub(crate) fn code_of(error: CoreError<'_>) -> ErrorCode {
             NetError::NoSuchTransition { .. } => ErrorCode::UnknownTransition,
             NetError::NoSuchToken { .. } => ErrorCode::UnknownToken,
             NetError::NoSuchParam { .. } => ErrorCode::Unsupported,
-            // A write outside the ports of a closed net (PROTOCOL.md §3,
-            // since 2026-11-23): an `inject`, at the top level or by path.
+            // A write the rule of closed nets refuses (PROTOCOL.md §3,
+            // since 2026-11-23): an `inject` outside the ports of a closed
+            // net, at the top level or by path, or, since 2026-11-28, at any
+            // place of a net inside a closed net. Every `why` is the one
+            // code.
             NetError::ClosedNet { .. } => ErrorCode::ClosedNet,
             _ => ErrorCode::Internal,
         },
@@ -130,7 +133,7 @@ mod tests {
         assert_eq!(code("no", Value::None), ErrorCode::Internal);
     }
 
-    /// A net with one serializable place, one plain place and one
+    /// A net with one serializable place, its port, one plain place and one
     /// serializable parameter, for errors produced the honest way.
     fn sample() -> Net {
         #[derive(Clone, serde::Serialize, serde::Deserialize)]
@@ -139,6 +142,7 @@ mod tests {
         let numbers = b.place::<u32>("Numbers");
         b.place::<String>("Notes");
         b.serializable(numbers);
+        b.port(numbers);
         b.param(Limit(1));
         b.serializable_param::<Limit>("limit");
         b.build().unwrap()
@@ -193,8 +197,8 @@ mod tests {
         assert_eq!(command(e), ErrorCode::InvalidParams);
     }
 
-    /// A place of bare nets, serializable, with one template, `Box`: an
-    /// `Items` place of numbers and a `size` parameter.
+    /// A place of bare nets, serializable and the net's port, with one
+    /// template, `Box`: an `Items` place of numbers and a `size` parameter.
     fn yard() -> Net {
         #[derive(Clone, serde::Serialize, serde::Deserialize)]
         struct Size(u32);
@@ -211,6 +215,7 @@ mod tests {
         b.templates(&templates);
         let yard = b.place_nested::<Net>("Yard");
         b.serializable(yard);
+        b.port(yard);
         b.build().unwrap()
     }
 

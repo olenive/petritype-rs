@@ -109,7 +109,7 @@ Overwatch`.
 ## 3. What exists today (anchors for the implementer)
 
 The anchors are against main. The `engine-policies` branch (slice 21, merged
-first, §5) moved code in `firing.rs` and `nested.rs`; re-anchor there before
+first, §5) moved code in `firing.rs` (since 0.4.0 the `firing/` module) and `nested.rs`; re-anchor there before
 starting.
 
 petritype-rs (ac80731):
@@ -120,7 +120,7 @@ petritype-rs (ac80731):
   (`TakeEdge` 222, `TakeAllEdge` 232, `SnapshotEdge` 246, `MutateEdge` 266,
   `TakeWhereEdge` 321, `MutateWhereEdge` 340); `InputEdge`, `InputSpec`, the
   `impl_edges!` arity macro (line 530; arity from `src/arity.rs`, 12).
-- `petritype/src/builder.rs`: `assert_no_source_transitions` (~line 880-915):
+- `petritype/src/builder/mod.rs`: `assert_no_source_transitions`:
   a transition is a source unless it has a consuming edge; non-consuming
   edges do not count. `SnapshotOfNoClonePlace` (`error.rs`) refuses a snapshot of a
   `place_no_clone` place. `DuplicateInputPlace`: one edge per place per
@@ -183,7 +183,7 @@ consume nothing, so it does not satisfy the rule (a transition whose only
 place-backed input is a `DrainEdge` is a source and fires for ever on an
 empty place). Say so in its doc, with the example. The same applies to any
 other analysis that assumes a consuming edge moves a token (the acyclicity
-check's reasoning, DESIGN §4.4 / `builder.rs` module doc). In Python the
+check's reasoning, DESIGN §4.4 / `builder/mod.rs` module doc). In Python the
 drain edge is an argument edge by class (R8), so the source rule and the
 cycle analysis must exclude it by hand rather than by type.
 

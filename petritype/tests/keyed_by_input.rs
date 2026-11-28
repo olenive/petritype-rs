@@ -13,8 +13,9 @@
 //! the serialised form.
 
 use petritype::{
-    BuildError, DrainEdge, EdgeKind, Event, Filter, MutateEdge, MutateWhereEdge, Net, NetBuilder,
-    PlaceRef, SnapshotEdge, SurveyEdge, TakeAllEdge, TakeEdge, TakeWhereEdge, TokenId,
+    BuildError, Clause, DrainEdge, EdgeKind, Event, Filter, InputKey, MutateEdge, MutateWhereEdge,
+    Net, NetBuilder, PlaceRef, SnapshotEdge, SurveyEdge, TakeAllEdge, TakeEdge, TakeWhereEdge,
+    TokenId,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -61,7 +62,8 @@ impl std::fmt::Display for Empty {
 impl std::error::Error for Empty {}
 
 /// `Orders` keyed by `unit`, `depot` and `item`; `Units` and `Depots` by
-/// `name` and `kind`; `Done` and `Out`, without keys.
+/// `name` and `kind`; `Done` and `Out`, without keys. Orders and units
+/// arrive from outside, at `Orders` and `Units`, its ports.
 struct Depot {
     b: NetBuilder,
     orders: PlaceRef<Order>,
@@ -90,6 +92,8 @@ fn depot(orders: &[Order], units: &[Unit]) -> Depot {
             [u.name.as_str().into(), u.kind.as_str().into()]
         });
     }
+    b.port(orders_place);
+    b.port(units_place);
     b.seed(orders_place, orders.iter().cloned());
     b.seed(units_place, units.iter().cloned());
     Depot {
@@ -602,7 +606,7 @@ fn the_guard_select_and_the_staged_path_see_the_pair() {
         ..
     } = d;
     let mut net = b.build().unwrap();
-    assert_eq!(net.select(), Some(dispatch));
+    assert_eq!(net.select().unwrap(), Some(dispatch));
     let lamp = ids(&net, orders)[0];
     let firing = net.launch(dispatch).unwrap();
     assert_eq!(ids(&net, orders), [lamp], "the book left, the lamp stayed");
@@ -819,6 +823,65 @@ fn a_filter_naming_two_sources_is_refused() {
     net.fire(both).unwrap();
 }
 
+/// A handle from another builder names a place of that net, however its id
+/// falls here: the build refuses it as a place the transition does not
+/// read, where it read whichever place of its own had the id. A second
+/// source from another net, past this net's places, is named by its id,
+/// where the build panicked on the lookup.
+#[test]
+fn a_source_from_another_net_is_refused() {
+    let mut other = NetBuilder::new();
+    let foreign = other.place::<Order>("Orders");
+    let mut d = depot(&[], &[]);
+    assert_eq!(foreign.id(), d.orders.id(), "the same id, in two nets");
+    d.b.transition(
+        "Load",
+        (
+            TakeEdge(d.orders),
+            TakeWhereEdge(d.units, named_by(foreign)),
+        ),
+        (d.done,),
+        |order: Order, _: Unit| (order,),
+    );
+    let error = refused(d);
+    assert!(
+        matches!(&error, BuildError::BoundSourceNotAnInput { place, input, .. }
+            if place == "Units" && input == &format!("{:?} of {:?}", foreign.id(), other.id())),
+        "{error:?}"
+    );
+
+    // Two sources, the second past this net's places: named, not looked up.
+    let mut far = NetBuilder::new();
+    for n in 0..9 {
+        far.place::<u32>(format!("P{n}"));
+    }
+    let far_orders = far.place::<Order>("Far Orders");
+    let mut d = depot(&[], &[]);
+    let mut stray = named_by(d.orders);
+    // As a clause read from JSON for another net would come: no net, and an
+    // id this net does not have.
+    stray.clauses.push(Clause::IsInput {
+        key: "kind".into(),
+        input: InputKey {
+            place: far_orders.id(),
+            key: "kind".into(),
+            net: None,
+        },
+    });
+    d.b.transition(
+        "Two",
+        (TakeEdge(d.orders), TakeWhereEdge(d.units, stray)),
+        (),
+        |_: Order, _: Unit| {},
+    );
+    let error = refused(d);
+    assert!(
+        matches!(&error, BuildError::BoundToTwoSources { first, second, .. }
+            if first == "Orders" && second == &format!("{:?}", far_orders.id())),
+        "{error:?}"
+    );
+}
+
 /// Each key must be declared: the bound edge's on its place, the source's
 /// on the source's.
 #[test]
@@ -954,7 +1017,6 @@ fn a_source_and_a_bound_edge_may_be_ports() {
 mod json {
     use super::*;
     use petritype::serde_json::{self, json};
-    use petritype::{Clause, InputKey};
 
     /// The clause is on its edge as declared, its source by the core's id.
     #[test]
@@ -981,6 +1043,7 @@ mod json {
                 input: InputKey {
                     place: d.orders.id(),
                     key: "unit".into(),
+                    net: None,
                 },
             }]
         );

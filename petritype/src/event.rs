@@ -91,8 +91,8 @@ pub enum Event {
         /// [`Added`](Event::Added) of its own, because nothing new appeared:
         /// this flag is the whole report. (True with an empty `consumed` for
         /// a restoring transition that consumes nothing at all, which reads
-        /// nothing but snapshots, surveys and mutating edges, or drains only
-        /// empty places.)
+        /// through nothing but snapshot, survey, mutating and read edges, or
+        /// drains only empty places.)
         ///
         /// False: they are gone, and their ids are retired.
         restored: bool,
@@ -164,10 +164,10 @@ pub enum Event {
     /// so it is one event with no fields. The runner reports it as
     /// `reloaded {reason: "resync"}`.
     Resynced,
-    /// Something happened inside an inner net of one of this net's tokens
-    /// (DESIGN §6.6): `event` is what that net logged, and the other fields
-    /// say where it was. Deeper levels nest: an event two nets down is a
-    /// `Nested` inside a `Nested`.
+    /// Something happened inside an inner net of one of this net's tokens:
+    /// `event` is what that net logged, and the other fields say where it
+    /// was. Deeper levels nest: an event two nets down is a `Nested` inside
+    /// a `Nested`.
     ///
     /// An inner net's events are *lifted* into this log by the net itself,
     /// never by a driver, at fixed moments, each with the place and the token
@@ -196,7 +196,12 @@ pub enum Event {
     ///    [`set_tokens`](crate::Net::set_tokens), [`replace`](crate::Net::replace)),
     ///    before its [`Removed`](Event::Removed) or [`Mutated`](Event::Mutated);
     /// 6. when the closure given to [`nested_scope`](crate::Net::nested_scope)
-    ///    returns.
+    ///    returns;
+    /// 7. for a firing the concurrent driver launches inside (since 0.4.0):
+    ///    its [`Launched`](Event::Launched), or an inline firing's whole
+    ///    story, once that net's part of the driver's pass is over, and its
+    ///    [`Distributed`](Event::Distributed) or [`Failed`](Event::Failed)
+    ///    as it lands, through every level on the way down to it.
     ///
     /// Each lifted event is one change here, and moves
     /// [`state_counter`](crate::Net::state_counter) by one. Seeded tokens are

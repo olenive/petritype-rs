@@ -9,6 +9,7 @@
 //! loose: the concurrent mode is wall-clock ordered, so nothing here asserts
 //! *which* body finished first, only that several of them overlapped.
 
+use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -72,6 +73,7 @@ fn straight(
     let mut b = NetBuilder::new();
     let inbox = b.place::<u32>("Inbox");
     let out = b.place::<u32>("Out");
+    b.port(inbox);
     b.seed(inbox, seed);
     let double = b
         .transition("Double", (TakeEdge(inbox),), (out,), |n: u32| (n * 2,))
@@ -90,6 +92,7 @@ fn independent(width: u32, body: Duration) -> (Net, Vec<PlaceRef<u32>>, Vec<Plac
     for i in 0..width {
         let inbox = b.place::<u32>(format!("In{i}"));
         let out = b.place::<u32>(format!("Out{i}"));
+        b.port(inbox);
         b.seed(inbox, [i]);
         b.transition(
             format!("Work{i}"),
@@ -420,14 +423,13 @@ fn concurrent_runs_independent_bodies_side_by_side() {
     let body = Duration::from_millis(50);
     let (mut net, _ins, outs) = independent(4, body);
 
+    // Four workers whatever the machine, so that four bodies can overlap.
+    let four = Mode::ConcurrentWith {
+        workers: NonZeroUsize::new(4).expect("not zero"),
+    };
     let started = Instant::now();
-    let summary = drivers::run(
-        &mut net,
-        Mode::Concurrent,
-        Limits::default(),
-        OnFailure::Stop,
-    )
-    .expect("nothing fails");
+    let summary =
+        drivers::run(&mut net, four, Limits::default(), OnFailure::Stop).expect("nothing fails");
     let elapsed = started.elapsed();
 
     assert!(summary.quiesced);
@@ -819,6 +821,61 @@ fn run_indefinitely_waits_for_stop_on_an_idle_net() {
     assert_eq!(summary.fired_count, 0);
     assert_eq!(summary.failed_count, 0);
     assert!(summary.quiesced, "nothing was fireable when it returned");
+}
+
+/// A tick too long for the clock to end has no deadline: the concurrent
+/// loop waits for the next completion as long as it takes, where adding the
+/// tick to the clock panicked. Here the body sets the stop.
+#[test]
+fn run_indefinitely_concurrent_takes_a_tick_too_long_for_the_clock() {
+    let stop = Arc::new(AtomicBool::new(false));
+    let mut b = NetBuilder::new();
+    let inbox = b.place::<u32>("Inbox");
+    let out = b.place::<u32>("Out");
+    b.seed(inbox, [1]);
+    let setter = Arc::clone(&stop);
+    b.transition("Last", (TakeEdge(inbox),), (out,), move |n: u32| {
+        setter.store(true, Ordering::Release);
+        (n,)
+    });
+    let mut net = b.build().expect("a one-transition net");
+
+    let summary = drivers::run_indefinitely(
+        &mut net,
+        Mode::Concurrent,
+        Duration::MAX,
+        &stop,
+        OnFailure::Stop,
+        |_net| {},
+    )
+    .expect("nothing fails");
+    assert_eq!(summary.fired_count, 1);
+    assert_eq!(net.count(out.id()), 1);
+}
+
+/// `each_tick` holds `&mut Net`, and a net it puts in place of the one it
+/// was handed may have fired less: the count saturates at zero, where the
+/// subtraction overflowed.
+#[test]
+fn run_indefinitely_counts_from_zero_when_each_tick_swaps_the_net() {
+    let (mut net, _inbox, _out, _double) = straight([1, 2]);
+    net.step().expect("Double fires");
+    net.step().expect("Double fires");
+    assert_eq!(net.fired_count(), 2, "before the run");
+    let stop = AtomicBool::new(false);
+    let summary = drivers::run_indefinitely(
+        &mut net,
+        Mode::Sequential,
+        Duration::from_millis(1),
+        &stop,
+        OnFailure::Stop,
+        |net| {
+            *net = straight([]).0;
+            stop.store(true, Ordering::Release);
+        },
+    )
+    .expect("nothing fails");
+    assert_eq!(summary.fired_count, 0, "the new net fired nothing");
 }
 
 // ----- the selector, and the shapes the API promises -----------------------

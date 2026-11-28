@@ -1,5 +1,5 @@
 //! How a net's tokens and places look: data a viewer draws, declared beside
-//! the net (DESIGN §18, 2026-10-16, net-declared controls).
+//! the net.
 //!
 //! A **token style** is what a token looks like, derived from its value by a
 //! function the net's author writes, as a token's [keys](crate::Keys) are:

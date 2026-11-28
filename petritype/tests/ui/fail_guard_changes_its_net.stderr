@@ -1,0 +1,5 @@
+error[E0596]: cannot borrow `*net` as mutable, as it is behind a `&` reference
+  --> tests/ui/fail_guard_changes_its_net.rs:17:13
+   |
+17 |             net.put(inbox, 1);
+   |             ^^^ `net` is a `&` reference, so it cannot be borrowed as mutable

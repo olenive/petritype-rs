@@ -16,7 +16,7 @@
 //! order. For each candidate, every edge bound to the source asks its place
 //! for the first token its filter accepts, each input clause reading the
 //! candidate's key: one lookup in the key index per bound edge
-//! ([`first_resolved`]), never a scan of the bound place. The first candidate
+//! ([`first_resolved`](crate::index::first_resolved)), never a scan of the bound place. The first candidate
 //! that every bound edge has a match for is the pair; a candidate without one
 //! stays where it is and does not hold back those behind it.
 //!
@@ -29,17 +29,20 @@
 //!
 //! [`bindings`] reads a transition's filters once, at
 //! [`build`](crate::NetBuilder::build), and refuses what has no one pair:
-//! a source that is not an input of the transition, one that gives every
-//! token rather than one, one that is itself bound (a chain, or the edge's own
-//! place, the shortest cycle), a filter naming two sources, and a key that
-//! either place does not declare. Two edges of one transition never read one
-//! place ([`DuplicateInputPlace`](crate::BuildError::DuplicateInputPlace)),
-//! so a place names one edge.
+//! a source that is not an input of the transition, a bound edge whose
+//! place, or whose source, another edge of the transition reads (two takes
+//! may share a place since 0.4.0, [`sharing`](crate::sharing)), one that
+//! gives every token rather than one, one that is itself bound (a chain, or
+//! the edge's own place, the shortest cycle), a filter naming two sources,
+//! and a key that either place does not declare. So the place of a bound
+//! edge or a source names that one edge, and the positions a pair is chosen
+//! at stay good until stage one takes them.
 
+use crate::deep::Busy;
 use crate::edge::EdgeKind;
 use crate::error::BuildError;
-use crate::ids::{PlaceId, TokenId};
-use crate::index::{KeyIndex, all_resolved, first_resolved};
+use crate::ids::{NetId, PlaceId, TokenId};
+use crate::index::{KeyIndex, all_resolved, first_free_resolved};
 use crate::keys::{Filter, Resolved, keys_or_none};
 use crate::net::slot_of;
 use crate::param::ParamSlot;
@@ -58,8 +61,8 @@ pub(crate) struct Binding {
 
 /// The tokens one binding chose, as `(edge, position, token)`: the source's
 /// first, then each bound edge's in the binding's order. The position is the
-/// token's place in its queue (its port's, for a window), good until the
-/// edge's turn in stage one, since every other edge reads another place.
+/// token's place in its queue (its port's, for a window), good until stage
+/// one takes it, since every other edge reads another place.
 pub(crate) type Chosen = Vec<(usize, usize, TokenId)>;
 
 /// Whether a source of this kind gives one token, which is what a key can be
@@ -100,7 +103,9 @@ fn declares(places: &[PlaceSlot], place: PlaceId, key: &str) -> bool {
 ///
 /// For the first bound edge, in edge order, that names two sources
 /// ([`BuildError::BoundToTwoSources`]), a place the transition does not
-/// read ([`BuildError::BoundSourceNotAnInput`]), a source that gives every
+/// read ([`BuildError::BoundSourceNotAnInput`]), a place of its own or a
+/// source that another edge of the transition reads as well
+/// ([`BuildError::BoundPlaceShared`]), a source that gives every
 /// token ([`BuildError::BoundSourceGivesMany`]), a source that is itself
 /// bound or its own place ([`BuildError::BoundSourceIsBound`]), or a key
 /// its place or its source's does not declare
@@ -108,14 +113,38 @@ fn declares(places: &[PlaceSlot], place: PlaceId, key: &str) -> bool {
 pub(crate) fn bindings(
     transition: &TransitionSlot,
     places: &[PlaceSlot],
+    net: NetId,
 ) -> Result<Vec<Binding>, BuildError> {
-    let name = |place: PlaceId| places[place.0 as usize].meta.name.clone();
+    // A clause may name a place of another net, by an id this net may not
+    // have: such a place is named by its id, never looked up here.
+    let name = |place: PlaceId| {
+        places
+            .get(place.0 as usize)
+            .map_or_else(|| format!("{place:?}"), |slot| slot.meta.name.clone())
+    };
     let mut bindings: Vec<Binding> = Vec::new();
     for (edge, filter) in transition.filters.iter().enumerate() {
         let Some(filter) = filter else {
             continue;
         };
         let place = transition.inputs[edge].0;
+        // A source from another net's handle is no input of this one,
+        // whatever its id names here.
+        if let Some(input) = filter
+            .inputs()
+            .map(|(_, input)| input)
+            .find(|input| input.net.is_some_and(|from| from != net))
+        {
+            return Err(BuildError::BoundSourceNotAnInput {
+                transition: transition.name.clone(),
+                place: name(place),
+                input: format!(
+                    "{:?} of {:?}",
+                    input.place,
+                    input.net.expect("a foreign source names its net")
+                ),
+            });
+        }
         let mut source: Option<PlaceId> = None;
         for (_, input) in filter.inputs() {
             match source {
@@ -138,15 +167,30 @@ pub(crate) fn bindings(
             .iter()
             .position(|(read, _)| *read == source)
         else {
-            // The id may be of another net's place, past this net's.
+            // The id may be past this net's places, as one read from JSON
+            // for another net can be.
             return Err(BuildError::BoundSourceNotAnInput {
                 transition: transition.name.clone(),
                 place: name(place),
-                input: places
-                    .get(source.0 as usize)
-                    .map_or_else(|| format!("{source:?}"), |slot| slot.meta.name.clone()),
+                input: name(source),
             });
         };
+        // One edge on each place of the pair, as Python petritype asks: the
+        // source is then one edge, and no other edge could take the token a
+        // pair was found with.
+        if let Some(shared) = [place, source].into_iter().find(|&of| {
+            transition
+                .inputs
+                .iter()
+                .filter(|(read, _)| *read == of)
+                .nth(1)
+                .is_some()
+        }) {
+            return Err(BuildError::BoundPlaceShared {
+                transition: transition.name.clone(),
+                place: name(shared),
+            });
+        }
         if !gives_one(transition.inputs[from].1) {
             return Err(BuildError::BoundSourceGivesMany {
                 transition: transition.name.clone(),
@@ -191,14 +235,21 @@ pub(crate) fn bindings(
 /// The source's own filter and each bound edge's are resolved against the
 /// net's parameters once; each candidate then costs one extraction of its
 /// keys and one index lookup per bound edge.
+///
+/// With `busy`, the concurrent driver's, an edge that takes or changes its
+/// token passes over the busy ones ([`Busy::for_edge`]): a source token that
+/// is busy is not tried, and a bound edge takes its first match that is not
+/// busy.
 pub(crate) fn pair(
     places: &[PlaceSlot],
     params: &[ParamSlot],
     index: &KeyIndex,
     transition: &TransitionSlot,
     binding: &Binding,
+    busy: Option<Busy<'_>>,
 ) -> Option<Chosen> {
-    let (source, _) = transition.inputs[binding.source];
+    let (source, kind) = transition.inputs[binding.source];
+    let source_busy = Busy::for_edge(busy, kind);
     let everything = Filter::new();
     let own = transition.filters[binding.source]
         .as_ref()
@@ -217,12 +268,16 @@ pub(crate) fn pair(
     // The slot the source's tokens are in: its own, or its port's.
     let slot = slot_of(places, source)?;
     for (at, token) in all_resolved(places, index, source, &own) {
+        if source_busy.is_some_and(|busy| busy.holds(slot, at)) {
+            continue;
+        }
         let keys = keys_or_none(slot, &*slot.tokens[at].1);
         let mut chosen: Chosen = Vec::with_capacity(1 + bound.len());
         chosen.push((binding.source, at, token));
         let matched = bound.iter_mut().all(|(edge, place, resolved)| {
             resolved.bind(&keys);
-            first_resolved(places, index, *place, resolved)
+            let busy = Busy::for_edge(busy, transition.inputs[*edge].1);
+            first_free_resolved(places, index, *place, resolved, busy)
                 .map(|(at, token)| chosen.push((*edge, at, token)))
                 .is_some()
         });
@@ -305,7 +360,14 @@ mod tests {
         for transition in &net.transitions {
             for binding in &transition.bindings {
                 assert_eq!(
-                    pair(&net.places, &net.params, &net.index, transition, binding),
+                    pair(
+                        &net.places,
+                        &net.params,
+                        &net.index,
+                        transition,
+                        binding,
+                        None
+                    ),
                     pair_scan(net, transition, binding),
                     "{}",
                     transition.name
@@ -322,6 +384,8 @@ mod tests {
         let mut b = NetBuilder::new();
         let orders = b.place::<(String, String)>("Orders");
         let units = b.place::<(String, u32)>("Units");
+        b.port(orders);
+        b.port(units);
         b.keys(
             orders,
             ["unit", "item"],

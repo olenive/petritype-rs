@@ -333,6 +333,16 @@ mod tests {
                 ("Migrating", true, keyed),
             ],
         );
+        let ports: Vec<&str> = net
+            .places()
+            .filter(|(_, info)| info.port)
+            .map(|(_, info)| info.name)
+            .collect();
+        assert_eq!(
+            ports,
+            ["Forest", "Wetland", "Savanna", "Reef", "Tundra"],
+            "a species is brought in at any habitat"
+        );
         let transitions: Vec<&str> = net.transitions().map(|(_, info)| info.name).collect();
         assert_eq!(
             transitions,
@@ -361,7 +371,10 @@ mod tests {
         let seeded: Vec<serde_json::Value> = net
             .places()
             .flat_map(|(place, _)| net.tokens(place).map(move |(token, _)| (place, token)))
-            .map(|(place, token)| net.json(place, token).expect("serializable"))
+            .map(|(place, token)| {
+                let json = net.json(place, token).expect("serializable");
+                json.expect("an animal has a JSON form")
+            })
             .collect();
         let seed = |name: &str, class: &str, diet: &str, population: u32| {
             json!({"name": name, "class": class, "diet": diet,

@@ -3,11 +3,12 @@
 //! filled in.
 //!
 //! It is also where the net is checked. Most checks always run (duplicate
-//! names, two input edges into one place, a snapshot, a survey or a restore
-//! of a place that cannot clone, an output no payload type can reach),
-//! because each one is a wiring mistake with no sensible reading. Two more
-//! are opt-in, because what they forbid is legitimate in many nets:
-//! [`assert_acyclic`](NetBuilder::assert_acyclic) and
+//! names, an input edge other than a take or a take-where on a place another
+//! edge of its transition reads, two output edges to one place, a snapshot,
+//! a survey or a restore of a place that cannot clone, an output no payload
+//! type can reach), because each one is a wiring mistake with no sensible
+//! reading. Two more are opt-in, because what they forbid is legitimate in
+//! many nets: [`assert_acyclic`](NetBuilder::assert_acyclic) and
 //! [`assert_no_source_transitions`](NetBuilder::assert_no_source_transitions).
 //!
 //! # The termination proof
@@ -45,13 +46,16 @@
 //! fires no more often than that place is fed, however many tokens a drain
 //! carries round meanwhile.
 
+mod cycles;
+mod validate;
+
 use std::any::{TypeId, type_name};
-use std::collections::{HashSet, VecDeque};
+use std::collections::VecDeque;
 use std::fmt;
 
 use crate::body::{OutputPlaces, TransitionBody};
 use crate::control::Control;
-use crate::edge::{EdgeKind, InputEdges, InputSpec};
+use crate::edge::{InputEdges, InputSpec};
 use crate::erased::RoutingProblem;
 use crate::error::BuildError;
 use crate::firing::TieBreak;
@@ -59,11 +63,9 @@ use crate::ids::{
     GroupRef, NetId, PlaceHandle, PlaceId, PlaceRef, SubnetRef, TransitionId, foreign_group,
     foreign_place,
 };
-use crate::index::KeyIndex;
 use crate::keys::{KeyValue, KeysVtable};
-use crate::nested::{Nested, NestedVtable, Stepping, forget_inner_events};
+use crate::nested::{Nested, NestedVtable, Stepping};
 use crate::net::Net;
-use crate::param::ParamSlot;
 use crate::place::{
     CloneFn, DebugFn, ErasedToken, PlaceMeta, PlaceSlot, SUBNET_TYPE_NAME, Subnet, SubnetMarker,
     Window, clone_of, debug_of,
@@ -72,34 +74,10 @@ use crate::sealed::{BodySealed, EdgeTupleSealed, PlaceTupleSealed};
 use crate::style::{PlaceStyle, Style, TokenStyle, style_fn};
 use crate::transition::{ArgSource, TransitionBuilder, TransitionSlot};
 
+use cycles::Node;
+
 /// How many characters a label keeps by default, as in Python petritype.
 const DEFAULT_LABEL_LIMIT: usize = 100;
-
-/// One node of the token-flow graph
-/// [`assert_acyclic`](NetBuilder::assert_acyclic) walks.
-///
-/// The two kinds are numbered separately, so a node is a kind and an index:
-/// names are unique per kind, and a place and a transition may share one.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Node {
-    /// The place with this index.
-    Place(u32),
-    /// The transition with this index.
-    Transition(u32),
-}
-
-/// How far the walk has got with a node.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Colour {
-    /// Not reached yet.
-    Unseen,
-    /// On the path being walked right now: reaching it again closes a cycle.
-    OnPath,
-    /// Walked, along with everything reachable from it, and no cycle found
-    /// through it. Reaching it again is a second way to the same place, not
-    /// a loop.
-    Done,
-}
 
 /// What the builder knows about one parameter type before the net is built
 /// (DESIGN §10).
@@ -156,22 +134,6 @@ enum GroupProblem {
     Twice { node: Node, first: u32, second: u32 },
     /// A port's place put in a group: [`BuildError::PortInGroup`].
     Port { place: PlaceId, group: u32 },
-}
-
-/// The colour of a node, from the two vectors the walk keeps.
-fn colour(node: Node, places: &[Colour], transitions: &[Colour]) -> Colour {
-    match node {
-        Node::Place(id) => places[id as usize],
-        Node::Transition(id) => transitions[id as usize],
-    }
-}
-
-/// Paints a node in whichever of the two vectors it belongs to.
-fn set_colour(node: Node, places: &mut [Colour], transitions: &mut [Colour], colour: Colour) {
-    match node {
-        Node::Place(id) => places[id as usize] = colour,
-        Node::Transition(id) => transitions[id as usize] = colour,
-    }
 }
 
 /// Declares the places of a net and builds it.
@@ -253,9 +215,16 @@ pub struct NetBuilder {
     /// The first thing wrong with a [`keys`](NetBuilder::keys) declaration,
     /// kept until [`build`](NetBuilder::build) reports it.
     keys_problem: Option<KeysProblem>,
+    /// The first place whose [`keys`](NetBuilder::keys) declaration names a
+    /// key by the empty string, reported with the other empty names.
+    empty_key: Option<PlaceId>,
+    /// The first place whose [`keys`](NetBuilder::keys) declaration names no
+    /// key, reported right after the empty names.
+    no_keys: Option<PlaceId>,
     /// The first thing wrong with a port: a [`port_of`](NetBuilder::port_of)
-    /// that named no port or the wrong type, or a [`port`](NetBuilder::port)
-    /// given a port of a subnet place. Kept until
+    /// that named no port or the wrong type, a [`port`](NetBuilder::port)
+    /// given a port of a subnet place, or an option such a port takes only
+    /// from its subnet's definition. Kept until
     /// [`build`](NetBuilder::build) reports it, which it does before
     /// anything else.
     port_problem: Option<BuildError>,
@@ -296,6 +265,8 @@ impl NetBuilder {
             open: false,
             not_nested: None,
             keys_problem: None,
+            empty_key: None,
+            no_keys: None,
             port_problem: None,
             controls: Vec::new(),
             groups: Vec::new(),
@@ -334,7 +305,9 @@ impl NetBuilder {
     ///
     /// Everything else works as in [`place`](NetBuilder::place). What such a
     /// place gives up is every feature built on cloning a token: snapshot
-    /// edges, restoring tokens on failure, and whole-net snapshots.
+    /// and survey edges, restoring tokens on failure, and whole-net
+    /// snapshots. A read edge, which lends the body a token where it lies,
+    /// clones nothing and works on it.
     pub fn place_no_clone<T>(&mut self, name: impl Into<String>) -> PlaceRef<T>
     where
         T: fmt::Debug + Send + Sync + 'static,
@@ -343,8 +316,7 @@ impl NetBuilder {
     }
 
     /// Declares a place whose tokens carry Petri nets of their own: inner
-    /// nets, which the engine runs, reads and reports on through the token
-    /// (DESIGN §6.6).
+    /// nets, which the engine runs, reads and reports on through the token.
     ///
     /// The token type says which nets it owns by implementing [`Nested`]; a
     /// type that does not is refused when the program compiles. What the
@@ -360,12 +332,13 @@ impl NetBuilder {
     ///   token's id.
     ///
     /// The place is a [no-clone](NetBuilder::place_no_clone) place: no
-    /// snapshot edge from it, and no consuming edge from it on a transition
-    /// that restores its inputs. Without the `serde` feature there is no
-    /// [`Net::snapshot`] of the net either; with it, a snapshot copies the
-    /// place's tokens with `Nested::fork`, which rebuilds their inner nets
-    /// from templates (DESIGN §6.6). A [`MutateEdge`](crate::MutateEdge) on
-    /// it is the way an outer body reaches inside.
+    /// snapshot or survey edge from it, and no consuming edge from it on a
+    /// transition that restores its inputs. Without the `serde` feature
+    /// there is no [`Net::snapshot`] of the net either; with it, a snapshot
+    /// copies the place's tokens with `Nested::fork`, which rebuilds their
+    /// inner nets from templates. A [`MutateEdge`](crate::MutateEdge) on it
+    /// is the way an outer body reaches inside to change an inner net, and a
+    /// [`ReadEdge`](crate::ReadEdge) the way it looks at one.
     ///
     /// With the `serde` feature, marking the place `serializable` as any
     /// other (the token type deriving `Serialize` and `Deserialize`, its
@@ -410,27 +383,27 @@ impl NetBuilder {
         place
     }
 
-    /// Marks a place of this net as a *port*: a place that a net around this
-    /// one, holding it in a [subnet place](NetBuilder::subnet_place), can
-    /// reach with its own edges. Every other place stays out of its reach.
+    /// Marks a place of this net as a *port*: a place where tokens enter it
+    /// from outside. A net around this one, holding it in a
+    /// [subnet place](NetBuilder::subnet_place), reaches its ports with its
+    /// own edges; every other place stays out of its reach.
     ///
     /// A port is an ordinary place here, or one whose tokens carry nets;
     /// marking one changes nothing about how this net uses it. Direction
     /// comes from the edges that touch it, on either side, so there is one
     /// kind of port. A second call changes nothing.
     ///
-    /// **A net that marks a port is closed** (since 2026-11-23,
-    /// [`Net::is_closed`]): from outside it, tokens are put, taken, removed,
-    /// replaced or set only at its ports, whoever writes: a body of a net
-    /// around it holding this net as a token, the program, a runner's
-    /// `inject`. Anything else is [`NetError::ClosedNet`](crate::NetError::ClosedNet).
-    /// Its own transitions, its controls' handlers and the tokens it is
-    /// [seeded](NetBuilder::seed) with are inside, and a net that marks no
-    /// port stays open. A write that should land is put right in one of
-    /// three ways: mark its place as a port too, start the net with the
-    /// token in its definition, or declare the net [open](NetBuilder::open).
-    /// A body that holds such a net, closed or open, is refused its knobs
-    /// and firing by name ([`NetError::HeldByBody`](crate::NetError::HeldByBody)).
+    /// **Every net is closed** unless it is declared [open](NetBuilder::open)
+    /// ([`Net::is_closed`], since 2026-11-28): from outside it, tokens are
+    /// put, taken, removed, replaced or set only at its ports, whoever
+    /// writes: a body of a net around it holding this net as a token, at
+    /// the ports its edge names, the program, a runner's `inject`. Anything
+    /// else is [`NetError::ClosedNet`](crate::NetError::ClosedNet), and a
+    /// net that marks no port takes no token from outside at all. Its own
+    /// transitions, its controls' handlers and the tokens it is
+    /// [seeded](NetBuilder::seed) with are inside. A write that should land
+    /// is put right in one of three ways: mark its place as a port, start
+    /// the net with the token in its definition, or declare the net open.
     ///
     /// ```
     /// use petritype::NetBuilder;
@@ -599,10 +572,15 @@ impl NetBuilder {
     /// What the port is, beyond its tokens, is the subnet's to say: its
     /// keys, its style, its serialiser and its stepping rule come from the
     /// subnet's definition. The per-place options here (`keys`, `style`,
-    /// `styled`, `place_style`, `serializable`) panic for such a handle,
-    /// and [`stepping`](NetBuilder::stepping) refuses it as a place that
-    /// holds no nets of this net's to step. [`seed`](NetBuilder::seed) puts
-    /// tokens into the port, as [`Net::put`] does.
+    /// `styled`, `place_style`, `serializable`) refuse such a handle with
+    /// [`BuildError::PortOption`] from [`build`](NetBuilder::build) (since
+    /// 0.4.0; until then they panicked), [`in_group`](NetBuilder::in_group)
+    /// with [`BuildError::PortInGroup`], [`port`](NetBuilder::port) with
+    /// [`BuildError::PortIsSubnetPlace`], and
+    /// [`stepping`](NetBuilder::stepping) with [`BuildError::NotNested`], as
+    /// a place that holds no nets of this net's to step.
+    /// [`seed`](NetBuilder::seed) puts tokens into the port, as
+    /// [`Net::put`] does.
     ///
     /// # Errors
     ///
@@ -711,8 +689,7 @@ impl NetBuilder {
     }
 
     /// Declares the keys of a place's tokens: named attributes, derived from
-    /// each token's value by `extractor`, that a query filters on (DESIGN
-    /// §8.3).
+    /// each token's value by `extractor`, that a query filters on.
     ///
     /// The names are given here, before any token exists, because a reader
     /// needs them first: a viewer building a filter bar, or the protocol's
@@ -755,14 +732,19 @@ impl NetBuilder {
     ///
     /// [`BuildError::DuplicateKeyName`] from [`build`](NetBuilder::build) if
     /// `names` repeats a name, and [`BuildError::KeysAlreadyDeclared`] if the
-    /// place already has keys; the first declaration stands until then. The
-    /// call itself is infallible, as the other per-place options are.
+    /// place already has keys; the first declaration stands until then.
+    /// [`BuildError::EmptyName`] if a name is the empty string and
+    /// [`BuildError::NoKeys`] if there is no name at all, `keys::<T, 0>`
+    /// (both since 2026-11-28); such a declaration is not kept.
+    /// [`BuildError::PortOption`] if `place` is a port of one of this net's
+    /// subnet places ([`port_of`](NetBuilder::port_of)), whose subnet's
+    /// definition says what it is (since 0.4.0; until then the call
+    /// panicked). The call itself is infallible, as the other per-place
+    /// options are.
     ///
     /// # Panics
     ///
-    /// If `place` came from a different builder, or is a port of one of
-    /// this net's subnet places ([`port_of`](NetBuilder::port_of)), whose
-    /// subnet's definition says what it is.
+    /// If `place` came from a different builder.
     pub fn keys<T, const N: usize>(
         &mut self,
         place: PlaceRef<T>,
@@ -772,7 +754,19 @@ impl NetBuilder {
         T: 'static,
     {
         let index = self.index_of(place, "keys");
-        self.own_place(index, "keys");
+        if !self.own_place(index, "keys") {
+            return;
+        }
+        // No key, or one named by the empty string: refused at build, with
+        // the empty names and right after them.
+        if names.is_empty() {
+            self.no_keys.get_or_insert(place.id());
+            return;
+        }
+        if names.iter().any(|name| name.is_empty()) {
+            self.empty_key.get_or_insert(place.id());
+            return;
+        }
         // The first name that repeats one before it.
         if let Some((_, &name)) = names
             .iter()
@@ -820,19 +814,37 @@ impl NetBuilder {
     /// pure function of the token that does not panic. A second call for
     /// the same place replaces the first.
     ///
+    /// # Errors
+    ///
+    /// [`BuildError::PortOption`] from [`build`](NetBuilder::build) if
+    /// `place` is a port of one of this net's subnet places
+    /// ([`port_of`](NetBuilder::port_of)), whose subnet's definition says
+    /// what it is (since 0.4.0; until then the call panicked). The call
+    /// itself is infallible, as the other per-place options are.
+    ///
     /// # Panics
     ///
-    /// If `place` came from a different builder, or is a port of one of
-    /// this net's subnet places ([`port_of`](NetBuilder::port_of)), whose
-    /// subnet's definition says what it is.
+    /// If `place` came from a different builder.
     pub fn style<T: 'static>(
         &mut self,
         place: PlaceRef<T>,
         f: impl Fn(&T) -> Style + Send + Sync + 'static,
     ) {
-        let index = self.index_of(place, "style");
-        self.own_place(index, "style");
-        self.places[index].meta.style = Some(style_fn(f));
+        self.style_as(place, f, "style");
+    }
+
+    /// [`style`](NetBuilder::style), `method` naming the call for a port's
+    /// [`BuildError::PortOption`].
+    fn style_as<T: 'static>(
+        &mut self,
+        place: PlaceRef<T>,
+        f: impl Fn(&T) -> Style + Send + Sync + 'static,
+        method: &'static str,
+    ) {
+        let index = self.index_of(place, method);
+        if self.own_place(index, method) {
+            self.places[index].meta.style = Some(style_fn(f));
+        }
     }
 
     /// Styles a place's tokens with their own [`TokenStyle`]: the one line
@@ -842,13 +854,17 @@ impl NetBuilder {
     /// implementation by itself, so a token type that implements the trait
     /// is styled only where its place says so.
     ///
+    /// # Errors
+    ///
+    /// As [`style`](NetBuilder::style): [`BuildError::PortOption`] from
+    /// [`build`](NetBuilder::build) for a port of one of this net's subnet
+    /// places.
+    ///
     /// # Panics
     ///
-    /// If `place` came from a different builder, or is a port of one of
-    /// this net's subnet places ([`port_of`](NetBuilder::port_of)), whose
-    /// subnet's definition says what it is.
+    /// If `place` came from a different builder.
     pub fn styled<T: TokenStyle + 'static>(&mut self, place: PlaceRef<T>) {
-        self.style(place, <T as TokenStyle>::style);
+        self.style_as(place, <T as TokenStyle>::style, "styled");
     }
 
     /// Gives a place a [`PlaceStyle`]: a rule for drawing the place itself
@@ -857,22 +873,27 @@ impl NetBuilder {
     /// [`PlaceInfo::style`](crate::PlaceInfo::style) and in the
     /// [`Topology`](crate::Topology). A second call replaces the first.
     ///
+    /// # Errors
+    ///
+    /// As [`style`](NetBuilder::style): [`BuildError::PortOption`] from
+    /// [`build`](NetBuilder::build) for a port of one of this net's subnet
+    /// places.
+    ///
     /// # Panics
     ///
-    /// If `place` came from a different builder, or is a port of one of
-    /// this net's subnet places ([`port_of`](NetBuilder::port_of)), whose
-    /// subnet's definition says what it is.
+    /// If `place` came from a different builder.
     pub fn place_style<T: 'static>(&mut self, place: PlaceRef<T>, style: PlaceStyle) {
         let index = self.index_of(place, "place_style");
-        self.own_place(index, "place_style");
-        self.places[index].meta.place_style = Some(style);
+        if self.own_place(index, "place_style") {
+            self.places[index].meta.place_style = Some(style);
+        }
     }
 
     /// Declares a *group*: a named set of this net's places and
-    /// transitions, which drawings read and the engine never does (DESIGN
-    /// §6.8). A large flat net whose parts all read and change one shared
-    /// place cannot be split into subnets, and is read by gathering its
-    /// parts under names instead.
+    /// transitions, which drawings read and the engine never does. A large
+    /// flat net whose parts all read and change one shared place cannot be
+    /// split into subnets, and is read by gathering its parts under names
+    /// instead.
     ///
     /// A group has a name and its place in the order the groups are
     /// declared in, which is the order drawings place them in, and nothing
@@ -909,9 +930,10 @@ impl NetBuilder {
     /// # Errors
     ///
     /// [`BuildError::DuplicateGroupName`] from [`build`](NetBuilder::build)
-    /// if two groups share a name. Names may hold any characters, and none
-    /// of them means anything. The call itself is infallible, as the other
-    /// options are.
+    /// if two groups share a name, and [`BuildError::EmptyName`] for the
+    /// empty string (since 2026-11-28). Names may hold any characters, at
+    /// least one, and none of them means anything. The call itself is
+    /// infallible, as the other options are.
     pub fn group(&mut self, name: impl Into<String>) -> GroupRef {
         let group = GroupRef::new(self.net, self.groups.len() as u32);
         self.groups.push(name.into());
@@ -996,24 +1018,30 @@ impl NetBuilder {
     /// traits, and its nets travel in `Net`'s own saved form, rebuilt on the
     /// way in from the templates of [`templates`](NetBuilder::templates).
     ///
+    /// # Errors
+    ///
+    /// As [`style`](NetBuilder::style): [`BuildError::PortOption`] from
+    /// [`build`](NetBuilder::build) for a port of one of this net's subnet
+    /// places, which its subnet's definition marks serializable or not.
+    ///
     /// # Panics
     ///
-    /// If `place` came from a different builder, or is a port of one of
-    /// this net's subnet places ([`port_of`](NetBuilder::port_of)), whose
-    /// subnet's definition says what it is.
+    /// If `place` came from a different builder.
     #[cfg(feature = "serde")]
     pub fn serializable<T>(&mut self, place: PlaceRef<T>)
     where
         T: serde::Serialize + serde::de::DeserializeOwned + Send + Sync + 'static,
     {
         let index = self.index_of(place, "serializable");
-        self.own_place(index, "serializable");
+        if !self.own_place(index, "serializable") {
+            return;
+        }
         let meta = &mut self.places[index].meta;
         meta.to_json = Some(crate::place::to_json_of::<T> as crate::place::ToJsonFn);
         meta.from_json = Some(crate::place::from_json_of::<T> as crate::place::FromJsonFn);
     }
 
-    /// Gives the net its value for the parameter type `T` (DESIGN §10).
+    /// Gives the net its value for the parameter type `T`.
     ///
     /// A parameter is a run-varying value a transition needs but that is not
     /// a token: an API key, a tuning constant, the configuration of this
@@ -1117,9 +1145,9 @@ impl NetBuilder {
     }
 
     /// Registers one template for the net's nested tokens: the function that
-    /// builds an inner net, under the name a saved token gives it (DESIGN
-    /// §6.6). The net decodes its tokens with
-    /// [`Net::templates`] in [scope](crate::Templates::scope), so a vehicle
+    /// builds an inner net, under the name a saved token gives it. The net
+    /// decodes its tokens with [`Net::templates`] in
+    /// [scope](crate::Templates::scope), so a vehicle
     /// read back from JSON gets its cabin rebuilt by the `"Cabin"` template
     /// registered here. Chainable; a second template of one name replaces
     /// the first.
@@ -1181,7 +1209,7 @@ impl NetBuilder {
     /// The three type-checked relationships are:
     ///
     /// - one body parameter per input, of the type that input produces
-    ///   ([`InputEdge`](crate::InputEdge)), which for the eight edge kinds
+    ///   ([`InputEdge`](crate::InputEdge)), which for the eleven edge kinds
     ///   depends on how they read their place, and for a
     ///   [`Param<T>`](crate::Param), which reads no place at all, is `T`;
     /// - one returned slot per output place, holding one token, zero or one,
@@ -1274,10 +1302,11 @@ impl NetBuilder {
         self.routing.push(problem);
         self.transitions.push(TransitionSlot {
             name: name.into(),
+            shared: crate::sharing::shared_edges(&edges),
             inputs: edges,
             filters,
             bindings: Vec::new(),
-            reaches,
+            reaches: reaches.into(),
             params,
             args,
             outputs: targets,
@@ -1303,8 +1332,11 @@ impl NetBuilder {
     /// # Errors
     ///
     /// [`BuildError::DuplicateControlName`] from [`build`](NetBuilder::build)
-    /// if two controls share a name. The call itself is infallible, as the
-    /// other options are.
+    /// if two controls share a name, and [`BuildError::EmptyName`] for one
+    /// named by the empty string (since 2026-11-28). The call itself is
+    /// infallible, as the other options are: what a control is, beyond its
+    /// name, was checked when it was made
+    /// ([`ControlError`](crate::ControlError)).
     pub fn control(&mut self, control: Control) -> &mut Self {
         self.controls.push(control);
         self
@@ -1328,20 +1360,23 @@ impl NetBuilder {
     }
 
     /// Declares the net **open**: anyone outside it may write to any of its
-    /// places, ports or not, as to a net that marks no port (DESIGN §6.9,
-    /// since 2026-11-23). Chainable.
+    /// places, ports or not. Chainable.
     ///
-    /// A net that marks a [port](NetBuilder::port) is closed by default:
-    /// from outside it, tokens are written only at its ports. This is the
-    /// override, for a net the program or a runner is expected to fill
-    /// (a map that a game deals its starting units onto, say). It opens
-    /// this net's places alone, not those of the nets inside it, and it
-    /// opens the places, not the controls: a body that holds the net is
-    /// still refused its parameters, switches, tie-break, stepping rules,
-    /// selector and firing by name while it marks a port. It is part of
-    /// the definition, read with [`Net::is_open`]: a fork or a restored net
-    /// keeps it, a saved marking does not carry it, and a runner shows it
-    /// on the net's topology as `open: true`.
+    /// Every net is closed by default: from outside it, tokens are written
+    /// only at its [ports](NetBuilder::port), and a net that marks none
+    /// takes none (since 2026-11-28; from 2026-11-23 only a net that marked
+    /// a port was closed). This is the override, for a net the program or a
+    /// runner is expected to fill anywhere (a map that a game deals its
+    /// starting units onto, say). It opens this net's places alone, not
+    /// those of the nets inside it, which stay under their own rule; but a
+    /// closed net shields the nets inside it, so the program writes a net
+    /// inside this one only when every net around it is declared open
+    /// (since 2026-11-28). It opens the places, not the controls: a body
+    /// that holds the net is still refused its parameters,
+    /// switches, tie-break, stepping rules, selector, controls and firing by
+    /// name. It is part of the definition, read with [`Net::is_open`]: a
+    /// fork or a restored net keeps it, a saved marking does not carry it,
+    /// and a runner shows it on the net's topology as `open: true`.
     ///
     /// ```
     /// use petritype::NetBuilder;
@@ -1403,6 +1438,40 @@ impl NetBuilder {
     /// always takes a token, fed from upstream of it, and fires no more
     /// often than that place is fed, however many tokens a drain carries
     /// back meanwhile.
+    ///
+    /// A [subnet place](NetBuilder::subnet_place) is followed through
+    /// (since 2026-11-28): a token put at one of its ports goes on from
+    /// every port that the subnet's own token flow, walked by these same
+    /// rules, leads it to, at any depth. So a cycle that leaves this net at
+    /// one port and comes back at another is found, and so is a way inside
+    /// the subnet that comes back to the port it left. The path names a
+    /// port by its subnet place and its own name, `Level 3/Lobby`, and the
+    /// way through as `(inside subnet place "Level 3")` between the two
+    /// ports. A cycle wholly inside a subnet, through none of its ports, is
+    /// the subnet's own and is not reported here: the subnet's definition
+    /// asks for the check on itself.
+    ///
+    /// ```
+    /// # use petritype::{BuildError, NetBuilder, TakeEdge};
+    /// let mut pipe = NetBuilder::new();
+    /// let (inbox, out) = (pipe.place::<u32>("In"), pipe.place::<u32>("Out"));
+    /// pipe.port(inbox);
+    /// pipe.port(out);
+    /// pipe.transition("Pass", (TakeEdge(inbox),), (out,), |n: u32| (n,));
+    ///
+    /// let mut b = NetBuilder::new();
+    /// b.assert_acyclic();
+    /// let s = b.subnet_place("S", pipe.build()?);
+    /// let (s_in, s_out) = (b.port_of::<u32>(s, "In"), b.port_of::<u32>(s, "Out"));
+    /// b.transition("Back", (TakeEdge(s_out),), (s_in,), |n: u32| (n,));
+    /// let error = b.build().expect_err("Back feeds the subnet that feeds it");
+    /// assert_eq!(
+    ///     error.to_string(),
+    ///     "the net's token flow has a cycle: \
+    ///      Back -> S/In -> (inside subnet place \"S\") -> S/Out -> Back",
+    /// );
+    /// # Ok::<(), BuildError>(())
+    /// ```
     ///
     /// ```
     /// # use petritype::{BuildError, NetBuilder, TakeEdge};
@@ -1500,6 +1569,14 @@ impl NetBuilder {
     /// until someone is waiting (`examples/traffic_light/net.rs`, which
     /// therefore does not ask for this check).
     ///
+    /// The transitions checked are this net's own. A
+    /// [subnet place](NetBuilder::subnet_place)'s subnet is not looked
+    /// into: its transitions are the subnet's, which its own definition asks
+    /// the check of, as a cycle wholly inside it is the subnet's own for
+    /// [`assert_acyclic`](NetBuilder::assert_acyclic). A transition of this
+    /// net that takes from a port of a subnet place consumes, as from any
+    /// place.
+    ///
     /// Passing proves that every firing shrinks the marking, not that the
     /// net stops: tokens can still go round a cycle for ever, since what one
     /// firing consumes the next one puts back. Only paired with
@@ -1515,424 +1592,6 @@ impl NetBuilder {
     pub fn assert_no_source_transitions(&mut self) -> &mut Self {
         self.assert_no_source_transitions = true;
         self
-    }
-
-    /// Checks the declarations and produces the net.
-    ///
-    /// The fresh net holds the seeded marking, an empty event log, and every
-    /// counter at zero: nothing has happened to it yet.
-    ///
-    /// # Errors
-    ///
-    /// First, the first thing wrong with a port:
-    /// [`BuildError::NoSuchPort`] or [`BuildError::PortTypeMismatch`] for a
-    /// [`port_of`](NetBuilder::port_of) that named no port or the wrong
-    /// type, and [`BuildError::PortIsSubnetPlace`] for a
-    /// [`port`](NetBuilder::port) given a port of a subnet place. Then
-    /// [`BuildError::DuplicatePlaceName`] or
-    /// [`BuildError::DuplicateTransitionName`] if two of either share a name
-    /// (a port's place is named by its subnet place and its port, and does
-    /// not count);
-    /// [`BuildError::NotNested`] if a place given a
-    /// [`stepping`](NetBuilder::stepping) rule holds no nets;
-    /// [`BuildError::DuplicateKeyName`] or
-    /// [`BuildError::KeysAlreadyDeclared`] for the first
-    /// [`keys`](NetBuilder::keys) declaration that repeats a name or a
-    /// place;
-    /// [`BuildError::SnapshotOfNoClonePlace`] if a snapshot or a survey edge
-    /// reads a place that cannot clone its tokens;
-    /// [`BuildError::RestoreOfNoClonePlace`] if a transition that
-    /// [restores its inputs on failure](crate::TransitionBuilder::restore_tokens_on_failure)
-    /// consumes such a place;
-    /// [`BuildError::EdgeOnSubnetPlace`] if a transition has an edge on a
-    /// subnet place, which the typed API already refuses when it compiles;
-    /// [`BuildError::DuplicateInputPlace`] if one transition reads one place
-    /// through two input edges;
-    /// [`BuildError::KeyedEdgeOnUnkeyedPlace`] if a
-    /// [`TakeWhereEdge`](crate::TakeWhereEdge) or
-    /// [`MutateWhereEdge`](crate::MutateWhereEdge) reads a place that declares
-    /// no [keys](NetBuilder::keys); for a keyed edge that chooses its token by
-    /// another input's ([`Clause::IsInput`](crate::Clause::IsInput)),
-    /// [`BuildError::BoundToTwoSources`],
-    /// [`BuildError::BoundSourceNotAnInput`],
-    /// [`BuildError::BoundSourceGivesMany`],
-    /// [`BuildError::BoundSourceIsBound`] or
-    /// [`BuildError::BoundKeyNotDeclared`]; and, for a transition whose body
-    /// [routes](crate::RoutedOutput) its outputs by type,
-    /// [`BuildError::UnroutableOutput`], [`BuildError::AmbiguousOutput`] or
-    /// [`BuildError::UnreachableOutput`].
-    ///
-    /// After the transitions' own checks and before the parameters,
-    /// [`BuildError::DuplicateControlName`] if two
-    /// [controls](NetBuilder::control) share a name, and then the
-    /// [groups](NetBuilder::group): [`BuildError::DuplicateGroupName`] if
-    /// two share a name, and then, for the first node put in a group
-    /// wrongly, [`BuildError::PlaceInTwoGroups`] or
-    /// [`BuildError::TransitionInTwoGroups`] for one put in a second group
-    /// and [`BuildError::PortInGroup`] for a port of a subnet place.
-    ///
-    /// Between the two, the parameters: with the `serde` feature,
-    /// `BuildError::DuplicateParamName` if two parameter types were marked
-    /// serialisable with `NetBuilder::serializable_param` under one wire
-    /// name, and [`BuildError::MissingParam`] if a transition declared a
-    /// [`Param<T>`](crate::Param) and no [`param`](NetBuilder::param) value
-    /// of that type was registered: the first offender in transition order,
-    /// then in the order the inputs were written.
-    ///
-    /// Then, only if they were asked for,
-    /// [`BuildError::SourceTransition`] from
-    /// [`assert_no_source_transitions`](NetBuilder::assert_no_source_transitions)
-    /// and [`BuildError::Cycle`] from
-    /// [`assert_acyclic`](NetBuilder::assert_acyclic).
-    pub fn build(mut self) -> Result<Net, BuildError> {
-        // A port asked for wrongly first: the handle it gave out names a
-        // stand-in, which every later check would only stumble on.
-        if let Some(problem) = self.port_problem.take() {
-            return Err(problem);
-        }
-        let mut seen = HashSet::with_capacity(self.places.len());
-        // A window is named by its subnet place and its port, so its name
-        // is unique among its subnet's ports, not among this net's places.
-        for slot in self.places.iter().filter(|slot| slot.meta.window.is_none()) {
-            if !seen.insert(slot.meta.name.as_str()) {
-                return Err(BuildError::DuplicatePlaceName {
-                    name: slot.meta.name.clone(),
-                });
-            }
-        }
-        if let Some(place) = self.not_nested {
-            return Err(BuildError::NotNested {
-                place: self.places[place.0 as usize].meta.name.clone(),
-            });
-        }
-        match self.keys_problem {
-            Some(KeysProblem::Duplicate { place, name }) => {
-                return Err(BuildError::DuplicateKeyName {
-                    place: self.places[place.0 as usize].meta.name.clone(),
-                    name: name.to_owned(),
-                });
-            }
-            Some(KeysProblem::Again { place }) => {
-                return Err(BuildError::KeysAlreadyDeclared {
-                    place: self.places[place.0 as usize].meta.name.clone(),
-                });
-            }
-            None => {}
-        }
-
-        let mut seen = HashSet::with_capacity(self.transitions.len());
-        // Each transition's bound edges by their sources, found below with
-        // its other checks and kept once every transition has passed.
-        let mut bindings = Vec::with_capacity(self.transitions.len());
-        for slot in &self.transitions {
-            if !seen.insert(slot.name.as_str()) {
-                return Err(BuildError::DuplicateTransitionName {
-                    name: slot.name.clone(),
-                });
-            }
-            // One input edge per place per transition. Both halves of
-            // firing rely on it: "fireable iff every input place is
-            // non-empty" (bar the drains and surveys, which ask nothing) is
-            // only exact while one edge wants one place, and the `&mut`
-            // borrows a mutating edge hands the body are disjoint by
-            // construction rather than by a run-time check.
-            // A subnet place holds no tokens, so an edge on it would read
-            // or write nothing. The typed API cannot name one (a
-            // `SubnetRef` is no `PlaceRef`), so this is the defence behind
-            // that.
-            if let Some(place) = slot
-                .inputs
-                .iter()
-                .map(|(place, _)| place)
-                .chain(&slot.outputs)
-                .find(|place| self.places[place.0 as usize].meta.subnet)
-            {
-                return Err(BuildError::EdgeOnSubnetPlace {
-                    transition: slot.name.clone(),
-                    place: self.places[place.0 as usize].meta.name.clone(),
-                });
-            }
-            let mut read = HashSet::with_capacity(slot.inputs.len());
-            for (place, kind) in &slot.inputs {
-                if !read.insert(*place) {
-                    return Err(BuildError::DuplicateInputPlace {
-                        transition: slot.name.clone(),
-                        place: self.places[place.0 as usize].meta.name.clone(),
-                    });
-                }
-                // A snapshot needs the place's cloner, which
-                // `place_no_clone` did not record (whether or not the type
-                // itself is `Clone`), and a survey is a snapshot of every
-                // token. A nested place is such a place, so this is also
-                // what refuses a snapshot or a survey of one.
-                if matches!(kind, EdgeKind::Snapshot | EdgeKind::Survey)
-                    && self.places[place.0 as usize].meta.clone.is_none()
-                {
-                    return Err(BuildError::SnapshotOfNoClonePlace {
-                        transition: slot.name.clone(),
-                        place: self.places[place.0 as usize].meta.name.clone(),
-                    });
-                }
-                // Restoring is done with clones taken at stage one, so a
-                // transition that restores can only consume places that can
-                // clone, a drain's included, empty or not: the check is about
-                // the edge, not the marking. The non-consuming edges are exempt
-                // because they consume nothing: a mutating edge has nothing
-                // to put back, and a snapshot or a survey of such a place
-                // was refused just above.
-                if slot.restore_tokens_on_failure
-                    && kind.consumes()
-                    && self.places[place.0 as usize].meta.clone.is_none()
-                {
-                    return Err(BuildError::RestoreOfNoClonePlace {
-                        transition: slot.name.clone(),
-                        place: self.places[place.0 as usize].meta.name.clone(),
-                    });
-                }
-                // A keyed edge chooses by keys, and a place that declares
-                // none gives no token a key, so no clause could ever pass:
-                // the transition would never fire, which is cheaper to say
-                // now than to find out by watching it.
-                if kind.is_keyed() && self.places[place.0 as usize].meta.keys.is_none() {
-                    return Err(BuildError::KeyedEdgeOnUnkeyedPlace {
-                        transition: slot.name.clone(),
-                        place: self.places[place.0 as usize].meta.name.clone(),
-                    });
-                }
-            }
-            // A reach is declared into the nets a place's tokens carry, so a
-            // place that holds none has nothing to reach, and a name is not
-            // empty. Nothing else about a reach is checked (DESIGN §8.5).
-            for ((place, _), reach) in slot.inputs.iter().zip(&slot.reaches) {
-                if reach.is_empty() {
-                    continue;
-                }
-                let meta = &self.places[place.0 as usize].meta;
-                if meta.nested.is_none() {
-                    return Err(BuildError::ReachIntoNoNets {
-                        transition: slot.name.clone(),
-                        place: meta.name.clone(),
-                    });
-                }
-                if reach.iter().any(String::is_empty) {
-                    return Err(BuildError::EmptyReachName {
-                        transition: slot.name.clone(),
-                        place: meta.name.clone(),
-                    });
-                }
-            }
-            // A keyed edge that chooses by another input's token, and that
-            // input: one pair for each firing to find, or a refusal.
-            bindings.push(crate::pairing::bindings(slot, &self.places)?);
-        }
-        for (slot, bindings) in self.transitions.iter_mut().zip(bindings) {
-            slot.bindings = bindings;
-        }
-
-        let mut seen = HashSet::with_capacity(self.controls.len());
-        for control in &self.controls {
-            if !seen.insert(control.name.as_str()) {
-                return Err(BuildError::DuplicateControlName {
-                    name: control.name.clone(),
-                });
-            }
-        }
-
-        // The groups, a naming matter like the controls: a name two groups
-        // share, then the first node put in a group wrongly.
-        let mut seen = HashSet::with_capacity(self.groups.len());
-        for name in &self.groups {
-            if !seen.insert(name.as_str()) {
-                return Err(BuildError::DuplicateGroupName { name: name.clone() });
-            }
-        }
-        if let Some(problem) = self.group_problem {
-            return Err(self.group_error(problem));
-        }
-
-        // The parameters, in the same spirit: a wire name two types share is
-        // a naming mistake like a duplicate place name, and a declared
-        // parameter with no value is this slice's version of a dangling
-        // edge. Both come before routing, which is the subtlest check of
-        // the three.
-        #[cfg(feature = "serde")]
-        {
-            let mut seen = HashSet::with_capacity(self.params.len());
-            for entry in &self.params {
-                let Some(wire) = &entry.wire else {
-                    continue;
-                };
-                if !seen.insert(wire.name.as_str()) {
-                    return Err(BuildError::DuplicateParamName {
-                        name: wire.name.clone(),
-                    });
-                }
-            }
-        }
-        for slot in &self.transitions {
-            for arg in &slot.args {
-                let ArgSource::Param { type_id, type_name } = *arg else {
-                    continue;
-                };
-                // A marked-but-valueless parameter is not a value, so it is
-                // reported here like one that was never mentioned at all.
-                if !self
-                    .params
-                    .iter()
-                    .any(|entry| entry.type_id == type_id && entry.value.is_some())
-                {
-                    return Err(BuildError::MissingParam {
-                        transition: slot.name.clone(),
-                        type_name,
-                    });
-                }
-            }
-        }
-
-        // Routing last: a net whose transitions are not yet distinct or
-        // whose edges are wrong has a more basic problem to report first.
-        // Each transition resolved its own table when it was declared; this
-        // is where the index an unreachable output was known by becomes the
-        // place's name.
-        for (index, problem) in self.routing.iter().enumerate() {
-            let Some(problem) = problem else {
-                continue;
-            };
-            let slot = &self.transitions[index];
-            let transition = slot.name.clone();
-            return Err(match *problem {
-                RoutingProblem::Unroutable { type_name } => BuildError::UnroutableOutput {
-                    transition,
-                    type_name,
-                },
-                RoutingProblem::Ambiguous { type_name } => BuildError::AmbiguousOutput {
-                    transition,
-                    type_name,
-                },
-                RoutingProblem::Unreachable { output } => BuildError::UnreachableOutput {
-                    transition,
-                    place: self.places[slot.outputs[output].0 as usize]
-                        .meta
-                        .name
-                        .clone(),
-                },
-            });
-        }
-
-        // The opt-in checks last: a net that is wired wrongly has a more
-        // basic problem to report than one that is wired for ever. The
-        // per-transition complaint comes before the whole-net one, being the
-        // easier of the two to act on.
-        if self.assert_no_source_transitions {
-            for slot in &self.transitions {
-                // A drain consumes, but may take nothing: only an edge that
-                // always takes a token makes a firing pay for itself.
-                if !slot.inputs.iter().any(|(_, kind)| kind.always_consumes()) {
-                    return Err(BuildError::SourceTransition {
-                        transition: slot.name.clone(),
-                    });
-                }
-            }
-        }
-        if self.assert_acyclic
-            && let Some(path) = self.find_cycle()
-        {
-            return Err(BuildError::Cycle { path });
-        }
-
-        // The two halves of each parameter meet here. An entry with no value
-        // has already been answered for: no transition declared it, or the
-        // check above would have refused the net, so it is dropped with the
-        // builder.
-        let params: Vec<ParamSlot> = self
-            .params
-            .into_iter()
-            .filter_map(|entry| {
-                let (value, clone) = entry.value?;
-                Some(ParamSlot {
-                    type_id: entry.type_id,
-                    type_name: entry.type_name,
-                    value,
-                    clone,
-                    #[cfg(feature = "serde")]
-                    name: entry.wire.as_ref().map(|wire| wire.name.clone()),
-                    #[cfg(feature = "serde")]
-                    to_json: entry.wire.as_ref().map(|wire| wire.to_json),
-                    #[cfg(feature = "serde")]
-                    from_json: entry.wire.as_ref().map(|wire| wire.from_json),
-                })
-            })
-            .collect();
-
-        // Which transitions reach each subnet through its windows: while one
-        // of them is in flight, the subnet takes no turn.
-        for (index, transition) in self.transitions.iter().enumerate() {
-            let reached: Vec<Window> = transition
-                .inputs
-                .iter()
-                .map(|(place, _)| place)
-                .chain(&transition.outputs)
-                .filter_map(|place| self.places[place.0 as usize].meta.window)
-                .collect();
-            for window in reached {
-                let subnet = self.places[window.subnet.0 as usize]
-                    .subnet
-                    .as_mut()
-                    .expect("a window's place holds a subnet");
-                let id = TransitionId(index as u32);
-                if !subnet.through.contains(&id) {
-                    subnet.through.push(id);
-                }
-            }
-        }
-
-        let marks_ports = self.places.iter().any(|slot| slot.meta.port);
-        let mut net = Net {
-            id: self.net,
-            open: self.open,
-            marks_ports,
-            held: None,
-            inside: false,
-            places: self.places,
-            transitions: self.transitions,
-            params,
-            next_token_id: 0,
-            topology_counter: 0,
-            state_counter: 0,
-            fired_count: 0,
-            selector: None,
-            tie_break: self.tie_break,
-            last_pick: None,
-            ring_cursor: None,
-            resettable: self.resettable,
-            label_limit: self.label_limit,
-            events: Vec::new(),
-            controls: self.controls,
-            groups: self.groups,
-            // Filled by the seeds below, which go in through the one
-            // insertion path like every other token.
-            index: KeyIndex::new(),
-            #[cfg(feature = "serde")]
-            stamp: None,
-            #[cfg(feature = "serde")]
-            templates: self.templates,
-        };
-        for (index, tokens) in self.seeds.into_iter().enumerate() {
-            let place = PlaceId(index as u32);
-            let nested = net.places[index].meta.nested;
-            for mut token in tokens {
-                // Whatever a seeded token's inner nets logged while they were
-                // being set up is setup too (DESIGN §6.6).
-                if let Some(nested) = nested {
-                    forget_inner_events(nested, &mut token);
-                }
-                // `insert_erased`, not `push_erased`: the initial marking is
-                // where the net starts, not a change to report.
-                net.insert_erased(place, token, "<seed>")
-                    .expect("a seed is checked against its place's type by the builder");
-            }
-        }
-        Ok(net)
     }
 
     // ----- internals ------------------------------------------------------
@@ -1992,44 +1651,6 @@ impl NetBuilder {
         }
     }
 
-    /// The build error a recorded group problem is, with every name filled
-    /// in.
-    fn group_error(&self, problem: GroupProblem) -> BuildError {
-        let group = |index: u32| self.groups[index as usize].clone();
-        match problem {
-            GroupProblem::Twice {
-                node: Node::Place(place),
-                first,
-                second,
-            } => BuildError::PlaceInTwoGroups {
-                place: self.places[place as usize].meta.name.clone(),
-                first: group(first),
-                second: group(second),
-            },
-            GroupProblem::Twice {
-                node: Node::Transition(transition),
-                first,
-                second,
-            } => BuildError::TransitionInTwoGroups {
-                transition: self.transitions[transition as usize].name.clone(),
-                first: group(first),
-                second: group(second),
-            },
-            GroupProblem::Port { place, group: at } => {
-                let meta = &self.places[place.0 as usize].meta;
-                let subnet = meta
-                    .window
-                    .map(|window| self.places[window.subnet.0 as usize].meta.name.clone())
-                    .unwrap_or_default();
-                BuildError::PortInGroup {
-                    place: meta.name.clone(),
-                    subnet,
-                    group: group(at),
-                }
-            }
-        }
-    }
-
     /// A node as a message names it: `place "Walk Paid"` or
     /// `transition "Fund Walk"`, since a place and a transition may share a
     /// name.
@@ -2037,102 +1658,6 @@ impl NetBuilder {
         match node {
             Node::Place(_) => format!("place {:?}", self.node_name(node)),
             Node::Transition(_) => format!("transition {:?}", self.node_name(node)),
-        }
-    }
-
-    /// The first cycle in the net's token flow, as the names of its nodes
-    /// from the node the walk closed on round to itself, or `None` if there
-    /// is none.
-    ///
-    /// A depth-first walk with three colours (unseen, on the path, done),
-    /// where meeting a node that is on the path is a cycle. The stack is
-    /// explicit rather than the call stack, so that a long pipeline cannot
-    /// overflow it. Every transition is a root, in declaration order, which
-    /// is enough: a cycle alternates places and transitions, so it contains
-    /// a transition, and a transition already walked was walked with
-    /// everything reachable from it.
-    fn find_cycle(&self) -> Option<Vec<String>> {
-        // The reverse of `inputs`, taken once: which transitions consume a
-        // place, in declaration order. Non-consuming edges are not token flow, and a
-        // drain, which may take nothing, is no part of the proof
-        // (`assert_acyclic`'s docs).
-        let mut consumers: Vec<Vec<u32>> = vec![Vec::new(); self.places.len()];
-        for (index, slot) in self.transitions.iter().enumerate() {
-            for (place, kind) in &slot.inputs {
-                if kind.always_consumes() {
-                    consumers[place.0 as usize].push(index as u32);
-                }
-            }
-        }
-
-        // One colour per node, in two vectors because the two kinds are
-        // numbered separately.
-        let mut places = vec![Colour::Unseen; self.places.len()];
-        let mut transitions = vec![Colour::Unseen; self.transitions.len()];
-        for root in 0..self.transitions.len() as u32 {
-            if transitions[root as usize] != Colour::Unseen {
-                continue;
-            }
-            transitions[root as usize] = Colour::OnPath;
-            // The path being walked, each node with how many of its
-            // successors have been followed so far.
-            let mut path = vec![(Node::Transition(root), 0_usize)];
-            while let Some(&(node, followed)) = path.last() {
-                path.last_mut().expect("the path is not empty here").1 += 1;
-                let Some(next) = self.successor(&consumers, node, followed) else {
-                    // Every way out of this node led nowhere: it is not on
-                    // any cycle, and nothing need come back to it.
-                    set_colour(node, &mut places, &mut transitions, Colour::Done);
-                    path.pop();
-                    continue;
-                };
-                match colour(next, &places, &transitions) {
-                    Colour::OnPath => {
-                        let from = path
-                            .iter()
-                            .position(|(node, _)| *node == next)
-                            .expect("a node on the path is in the path");
-                        return Some(
-                            path[from..]
-                                .iter()
-                                .map(|(node, _)| self.node_name(*node))
-                                .chain(std::iter::once(self.node_name(next)))
-                                .collect(),
-                        );
-                    }
-                    Colour::Done => {}
-                    Colour::Unseen => {
-                        set_colour(next, &mut places, &mut transitions, Colour::OnPath);
-                        path.push((next, 0));
-                    }
-                }
-            }
-        }
-        None
-    }
-
-    /// Where the `index`-th edge out of `node` leads, or `None` once they are
-    /// exhausted: a transition's output places, or the transitions that
-    /// consume a place, both in declaration order.
-    fn successor(&self, consumers: &[Vec<u32>], node: Node, index: usize) -> Option<Node> {
-        match node {
-            Node::Transition(id) => self.transitions[id as usize]
-                .outputs
-                .get(index)
-                .map(|place| Node::Place(place.0)),
-            Node::Place(id) => consumers[id as usize]
-                .get(index)
-                .map(|transition| Node::Transition(*transition)),
-        }
-    }
-
-    /// What to call a node in a reported cycle. Names are unique per kind,
-    /// and a place and a transition may share one, so a path can name the
-    /// same word twice without meaning the same node.
-    fn node_name(&self, node: Node) -> String {
-        match node {
-            Node::Place(id) => self.places[id as usize].meta.name.clone(),
-            Node::Transition(id) => self.transitions[id as usize].name.clone(),
         }
     }
 
@@ -2225,18 +1750,24 @@ impl NetBuilder {
         index
     }
 
-    /// Panics if the place at `index` is a port of one of this net's subnet
-    /// places: what a port is, beyond its tokens, is said by its subnet's
+    /// Whether the place at `index` is one of this net's own rather than a
+    /// port of one of its subnet places, for an option `method` would set:
+    /// what a port is, beyond its tokens, is said by its subnet's
     /// definition, and an option set out here would describe a different
-    /// place from the one the subnet keeps.
-    fn own_place(&self, index: usize, method: &str) {
-        if let Some(window) = self.places[index].meta.window {
-            panic!(
-                "{method}: place {:?} is a port of the subnet place {:?}, and what a port is, \
-                 beyond its tokens, is declared in its subnet's definition",
-                self.places[index].meta.name, self.places[window.subnet.0 as usize].meta.name,
-            );
-        }
+    /// place from the one the subnet keeps. A port is kept as the
+    /// [`BuildError::PortOption`] that [`build`](NetBuilder::build)
+    /// reports, and the option is not set.
+    fn own_place(&mut self, index: usize, method: &'static str) -> bool {
+        let Some(window) = self.places[index].meta.window else {
+            return true;
+        };
+        let problem = BuildError::PortOption {
+            method,
+            place: self.places[index].meta.name.clone(),
+            subnet: self.places[window.subnet.0 as usize].meta.name.clone(),
+        };
+        self.port_problem.get_or_insert(problem);
+        false
     }
 
     /// The index of an erased output place or edge target, rejecting a
@@ -2288,6 +1819,8 @@ impl fmt::Debug for NetBuilder {
             .field("open", &self.open)
             .field("not_nested", &self.not_nested)
             .field("keys_problem", &self.keys_problem)
+            .field("empty_key", &self.empty_key)
+            .field("no_keys", &self.no_keys)
             .field("port_problem", &self.port_problem)
             .field("groups", &self.groups)
             .field("group_problem", &self.group_problem)
@@ -2296,7 +1829,7 @@ impl fmt::Debug for NetBuilder {
                 &self
                     .controls
                     .iter()
-                    .map(|control| control.name.as_str())
+                    .map(|control| control.name())
                     .collect::<Vec<_>>(),
             );
         #[cfg(feature = "serde")]
@@ -2327,15 +1860,6 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_names_are_rejected() {
-        let mut b = NetBuilder::new();
-        let _ = b.place::<u32>("Same");
-        let _ = b.place::<String>("Same");
-        let error = b.build().unwrap_err();
-        assert!(matches!(error, BuildError::DuplicatePlaceName { ref name } if name == "Same"));
-    }
-
-    #[test]
     #[should_panic(expected = "but this is net")]
     fn seeding_with_a_foreign_handle_panics() {
         let mut other = NetBuilder::new();
@@ -2354,50 +1878,5 @@ mod tests {
 
         let id = a.id();
         assert_eq!(a.build().unwrap().id(), id);
-    }
-
-    /// An edge on a subnet place cannot be written with the typed API, since
-    /// a `SubnetRef` is no `PlaceRef`, so the check behind that is asked
-    /// with a handle made in here.
-    #[test]
-    fn an_edge_on_a_subnet_place_is_refused() {
-        use crate::TakeEdge;
-        for output in [false, true] {
-            let mut b = NetBuilder::new();
-            let inbox = b.place::<u32>("Inbox");
-            let level = b.subnet_place("Level 3", NetBuilder::new().build().unwrap());
-            let forged = PlaceRef::<u32>::new(b.id(), level.id());
-            if output {
-                b.transition("Stuff", (TakeEdge(inbox),), (forged,), |n: u32| (n,));
-            } else {
-                b.transition("Rob", (TakeEdge(forged),), (inbox,), |n: u32| (n,));
-            }
-            let error = b.build().expect_err("a subnet place holds no tokens");
-            assert!(
-                matches!(&error, BuildError::EdgeOnSubnetPlace { place, .. } if place == "Level 3"),
-                "{error}"
-            );
-        }
-    }
-
-    #[test]
-    fn seeds_are_numbered_in_place_order() {
-        let mut b = NetBuilder::new();
-        let first = b.place::<u32>("First");
-        let second = b.place::<u32>("Second");
-        b.seed(second, [10, 11]);
-        b.seed(first, [1]);
-        let net = b.build().unwrap();
-
-        let ids: Vec<_> = net
-            .tokens(first.id())
-            .chain(net.tokens(second.id()))
-            .map(|(id, _)| id)
-            .collect();
-        let mut sorted = ids.clone();
-        sorted.sort();
-        assert_eq!(ids, sorted);
-        assert_eq!(net.count(first.id()), 1);
-        assert_eq!(net.count(second.id()), 2);
     }
 }

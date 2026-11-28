@@ -45,7 +45,7 @@
           "generation": 1, "marking_version": 3, "running": false,
           "topology": {
             "places": [
-              {"name": "Inbox", "type_name": "parcel_runner::nets::Parcel", "serializable": true},
+              {"name": "Inbox", "type_name": "parcel_runner::nets::Parcel", "serializable": true, "port": true},
               {"name": "Shelf", "type_name": "parcel_runner::nets::Parcel", "serializable": false}
             ],
             "transitions": [{"name": "Shelve", "detail": {"params": [], "detachable": true}}],

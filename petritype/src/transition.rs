@@ -62,16 +62,24 @@ pub(crate) struct TransitionSlot {
     /// The name given in the builder; unique within a net.
     pub(crate) name: String,
     /// Input places and how each is read, in declaration order, with the
-    /// [parameters](crate::Param) left out. The places are distinct:
-    /// [`build`](crate::NetBuilder::build) rejects two input edges into one
-    /// place.
+    /// [parameters](crate::Param) left out. A place may stand here more
+    /// than once only for edges that each take a token of their own
+    /// ([`shared`](TransitionSlot::shared)), as
+    /// [`build`](crate::NetBuilder::build) checks.
     ///
     /// Edges only, because everything that reads this field is about places:
-    /// fireability, [`Net::edges`](crate::Net::edges), the duplicate-place
+    /// fireability, [`Net::edges`](crate::Net::edges), the shared-place
     /// check, the acyclicity and source walks, and stage one's consumption.
     /// [`args`](TransitionSlot::args) is what remembers where the parameters
     /// stood among them.
     pub(crate) inputs: Vec<(PlaceId, EdgeKind)>,
+    /// The input edges, by their index in [`inputs`](TransitionSlot::inputs),
+    /// whose place another input edge of this transition reads, in edge
+    /// order: once the net is built, takes and take-wheres alone (DESIGN
+    /// §4.4, since 0.4.0). Found when the transition is declared; empty for
+    /// almost every transition. Fireability and stage one choose their
+    /// tokens together ([`share`](crate::sharing::share)).
+    pub(crate) shared: Vec<usize>,
     /// One entry per input edge, beside [`inputs`](TransitionSlot::inputs):
     /// the filter of a [keyed](EdgeKind::is_keyed) edge, `None` for every
     /// other. Apart rather than inside the kind so that the kind stays
@@ -85,7 +93,9 @@ pub(crate) struct TransitionSlot {
     /// One entry per input edge, beside [`inputs`](TransitionSlot::inputs):
     /// the ports of its tokens' nets the edge says its body reaches
     /// ([`Reaching`](crate::Reaching)), empty for an edge that names none.
-    pub(crate) reaches: Vec<Vec<String>>,
+    /// Shared, so that a firing that hands its body a net keeps them on its
+    /// [`Hold`](crate::closed::Hold) for the price of a count.
+    pub(crate) reaches: std::sync::Arc<[Vec<String>]>,
     /// The declared parameter types by name, in declaration order: what
     /// [`TransitionInfo::params`](TransitionInfo::params) reports so that a
     /// renderer can badge the transition (DESIGN §10).
@@ -128,10 +138,10 @@ pub(crate) struct TransitionSlot {
     /// puts them back at the front of their places
     /// ([`Net::distribute`](crate::Net::distribute)).
     pub(crate) restore_tokens_on_failure: bool,
-    /// True unless some input is a [`MutateEdge`](crate::MutateEdge) or a
-    /// [`MutateWhereEdge`](crate::MutateWhereEdge).
+    /// True unless some input edge [lends](EdgeKind::lends) its body tokens
+    /// where they lie: a mutating or a read edge.
     ///
-    /// A mutating edge means the body borrows a token where it lies, so the
+    /// Such an edge means the body borrows a token in its place, so the
     /// firing cannot leave the net and cannot be handed to a worker. Derived
     /// from the edge kinds, never asked of the author.
     pub(crate) detachable: bool,
@@ -150,6 +160,13 @@ impl TransitionSlot {
             .iter()
             .any(|binding| binding.source == edge || binding.bound.contains(&edge))
     }
+
+    /// Whether the input edge at this index reads a place another input
+    /// edge of this transition reads: one of
+    /// [`shared`](TransitionSlot::shared), whose tokens are chosen together.
+    pub(crate) fn is_shared(&self, edge: usize) -> bool {
+        self.shared.binary_search(&edge).is_ok()
+    }
 }
 
 impl fmt::Debug for TransitionSlot {
@@ -158,6 +175,7 @@ impl fmt::Debug for TransitionSlot {
             .field("name", &self.name)
             .field("inputs", &self.inputs)
             .field("filters", &self.filters)
+            .field("shared", &self.shared)
             .field("bindings", &self.bindings)
             .field("reaches", &self.reaches)
             // The type names only: a parameter's value is never printed
@@ -189,8 +207,10 @@ impl fmt::Debug for TransitionSlot {
 pub struct TransitionInfo<'a> {
     /// The transition's name, unique within the net.
     pub name: &'a str,
-    /// Input places and how each is read, in declaration order. The places
-    /// are distinct.
+    /// Input places and how each is read, in declaration order. A place
+    /// stands here once for each edge on it: two or more times only for
+    /// take and take-where edges, each of which takes a token of its own
+    /// (since 0.4.0).
     ///
     /// Edges only. A [`Param<T>`](crate::Param) is an input of the
     /// transition but not an edge of the net (it reads no place and is no
@@ -201,8 +221,9 @@ pub struct TransitionInfo<'a> {
     /// [`inputs`](TransitionInfo::inputs): the [`Filter`] of a
     /// [keyed](EdgeKind::is_keyed) edge
     /// ([`TakeWhereEdge`](crate::TakeWhereEdge),
-    /// [`MutateWhereEdge`](crate::MutateWhereEdge)), as declared, and `None`
-    /// for every other kind (slice 19).
+    /// [`MutateWhereEdge`](crate::MutateWhereEdge),
+    /// [`ReadWhereEdge`](crate::ReadWhereEdge)), as declared, and `None` for
+    /// every other kind.
     ///
     /// Beside `inputs` rather than inside it, so that the edge list keeps its
     /// shape and [`EdgeKind`] stays `Copy`; `filters[i]` belongs to
@@ -215,7 +236,7 @@ pub struct TransitionInfo<'a> {
     /// (since 2026-11-23).
     pub reaches: &'a [Vec<String>],
     /// The [parameter](crate::Param) types this transition declared, by
-    /// name, in declaration order (DESIGN §10).
+    /// name, in declaration order.
     ///
     /// Type names and nothing else: a parameter has no `Debug` bound, and a
     /// reader is told what a transition *needs*, never what it was given. A
@@ -233,7 +254,7 @@ pub struct TransitionInfo<'a> {
     /// ([`RoutedOutput`](crate::RoutedOutput)) or names their places in a
     /// [`Distribution`](crate::Distribution); a wrapped body is what its
     /// [output distribution function](crate::OutputDistribution) returns,
-    /// and a `Result` what it wraps (DESIGN §4.5).
+    /// and a `Result` what it wraps.
     ///
     /// It says what an output edge's [`slot`](crate::EdgeInfo::Output)
     /// means. For a positional body the slot is the position in the
@@ -263,18 +284,21 @@ pub struct TransitionInfo<'a> {
     pub in_flight: bool,
     /// Whether a firing of this transition can leave the net.
     ///
-    /// False exactly when some input is a
-    /// [`MutateEdge`](crate::MutateEdge) or a
-    /// [`MutateWhereEdge`](crate::MutateWhereEdge), whose body parameter
-    /// borrows a token where it lies: such a firing runs inline inside
-    /// [`launch`](crate::Net::launch) instead of being handed to a worker.
-    /// Derived from the edge kinds, never asked of the author. The other
-    /// reads, [`SnapshotEdge`](crate::SnapshotEdge) and
-    /// [`SurveyEdge`](crate::SurveyEdge), hand over clones and leave it true.
+    /// False exactly when some input edge lends its body tokens where they
+    /// lie ([`EdgeKind::lends`]): a [`MutateEdge`](crate::MutateEdge) or a
+    /// [`MutateWhereEdge`](crate::MutateWhereEdge), which lends a token to
+    /// change, or a [`ReadEdge`](crate::ReadEdge), a
+    /// [`ReadWhereEdge`](crate::ReadWhereEdge) or a
+    /// [`ReadAllEdge`](crate::ReadAllEdge), which lends tokens to look at.
+    /// Such a firing runs inline inside [`launch`](crate::Net::launch)
+    /// instead of being handed to a worker. Derived from the edge kinds,
+    /// never asked of the author. [`SnapshotEdge`](crate::SnapshotEdge) and
+    /// [`SurveyEdge`](crate::SurveyEdge) hand over clones, and a
+    /// [`Param`](crate::Param) a clone of its value, and leave it true.
     pub detachable: bool,
     /// The name of the group the transition is in, as
     /// [`TransitionBuilder::group`] put it there, or `None` for a
-    /// transition in no group (DESIGN §6.8). Only drawings read it: being in
+    /// transition in no group. Only drawings read it: being in
     /// a group changes nothing about how the transition fires.
     pub group: Option<&'a str>,
 }
@@ -299,10 +323,10 @@ pub struct TransitionInfo<'a> {
 ///     .id();
 /// ```
 ///
-/// `output_distribution` is deliberately *not* here, although DESIGN §5 lists
-/// it: by the time this handle exists the body's return type has been erased,
-/// and the point of an output distribution function is that its own return
-/// type decides the output form. It is a method on the body instead:
+/// `output_distribution` is deliberately *not* one of these options: by the
+/// time this handle exists the body's return type has been erased, and the
+/// point of an output distribution function is that its own return type
+/// decides the output form. It is a method on the body instead:
 /// [`OutputDistribution::output_distribution`](crate::OutputDistribution::output_distribution),
 /// applied before `transition()` is called.
 pub struct TransitionBuilder<'a> {
@@ -350,7 +374,10 @@ impl TransitionBuilder<'_> {
     /// A transition without a priority scores `0.0`, so a single
     /// `.priority(|_| 1.0)` is enough to put one transition ahead of every
     /// other. The score may depend on the marking, since `f` is given the
-    /// net. `NaN` is read as `0.0`.
+    /// net. An infinity ranks as itself. A `NaN` ranks neither above nor
+    /// below any other score, so a choice that meets one fails with
+    /// [`SelectionFailed`](crate::SelectionFailed), and nothing fires (since
+    /// 2026-11-28; until then it was read as `0.0`).
     ///
     /// A custom [`selector`](crate::Net::set_selector) may ignore priorities
     /// entirely. Like a guard, a priority outlives its declaration, so one
@@ -389,11 +416,12 @@ impl TransitionBuilder<'_> {
     ///
     /// [`SnapshotEdge`](crate::SnapshotEdge),
     /// [`MutateEdge`](crate::MutateEdge),
-    /// [`MutateWhereEdge`](crate::MutateWhereEdge) and
-    /// [`SurveyEdge`](crate::SurveyEdge) consume nothing, so there is nothing
-    /// to restore for them: a snapshot's or a survey's clones were never in
-    /// a place, and a mutation was made where the token lies and stands,
-    /// failure or not.
+    /// [`MutateWhereEdge`](crate::MutateWhereEdge),
+    /// [`SurveyEdge`](crate::SurveyEdge) and the read edges consume nothing,
+    /// so there is nothing to restore for them: a snapshot's or a survey's
+    /// clones were never in a place, a read edge's tokens never left theirs,
+    /// and a mutation was made where the token lies and stands, failure or
+    /// not.
     ///
     /// The cost is one clone per consumed token per firing of *this*
     /// transition, taken whether or not the firing goes on to fail.
@@ -424,7 +452,7 @@ impl TransitionBuilder<'_> {
     /// let token = net.tokens(inbox.id()).next().unwrap().0;
     ///
     /// let failure = net.step().expect_err("this body always fails");
-    /// assert!(failure.restored);
+    /// assert!(failure.firing().is_some_and(|failure| failure.restored));
     /// assert_eq!(net.count(inbox.id()), 1, "the token is back");
     /// assert_eq!(
     ///     net.tokens(inbox.id()).next().unwrap().0,
@@ -441,8 +469,8 @@ impl TransitionBuilder<'_> {
     /// place declared with
     /// [`place_no_clone`](crate::NetBuilder::place_no_clone), which has no
     /// cloner to take the clones with. Reading such a place through a
-    /// [`MutateEdge`](crate::MutateEdge) is fine: nothing is consumed, so
-    /// nothing is cloned.
+    /// [`MutateEdge`](crate::MutateEdge) or a read edge is fine: nothing is
+    /// consumed, so nothing is cloned.
     pub fn restore_tokens_on_failure(&mut self) -> &mut Self {
         self.builder
             .transition_slot(self.id)
@@ -452,7 +480,7 @@ impl TransitionBuilder<'_> {
 
     /// Puts this transition in a group, one that
     /// [`NetBuilder::group`](crate::NetBuilder::group) declared: a label
-    /// that drawings read and the engine never does (DESIGN §6.8).
+    /// that drawings read and the engine never does.
     ///
     /// ```
     /// # use petritype::{NetBuilder, TakeEdge};

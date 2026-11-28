@@ -37,12 +37,13 @@ fn ids(net: &Net, place: PlaceId) -> Vec<TokenId> {
     net.tokens(place).map(|(id, _)| id).collect()
 }
 
-/// `Inbox -> Double -> Out`: one place to put tokens in, one transition to
-/// switch on and off.
+/// `Inbox -> Double -> Out`: one place to put tokens in, a port, and one
+/// transition to switch on and off.
 fn net_with_a_transition() -> (Net, PlaceRef<u32>, PlaceRef<u32>, TransitionId) {
     let mut b = NetBuilder::new();
     let inbox = b.place::<u32>("Inbox");
     let out = b.place::<u32>("Out");
+    b.port(inbox);
     let double = b
         .transition("Double", (TakeEdge(inbox),), (out,), |n: u32| (n * 2,))
         .id();
@@ -50,10 +51,11 @@ fn net_with_a_transition() -> (Net, PlaceRef<u32>, PlaceRef<u32>, TransitionId) 
     (net, inbox, out, double)
 }
 
-/// A net with one `u32` place and nothing else.
+/// A net with one `u32` place, a port, and nothing else.
 fn small_net() -> (Net, PlaceRef<u32>) {
     let mut b = NetBuilder::new();
     let inbox = b.place::<u32>("Inbox");
+    b.port(inbox);
     let net = b.build().expect("a well-formed net");
     (net, inbox)
 }
@@ -67,6 +69,7 @@ fn bigger_net() -> (Net, PlaceRef<u32>, TransitionId) {
     let first = b.place::<u32>("First");
     let second = b.place::<u32>("Second");
     let third = b.place::<u32>("Third");
+    b.port(third);
     b.transition("One", (TakeEdge(first),), (second,), |n: u32| (n,));
     let two = b
         .transition("Two", (TakeEdge(second),), (third,), |n: u32| (n,))
@@ -122,6 +125,7 @@ fn extend_appends_in_order_with_one_event_per_token() {
 fn set_tokens_replaces_everything_and_an_empty_batch_clears() {
     let mut b = NetBuilder::new();
     let inbox = b.place::<u32>("Inbox");
+    b.port(inbox);
     b.seed(inbox, [1, 2]);
     let mut net = b.build().expect("a well-formed net");
     let seeded = ids(&net, inbox.id());
@@ -372,6 +376,7 @@ fn a_command_sent_to_the_wrong_net_lands_by_index_the_type_check_is_the_guard() 
     // Where the types differ, the one runtime check catches it.
     let mut c = NetBuilder::new();
     let notes = c.place::<String>("Notes");
+    c.port(notes);
     let mut net_c = c.build().expect("a well-formed net");
     assert!(matches!(
         net_c.apply(Command::put(inbox_a, 7)),
@@ -521,13 +526,15 @@ mod json {
     use petritype::JsonCommand;
     use petritype::serde_json::{self, Value};
 
-    /// `Counts` is serialisable, `Notes` deliberately is not.
+    /// `Counts` is serialisable and a port, `Notes` deliberately is not
+    /// serialisable.
     fn json_net() -> (Net, PlaceRef<u32>, PlaceRef<String>, TransitionId) {
         let mut b = NetBuilder::new();
         let counts = b.place::<u32>("Counts");
         let notes = b.place::<String>("Notes");
         let seen = b.place::<u32>("Seen");
         b.serializable(counts);
+        b.port(counts);
         let tally = b
             .transition("Tally", (TakeEdge(counts),), (seen,), |n: u32| (n,))
             .id();
@@ -611,7 +618,7 @@ mod json {
         );
         assert_eq!(
             net.json(counts.id(), tokens[2]).expect("serializable"),
-            Value::from(3),
+            Ok(Value::from(3)),
         );
     }
 
@@ -716,6 +723,89 @@ mod json {
         }
     }
 
+    /// A token, or a parameter value, whose own `Serialize` refuses.
+    #[derive(Debug, Clone)]
+    struct Unwritable;
+
+    impl serde::Serialize for Unwritable {
+        fn serialize<S: serde::Serializer>(&self, _: S) -> Result<S::Ok, S::Error> {
+            Err(serde::ser::Error::custom("an unwritable token"))
+        }
+    }
+
+    impl<'de> serde::Deserialize<'de> for Unwritable {
+        fn deserialize<D: serde::Deserializer<'de>>(_: D) -> Result<Self, D::Error> {
+            Ok(Unwritable)
+        }
+    }
+
+    /// What cannot be written is an error, where its error's text was
+    /// written as the token or the value.
+    #[test]
+    fn to_json_refuses_what_cannot_be_written() {
+        let mut b = NetBuilder::new();
+        let odd = b.place::<Unwritable>("Odd");
+        b.serializable(odd);
+        b.param(Unwritable);
+        b.serializable_param::<Unwritable>("odd");
+        let net = b.build().expect("a well-formed net");
+
+        let refused = Command::put(odd, Unwritable).to_json(&net);
+        match refused {
+            Err(CommandError::CannotEncodeToken { place, name, .. }) => {
+                assert_eq!((place, name.as_str()), (odd.id(), "Odd"));
+            }
+            other => panic!("expected CannotEncodeToken, got {other:?}"),
+        }
+        let refused = Command::set_param(Unwritable).to_json(&net);
+        match refused {
+            Err(CommandError::CannotEncodeParam { param, .. }) => assert_eq!(param, "odd"),
+            other => panic!("expected CannotEncodeParam, got {other:?}"),
+        }
+    }
+
+    /// A command at a window onto a subnet's port is refused: a JSON
+    /// command names its place by name, and a port's name alone named
+    /// another place of the net around it, or none, when read back.
+    #[test]
+    fn to_json_refuses_a_window_onto_a_port() {
+        let mut level = NetBuilder::new();
+        let lobby = level.place::<u32>("Lobby");
+        level.serializable(lobby);
+        level.port(lobby);
+        let level = level.build().expect("a level");
+        let mut b = NetBuilder::new();
+        let own_lobby = b.place::<u32>("Lobby");
+        b.serializable(own_lobby);
+        let level_3 = b.subnet_place("Level 3", level);
+        let door = b.port_of::<u32>(level_3, "Lobby");
+        let net = b.build().expect("a world");
+
+        let refused = Command::put(door, 7).to_json(&net);
+        match refused {
+            Err(CommandError::PortNotNamed {
+                place,
+                subnet,
+                port,
+            }) => {
+                assert_eq!(
+                    (place, subnet.as_str(), port.as_str()),
+                    (door.id(), "Level 3", "Lobby")
+                );
+            }
+            other => panic!("expected PortNotNamed, got {other:?}"),
+        }
+        assert_eq!(
+            Command::put(own_lobby, 7)
+                .to_json(&net)
+                .expect("its own place"),
+            JsonCommand::Extend {
+                place: String::from("Lobby"),
+                tokens: vec![Value::from(7)],
+            },
+        );
+    }
+
     #[test]
     fn replace_through_json_keeps_the_id() {
         let (mut net, counts, _notes, _tally) = json_net();
@@ -744,7 +834,7 @@ mod json {
         );
         assert_eq!(
             net.json(counts.id(), token).expect("serializable"),
-            Value::from(99),
+            Ok(Value::from(99)),
         );
     }
 

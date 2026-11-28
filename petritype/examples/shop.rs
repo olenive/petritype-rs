@@ -166,6 +166,16 @@ mod tests {
                 ("Discounts Applied", true),
             ]
         );
+        let ports: Vec<&str> = net
+            .places()
+            .filter(|(_, info)| info.port)
+            .map(|(_, info)| info.name)
+            .collect();
+        assert_eq!(
+            ports,
+            ["Orders", "Promotions"],
+            "where orders and promotions come in"
+        );
         assert!(
             net.places().all(|(place, _)| net.count(place) == 0),
             "empty everywhere"
@@ -267,8 +277,8 @@ mod tests {
     }
 
     /// The wire's `inject` is a JSON `extend` of one string into a place,
-    /// which every place takes; the script driven that way ends as the table
-    /// does.
+    /// here `Orders` or `Promotions`, the net's ports; the script driven that
+    /// way ends as the table does.
     #[test]
     fn the_script_through_json_commands() {
         let mut shop = build_shop().expect("the net builds");
@@ -278,7 +288,7 @@ mod tests {
                     place: place.to_owned(),
                     tokens: vec![json!(token)],
                 })
-                .expect("every place is serializable");
+                .expect("a serializable port");
         };
         inject(&mut shop, "Orders", "Order 1");
         shop.net.step().unwrap();

@@ -156,8 +156,7 @@ impl Distribution {
     /// An empty distribution: the starting point of every chain, and a
     /// perfectly good answer on its own for a firing that produces nothing.
     ///
-    /// The one constructor, as `dev-docs/NAMING_CONVENTIONS.md` asks: pairs
-    /// are added with [`to`](Distribution::to) or
+    /// The one constructor: pairs are added with [`to`](Distribution::to) or
     /// [`push`](Distribution::push), and there is no second spelling for the
     /// same thing.
     pub fn new() -> Self {
@@ -261,11 +260,10 @@ impl<Outputs: OutputPlaces> IntoOutcome<Outputs, marker::Distributed> for Distri
 /// and the output places are known, and saying it twice would only move the
 /// error message further from the mistake.
 ///
-/// DESIGN §5 writes this as an option on the transition,
-/// `b.transition(..).output_distribution(f)`, but by then the body's return
-/// type has been erased, and the whole point is that *`f`'s* return type
-/// decides the output form. So it wraps the body instead, before
-/// `transition()` ever sees it.
+/// It wraps the body, before `transition()` ever sees it, because *`f`'s*
+/// return type is what decides the output form. An option on the
+/// transition, `b.transition(..).output_distribution(f)`, would come too
+/// late: by then the body's return type has been erased.
 ///
 /// ```
 /// # use petritype::{Distribution, NetBuilder, OutputDistribution, TakeEdge};
@@ -340,9 +338,9 @@ impl<F, G> fmt::Debug for WithOutputDistribution<F, G> {
 /// Both variants mean the same kind of mistake: a pair whose place is not one
 /// this transition may write to. They are found while the firing's targets
 /// are resolved, *before* any of its tokens are written, so a distribution
-/// with a good pair and a bad one writes neither (DESIGN §6.2). The firing
-/// then fails exactly as a body returning `Err`
-/// does: the consumed tokens are lost (or put back, for a transition that
+/// with a good pair and a bad one writes neither. The firing then fails
+/// exactly as a body returning `Err` does: the consumed tokens are lost (or
+/// put back, for a transition that
 /// [restores them](crate::TransitionBuilder::restore_tokens_on_failure)), an
 /// [`Event::Failed`](crate::Event::Failed) records them, and the error is the
 /// [`source`](std::error::Error::source) of the
@@ -362,7 +360,9 @@ impl<F, G> fmt::Debug for WithOutputDistribution<F, G> {
 /// [`Event`](crate::Event)s already serve it while the net is alive. So both
 /// variants carry a name beside each id: the names go in the `Display`
 /// message, and the ids stay as the fields a program matches on.
-#[derive(Debug, thiserror::Error)]
+///
+/// `Clone`, `PartialEq` and `Eq` (since 0.4.0), as [`BuildError`](crate::BuildError) is.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum DistributionError {
     /// A token was addressed to a place that is not one of the transition's

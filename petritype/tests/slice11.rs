@@ -44,11 +44,14 @@ fn values<T: Clone + Send + Sync + 'static>(net: &Net, place: PlaceId) -> Vec<T>
 }
 
 /// `Urls -> Fetch -> Pages`, where `Fetch` needs an `ApiToken` it is not told
-/// about through any place.
+/// about through any place. Both places are ports: urls arrive from outside,
+/// and pages are taken out.
 fn token_net() -> (Net, PlaceRef<String>, PlaceRef<String>, TransitionId) {
     let mut b = NetBuilder::new();
     let urls = b.place::<String>("Urls");
     let pages = b.place::<String>("Pages");
+    b.port(urls);
+    b.port(pages);
     b.param(ApiToken(String::from("first")));
     let fetch = b
         .transition(
@@ -280,6 +283,7 @@ fn parameters_do_not_affect_fireability() {
     let mut b = NetBuilder::new();
     let inbox = b.place::<u32>("Inbox");
     let out = b.place::<u32>("Out");
+    b.port(inbox);
     b.param(Scale(2));
     let scale = b
         .transition(
@@ -756,6 +760,7 @@ mod json {
         let urls = b.place::<String>("Urls");
         let pages = b.place::<String>("Pages");
         b.serializable(pages);
+        b.port(urls);
         b.param(WireToken(String::from("first")));
         b.param(Scale(2));
         b.serializable_param::<WireToken>("api_token");
@@ -894,7 +899,7 @@ mod json {
         let token = net.tokens(pages.id()).next().expect("one page").0;
 
         let taken = net.snapshot().expect("every place can clone");
-        assert_eq!(taken.json(pages.id(), token), Some(json!("a/first")));
+        assert_eq!(taken.json(pages.id(), token), Some(Ok(json!("a/first"))));
         assert_eq!(taken.json(pages.id(), token), net.json(pages.id(), token));
         assert_eq!(
             taken.json(urls.id(), token),

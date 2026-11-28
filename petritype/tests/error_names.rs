@@ -23,7 +23,8 @@ use std::any::Any;
 
 use petritype::drivers::{self, Limits, Mode, OnFailure};
 use petritype::{
-    Command, CommandError, Distribution, DistributionError, NetBuilder, NetError, TakeEdge,
+    BodyPanicked, BuildError, Command, CommandError, Distribution, DistributionError, NetBuilder,
+    NetError, TakeEdge,
 };
 
 /// The error a failing body returns, so that the failure has something to
@@ -64,6 +65,7 @@ fn a_transition_that_cannot_fire_is_named() {
 fn a_place_that_holds_no_such_token_is_named() {
     let mut b = NetBuilder::new();
     let inbox = b.place::<u32>("Inbox");
+    b.port(inbox);
     let mut net = b.build().expect("a net with one place");
 
     // An id retires with its token, so removing the same token twice is the
@@ -91,6 +93,7 @@ fn a_place_that_holds_no_such_token_is_named() {
 fn a_place_offered_the_wrong_type_is_named() {
     let mut b = NetBuilder::new();
     let inbox = b.place::<u32>("Inbox");
+    b.port(inbox);
     let mut net = b.build().expect("a net with one place");
     let token = net.put(inbox, 1);
 
@@ -131,7 +134,11 @@ fn a_failed_firing_names_its_transition() {
         .id();
     let mut net = b.build().expect("a one-transition net");
 
-    let failure = net.step().expect_err("the body returns Err");
+    let failure = net
+        .step()
+        .expect_err("the body returns Err")
+        .into_firing()
+        .unwrap();
     assert_eq!(failure.transition, weigh);
     assert_eq!(
         failure.to_string(),
@@ -179,7 +186,11 @@ fn a_distribution_outside_the_declaration_names_both_ends() {
         .id();
     let mut net = b.build().expect("a distribution needs no routing table");
 
-    let failure = net.step().expect_err("the pair names a place it may not");
+    let failure = net
+        .step()
+        .expect_err("the pair names a place it may not")
+        .into_firing()
+        .unwrap();
     let refused = failure
         .error
         .downcast_ref::<DistributionError>()
@@ -200,6 +211,53 @@ fn a_distribution_outside_the_declaration_names_both_ends() {
             elsewhere.id(),
         ),
     );
+}
+
+/// `BuildError`, `DistributionError` and `BodyPanicked` are `Clone`,
+/// `PartialEq` and `Eq` (since 0.4.0): a copy compares equal to the error
+/// it was taken from, and a test compares one with `assert_eq!`.
+#[test]
+fn the_build_distribution_and_panic_errors_compare_and_copy() {
+    fn clone_eq<E: Clone + PartialEq + Eq + std::fmt::Debug>(error: &E) {
+        assert_eq!(&error.clone(), error);
+    }
+
+    let mut b = NetBuilder::new();
+    b.place::<u32>("Twice");
+    b.place::<u32>("Twice");
+    let built = b.build().expect_err("a name given twice");
+    clone_eq(&built);
+    assert_eq!(
+        built,
+        BuildError::DuplicatePlaceName {
+            name: "Twice".to_owned()
+        }
+    );
+
+    let mut b = NetBuilder::new();
+    let inbox = b.place::<u32>("Inbox");
+    let uploads = b.place::<u32>("Uploads");
+    let elsewhere = b.place::<u32>("Elsewhere");
+    b.seed(inbox, [1, 2]);
+    b.transition("Weigh", (TakeEdge(inbox),), (uploads,), move |n: u32| {
+        assert_ne!(n, 2, "the scales broke");
+        Distribution::new().to(elsewhere, n)
+    });
+    let mut net = b.build().expect("a net");
+    let failed = net.step().expect_err("outside").into_firing().unwrap();
+    clone_eq(
+        failed
+            .error
+            .downcast_ref::<DistributionError>()
+            .expect("a distribution error"),
+    );
+    let failed = net.step().expect_err("a panic").into_firing().unwrap();
+    let panicked = failed
+        .error
+        .downcast_ref::<BodyPanicked>()
+        .expect("a caught panic");
+    clone_eq(panicked);
+    assert!(panicked.message.contains("the scales broke"), "{panicked}");
 }
 
 #[cfg(feature = "serde")]

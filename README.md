@@ -35,7 +35,8 @@ cargo test --workspace --features serde
 ```
 
 `just check` runs the full gate: that suite, the core crate alone, clippy with warnings
-denied, the formatting check and the docs with warnings denied. `just` comes from cargo
+denied, the formatting check and the docs with warnings denied, clippy and the docs once
+with serde and again for each crate that has the feature, built without it. `just` comes from cargo
 (`cargo install just`) or Homebrew (`brew install just`).
 
 The runner's tests also replay the protocol transcripts shared with the Python runtime,
@@ -117,6 +118,10 @@ let mut server = petritype_runner::HostServer::bind("127.0.0.1:7878", "my-net", 
 server.change(|net| net.step())?; // fire, put tokens in, anything a `&mut Net` allows
 server.serve(); // let viewers in and answer them; never blocks
 ```
+
+`HostServer::bind_with` takes a `HostServerConfig` for its limits: viewers, line and backlog sizes, how much one
+`serve` does, timeouts and the heartbeat. The server is for a viewer on the same machine; it authenticates and
+encrypts nothing, so bind it to loopback.
 
 A viewer connects to the port and speaks the net protocol line by line, starting with `get_state`. It reads the
 net, inner nets included, and is told of every change; it cannot load, fire or change anything. The Bevy viewer
@@ -224,40 +229,61 @@ that see it (PROTOCOL.md §12.7, `DESIGN.md` §19.3.17).
 
 ## Closed nets
 
-Since 2026-11-23 a net that marks any place as a port is **closed**: from outside it, tokens are put, taken,
-removed, replaced or set only at its ports. That holds for everyone outside: a body of the net around it, holding the
-net as a token by any edge, the program and its drivers, and the runner's `inject`, at the top level and by path. A
-net that marks no port stays open, as every net was. Its own transitions, the handlers of its own controls and the
-tokens its definition starts it with are inside, and the place a net has for a port of one of its subnet places is a
-place of that net, so a write there from outside is refused when that net is closed.
+Every net is **closed** unless its definition declares it open (since 2026-11-28; from 2026-11-23 only a net that
+marked a port was): from outside it, tokens are put, taken, removed, replaced or set only at its ports, and a net that
+marks no port takes no token from outside at all. A port is where tokens enter a net from outside, so a drawing shows
+every way in: `petritype-dot` dots a port's outline and dashes every other place of a net declared open.
+That holds for everyone outside: a body of the net around it, holding the net as a token by any edge, the program and
+its drivers, and the runner's `inject`, at the top level and by path. Its own transitions, the handlers of its own
+controls and the tokens its definition starts it with are inside, and the place a net has for a port of one of its
+subnet places is a place of that net, so a write there from outside is refused unless that net is open.
 
 ```rust
-b.port(inbox);                                   // closed: from outside, only Inbox takes tokens
+b.port(inbox);                                   // from outside, only Inbox takes tokens
 b.open();                                        // the override, in the definition: open, ports or not
 post.put(ledger, letter);                        // panics on a closed net, Ledger not being a port
 post.try_put(ledger, letter)?;                   // NetError::ClosedNet instead; also try_extend, try_set_tokens
 ```
 
-`remove`, `replace` and an erased `Command` return `NetError::ClosedNet`, and `inject` answers `closed_net`. A body
-that is refused fails its firing with the error, whether or not it passed the error on, and the firing restores what
-any failure restores; a firing that took a token carrying a net cannot restore it in this core
-(`RestoreOfNoClonePlace`), so a refused one loses it. A body that holds a net marking a port, closed or open, is also
-refused its knobs and firing by name (`NetError::HeldByBody`). Reading, stepping and the whole-state acts stay allowed.
-`DESIGN.md` §6.9 has the rules; `petritype-runner`'s conformance net `post-office` shows them on the wire.
+`remove`, `replace` and an erased `Command` return `NetError::ClosedNet`, and `inject` answers `closed_net`. Since
+2026-11-28 three more rules hold, so that the drawing shows every way a token comes in:
+
+- **A body is held to its edge.** It writes a closed net its edge handed it only at the ports the edge names in its
+  `reaching`; an edge that names none lets it write no port. Naming more than the body writes is no error.
+- **A body writes no closed net inside the one it holds**, a net one of its tokens carries or a subnet, at a port or
+  not: an edge names ports of the net it hands over only.
+- **A closed net shields the nets inside it.** The program, its drivers and the runner write no place of a net inside
+  a closed net, at any depth, at a port or not, through `nested_scope`, `subnet_scope` or `inject` by path or nested
+  id, and import no marking into it. Declare every net around open, or give the closed net a port and a transition
+  that carries the token in.
+
+`ClosedNet::why` says which refusal it was (`ClosedRefusal`), and the message how to put it right. A body that is
+refused fails its firing with the error, whether or not it passed the error on, and the firing restores what any
+failure restores; a firing that took a token carrying a net cannot restore it in this core (`RestoreOfNoClonePlace`),
+so a refused one loses it. A body that holds a net, closed or open, is also refused its knobs, its controls, firing
+by name, draining its events, `choose`, a staged step and a driver's `OnFailure::Disable` (`NetError::HeldByBody`; a
+staged step and `step_inside` answer `StepError::HeldByBody`, and the firing fails with the `NetError`).
+Reading, stepping, driving and the whole-state acts stay allowed, and the knobs of a net inside a closed net stay with
+the program. `DESIGN.md` §6.9 has the rules; `petritype-runner`'s conformance net
+`post-office` shows them on the wire.
 
 What a program changes:
 
-- **How to tell a net is closed.** It marks a port and does not declare itself open. On the wire its topology shows
-  `port: true` on some place and no `open`; in Rust, `Net::is_closed()`; in Python, `graph.is_closed`.
+- **How to tell a net is closed.** It does not declare itself open. On the wire its topology shows no `open`; in
+  Rust, `Net::is_closed()`; in Python, `graph.is_closed`.
 - **Three ways to make a refused write land.** Mark the place as a port; start the net with the token in its
   definition, as a seed or a template's token; or declare the net open (`b.open()`, Python `open=True`).
 - **Knobs and firing by name** (a parameter, a switch, the tie-break, the stepping rule, a selector, `fire`, `launch`,
-  `step_inside`, a control) stay with the program, its drivers and the runner on any net. A body of the net around a
-  net that marks a port is refused them, open or closed, since declaring a net open opens its places and not its knobs.
-  A body on a net with no port keeps them in stage one; in stage two, give such a setting to a transition of the net's
-  own, or leave it to the program.
-- **Whole-state acts** (loading or importing a marking, restoring, forking, resetting, saving) stay allowed.
-- **Stage two** will close every net that does not declare itself open.
+  `step_inside`, a control) stay with the program, its drivers and the runner on any net. A body of the net around is
+  refused them on every net it holds, open or closed, since declaring a net open opens its places and not its knobs:
+  give such a setting to a transition of the net's own, or leave it to the program.
+- **A body's write at a port its edge does not name** is put right by naming the port in the edge's `reaching`. A
+  write into a net inside the one the body holds goes to a port of the held net, and a transition of that net carries
+  it further in.
+- **A write or an import from outside into a net inside a closed net** is put right by declaring every net around
+  open, or by giving the closed net a port and a transition that carries the token in.
+- **Whole-state acts** (importing a marking, restoring, forking, resetting, saving) stay allowed for the program, but
+  an import into a net inside a closed net is refused: import into the net around as a whole.
 
 ## Groups
 
@@ -278,7 +304,7 @@ b.transition("Fund Walk", (TakeEdge(trail), MutateEdge(energy)), (paid,), |leg: 
 
 A node is in one group or in none, and the net fires, steps, saves and logs exactly as it would with no groups.
 `net.groups()` lists the names in declared order, `PlaceInfo::group` and `TransitionInfo::group` say which group
-a node is in, and a subnet has groups of its own. `petritype-dot` draws each group as a dashed frame.
+a node is in, and a subnet has groups of its own. `petritype-dot` draws each group as a dotted frame.
 `petritype/examples/hike.rs` is a walker whose walking and eating both change its `Energy`, each concern a group
 and the energy in none (`cargo run -p petritype --example hike`); `DESIGN.md` §6.8 has the rules.
 Served by `petritype-runner`, each net's topology lists its own groups as `groups` and the `group` of each member,
@@ -341,10 +367,27 @@ The edges that take nothing (snapshot, survey, mutate, the keyed mutate and the 
 them, so they ask no `Clone` of the token type and can read a place whose tokens carry nets; a transition with one runs
 its body inline, as one with a mutate edge does.
 
+Since 0.4.0 a transition may read one place through two or more take and take-where edges, each taking a token of its
+own. Two oxygen radicals make a molecule, and the transition waits while the place holds one; a ballroom gives a couple
+through two keyed edges, and the transition waits for a lady and a gentleman:
+
+```rust
+b.transition("Bond", (TakeEdge(radicals), TakeEdge(radicals)), (molecules,),
+    |a: Radical, b: Radical| (Molecule(a, b),));
+b.transition("Dance", (TakeWhereEdge(ballroom, role("lady")), TakeWhereEdge(ballroom, role("gentleman"))), (floor,),
+    |lady: Dancer, gentleman: Dancer| ((lady, gentleman),));
+```
+
+The edges choose in the order they are declared, each the first token no edge before it took (a take the front one,
+a take-where the first its filter accepts), and none gives its token up for a later one, as in the Python library: a
+filter that accepts what a later filter needs goes after it. Any other kind beside another edge on its place is a build
+error, `BuildError::EdgeCannotSharePlace`, and so is a second output edge of one transition to one place,
+`BuildError::DuplicateOutputPlace`: one slot of `Vec<T>` puts several tokens there.
+
 An edge on a place whose tokens carry nets may name the ports it reaches in them, `MutateEdge(field).reaching(["Orders
-In"])`: a declaration that the runner sends as `reaches` and a drawing writes on the edge, which changes nothing about
-firing. Every net shows its own ports on the wire, the nets that tokens carry included. A token's net that marks a port
-is closed, so the body writes inside it only at its ports, whatever the edge names (see [Closed nets](#closed-nets)).
+In"])`: the runner sends them as `reaches`, a drawing writes them on the edge, and since 2026-11-28 the body is held to
+them. Every net shows its own ports on the wire, the nets that tokens carry included. A token's net is closed unless it
+is declared open, so the body writes inside it only at the ports its edge names (see [Closed nets](#closed-nets)).
 
 `DrainEdge` and `SurveyEdge` are for a place a transition only needs to read, or to empty, when something is there. A shop prices an
 order with whatever promotions are running, and a shop with none running still sells things; a traffic light lets
@@ -439,8 +482,9 @@ A Petri net has two kinds of nodes connected by directed edges:
 - **Transitions** consume tokens from input places, run a function, and
   distribute the results to output places.
 
-A transition can fire when every input place has a token (or, for a drain or a
-survey edge, whatever it holds, nothing included). Firing consumes the inputs,
+A transition can fire when every input place has a token (a token for each
+edge, when take edges share a place; or, for a drain or a survey edge, whatever
+it holds, nothing included). Firing consumes the inputs,
 runs the body, and distributes the outputs. The tokens across all places are
 the live state of the system.
 

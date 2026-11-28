@@ -11,8 +11,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Barrier, mpsc};
 
 use petritype::{
-    Completed, Distribution, Event, Firing, MutateEdge, Net, NetBuilder, NetError, PlaceId,
-    PlaceRef, Routed, SnapshotEdge, TakeEdge, TokenId, TransitionId,
+    Completed, DistributeError, Distribution, Event, Firing, MutateEdge, Net, NetBuilder, NetError,
+    PlaceId, PlaceRef, Routed, SnapshotEdge, TakeEdge, TokenId, TransitionId,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -87,6 +87,7 @@ fn doubling_net() -> (Net, TransitionId, PlaceRef<u32>, PlaceRef<u32>) {
     let mut b = NetBuilder::new();
     let inbox = b.place::<u32>("Inbox");
     let out = b.place::<u32>("Out");
+    b.port(inbox);
     b.seed(inbox, [21]);
     let double = b
         .transition("Double", (TakeEdge(inbox),), (out,), |n: u32| (n * 2,))
@@ -323,13 +324,17 @@ fn a_firing_from_another_net_is_refused_and_changes_nothing() {
     let net_id = there.id();
     here.drain_events().for_each(drop);
 
-    match here.distribute(foreign) {
-        Err(NetError::ForeignFiring { transition, from }) => {
-            assert_eq!(transition, elsewhere);
-            assert_eq!(from, net_id, "the net that launched it, named");
+    let refused = here.distribute(foreign).expect_err("another net's firing");
+    match refused.error() {
+        NetError::ForeignFiring { transition, from } => {
+            assert_eq!(*transition, elsewhere);
+            assert_eq!(*from, net_id, "the net that launched it, named");
         }
         other => panic!("expected a foreign firing, got {other:?}"),
     }
+    assert_eq!(refused.to_string(), refused.error().to_string());
+    let source = std::error::Error::source(&refused).expect("the error is the source");
+    assert_eq!(source.to_string(), refused.error().to_string());
 
     assert_eq!(here.count(out.id()), 0, "nothing was written");
     assert_eq!(here.fired_count(), 0);
@@ -338,13 +343,60 @@ fn a_firing_from_another_net_is_refused_and_changes_nothing() {
     assert_eq!(
         there.in_flight(),
         [elsewhere],
-        "and the net it belongs to keeps the transition in flight: the \
-         rejected firing took the body with it"
+        "the net it belongs to keeps the transition in flight until it lands"
     );
+
+    // The firing comes back with the error (since 0.4.0), and lands where
+    // it was launched, so the transition is not in flight for good.
+    let (_, handed_back) = refused.into_parts();
+    let handed_back = handed_back.expect("a refused firing is handed back");
+    assert_eq!(handed_back.transition(), elsewhere);
+    there.distribute(handed_back).expect("its own net");
+    assert!(there.in_flight().is_empty(), "the body is home");
+    assert_eq!(there.fired_count(), 1);
 
     // The net that was written to at least still works.
     assert_eq!(here.step().expect("no body here fails"), Some(double));
     assert_eq!(values::<u32>(&here, out.id()), [42]);
+}
+
+/// `distribute`'s error goes with `?` whichever error a caller returns: a
+/// `NetError`, as `distribute` returned until 0.4.0, which drops the firing
+/// it carries, or a boxed error, which keeps it whole, the error being
+/// `Send + Sync + 'static`.
+#[test]
+fn a_distribute_error_goes_with_the_question_mark() {
+    fn as_net_error(net: &mut Net, completed: Completed) -> Result<(), NetError> {
+        net.distribute(completed)?;
+        Ok(())
+    }
+    type Boxed = Box<dyn std::error::Error + Send + Sync>;
+    fn as_boxed(net: &mut Net, completed: Completed) -> Result<(), Boxed> {
+        net.distribute(completed)?;
+        Ok(())
+    }
+    fn send_sync_static<T: Send + Sync + 'static>() {}
+    send_sync_static::<DistributeError>();
+
+    let (mut here, double, _, _) = doubling_net();
+    let (mut there, elsewhere, inbox, _) = doubling_net();
+    there.put(inbox, 4);
+    let foreign = there.launch(elsewhere).expect("fireable").run();
+    let boxed = as_boxed(&mut here, foreign).expect_err("another net's firing");
+    let refused = boxed
+        .downcast::<DistributeError>()
+        .expect("the error, whole");
+    there
+        .distribute(refused.into_completed().expect("handed back"))
+        .expect("its own net");
+
+    let foreign = there.launch(elsewhere).expect("fireable").run();
+    let error = as_net_error(&mut here, foreign).expect_err("another net's firing");
+    assert!(matches!(error, NetError::ForeignFiring { transition, .. } if transition == elsewhere));
+    assert_eq!(there.in_flight(), [elsewhere], "dropped with the firing");
+
+    let own = here.launch(double).expect("fireable").run();
+    as_net_error(&mut here, own).expect("its own net");
 }
 
 // ----- the body's failure --------------------------------------------------
@@ -370,8 +422,12 @@ fn a_failing_body_is_reported_when_it_is_distributed() {
     assert!(!completed.succeeded(), "the body returned Err");
     net.drain_events().for_each(drop);
 
-    match net.distribute(completed) {
-        Err(NetError::FiringFailed(failure)) => {
+    // A failure was distributed, the body home: nothing is handed back.
+    match net
+        .distribute(completed)
+        .map_err(DistributeError::into_parts)
+    {
+        Err((NetError::FiringFailed(failure), None)) => {
             assert_eq!(failure.transition, fussy);
             assert!(
                 !failure.restored,

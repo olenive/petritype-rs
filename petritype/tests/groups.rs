@@ -360,7 +360,8 @@ fn the_same_group_again_changes_nothing() {
 
 #[test]
 fn a_group_name_may_hold_any_characters_and_any_node_s_name() {
-    let names = ["Walk", "Walk / Eat", "Level 1 # 2", "a\"b\\c\nd", ""];
+    // At least one: the empty string is refused, as every empty name is.
+    let names = ["Walk", "Walk / Eat", "Level 1 # 2", "a\"b\\c\nd", " "];
     let mut b = NetBuilder::new();
     let groups: Vec<GroupRef> = names.iter().map(|name| b.group(*name)).collect();
     // A group may share its name with a place and with a transition.

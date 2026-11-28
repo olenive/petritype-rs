@@ -66,6 +66,7 @@ fn mammals() -> Filter {
 }
 
 /// A barn with keys and a yard without, the barn seeded with these animals.
+/// Animals arrive at the barn, its port.
 struct Farm {
     b: NetBuilder,
     barn: PlaceRef<Animal>,
@@ -77,6 +78,7 @@ fn farm(seed: &[(&str, &str, i64)]) -> Farm {
     let barn = b.place::<Animal>("Barn");
     let yard = b.place::<Animal>("Yard");
     declare_keys(&mut b, barn);
+    b.port(barn);
     b.seed(
         barn,
         seed.iter()
@@ -604,7 +606,7 @@ fn a_keyed_edge_reads_its_place_like_any_other_edge() {
     );
     assert!(matches!(
         b.build(),
-        Err(BuildError::DuplicateInputPlace { transition, place })
+        Err(BuildError::EdgeCannotSharePlace { transition, place, kind: EdgeKind::Snapshot })
             if transition == "Twice" && place == "Barn"
     ));
 }
@@ -968,6 +970,7 @@ fn a_run_takes_every_match_and_leaves_the_rest_with_their_ids() {
 fn a_keyed_edge_on_a_nested_place() {
     let mut inner = NetBuilder::new();
     let todo = inner.place::<u32>("Todo");
+    inner.port(todo);
     let busy = {
         let mut net = inner.build().unwrap();
         net.put(todo, 1);
@@ -975,7 +978,8 @@ fn a_keyed_edge_on_a_nested_place() {
     };
     let idle = {
         let mut inner = NetBuilder::new();
-        inner.place::<u32>("Todo");
+        let todo = inner.place::<u32>("Todo");
+        inner.port(todo);
         inner.build().unwrap()
     };
     let busy_id = busy.id();

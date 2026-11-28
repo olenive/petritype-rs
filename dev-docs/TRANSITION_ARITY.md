@@ -97,7 +97,7 @@ petritype-rs (c93ec03):
   routed return form) and `:573` `for_each_arity!(impl_outputs)`
   (`OutputPlaces`; positional slot *i* of the returned tuple goes to output
   place *i*, each slot `T`, `Option<T>` or `Vec<T>`; DESIGN §4.5).
-- `petritype/src/builder.rs:736` `NetBuilder::transition<Edges: InputEdges,
+- `petritype/src/builder/mod.rs` `NetBuilder::transition<Edges: InputEdges,
   Outputs: OutputPlaces, Body: TransitionBody<Edges, Outputs, Marker>>`.
   Build checks that matter here: `DuplicateInputPlace` (one edge per place
   per transition), the arena/detachable rules for mutating edges, the

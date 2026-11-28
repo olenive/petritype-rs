@@ -20,7 +20,8 @@ use serde::de::Error as _;
 use serde::ser::Error as _;
 
 use crate::command::JsonCommand;
-use crate::error::{NetError, TemplateError};
+use crate::error::{NetError, PathStep, TemplateError};
+use crate::ids::PlaceId;
 use crate::marking::Marking;
 use crate::net::Net;
 use crate::param::param_slot_index;
@@ -29,7 +30,7 @@ use crate::param::param_slot_index;
 ///
 /// The same type, under the same name, as `petritype_runner::Params`, the
 /// load parameters of a net process, so a runner's factory and a template
-/// line up (DESIGN §19.3).
+/// line up.
 pub type Params = serde_json::Map<String, serde_json::Value>;
 
 /// A template's factory, stored: the shape of a runner's net factory, with
@@ -40,7 +41,7 @@ pub(crate) type Factory = Arc<dyn Fn(&Params) -> Result<Net, BoxedError> + Send 
 type BoxedError = Box<dyn Error + Send + Sync>;
 
 /// A registry of templates: functions that build a [`Net`], each under a
-/// name (DESIGN §6.6).
+/// name.
 ///
 /// A template is how a net that lives inside a token is saved and restored,
 /// and how it is copied: a [`Net`] cannot be cloned or written out whole,
@@ -98,6 +99,11 @@ impl Templates {
     /// Registers `factory` under `name`, replacing any template of that
     /// name. Chainable.
     ///
+    /// A name has at least one character: [`build`](Templates::build)
+    /// refuses the empty string, and so does
+    /// [`NetBuilder::build`](crate::NetBuilder::build) for a net given a
+    /// registry that holds it ([`BuildError::EmptyName`](crate::BuildError::EmptyName)).
+    ///
     /// The factory is the shape of a runner's net factory: it takes
     /// [`Params`] and returns a built net or an error, which may be any
     /// error that converts into a boxed one: a
@@ -132,10 +138,15 @@ impl Templates {
     ///
     /// # Errors
     ///
-    /// [`TemplateError::NoSuchTemplate`] for a name this registry does not
-    /// have, and [`TemplateError::Factory`] carrying whatever the factory
-    /// returned.
+    /// [`TemplateError::EmptyName`] for the empty string, which names no
+    /// template a net can be saved by, even one registered under it (since
+    /// 2026-11-28); [`TemplateError::NoSuchTemplate`] for a name this
+    /// registry does not have; and [`TemplateError::Factory`] carrying
+    /// whatever the factory returned.
     pub fn build(&self, name: &str, params: &Params) -> Result<Net, TemplateError> {
+        if name.is_empty() {
+            return Err(TemplateError::EmptyName);
+        }
         let factory = self
             .factories
             .get(name)
@@ -249,6 +260,11 @@ impl fmt::Debug for Stamp {
 
 /// Calls a factory and stamps what it built.
 fn build_stamped(name: &str, factory: &Factory, params: &Params) -> Result<Net, BoxedError> {
+    // A saved net names its template, and the empty string names none: a
+    // net saved under it is not rebuilt, as `Templates::build` makes none.
+    if name.is_empty() {
+        return Err(Box::new(TemplateError::EmptyName));
+    }
     let mut net = factory(params)?;
     net.stamp = Some(Stamp {
         name: name.to_owned(),
@@ -347,7 +363,7 @@ impl Net {
     }
 
     /// A copy of this net: built again by the template that built it, then
-    /// given this net's marking, parameters and switches (DESIGN §6.6).
+    /// given this net's marking, parameters and switches.
     ///
     /// A `Net` cannot be cloned (its bodies are closures, and an airborne
     /// body is not even in it), but the factory that built it can be called
@@ -392,6 +408,7 @@ impl Net {
     ///     let mut b = NetBuilder::new();
     ///     let queue = b.place::<String>("Queue");
     ///     b.serializable(queue);
+    ///     b.port(queue);
     ///     b.build()
     /// });
     /// let mut net = templates.build("Queue", &Params::new())?;
@@ -445,7 +462,7 @@ impl Net {
     fn copy_settings(&mut self, original: &Net) {
         for slot in &original.params {
             if let Some(index) = param_slot_index(&self.params, slot.type_id) {
-                self.params[index].value = slot.clone_value();
+                self.params[index].set(slot.clone_value());
             }
         }
         for slot in &original.transitions {
@@ -484,9 +501,48 @@ impl Net {
             Some(&transition) => Err(NetError::InFlight {
                 transition,
                 name: self.transition_name(transition),
+                path: Vec::new(),
             }),
             None => Ok(()),
         }
+    }
+
+    /// [`check_landed`](Net::check_landed) here and in every subnet, at any
+    /// depth: this net's own transitions first, then each subnet place's
+    /// subnet in place order, the error's `path` naming the subnet places
+    /// down to the one in flight. What an import asks, since it fills each
+    /// subnet where it stands and a firing of one would land into the
+    /// marking imported. A net a token carries is replaced by an import,
+    /// not filled, so a firing of it cannot land there, and it is not asked.
+    pub(crate) fn check_landed_deep(&self) -> Result<(), NetError> {
+        self.check_landed()?;
+        for (index, slot) in self.places.iter().enumerate() {
+            let Some(subnet) = slot.subnet.as_deref() else {
+                continue;
+            };
+            match subnet.net.check_landed_deep() {
+                Ok(()) => {}
+                Err(NetError::InFlight {
+                    transition,
+                    name,
+                    mut path,
+                }) => {
+                    path.insert(
+                        0,
+                        PathStep::Subnet {
+                            place: PlaceId(index as u32),
+                        },
+                    );
+                    return Err(NetError::InFlight {
+                        transition,
+                        name,
+                        path,
+                    });
+                }
+                Err(other) => return Err(other),
+            }
+        }
+        Ok(())
     }
 
     /// The current value of every parameter with a wire name, by that name.
@@ -540,7 +596,7 @@ impl Net {
 
 /// A net in its saved form:
 /// `{"template": .., "marking": {..}, "params": {..}, "enabled": {..}}`
-/// (DESIGN §6.6; PROTOCOL.md §12.5 on the wire).
+/// (PROTOCOL.md §12.5 on the wire).
 ///
 /// `template` is the name of the template that built it; `marking` is
 /// [`Net::export_marking`]; `params` the current value of every parameter
@@ -572,8 +628,11 @@ impl serde::Serialize for Net {
 ///
 /// The saved `params` are handed to the factory and then set on what it
 /// built through the JSON parameter route, so an unknown name or a value of
-/// the wrong shape is an error, as it is for a `set_param` command. Keys
-/// other than the four of the saved form are refused.
+/// the wrong shape is an error, as it is for a `set_param` command. An
+/// `enabled` entry that names no transition of the rebuilt net is an error
+/// too. `template` and `marking` are required; `params` and `enabled` may be
+/// left out, as empty. A key other than the four of the saved form is
+/// ignored.
 impl<'de> serde::Deserialize<'de> for Net {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Net, D::Error> {
         let loaded = Loaded::deserialize(deserializer)?;

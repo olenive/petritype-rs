@@ -10,10 +10,11 @@
 //! `serde` only, so that a runner's example binary can include this file as
 //! it is.
 //!
-//! Every place is serializable, so that a host can `inject` into any of
-//! them. The light is one place, `Light`, holding one token, a [`Colour`]:
-//! red, green or amber, whose JSON form is the plain string, `"red"`, as it
-//! was when the token was a string. It starts red. Cars are strings; they
+//! Every place is serializable, and `Waiting` is the net's port: the net is
+//! closed, as every net not declared open is, so from outside it takes
+//! tokens only there, the cars. The light is one place, `Light`, holding
+//! one token, a [`Colour`]: red, green or amber, whose JSON form is the
+//! plain string, `"red"`, as it was when the token was a string. It starts red. Cars are strings; they
 //! arrive in `Waiting` from outside and go to `Passed`. The colours go round
 //! red, green, amber and red again ([`next_colour`]). Two transitions, one
 //! that moves the cars and one that changes the light, declared in this
@@ -174,19 +175,20 @@ pub fn change(light: Colour) -> (Colour,) {
 }
 
 /// The traffic light as §11 seeds it: red in `Light`, every other place
-/// empty, every transition switched on, no parameters; the light styled,
-/// and the two controls.
+/// empty, every transition switched on, no parameters, `Waiting` its port;
+/// the light styled, and the two controls.
 pub fn build_traffic_light() -> Result<TrafficLight, BuildError> {
     let mut b = NetBuilder::new();
     b.resettable();
     let light = b.place::<Colour>("Light");
     let waiting = b.place::<String>("Waiting");
     let passed = b.place::<String>("Passed");
-    // Every place takes a token injected over the wire, cars into `Waiting`
-    // above all.
+    // Every place's tokens go over the wire as JSON, and cars come in from
+    // outside at `Waiting`.
     b.serializable(light);
     b.serializable(waiting);
     b.serializable(passed);
+    b.port(waiting);
     b.seed(light, [Colour::Red]);
     // The token as the lamp it lights, and the place filled with it.
     b.styled(light);
@@ -217,7 +219,7 @@ pub fn build_traffic_light() -> Result<TrafficLight, BuildError> {
     })
     .with_kind(ControlKind::Text {
         placeholder: Some("name".to_owned()),
-    });
+    })?;
     b.control(car)
         .control(Control::fire("change", "Change", change));
 

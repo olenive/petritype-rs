@@ -81,6 +81,7 @@
          "name": "Couriers",
          "type_name": "<label>",
          "serializable": true,
+         "port": true,
          "key_names": [
           "name"
          ]
@@ -97,6 +98,7 @@
          "name": "Calls",
          "type_name": "<label>",
          "serializable": true,
+         "port": true,
          "key_names": [
           "courier"
          ]
@@ -697,6 +699,7 @@
          "name": "Couriers",
          "type_name": "<label>",
          "serializable": true,
+         "port": true,
          "key_names": [
           "name"
          ]
@@ -713,6 +716,7 @@
          "name": "Calls",
          "type_name": "<label>",
          "serializable": true,
+         "port": true,
          "key_names": [
           "courier"
          ]

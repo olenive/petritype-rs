@@ -157,7 +157,7 @@ thirteen outputs (and, after R1, also flat at sixteen).
 - `petritype-derive/src/lib.rs`: `#[proc_macro_derive(Routed)]` (62), with
   its refusals (named fields, unions, lifetimes) as the style for new
   refusals. `syn`, `quote`, `proc_macro2` already depended on.
-- `petritype/src/builder.rs:736` `NetBuilder::transition<Edges: InputEdges,
+- `petritype/src/builder/mod.rs` `NetBuilder::transition<Edges: InputEdges,
   Outputs: OutputPlaces, Body: TransitionBody<Edges, Outputs, Marker>>`:
   loops over the flat `described` specs into `edges`, `filters`, `params`,
   `args` (`ArgSource`), so anything that describes flat is invisible from

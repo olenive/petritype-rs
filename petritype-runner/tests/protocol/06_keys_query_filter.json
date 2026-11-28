@@ -81,6 +81,7 @@
          "name": "Forest",
          "type_name": "<label>",
          "serializable": true,
+         "port": true,
          "key_names": [
           "species",
           "class",
@@ -91,6 +92,7 @@
          "name": "Wetland",
          "type_name": "<label>",
          "serializable": true,
+         "port": true,
          "key_names": [
           "species",
           "class",
@@ -101,6 +103,7 @@
          "name": "Savanna",
          "type_name": "<label>",
          "serializable": true,
+         "port": true,
          "key_names": [
           "species",
           "class",
@@ -111,6 +114,7 @@
          "name": "Reef",
          "type_name": "<label>",
          "serializable": true,
+         "port": true,
          "key_names": [
           "species",
           "class",
@@ -121,6 +125,7 @@
          "name": "Tundra",
          "type_name": "<label>",
          "serializable": true,
+         "port": true,
          "key_names": [
           "species",
           "class",
@@ -1283,6 +1288,7 @@
          "name": "Forest",
          "type_name": "<label>",
          "serializable": true,
+         "port": true,
          "key_names": [
           "species",
           "class",
@@ -1293,6 +1299,7 @@
          "name": "Wetland",
          "type_name": "<label>",
          "serializable": true,
+         "port": true,
          "key_names": [
           "species",
           "class",
@@ -1303,6 +1310,7 @@
          "name": "Savanna",
          "type_name": "<label>",
          "serializable": true,
+         "port": true,
          "key_names": [
           "species",
           "class",
@@ -1313,6 +1321,7 @@
          "name": "Reef",
          "type_name": "<label>",
          "serializable": true,
+         "port": true,
          "key_names": [
           "species",
           "class",
@@ -1323,6 +1332,7 @@
          "name": "Tundra",
          "type_name": "<label>",
          "serializable": true,
+         "port": true,
          "key_names": [
           "species",
           "class",
@@ -2464,6 +2474,7 @@
          "name": "Forest",
          "type_name": "<label>",
          "serializable": true,
+         "port": true,
          "key_names": [
           "species",
           "class",
@@ -2474,6 +2485,7 @@
          "name": "Wetland",
          "type_name": "<label>",
          "serializable": true,
+         "port": true,
          "key_names": [
           "species",
           "class",
@@ -2484,6 +2496,7 @@
          "name": "Savanna",
          "type_name": "<label>",
          "serializable": true,
+         "port": true,
          "key_names": [
           "species",
           "class",
@@ -2494,6 +2507,7 @@
          "name": "Reef",
          "type_name": "<label>",
          "serializable": true,
+         "port": true,
          "key_names": [
           "species",
           "class",
@@ -2504,6 +2518,7 @@
          "name": "Tundra",
          "type_name": "<label>",
          "serializable": true,
+         "port": true,
          "key_names": [
           "species",
           "class",

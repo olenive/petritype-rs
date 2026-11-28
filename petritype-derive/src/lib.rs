@@ -18,8 +18,8 @@ use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
 use syn::{
-    Data, DataEnum, DeriveInput, Error, Fields, GenericParam, Result, parse_macro_input,
-    parse_quote,
+    Data, DataEnum, DeriveInput, Error, Fields, GenericParam, LitStr, Path, Result,
+    parse_macro_input, parse_quote,
 };
 
 /// What a variant that is not `Variant(T)` or `Variant` is told.
@@ -38,6 +38,9 @@ const UNION: &str = "`Routed` cannot be derived for a union: derive it on an enu
 /// A token is an owned value that may outlive the firing that made it.
 const LIFETIME: &str = "`Routed` cannot be derived for a type with a lifetime: a token is an owned \
                         value, so every routed payload must be `'static`";
+
+/// What `#[routed(..)]` accepts.
+const ROUTED_OPTION: &str = "expected `crate = \"path\"`";
 
 /// Routes a returned value to the output place of its type.
 ///
@@ -62,8 +65,12 @@ const LIFETIME: &str = "`Routed` cannot be derived for a type with a lifetime: a
 ///
 /// The expansion is an implementation of `petritype::RoutedOutput`; the
 /// crate's documentation of that trait says what the resulting net must
-/// satisfy, and `NetBuilder::build` reports it when it does not.
-#[proc_macro_derive(Routed)]
+/// satisfy, and `NetBuilder::build` reports it when it does not. It names
+/// everything by its full path and is `#[automatically_derived]`, so it
+/// compiles in a `#[no_implicit_prelude]` module. `#[routed(crate =
+/// "path")]` names `petritype` by another path, for a caller that reaches
+/// it through a renamed dependency or a re-export.
+#[proc_macro_derive(Routed, attributes(routed))]
 pub fn derive_routed(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     routed(input)
@@ -78,6 +85,7 @@ fn routed(input: DeriveInput) -> Result<TokenStream2> {
     if let Some(lifetime) = input.generics.lifetimes().next() {
         return Err(Error::new_spanned(lifetime, LIFETIME));
     }
+    let krate = routed_crate(&input)?;
 
     let name = &input.ident;
     let (payloads, arms) = match &input.data {
@@ -105,20 +113,51 @@ fn routed(input: DeriveInput) -> Result<TokenStream2> {
 
     Ok(quote! {
         #[automatically_derived]
-        impl #impl_generics ::petritype::routing::RoutedOutput for #name #type_generics
+        impl #impl_generics #krate::routing::RoutedOutput for #name #type_generics
         #where_clause
         {
-            fn describe(spec: &mut ::petritype::routing::RouteSpec) {
+            fn describe(spec: &mut #krate::routing::RouteSpec) {
                 #(#payloads)*
             }
 
-            fn emit(self, sink: &mut ::petritype::routing::RouteSink<'_>) {
+            fn emit(self, sink: &mut #krate::routing::RouteSink<'_>) {
                 match self {
                     #(#arms)*
                 }
             }
         }
     })
+}
+
+/// The path the expansion names `petritype` by: `#[routed(crate = "..")]`,
+/// given once, or `::petritype`.
+fn routed_crate(input: &DeriveInput) -> Result<Path> {
+    let mut krate: Option<Path> = None;
+    for attr in &input.attrs {
+        if !attr.path().is_ident("routed") {
+            continue;
+        }
+        attr.parse_nested_meta(|meta| {
+            if !meta.path.is_ident("crate") {
+                return Err(meta.error(ROUTED_OPTION));
+            }
+            let value: LitStr = meta.value()?.parse()?;
+            if krate.is_some() {
+                return Err(Error::new_spanned(
+                    &meta.path,
+                    "`crate` is given more than once in `#[routed(..)]`: give it once",
+                ));
+            }
+            krate = Some(value.parse::<Path>().map_err(|_| {
+                Error::new(
+                    value.span(),
+                    "the crate must be a path, such as `::petritype`",
+                )
+            })?);
+            Ok(())
+        })?;
+    }
+    Ok(krate.unwrap_or_else(|| parse_quote!(::petritype)))
 }
 
 /// One payload declaration and one match arm per variant, in declaration
@@ -183,14 +222,22 @@ fn variants(data: &DataEnum) -> Result<(Vec<TokenStream2>, Vec<TokenStream2>)> {
 /// struct, fields included, and `Clone`, `Copy` and `Debug` where its
 /// inputs are.
 ///
-/// The struct may have one lifetime, for fields of type `&'a mut T` that a
-/// `MutateEdge` or a `MutateWhereEdge` fills; the body then takes
+/// The struct may have one lifetime, for the fields that borrow a token
+/// where it lies: `&'a mut T`, which a `MutateEdge` or a `MutateWhereEdge`
+/// fills, and `&'a T` or `Vec<&'a T>`, which a `ReadEdge`, a
+/// `ReadWhereEdge` or a `ReadAllEdge` fills; the body then takes
 /// `Pricing<'_>`. It may not have type or const parameters (a field's type
 /// is what the net wires against), and needs at least one named field.
 ///
 /// `#[binding(edges = "Name")]` names the wiring something else, and
 /// `#[binding(inputs = "Name")]` does so for this derive alone, for a struct
-/// that also derives another binding.
+/// that also derives another binding. `#[binding(crate = "path")]` names
+/// `petritype` by another path, for a caller that reaches it through a
+/// renamed dependency or a re-export. A key given twice is refused. The
+/// expansion names everything by its full path and its impls are
+/// `#[automatically_derived]`, so it compiles in a `#[no_implicit_prelude]`
+/// module, and its type parameters are named so that none is a name the
+/// struct or its field types use (a struct called `F0` keeps its name).
 ///
 /// The expansion implements the engine traits of `petritype::binding` for
 /// the wiring; the crate's documentation of `Reads` says what may fill a
@@ -236,7 +283,8 @@ pub fn derive_inputs(input: TokenStream) -> TokenStream {
 /// const parameters, and needs at least one named field.
 /// `#[binding(edges = "Name")]` names the struct of outputs something else,
 /// and `#[binding(outputs = "Name")]` does so for this derive alone, for a
-/// struct that also derives `Inputs`.
+/// struct that also derives `Inputs`. `#[binding(crate = "path")]` and the
+/// rest are as for `Inputs`.
 #[proc_macro_derive(Outputs, attributes(binding))]
 pub fn derive_outputs(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);

@@ -8,7 +8,10 @@ impl Thumbnail {
     /// The thumbnail as an SVG document, each cell a `cell_px` square: one
     /// `<rect>` per position of the grid, empty ones in the page colour,
     /// drawn with crisp edges, and nothing else. The vector form of the live
-    /// picture, and of the icon ([`Thumbnail::icon`]).
+    /// picture, and of the icon ([`Thumbnail::icon`]). Its sizes and
+    /// coordinates are worked out in `u128`, which holds any grid's size
+    /// times any `u32`, so they are exact on any target, a 32-bit one
+    /// included.
     ///
     /// ```
     /// use petritype::NetBuilder;
@@ -33,8 +36,8 @@ impl Thumbnail {
     /// # Ok::<(), petritype::BuildError>(())
     /// ```
     pub fn svg(&self, cell_px: u32) -> String {
-        let px = cell_px as usize;
-        let (width, height) = (self.columns() * px, self.rows() * px);
+        let px = u128::from(cell_px);
+        let (width, height) = (self.columns() as u128 * px, self.rows() as u128 * px);
         let mut out = String::new();
         // Writing to a `String` cannot fail.
         let _ = writeln!(
@@ -46,8 +49,8 @@ impl Thumbnail {
             let _ = writeln!(
                 out,
                 "<rect x=\"{}\" y=\"{}\" width=\"{px}\" height=\"{px}\" fill=\"{colour}\"/>",
-                column * px,
-                row * px,
+                column as u128 * px,
+                row as u128 * px,
             );
         }
         out.push_str("</svg>\n");
@@ -86,6 +89,27 @@ mod tests {
 
         let svg = Thumbnail::new(&activity, &grid, HueMode::Kind, &Palette::DARK).svg(4);
         assert_eq!(svg, GOLDEN, "\n{svg}");
+    }
+
+    /// The largest cell a `u32` gives draws to its exact size and
+    /// coordinates, whatever the target's `usize`: on a 32-bit target the
+    /// two columns' width alone passed it.
+    #[test]
+    fn the_largest_cells_draw_to_their_exact_size() {
+        let light = build_traffic_light().expect("the traffic light builds");
+        let mut layout = Layout::default();
+        layout.compute(&light.net);
+        let grid = Grid::from_layout(&layout, &light.net.topology());
+        let svg = Thumbnail::icon(&grid, &Palette::DARK).svg(u32::MAX);
+        let px = u128::from(u32::MAX);
+        assert!(
+            svg.contains(&format!("width=\"{}\" height=\"{}\"", 2 * px, 3 * px)),
+            "{svg}"
+        );
+        assert!(
+            svg.contains(&format!("<rect x=\"{px}\" y=\"{}\"", 2 * px)),
+            "{svg}"
+        );
     }
 
     /// `Waiting` and `Light` on the first row, `Go` and `Change` on the

@@ -43,7 +43,8 @@ pub struct Shop {
 
 /// The shop, empty, with this price list.
 ///
-/// `Price Order` takes the front order, surveys the promotions (every one,
+/// Orders, gift orders, stamps and promotions come in from outside, so
+/// those four places are its ports. `Price Order` takes the front order, surveys the promotions (every one,
 /// zero or more, none consumed) and reads the prices off the net's
 /// parameter. `Price and Stamp` is the mixed form: the struct of edges is
 /// one input position beside a plain edge, and the body takes the struct
@@ -58,6 +59,10 @@ pub fn build_shop(prices: Prices) -> Result<Shop, BuildError> {
     let priced = b.place::<Order>("Priced");
     let notes = b.place::<Note>("Notes");
     let restock = b.place::<Item>("Restock");
+    b.port(orders);
+    b.port(gifts);
+    b.port(stamps);
+    b.port(promos);
     b.param(prices);
 
     let outputs = PricedEdges {
@@ -118,6 +123,7 @@ pub type WholesaleOutputs = PricedEdges<PlaceRef<Order>, PlaceRef<Note>, PlaceRe
 
 /// A wholesaler: trade orders only, the promotions read and left running,
 /// the price list a token on a place, and every output somewhere else.
+/// Orders and promotions come in from outside, at its two ports.
 pub struct Wholesale {
     pub net: Net,
     /// Orders of every tier; only trade orders are priced here.
@@ -162,6 +168,8 @@ where
     b.keys(orders, ["tier"], |order: &Order| {
         [order.tier.as_str().into()]
     });
+    b.port(orders);
+    b.port(promos);
     b.seed(price_list, [prices]);
 
     let inputs: WholesaleInputs = PricingEdges {

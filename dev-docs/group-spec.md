@@ -159,7 +159,8 @@ net with two groups, one place in none, and a subnet with a group of its own:
 
 ## 6. Graphviz, in both runtimes
 
-A group is drawn as a Graphviz cluster: a dashed frame with the group's name.
+A group is drawn as a Graphviz cluster: a dotted frame with the group's name
+(dashed until 2026-11-28, when an open net's places took the dashes).
 Closing is for the viewer and is not drawn here.
 
 ## 7. What is removed, and who has to change

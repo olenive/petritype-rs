@@ -29,6 +29,7 @@ fn mixed_net() -> Net {
     let heavy = b.place::<u32>("Heavy");
     let batches = b.place::<Vec<u32>>("Batches");
     let tally = b.place::<u64>("Tally");
+    b.port(inbox);
     b.seed(inbox, [3, 30]);
     b.seed(config, [10]);
     b.seed(tally, [0]);

@@ -17,11 +17,14 @@
 //! Inside a vehicle, passengers come in at the `Door` and sit or stand, and
 //! go back to the door when it has arrived somewhere. Nothing inside a
 //! vehicle touches the city. The city reaches in only through the vehicle
-//! token it holds: `Board <station>` and `Alight <station>` put a passenger
+//! token it holds, and only at the cabin's ports, `Door`, `Announcements`,
+//! `Doors Open` and `Doors Closed`, each named by the edge of a body that
+//! reaches it: `Board <station>` and `Alight <station>` put a passenger
 //! into the cabin's `Door` and take one out with a [`MutateEdge`] body;
-//! `Depart <station>` and `Arrive` move the vehicle and set the cabin's
-//! parameter `stopped`, and `Arrive` puts an announcement inside and opens
-//! the doors. The city's guards read the cabin through [`Net::nested`].
+//! `Depart <station>` and `Arrive` move the vehicle, and `Arrive` puts an
+//! announcement inside and opens the doors. No body sets a cabin's
+//! parameters, as no body may set the knobs of a net it holds. The city's
+//! guards read the cabin through [`Net::nested`].
 //!
 //! **Step and watch.** A vehicle's state is where its doors are: each door is
 //! a token, its name, in the cabin's `Doors Open` or `Doors Closed`, which
@@ -291,7 +294,7 @@ mod tests {
     use std::collections::{BTreeMap, BTreeSet};
 
     use super::*;
-    use net::{CONTROL_PLACES, Capacity, Destination, SeatCount, Stopped};
+    use net::{CONTROL_PLACES, Capacity, Destination, SeatCount};
     use petritype::drivers::{self, Limits, Mode, OnFailure};
     use petritype::{Event, Params, TieBreak, TokenId};
     use serde_json::{Value, json};
@@ -432,6 +435,14 @@ mod tests {
                 ("Arrived", false, true),
             ],
         );
+        let ports: Vec<&str> = city
+            .net
+            .places()
+            .filter(|(_, info)| info.port)
+            .map(|(_, info)| info.name)
+            .collect();
+        assert_eq!(ports, ["Depot"], "where a vehicle comes into service");
+        assert!(city.net.is_closed());
         let transitions: Vec<&str> = city.net.transitions().map(|(_, info)| info.name).collect();
         assert_eq!(
             transitions,
@@ -474,7 +485,7 @@ mod tests {
             "Cabin",
             json!({"Door": [], "Seats": [], "Standing": [], "Announcements": [],
                    "Doors Open": ["Front"], "Doors Closed": []}),
-            json!({"stopped": true, "seats": 2, "capacity": 6}),
+            json!({"seats": 2, "capacity": 6}),
             switches(&[
                 "Sit",
                 "Stand",
@@ -488,7 +499,7 @@ mod tests {
             "Deck",
             json!({"Door": [], "Lower Deck": [], "Upper Deck": [], "Announcements": [],
                    "Doors Open": ["Bow", "Stern"], "Doors Closed": []}),
-            json!({"stopped": true, "capacity": 40}),
+            json!({"capacity": 40}),
             switches(&[
                 "Go Below",
                 "Go Up",
@@ -525,7 +536,7 @@ mod tests {
                 "Pod",
                 json!({"Door": [], "Seats": [], "Announcements": [],
                        "Doors Open": ["Front"], "Doors Closed": []}),
-                json!({"stopped": true, "seats": 4, "capacity": 4}),
+                json!({"seats": 4, "capacity": 4}),
                 switches(&["Sit", "Go To Door", "Close Doors", "Clear Announcement"]),
             ),
         );
@@ -537,7 +548,16 @@ mod tests {
                     .collect(),
             )
         };
+        // Every template's ports: where the city's bodies reach.
+        let ports = |net: &Net| -> Vec<String> {
+            net.places()
+                .filter(|(_, info)| info.port)
+                .map(|(_, info)| info.name.to_owned())
+                .collect()
+        };
+        let cabin_ports = ["Door", "Announcements", "Doors Open", "Doors Closed"];
         let (places, transitions) = order(&pod);
+        assert_eq!(ports(&pod), cabin_ports);
         assert_eq!(
             places,
             [
@@ -554,6 +574,7 @@ mod tests {
         );
         let cabin = city.inside(city.stations.at(Location::Depot)).expect("bus");
         let (places, transitions) = order(cabin);
+        assert_eq!(ports(cabin), cabin_ports);
         assert_eq!(
             places,
             [
@@ -580,6 +601,7 @@ mod tests {
             .inside(city.stations.at(Location::Harbour))
             .expect("ferry");
         let (places, transitions) = order(deck);
+        assert_eq!(ports(deck), cabin_ports);
         assert_eq!(
             places,
             [
@@ -900,7 +922,6 @@ mod tests {
             .inside(city.stations.at(Location::Airport))
             .expect("the bus is at the Airport");
         assert_eq!(names(cabin, "Announcements"), ["Arrived at Airport"]);
-        assert_eq!(cabin.param::<Stopped>(), Some(&Stopped(true)));
         assert_eq!(doors(cabin), (owned(&["Front"]), vec![]), "opened");
         assert_eq!(phase(cabin), Phase::Alighting);
         assert_eq!(city.net.count(city.stations.at(Location::Central).id()), 0);
@@ -947,8 +968,9 @@ mod tests {
     #[test]
     fn a_loaded_cabin_is_a_new_net_with_its_parameters_and_switches() {
         let (mut city, _) = after(10);
-        // A switch inside, thrown, to see it come back: what a save keeps,
-        // not how the journey runs.
+        // A switch inside, thrown, and a parameter, changed, by the program,
+        // to see them come back: what a save keeps, not how the journey
+        // runs.
         let (token, _) = city.vehicle(city.in_transit).expect("the bus");
         city.net
             .nested_scope(city.in_transit.id(), token, |nets| {
@@ -957,6 +979,7 @@ mod tests {
                     .transition_named("Clear Announcement")
                     .expect("a cabin transition");
                 cabin.disable(clear).expect("disables");
+                cabin.set_param(Capacity(5)).expect("a cabin parameter");
             })
             .expect("a nested place");
         let text = save(&city).expect("saves");
@@ -966,9 +989,8 @@ mod tests {
         let after = loaded.inside(loaded.in_transit).expect("the bus");
         assert_ne!(after.id(), before.id(), "a restored cabin is a new net");
         assert_eq!(after.template(), Some("Cabin"));
-        assert_eq!(after.param::<Stopped>(), Some(&Stopped(false)));
         assert_eq!(after.param::<SeatCount>(), Some(&SeatCount(2)));
-        assert_eq!(after.param::<Capacity>(), Some(&Capacity(6)));
+        assert_eq!(after.param::<Capacity>(), Some(&Capacity(5)), "as changed");
         assert_eq!(doors(after), (vec![], owned(&["Front"])), "closed");
         for (transition, info) in before.transitions() {
             let same = after.transition_named(info.name).expect("same template");
@@ -998,7 +1020,7 @@ mod tests {
                              "marking": {"Door": [], "Seats": ["Ada", "Bram"], "Standing": ["Cato"],
                                          "Announcements": [], "Doors Open": [],
                                          "Doors Closed": ["Front"]},
-                             "params": {"stopped": true, "seats": 2, "capacity": 6},
+                             "params": {"seats": 2, "capacity": 6},
                              "enabled": {"Sit": true, "Stand": true, "Go To Door": true,
                                          "Go To Door From Standing": true,
                                          "Close Doors": true, "Clear Announcement": true}}}),
@@ -1054,7 +1076,9 @@ mod tests {
         );
         let log: Vec<Event> = city.net.drain_events().collect();
 
-        // Everything that happened inside the bus, by where the bus was.
+        // Everything that happened inside the bus, by where the bus was:
+        // nothing in transit, and what `Arrive` did inside told under the
+        // place the bus landed in.
         let mut stops: Vec<(String, TokenId)> = Vec::new();
         for event in &log {
             if let Event::Nested {
@@ -1073,14 +1097,10 @@ mod tests {
         }
         let (last_token, still) = bus_at(&city, city.stations.at(Location::Central));
         assert_eq!(still, nested_id, "the cabin never changed");
-        assert_eq!(stops.len(), 3, "{stops:?}");
+        assert_eq!(stops.len(), 2, "{stops:?}");
         assert_eq!(stops[0], ("Depot".to_owned(), first_token));
-        assert_eq!(stops[1].0, "In Transit");
-        assert_eq!(stops[2], ("Central".to_owned(), last_token));
-        assert!(
-            first_token != stops[1].1 && stops[1].1 != last_token,
-            "a new token id at every move"
-        );
+        assert_eq!(stops[1], ("Central".to_owned(), last_token));
+        assert_ne!(first_token, last_token, "a new token id at every move");
         // The ferry's boarding is in the log too, under its own id.
         let (_, ferry) = city
             .vehicle(city.stations.at(Location::Harbour))
@@ -1092,11 +1112,17 @@ mod tests {
 
     #[test]
     fn board_is_refused_when_the_bus_is_full() {
-        let mut city = build_city().expect("the city builds");
-        let platform = city.platforms.at(Location::Depot);
-        // Six fit aboard a bus; three are waiting already.
-        city.net
-            .extend(platform, ["Dee", "Eli", "Fay", "Gus"].map(String::from));
+        // Six fit aboard a bus; three are waiting already, and four more
+        // join them. A platform is no port of the city, so the program
+        // brings them in by loading a saved city that holds them.
+        let city = build_city().expect("the city builds");
+        let mut saved =
+            serde_json::to_value(city.net.export_marking().expect("saves")).expect("JSON");
+        saved["Platform@Depot"]
+            .as_array_mut()
+            .expect("a platform")
+            .extend(["Dee", "Eli", "Fay", "Gus"].map(Value::from));
+        let mut city = load(&saved.to_string()).expect("the saved city loads");
         let story = step(&mut city, 9);
         assert_eq!(story[..6], ["Board Depot"; 6]);
         assert_eq!(story[6..], ["Board Harbour", "Board Harbour", "Bus 1: Sit"]);

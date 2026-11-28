@@ -1,0 +1,17 @@
+error: `edges` is given more than once in `#[binding(..)]`: give it once
+ --> tests/ui/fail_binding_twice.rs:6:28
+  |
+6 | #[binding(edges = "First", edges = "Second")]
+  |                            ^^^^^
+
+error: `outputs` is given more than once in `#[binding(..)]`: give it once
+  --> tests/ui/fail_binding_twice.rs:13:11
+   |
+13 | #[binding(outputs = "Second")]
+   |           ^^^^^^^
+
+error: `crate` is given more than once in `#[routed(..)]`: give it once
+  --> tests/ui/fail_binding_twice.rs:19:33
+   |
+19 | #[routed(crate = "::petritype", crate = "::petritype")]
+   |                                 ^^^^^

@@ -112,6 +112,13 @@
 //! write and an `inject` at a port landing, an `inject` at another place
 //! of the closed net answered `closed_net` and landing in the open one,
 //! and a body's write there failing its firing) are verbatim copies too.
+//! All the shared ones but `10`, `11` and `14` were copied again on
+//! 2026-11-28, as the Python repository recorded them for every net being
+//! closed unless it declares itself open; `05` and `09` hold here only once
+//! a closed net shields the nets inside it, which this runner does not do
+//! yet. Our own `01` and `04` were edited by hand the same day for the
+//! ports of `parcel-fleet` and `parcel-intake`, there being no recorder
+//! here.
 //! The shared set of §11, over the conformance nets `parcel-distribution`,
 //! `transit`, `wildlife`, `shop`, `traffic-light`, `stepping-rules`,
 //! `levels`, `groups`, `workshop`, `cellar`, `harbour`, `odd-names`,

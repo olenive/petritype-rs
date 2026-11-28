@@ -4,7 +4,7 @@
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Identifies one net within this process run.
 ///
@@ -24,15 +24,24 @@ use std::sync::atomic::{AtomicU32, Ordering};
 /// moves and its [`TokenId`] does not. So it prints as its bare number and,
 /// with the `serde` feature, serialises as one (never deserialises), as an
 /// opaque, process-local id to follow a token by, not as something to keep.
+///
+/// The number is a `u64` (since 0.4.0; a `u32` until then), so a process
+/// that builds a net a million times a second runs for over half a million
+/// years before the counter could wrap and two live nets share an id. A
+/// JSON reader that holds numbers as doubles, JavaScript's among them, reads
+/// an id exactly up to 2^53, a count no process reaches in practice; above
+/// it, two ids that differ in their low bits could read as one. The protocol
+/// runner (`petritype-runner`) spells an inner net's id as a decimal string,
+/// which every reader keeps exactly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[cfg_attr(feature = "serde", serde(transparent))]
-pub struct NetId(pub(crate) u32);
+pub struct NetId(pub(crate) u64);
 
 /// The source of [`NetId`]s. `Relaxed` is enough: the only requirement is
 /// that no two builders get the same number, which `fetch_add` guarantees on
 /// its own: nothing else is published through this counter.
-static NEXT_NET_ID: AtomicU32 = AtomicU32::new(0);
+static NEXT_NET_ID: AtomicU64 = AtomicU64::new(0);
 
 impl NetId {
     /// Mints the next id. Called once per [`NetBuilder`](crate::NetBuilder).
@@ -42,7 +51,7 @@ impl NetId {
 
     /// The number this id is: what `Display` prints and the `serde` feature
     /// writes.
-    pub const fn get(self) -> u32 {
+    pub const fn get(self) -> u64 {
         self.0
     }
 }
@@ -124,10 +133,11 @@ impl PlaceId {
     /// A place id from its index in the net's place list: the number
     /// `Display` prints and a [`Topology`](crate::Topology) entry carries.
     ///
-    /// For a mirror of a net in another process, which numbers places in
-    /// topology order (DESIGN §19). An id the net never issued is harmless:
-    /// the read API answers `None`, `false` or nothing for it, and no typed
-    /// [`PlaceRef`] can be made from one.
+    /// For a mirror of a net in another process, built from what the net
+    /// protocol sends, which numbers the places in topology order. An id
+    /// the net never issued is harmless: the read API answers `None`,
+    /// `false` or nothing for it, and no typed [`PlaceRef`] can be made from
+    /// one.
     pub const fn new(index: u32) -> PlaceId {
         PlaceId(index)
     }
@@ -155,9 +165,9 @@ impl TokenId {
     /// A token id from its number: what `Display` prints, what the event log
     /// and a wire protocol carry.
     ///
-    /// For a mirror that reads ids off the wire (DESIGN §19). A number the
-    /// net never issued, or has retired, is harmless: the read API answers
-    /// `None` for it.
+    /// For a mirror of a net in another process, which reads the ids off the
+    /// wire of the net protocol. A number the net never issued, or has
+    /// retired, is harmless: the read API answers `None` for it.
     pub const fn new(number: u64) -> TokenId {
         TokenId(number)
     }
@@ -301,7 +311,7 @@ impl fmt::Debug for SubnetRef {
 /// [`NetBuilder::group`](crate::NetBuilder::group).
 ///
 /// A group is a named set of places and transitions of one net that only
-/// drawings read (DESIGN §6.8). The handle is what puts a node in it:
+/// drawings read. The handle is what puts a node in it:
 /// [`NetBuilder::in_group`](crate::NetBuilder::in_group) for a place or a
 /// subnet place, and
 /// [`TransitionBuilder::group`](crate::TransitionBuilder::group) for a
@@ -447,5 +457,17 @@ mod tests {
         assert_eq!(format!("#{}", TokenId(7)), "#7");
         assert_eq!(NetId(5).to_string(), "5");
         assert_eq!(NetId(5).get(), 5);
+    }
+
+    /// The id is as wide as a `u64` (since 0.4.0): one past `u32::MAX`
+    /// prints and reads back as itself, where a `u32` counter would have
+    /// wrapped to an id an earlier net already had.
+    #[test]
+    fn a_net_id_is_as_wide_as_a_u64() {
+        let past_u32 = NetId(u64::from(u32::MAX) + 1);
+        assert_eq!(past_u32.get(), 4_294_967_296_u64);
+        assert_eq!(past_u32.to_string(), "4294967296");
+        assert_ne!(past_u32, NetId(0));
+        assert_eq!(NetId(u64::MAX).to_string(), u64::MAX.to_string());
     }
 }

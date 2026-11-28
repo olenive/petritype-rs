@@ -80,7 +80,8 @@
         {
          "name": "Inbox #1 / \"new\"",
          "type_name": "<label>",
-         "serializable": true
+         "serializable": true,
+         "port": true
         },
         {
          "name": "Cabinet \"C\" #2/3",
@@ -681,7 +682,8 @@
         {
          "name": "Inbox #1 / \"new\"",
          "type_name": "<label>",
-         "serializable": true
+         "serializable": true,
+         "port": true
         },
         {
          "name": "Cabinet \"C\" #2/3",

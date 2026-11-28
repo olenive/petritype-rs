@@ -13,7 +13,7 @@ error[E0277]: a transition's outputs must be a tuple of place handles
    = help: the following other types implement trait `OutputPlaces`:
              (T₁, T₂, …, Tₙ) up to tuples of arity 16
 note: required by a bound in `NetBuilder::transition`
-  --> src/builder.rs
+  --> src/builder/mod.rs
    |
    | impl NetBuilder {
 ...
@@ -52,7 +52,7 @@ help: the following other types implement trait `IntoOutcome<Outputs, Marker>`
    |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `petritype::Distribution` implements `IntoOutcome<Outputs, petritype::marker::Distributed>`
    = note: required for `{closure@$DIR/tests/ui/fail_outputs_in_tuple.rs:32:9: 32:23}` to implement `TransitionBody<(TakeEdge<Order>,), (PricedEdges<PlaceRef<Order>, PlaceRef<Note>>, PlaceRef<Log>), (_, (Priced, Log))>`
 note: required by a bound in `NetBuilder::transition`
-  --> src/builder.rs
+  --> src/builder/mod.rs
    |
    | impl NetBuilder {
 ...

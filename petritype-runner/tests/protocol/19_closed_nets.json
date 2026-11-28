@@ -142,7 +142,8 @@
           "direction": "out"
          }
         ]
-       }
+       },
+       "open": true
       },
       "transitions": {
        "Deliver": {
@@ -549,13 +550,7 @@
     "method": "inject",
     "params": {
      "place": "Ledger",
-     "path": [
-      {
-       "place": "Posts",
-       "token": "<id:open_post>",
-       "net": ""
-      }
-     ],
+     "nested_id": "<id:open_post_2>",
      "token": "Note"
     }
    },
@@ -830,7 +825,8 @@
           "direction": "out"
          }
         ]
-       }
+       },
+       "open": true
       },
       "transitions": {
        "Deliver": {

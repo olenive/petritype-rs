@@ -6,7 +6,7 @@ use std::net::TcpStream;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use petritype::{Firing, Nested, Net, NetBuilder, NetId, TakeEdge};
-use petritype_runner::{Host, HostServer};
+use petritype_runner::{Host, HostServer, HostServerConfig};
 use serde_json::{Value, json};
 
 // ----- the nets ----------------------------------------------------------------
@@ -23,12 +23,15 @@ impl std::fmt::Display for Refused {
 impl std::error::Error for Refused {}
 
 /// `Inbox -Double-> Out`, holding 1 and 2, and `Bad -Fail->`, empty.
+/// `Inbox` and `Bad` are its ports, where the program puts numbers in.
 fn doubler() -> Net {
     let mut b = NetBuilder::new();
     let inbox = b.place::<u32>("Inbox");
     let out = b.place::<u32>("Out");
     let bad = b.place::<u32>("Bad");
     b.serializable(inbox);
+    b.port(inbox);
+    b.port(bad);
     b.seed(inbox, [1, 2]);
     b.transition("Double", (TakeEdge(inbox),), (out,), |n: u32| (n * 2,));
     b.transition(
@@ -40,21 +43,25 @@ fn doubler() -> Net {
     b.build().expect("the net builds")
 }
 
-/// `In -Move-> Out`, holding `items`.
+/// `In -Move-> Out`, holding `items`, both places its ports, where the
+/// program puts numbers in.
 fn bin(items: &[u32]) -> Net {
     let mut b = NetBuilder::new();
     let input = b.place::<u32>("In");
     let output = b.place::<u32>("Out");
+    b.port(input);
+    b.port(output);
     b.seed(input, items.iter().copied());
     b.transition("Move", (TakeEdge(input),), (output,), |n: u32| (n,));
     b.build().expect("the bin builds")
 }
 
-/// A net with nothing of its own to fire, whose `Shelf` holds one bin with
-/// 7 in it.
+/// A net with nothing of its own to fire, whose `Shelf`, its port, holds
+/// one bin with 7 in it.
 fn shelf() -> Net {
     let mut b = NetBuilder::new();
     let shelf = b.place_nested::<Net>("Shelf");
+    b.port(shelf);
     b.seed(shelf, [bin(&[7])]);
     b.build().expect("the shelf builds")
 }
@@ -375,18 +382,23 @@ impl Nested for Crate {
 }
 
 /// `Inbox -Double-> Out`, holding 1, 2 and 3, and `Shelf -Ship-> Dock`,
-/// whose crates carry bins: on the shelf, one holding 7 and one empty. The
-/// bins' ids go into `ids`, in the order they are made.
+/// whose crates carry bins: on the shelf, one holding 7 and one empty.
+/// `Shelf` is its port, where the program puts crates. The yard is
+/// declared open, since the program also changes its bins from outside
+/// ([`Act::InBin`]): a closed net shields the nets inside it. The bins' ids
+/// go into `ids`, in the order they are made.
 fn yard(ids: &mut Vec<NetId>) -> Net {
     let mut b = NetBuilder::new();
     let inbox = b.place::<u32>("Inbox");
     let out = b.place::<u32>("Out");
     let shelf = b.place_nested::<Crate>("Shelf");
     let dock = b.place_nested::<Crate>("Dock");
+    b.port(shelf);
     b.seed(inbox, [1, 2, 3]);
     b.seed(shelf, [packed(&[7], ids), packed(&[], ids)]);
     b.transition("Double", (TakeEdge(inbox),), (out,), |n: u32| (n * 2,));
     b.transition("Ship", (TakeEdge(shelf),), (dock,), |c: Crate| (c,));
+    b.open();
     b.build().expect("the yard builds")
 }
 
@@ -1056,4 +1068,243 @@ fn a_server_nobody_watches_is_quiet_until_a_viewer_asks_and_after_the_last_leave
     // Quiet again, and the next viewer is served as the first was.
     double_all(&mut server);
     attach_and_follow(&mut server, 1_004, 503);
+}
+
+/// A request line of exactly `bytes` bytes without its newline: a
+/// `describe` padded with a parameter the method does not read.
+fn padded(id: &str, bytes: usize) -> Vec<u8> {
+    let head = format!(r#"{{"id": "{id}", "method": "describe", "params": {{"pad": ""#);
+    let tail = r#""}}"#;
+    let mut line = head.into_bytes();
+    line.resize(bytes - tail.len(), b'y');
+    line.extend_from_slice(tail.as_bytes());
+    line.push(b'\n');
+    line
+}
+
+#[test]
+fn a_line_over_the_cap_or_not_utf8_is_invalid_params_and_the_viewer_is_served_on() {
+    let cap = 4 << 20;
+    let mut server = HostServer::bind("127.0.0.1:0", "doubler", doubler()).expect("a free port");
+    let mut viewer = Viewer::connect(&server);
+    wait_for_viewers(&mut server, 1);
+
+    // One byte over the cap: skipped, never read, answered with no id.
+    viewer.stream.write_all(&padded("1", cap + 1)).unwrap();
+    let refused = viewer.next(&mut server);
+    assert_eq!(refused["id"], "");
+    assert_eq!(refused["error"]["code"], "invalid_params");
+    assert_eq!(
+        refused["error"]["message"],
+        "a request line is at most 4194304 bytes long; a longer one was discarded unread"
+    );
+    // At the cap: read and answered.
+    viewer.stream.write_all(&padded("2", cap)).unwrap();
+    let answer = viewer.next(&mut server);
+    assert_eq!(answer["id"], "2");
+    assert!(answer.get("result").is_some(), "{answer}");
+
+    // Not UTF-8, inside a string that would otherwise parse: refused, where
+    // it was read with the byte replaced and answered as a request.
+    viewer
+        .stream
+        .write_all(b"{\"id\": \"3\", \"method\": \"get_state\", \"params\": {\"x\": \"\xff\"}}\n")
+        .unwrap();
+    let refused = viewer.next(&mut server);
+    assert_eq!(refused["id"], "");
+    assert_eq!(refused["error"]["code"], "invalid_params");
+    assert_eq!(refused["error"]["message"], "a request line must be UTF-8");
+
+    viewer.send("4", "get_state");
+    assert_eq!(viewer.next(&mut server)["id"], "4", "served on");
+}
+
+#[test]
+fn a_staged_firing_whose_landing_the_program_drained_is_forgotten() {
+    let mut host = Host::new("doubler", doubler());
+    let (firing, lines) = changed(&mut host, |net| {
+        let double = net.transition_named("Double").expect("Double");
+        net.launch(double).expect("Double is fireable")
+    });
+    assert_eq!(methods(&lines), ["launched"]);
+    // The program lands it and takes the events itself: nobody is told.
+    let (_, lines) = changed(&mut host, |net| {
+        net.distribute(firing.run()).expect("the firing lands");
+        net.drain_events().for_each(drop);
+    });
+    assert!(lines.is_empty(), "{lines:#?}");
+
+    // Double fires on the last number: nothing is fireable any more, which
+    // differs from what a viewer read, so the viewer is told. Until
+    // 2026-11-28 the landing that never came kept the sets uncompared.
+    let (fired, lines) = changed(&mut host, |net| net.step());
+    assert!(fired.expect("the body does not fail").is_some());
+    assert_eq!(methods(&lines), ["fired", "fireable"]);
+    assert_eq!(lines[1]["params"]["transitions"], json!([]));
+}
+
+/// A server of the doubler with `config`.
+fn bound(config: HostServerConfig) -> HostServer {
+    HostServer::bind_with("127.0.0.1:0", "doubler", doubler(), config).expect("a free port")
+}
+
+/// Serves `server` until the other end of `stream` closes it, reading and
+/// dropping whatever comes first; panics after twenty seconds.
+fn until_closed(server: &mut HostServer, stream: &mut TcpStream) {
+    stream
+        .set_read_timeout(Some(Duration::from_millis(20)))
+        .expect("a timeout");
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let mut buffer = [0_u8; 4096];
+    loop {
+        server.serve();
+        match std::io::Read::read(stream, &mut buffer) {
+            Ok(0) => return,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::BrokenPipe
+                ) =>
+            {
+                return;
+            }
+            Ok(_) | Err(_) => {}
+        }
+        assert!(Instant::now() < deadline, "the connection stayed open");
+    }
+}
+
+#[test]
+fn a_connection_past_the_viewer_cap_is_closed_and_one_may_join_once_another_leaves() {
+    let mut config = HostServerConfig::default();
+    config.max_viewers = 2;
+    let mut server = bound(config);
+    let mut first = Viewer::connect(&server);
+    wait_for_viewers(&mut server, 1);
+    let mut second = Viewer::connect(&server);
+    wait_for_viewers(&mut server, 2);
+
+    let mut third = TcpStream::connect(server.local_addr()).expect("the server listens");
+    until_closed(&mut server, &mut third);
+    assert_eq!(server.viewers(), 2);
+    for (viewer, id) in [(&mut first, "1"), (&mut second, "2")] {
+        viewer.send(id, "get_state");
+        assert_eq!(viewer.next(&mut server)["id"], id, "served as ever");
+    }
+
+    // One leaves, and its place goes to the next to connect.
+    drop(first);
+    wait_for_viewers(&mut server, 1);
+    let mut fourth = Viewer::connect(&server);
+    wait_for_viewers(&mut server, 2);
+    fourth.send("4", "get_state");
+    assert_eq!(fourth.next(&mut server)["id"], "4");
+}
+
+#[test]
+fn a_connection_that_makes_no_request_is_closed_after_the_handshake_timeout() {
+    let mut config = HostServerConfig::default();
+    config.idle_handshake_timeout = Duration::from_millis(100);
+    let mut server = bound(config);
+    let mut silent = TcpStream::connect(server.local_addr()).expect("the server listens");
+    wait_for_viewers(&mut server, 1);
+    // A line that is no request counts for nothing.
+    writeln!(silent, "not a request").expect("the server reads");
+    until_closed(&mut server, &mut silent);
+    assert_eq!(server.viewers(), 0);
+}
+
+#[test]
+fn a_viewer_that_reads_nothing_is_dropped_and_the_program_goes_on() {
+    let mut b = NetBuilder::new();
+    let notes = b.place::<String>("Notes");
+    b.port(notes);
+    b.transition("Read", (TakeEdge(notes),), (), |_: String| {});
+    let mut config = HostServerConfig::default();
+    config.writer_backlog_bytes = 64 << 10;
+    let mut server =
+        HostServer::bind_with("127.0.0.1:0", "notes", b.build().unwrap(), config).unwrap();
+    let mut viewer = Viewer::connect(&server);
+    wait_for_viewers(&mut server, 1);
+    viewer.send("1", "get_state");
+    viewer.next(&mut server);
+
+    // The viewer reads no more. Each change tells of a token with a label
+    // of a thousand characters, until what waits for the viewer passes the
+    // cap, once the system's buffers are full.
+    let note = "n".repeat(2_000);
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while server.viewers() == 1 {
+        assert!(Instant::now() < deadline, "the viewer was never dropped");
+        server.change(|net| {
+            let notes = net.place_ref::<String>("Notes").expect("Notes");
+            net.put(notes, note.clone());
+            net.step().expect("the body does not fail");
+        });
+        server.serve();
+    }
+    // The program went on all the while, and goes on.
+    server.change(|net| {
+        let notes = net.place_ref::<String>("Notes").expect("Notes");
+        net.put(notes, note.clone());
+    });
+    assert_eq!(
+        server
+            .net()
+            .count(server.net().place_named("Notes").unwrap()),
+        1
+    );
+}
+
+#[test]
+fn the_heartbeat_comes_at_the_period_given() {
+    let mut config = HostServerConfig::default();
+    config.heartbeat_period = Duration::from_millis(50);
+    let mut server = bound(config);
+    assert_eq!(server.config().heartbeat_period, Duration::from_millis(50));
+    let mut viewer = Viewer::connect(&server);
+    wait_for_viewers(&mut server, 1);
+    viewer.send("1", "get_state");
+    viewer.next(&mut server);
+    // Well inside the default 30 seconds.
+    let line = viewer
+        .maybe_next(&mut server, Duration::from_secs(10))
+        .expect("a heartbeat");
+    assert_eq!(line["method"], "heartbeat");
+    assert_eq!(line["params"]["marking_version"], 0);
+}
+
+#[test]
+fn dropping_the_server_closes_every_connection_and_frees_the_port() {
+    let mut server = bound(HostServerConfig::default());
+    let address = server.local_addr();
+    let mut admitted = Viewer::connect(&server);
+    wait_for_viewers(&mut server, 1);
+    admitted.send("1", "get_state");
+    admitted.next(&mut server);
+    // Connected, and never let in: given a moment, it waits among the
+    // arrivals, and if the listener has not taken it by the drop, the
+    // listener closes it when woken.
+    let mut waiting = TcpStream::connect(address).expect("the server listens");
+    std::thread::sleep(Duration::from_millis(100));
+
+    drop(server);
+    for stream in [&mut admitted.stream, &mut waiting] {
+        stream
+            .set_read_timeout(Some(Duration::from_secs(20)))
+            .expect("a timeout");
+        let mut rest = Vec::new();
+        let read = std::io::Read::read_to_end(stream, &mut rest);
+        assert!(
+            !matches!(&read, Err(error) if error.kind() == std::io::ErrorKind::WouldBlock
+                || error.kind() == std::io::ErrorKind::TimedOut),
+            "the connection stayed open: {read:?}"
+        );
+    }
+    // The listener has stopped: the port can be bound again.
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while std::net::TcpListener::bind(address).is_err() {
+        assert!(Instant::now() < deadline, "the listener kept the port");
+        std::thread::sleep(Duration::from_millis(5));
+    }
 }

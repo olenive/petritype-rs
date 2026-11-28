@@ -12,11 +12,12 @@ use std::fmt;
 
 use petritype::drivers::{self, DriverError, Limits, Mode, OnFailure};
 use petritype::{
-    BuildError, DeepStep, Event, FiringFailed, MutateEdge, Nested, Net, NetBuilder, PathStep,
-    PlaceId, PlaceRef, SnapshotEdge, Stepping, TakeEdge, TokenId, TransitionId,
+    BuildError, DeepStep, Event, MutateEdge, Nested, Net, NetBuilder, PathStep, PlaceId, PlaceRef,
+    SnapshotEdge, StepError, Stepping, TakeEdge, TokenId, TransitionId,
 };
 
-/// An inner net with work to do: `Todo -> Work -> Done`.
+/// An inner net with work to do: `Todo -> Work -> Done`, jobs arriving at
+/// `Todo`, its port.
 struct Worker {
     net: Net,
     todo: PlaceRef<u32>,
@@ -28,6 +29,7 @@ fn worker(jobs: u32) -> Worker {
     let mut b = NetBuilder::new();
     let todo = b.place::<u32>("Todo");
     let done = b.place::<u32>("Done");
+    b.port(todo);
     b.seed(todo, 0..jobs);
     let work = b
         .transition("Work", (TakeEdge(todo),), (done,), |n: u32| (n,))
@@ -115,7 +117,8 @@ fn unwrap(event: &Event) -> (Option<(PlaceId, TokenId, &str)>, &Event) {
 }
 
 /// A yard of buses with two transitions over it: `Tinker` reaches inside
-/// with a mutating edge and adds a job, `Scrap` consumes the bus.
+/// with a mutating edge and adds a job at the cabin's `Todo`, which its
+/// edge names, and `Scrap` consumes the bus.
 ///
 /// Launching `Tinker` runs its body at once (it is not detachable) and its
 /// write inside is lifted only when that firing lands: in between, the bus
@@ -135,17 +138,24 @@ fn yard() -> Yard {
     } = worker(0);
     let mut b = NetBuilder::new();
     let yard = b.place_nested::<Bus>("Yard");
+    // Buses come and go from outside: the yard is a port.
+    b.port(yard);
     b.seed(yard, [Bus { inner }]);
     // By name rather than by the handle above: a bus put into the yard later
     // has a cabin of its own, which that handle does not belong to.
     let tinker = b
-        .transition("Tinker", (MutateEdge(yard),), (), |bus: &mut Bus| {
-            let todo = bus
-                .inner
-                .place_ref::<u32>("Todo")
-                .expect("a worker's cabin");
-            bus.inner.put(todo, 7);
-        })
+        .transition(
+            "Tinker",
+            (MutateEdge(yard).reaching(["Todo"]),),
+            (),
+            |bus: &mut Bus| {
+                let todo = bus
+                    .inner
+                    .place_ref::<u32>("Todo")
+                    .expect("a worker's cabin");
+                bus.inner.put(todo, 7);
+            },
+        )
         .id();
     let scrap = b
         .transition("Scrap", (TakeEdge(yard),), (), |_bus: Bus| {})
@@ -381,6 +391,7 @@ fn step_deep_under_outer_first_goes_outer_first_then_place_order_then_token_orde
     let mut b = NetBuilder::new();
     let inbox = b.place::<u32>("Inbox");
     let outbox = b.place::<u32>("Outbox");
+    b.port(inbox);
     let first = b.place_nested::<Net>("First");
     let second = b.place_nested::<Pair>("Second");
     b.stepping(first, Stepping::OuterFirst);
@@ -454,6 +465,7 @@ fn a_passive_place_is_stepped_only_by_a_body() {
     let mut b = NetBuilder::new();
     let machines = b.place_nested::<Net>("Machines");
     let cranks = b.place::<()>("Cranks");
+    b.port(cranks);
     b.stepping(machines, Stepping::Passive);
     let Worker {
         net: inner,
@@ -467,7 +479,7 @@ fn a_passive_place_is_stepped_only_by_a_body() {
             "Crank",
             (TakeEdge(cranks), MutateEdge(machines)),
             (),
-            |(): (), machine: &mut Net| -> Result<(), FiringFailed> {
+            |(): (), machine: &mut Net| -> Result<(), StepError> {
                 machine.step()?;
                 Ok(())
             },
@@ -765,7 +777,7 @@ fn a_failing_body_restores_the_outer_token_and_leaves_its_inner_write_standing()
     let board = b
         .transition(
             "Board",
-            (TakeEdge(platform), MutateEdge(depot)),
+            (TakeEdge(platform), MutateEdge(depot).reaching(["Todo"])),
             (),
             move |passenger: u32, bus: &mut Bus| -> Result<(), Refused> {
                 bus.inner.put(door, passenger);
@@ -778,7 +790,11 @@ fn a_failing_body_restores_the_outer_token_and_leaves_its_inner_write_standing()
     let waiting = only(&net, platform.id());
     let bus = only(&net, depot.id());
 
-    let failure = net.step().expect_err("the body refuses");
+    let failure = net
+        .step()
+        .expect_err("the body refuses")
+        .into_firing()
+        .unwrap();
     assert_eq!(failure.transition, board);
     assert!(failure.restored);
     assert!(failure.path.is_empty(), "the outer net's own transition");
@@ -816,6 +832,9 @@ fn nested_scope_lifts_when_it_returns_and_only_what_changed() {
     let depot = b.place_nested::<Bus>("Depot");
     b.seed(plain, [1]);
     b.seed(depot, [Bus { inner }]);
+    // Open, so that the program may write inside through `nested_scope`: a
+    // closed net shields the nets inside it.
+    b.open();
     let mut net = b.build().expect("builds");
     let bus = only(&net, depot.id());
 
@@ -978,10 +997,15 @@ fn rule_4_a_produced_token_speaks_after_its_new_id_is_announced() {
         let shop = b.place_nested::<Bus>("Shop");
         b.seed(yard, [Bus { inner }]);
         let paint = b
-            .transition("Paint", (TakeEdge(yard),), (shop,), move |mut bus: Bus| {
-                bus.inner.put(todo, 1);
-                (bus,)
-            })
+            .transition(
+                "Paint",
+                (TakeEdge(yard).reaching(["Todo"]),),
+                (shop,),
+                move |mut bus: Bus| {
+                    bus.inner.put(todo, 1);
+                    (bus,)
+                },
+            )
             .id();
         let mut net = b.build().expect("builds");
         let old = only(&net, yard.id());
@@ -1142,7 +1166,11 @@ fn an_inner_failure_says_where_it_happened() {
     let (mut net, depot, fail) = breakdown();
     let bus = only(&net, depot.id());
 
-    let failure = net.step_deep().expect_err("the inner body refuses");
+    let failure = net
+        .step_deep()
+        .expect_err("the inner body refuses")
+        .into_firing()
+        .unwrap();
     assert_eq!(failure.transition, fail);
     assert_eq!(failure.name, "Break");
     assert_eq!(

@@ -238,7 +238,11 @@ fn a_fallible_body_distributes_its_ok_and_fails_on_its_err() {
     assert!(matches!(fired(&mut net), Event::Fired { .. }));
 
     let consumed = pairs(&net, paint.id());
-    let failure = net.step().expect_err("the second colour is refused");
+    let failure = net
+        .step()
+        .expect_err("the second colour is refused")
+        .into_firing()
+        .unwrap();
     assert_eq!(failure.transition, make);
     assert_eq!(failure.error.to_string(), "refused");
     assert_eq!(
@@ -420,7 +424,11 @@ fn a_place_that_is_not_an_output_fails_the_whole_firing() {
     let mut net = b.build().expect("a distribution needs no routing table");
 
     let consumed = pairs(&net, inbox.id())[..1].to_vec();
-    let failure = net.step().expect_err("one pair names a place it may not");
+    let failure = net
+        .step()
+        .expect_err("one pair names a place it may not")
+        .into_firing()
+        .unwrap();
     assert_eq!(failure.transition, make);
     assert!(!failure.restored);
     assert!(matches!(

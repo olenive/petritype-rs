@@ -3,7 +3,7 @@
 
 use std::fmt;
 
-use petritype::{BuildError, Net};
+use petritype::{BuildError, ControlError, Net};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
@@ -59,6 +59,14 @@ impl std::error::Error for LoadError {
 impl From<BuildError> for LoadError {
     fn from(error: BuildError) -> Self {
         LoadError::Build(error)
+    }
+}
+
+/// A control no widget can show, made with `?` in a factory, is a net that
+/// did not build.
+impl From<ControlError> for LoadError {
+    fn from(error: ControlError) -> Self {
+        LoadError::Build(BuildError::Control(error))
     }
 }
 

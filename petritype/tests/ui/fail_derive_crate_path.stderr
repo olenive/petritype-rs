@@ -1,0 +1,23 @@
+error[E0433]: cannot find module or crate `nowhere` in this scope
+ --> tests/ui/fail_derive_crate_path.rs:6:19
+  |
+6 | #[binding(crate = "nowhere")]
+  |                   ^^^^^^^^^ use of unresolved module or unlinked crate `nowhere`
+  |
+  = help: if you wanted to use a crate named `nowhere`, use `cargo add nowhere` to add it to your `Cargo.toml`
+
+error[E0433]: cannot find module or crate `nowhere` in this scope
+ --> tests/ui/fail_derive_crate_path.rs:8:5
+  |
+8 |     order: u32,
+  |     ^^^^^ use of unresolved module or unlinked crate `nowhere`
+  |
+  = help: if you wanted to use a crate named `nowhere`, use `cargo add nowhere` to add it to your `Cargo.toml`
+
+error[E0433]: cannot find module or crate `nowhere` in this scope
+  --> tests/ui/fail_derive_crate_path.rs:12:18
+   |
+12 | #[routed(crate = "nowhere")]
+   |                  ^^^^^^^^^ use of unresolved module or unlinked crate `nowhere`
+   |
+   = help: if you wanted to use a crate named `nowhere`, use `cargo add nowhere` to add it to your `Cargo.toml`

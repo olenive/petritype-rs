@@ -8,7 +8,7 @@
 //! log's base one advanced entry by entry, so that a reader can name the
 //! tokens a place held at any entry and say how each looked then.
 
-use std::mem::size_of;
+use std::mem::{size_of, size_of_val};
 
 use petritype::style::Rgb;
 use petritype::{PlaceId, TokenId, TransitionId};
@@ -23,11 +23,14 @@ use crate::log::{Entry, Logged};
 /// host cuts it to a cap of its own ([`new`](Look::new)), so that one
 /// aberrant token cannot use up a log. With the `serde` feature it is
 /// `Serialize` and `Deserialize`, the colour written as `#rrggbb` and left
-/// out when there is none.
+/// out when there is none; reading refuses a colour written any other way.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Look {
-    /// The label, at most the cap it was made with, cut with [`CUT`](Look::CUT).
+    /// The label. One made by [`new`](Look::new) is the first `cap`
+    /// characters of the text it was given, followed by [`CUT`](Look::CUT)
+    /// when anything was cut, so at most `cap` characters and the marker's
+    /// three.
     pub label: String,
     /// The colour, or `None` for a token whose runtime gave it none.
     #[cfg_attr(
@@ -71,6 +74,7 @@ impl Look {
 #[cfg(feature = "serde")]
 mod hex {
     use petritype::style::Rgb;
+    use serde::de::Error as _;
     use serde::{Deserialize, Deserializer, Serializer};
 
     pub(super) fn serialize<S: Serializer>(colour: &Option<Rgb>, s: S) -> Result<S::Ok, S::Error> {
@@ -80,9 +84,15 @@ mod hex {
         }
     }
 
+    /// `#rrggbb`, or none; anything else is refused (since 2026-11-28;
+    /// until then it read as no colour).
     pub(super) fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Rgb>, D::Error> {
-        let text = Option::<String>::deserialize(d)?;
-        Ok(text.as_deref().and_then(Rgb::hex))
+        match Option::<String>::deserialize(d)? {
+            None => Ok(None),
+            Some(text) => Rgb::hex(&text).map(Some).ok_or_else(|| {
+                D::Error::custom(format!("a colour is written #rrggbb, not {text:?}"))
+            }),
+        }
     }
 }
 
@@ -100,8 +110,14 @@ mod hex {
 /// core's rules of where tokens go: a firing takes from the front of its
 /// places and puts at the back, a failure that restores puts the tokens it
 /// took back at the front in the order they were taken, and a token taken
-/// by a launch keeps its look until its firing lands or fails. With the
-/// `serde` feature it is `Serialize` and `Deserialize`.
+/// by a launch keeps its look until its firing lands or fails. A roster
+/// keeps a look only for a token it names, in a place or taken by a launch.
+///
+/// With the `serde` feature it is `Serialize` and `Deserialize`. Reading
+/// refuses a list out of the order of its ids or naming an id twice, which
+/// the lookups that search it could not read, and leaves out a place
+/// written with no token and a look for a token named nowhere, which an
+/// earlier version could write.
 ///
 /// ```
 /// use petritype::{PlaceId, TokenId, TransitionId};
@@ -128,8 +144,11 @@ mod hex {
 /// assert_eq!(roster.look(TokenId::new(1)), None, "gone");
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(default))]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Serialize, serde::Deserialize),
+    serde(try_from = "RosterData")
+)]
 pub struct Roster {
     /// Each place with tokens named, in the order of their ids, with the
     /// tokens in the place's order.
@@ -139,6 +158,47 @@ pub struct Roster {
     looks: Vec<(TokenId, Look)>,
     /// What each transition in flight took, in the order of their ids.
     flying: Vec<(TransitionId, Vec<(PlaceId, TokenId)>)>,
+}
+
+/// A roster as written, checked on reading.
+#[cfg(feature = "serde")]
+#[derive(Default, serde::Deserialize)]
+#[serde(default)]
+struct RosterData {
+    places: Vec<(PlaceId, Vec<TokenId>)>,
+    looks: Vec<(TokenId, Look)>,
+    flying: Vec<(TransitionId, Vec<(PlaceId, TokenId)>)>,
+}
+
+#[cfg(feature = "serde")]
+impl TryFrom<RosterData> for Roster {
+    type Error = String;
+
+    fn try_from(data: RosterData) -> Result<Self, Self::Error> {
+        if !data.places.is_sorted_by(|a, b| a.0 < b.0) {
+            return Err("a roster's places are out of the order of their ids, \
+                        or name a place twice"
+                .to_owned());
+        }
+        if !data.looks.is_sorted_by(|a, b| a.0 < b.0) {
+            return Err("a roster's looks are out of the order of their tokens, \
+                        or name a token twice"
+                .to_owned());
+        }
+        if !data.flying.is_sorted_by(|a, b| a.0 < b.0) {
+            return Err("a roster's transitions in flight are out of order, \
+                        or name a transition twice"
+                .to_owned());
+        }
+        let mut roster = Roster {
+            places: data.places,
+            looks: data.looks,
+            flying: data.flying,
+        };
+        roster.places.retain(|(_, tokens)| !tokens.is_empty());
+        roster.forget_unnamed_looks();
+        Ok(roster)
+    }
 }
 
 impl Roster {
@@ -194,7 +254,7 @@ impl Roster {
         let names: usize = self
             .places
             .iter()
-            .map(|(_, tokens)| size_of::<(PlaceId, Vec<TokenId>)>() + tokens.len() * 8)
+            .map(|(_, tokens)| size_of::<(PlaceId, Vec<TokenId>)>() + size_of_val(&tokens[..]))
             .sum();
         let looks: usize = self
             .looks
@@ -205,7 +265,7 @@ impl Roster {
             .flying
             .iter()
             .map(|(_, taken)| {
-                size_of::<(TransitionId, Vec<(PlaceId, TokenId)>)>() + taken.len() * 16
+                size_of::<(TransitionId, Vec<(PlaceId, TokenId)>)>() + size_of_val(&taken[..])
             })
             .sum();
         size_of::<Roster>() + names + looks + flying
@@ -272,7 +332,7 @@ impl Roster {
                 restored,
                 ..
             } => {
-                self.take_flying(*transition);
+                let flown = self.take_flying(*transition);
                 if *restored {
                     for &(place, token) in consumed {
                         self.take(place, token);
@@ -284,6 +344,9 @@ impl Roster {
                         self.forget_look(token);
                     }
                 }
+                // What the launch took and the failure does not put back is
+                // gone, with its look.
+                self.forget_looks_unless_named(flown);
             }
             Entry::Added { place, token } => self.put_back(*place, *token),
             Entry::Removed { place, token } => {
@@ -311,10 +374,12 @@ impl Roster {
     /// them, as far as the entries can tell: each is undone, the last
     /// first. A token they produced or added was not there before; one they
     /// took is named again, at the front of its place and with no look,
-    /// since how it looked is not in an entry; one they changed loses its
-    /// look, which was another before; and a place a correction of a count
-    /// touched names no token. What a transition in flight before the first
-    /// entry had taken is not known. A failure is undone as
+    /// since how it looked is not in an entry, unless a failure among them
+    /// put it back, when it keeps the look it has; one they changed loses
+    /// its look, which was another before; and a place a correction of a
+    /// count touched names no token. What a transition in flight before the
+    /// first entry had taken is not known, and neither are the looks of
+    /// what it took. A failure is undone as
     /// [`Standing::worked_back`](crate::Standing::worked_back) undoes it.
     pub fn worked_back(&self, entries: &[Entry]) -> Roster {
         let staged = staged_failures(entries);
@@ -348,6 +413,9 @@ impl Roster {
                 Entry::InFlight { .. } => {}
             }
         }
+        // A token in flight before the first entry, or taken by a launch
+        // whose failure the entries undid, is named nowhere now.
+        roster.forget_unnamed_looks();
         roster
     }
 
@@ -437,11 +505,45 @@ impl Roster {
         }
     }
 
+    /// What a launch of `transition` took, replacing what a launch of it
+    /// before took, whose looks go unless the roster names those tokens
+    /// elsewhere.
     fn set_flying(&mut self, transition: TransitionId, taken: Vec<(PlaceId, TokenId)>) {
-        match self.flying.binary_search_by_key(&transition, |(t, _)| *t) {
-            Ok(at) => self.flying[at].1 = taken,
-            Err(at) => self.flying.insert(at, (transition, taken)),
+        let before = match self.flying.binary_search_by_key(&transition, |(t, _)| *t) {
+            Ok(at) => std::mem::replace(&mut self.flying[at].1, taken),
+            Err(at) => {
+                self.flying.insert(at, (transition, taken));
+                Vec::new()
+            }
+        };
+        self.forget_looks_unless_named(before);
+    }
+
+    /// The looks of `tokens` forgotten, but for those the roster still
+    /// names.
+    fn forget_looks_unless_named(&mut self, tokens: Vec<(PlaceId, TokenId)>) {
+        for (_, token) in tokens {
+            if !self.names(token) {
+                self.forget_look(token);
+            }
         }
+    }
+
+    /// Every look of a token the roster names nowhere forgotten.
+    fn forget_unnamed_looks(&mut self) {
+        let mut named: Vec<TokenId> = self
+            .places
+            .iter()
+            .flat_map(|(_, tokens)| tokens.iter().copied())
+            .chain(
+                self.flying
+                    .iter()
+                    .flat_map(|(_, taken)| taken.iter().map(|(_, token)| *token)),
+            )
+            .collect();
+        named.sort_unstable();
+        self.looks
+            .retain(|(token, _)| named.binary_search(token).is_ok());
     }
 
     fn take_flying(&mut self, transition: TransitionId) -> Vec<(PlaceId, TokenId)> {

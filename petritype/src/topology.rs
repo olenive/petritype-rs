@@ -66,9 +66,9 @@ pub struct Topology {
     /// them.
     pub edges: Vec<EdgeInfo>,
     /// The names of the net's groups, in declared order:
-    /// [`Net::groups`](crate::Net::groups) (DESIGN §6.8). With `serde`,
-    /// written only when there are some, so that the shape of a net with no
-    /// groups is what it always was.
+    /// [`Net::groups`](crate::Net::groups). With `serde`, written only when
+    /// there are some, so that the shape of a net with no groups is what it
+    /// always was.
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Vec::is_empty"))]
     pub groups: Vec<String>,
     /// [`Net::topology_counter`](crate::Net::topology_counter) when this was
@@ -119,8 +119,8 @@ pub struct TopologyPlace {
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub stepping: Option<Stepping>,
     /// [`PlaceInfo::key_names`]: the keys the place derives from its tokens,
-    /// in declaration order, empty for none (DESIGN §8.3). With `serde`,
-    /// written only when there are some, like `nested`.
+    /// in declaration order, empty for none. With `serde`, written only when
+    /// there are some, like `nested`.
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Vec::is_empty"))]
     pub key_names: Vec<&'static str>,
     /// [`PlaceInfo::style`]: how the place itself is drawn. With `serde`,
@@ -163,9 +163,9 @@ pub struct TopologyTransition {
     /// [`TransitionInfo::inputs`].
     pub inputs: Vec<(PlaceId, EdgeKind)>,
     /// The filter of each input edge, `None` for all but the keyed ones:
-    /// [`TransitionInfo::filters`] (slice 19). With `serde`, written only
-    /// when some input is keyed, so that the shape of a net without keyed
-    /// edges is what it always was.
+    /// [`TransitionInfo::filters`]. With `serde`, written only when some
+    /// input is keyed, so that the shape of a net without keyed edges is
+    /// what it always was.
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "no_filters"))]
     pub filters: Vec<Option<Filter>>,
     /// The ports each input edge says it reaches: [`TransitionInfo::reaches`]

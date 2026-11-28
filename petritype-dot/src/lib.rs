@@ -7,9 +7,10 @@
 //! being *taken* from one being *read*, and an edge that waits for a token
 //! from one that an empty place satisfies.
 //!
-//! The renderer works over the read API of DESIGN §8.2 and nothing else, so
-//! it draws a live [`Net`] or an owned [`Snapshot`] alike ([`DotSource`] is
-//! the one trait the two share here). That is the point of the snapshot: a
+//! The renderer works over the net's read methods (its places, transitions,
+//! edges, groups, tokens and labels) and nothing else, so it draws a live
+//! [`Net`] or an owned [`Snapshot`] alike ([`DotSource`] is the one trait
+//! the two share here). That is the point of the snapshot: a
 //! render thread owns a consistent copy of the state while the driver keeps
 //! `&mut Net`, and the two renders are the same text:
 //! `dot(&net) == dot(&net.snapshot()?)`.
@@ -24,7 +25,8 @@
 //! The shapes and colours mirror the Python petritype renderer
 //! (`petritype/plotting/rustworkx_to_graphviz.py`,
 //! `activation_coloured_attr_functions`), so a net ported from Python looks
-//! like the Python one. Four things are additions, marked *new* below.
+//! like the Python one. What the Python renderer does not draw is marked
+//! *new* below.
 //!
 //! | element | drawn as |
 //! |---|---|
@@ -49,8 +51,16 @@
 //! | [subnet place](petritype::NetBuilder::subnet_place) | `shape=Mrecord, style=filled, fillcolor=lightskyblue, color=black, penwidth=1`: one box with rounded corners, its label a record with the place's name as the title and a cell per port, in the subnet's order, showing the port's name and count; the cells are named `port0`, `port1`, ... by position, and the ports are not drawn as nodes of their own |
 //! | highlighted subnet place | when the firing touched one of its ports, `color=magenta` (`red` for a failure) and `penwidth=2`, as a place |
 //! | edge on a port, from outside | as its kind draws it, ending at the port's cell: `tailport=port<k>` for an input edge, `headport=port<k>` for an output edge |
-//! | port place, in its subnet's own drawing | as a place, plus `peripheries=2`: a second ring, so the border shows from inside |
-//! | [group](petritype::NetBuilder::group) | a Graphviz cluster, `subgraph cluster_<n>` with `n` its position in declared order, `label` the group's name and `style=dashed`: a dashed frame round the group's places, a subnet place with its box, and then its transitions. The clusters follow the nodes in no group, in declared order |
+//! | port place, in the drawing of the net that marks it (a subnet, a net a token carries, or the net drawn) | as a place, with `style="filled,dotted"`: one dotted ring, the border where tokens come in from outside (since 0.4.0, as the Python renderer since 2026-11-28; until then a second ring, `peripheries=2`) |
+//! | place of a net [declared open](petritype::NetBuilder::open), whichever net is drawn | as a place, with `style="filled,dashed"`: a dashed outline, the place still filled, for a net that takes tokens from outside at every place (since 0.4.0, as the Python renderer since 2026-11-28). A port of an open net is dotted, as a port is anywhere, and never dashed as well. A subnet place's box is drawn as before; the subnet's own drawing shows whether the subnet is open |
+//! | [group](petritype::NetBuilder::group) | a Graphviz cluster, `subgraph cluster_<n>` with `n` its position in declared order, `label` the group's name and `style=dotted`: a dotted frame round the group's places, a subnet place with its box, and then its transitions. The clusters follow the nodes in no group, in declared order. The frame is dotted since 0.4.0, as in the Python renderer, where it was dashed, so that it is not taken for an open net's places at a glance: of Graphviz's two patterns an open net's places take the longer dashes, and a frame and a port the dots |
+//!
+//! The marks of a way in are kept light: a port is one dotted ring, an open
+//! net's place a dashed one, a group a dotted frame. With little visual
+//! noise, a firing being outlined and tokens moving stay what catches the
+//! eye. And only a nested net looks nested: a port's second ring, as it was
+//! drawn until 0.4.0, read as a place inside a place. Highlighting composes
+//! with each mark, changing only `color` and `penwidth`.
 //!
 //! The nodes in no group come first, at the top level, so a net with no
 //! groups draws to the text it drew before groups existed. The node ids
@@ -135,7 +145,7 @@ use petritype::{
 
 /// Anything the renderer can draw: a live [`Net`] or an owned [`Snapshot`].
 ///
-/// The methods are the read API of DESIGN §8.2, narrowed to what a diagram
+/// The methods are the net's read methods, narrowed to what a diagram
 /// needs, and they carry the names [`Net`] gives them. One deliberate
 /// difference: [`token_ids`](DotSource::token_ids) yields ids alone, because
 /// a diagram draws [`label`](DotSource::label)s rather than values, and the
@@ -143,6 +153,24 @@ use petritype::{
 ///
 /// Every method takes `&self`. A renderer never writes to the net, and never
 /// drains its events.
+///
+/// A source of one's own should agree with itself, as [`Net`] and
+/// [`Snapshot`] do: each edge names a place that
+/// [`places`](DotSource::places) lists and a transition that
+/// [`transitions`](DotSource::transitions) lists, each port's `port_of` a
+/// subnet place it lists, each node's `group` one that
+/// [`groups`](DotSource::groups) lists, and [`label`](DotSource::label)
+/// renders each token [`token_ids`](DotSource::token_ids) yields. A source
+/// that disagrees with itself is drawn as far as it agrees, in these ways
+/// (since 2026-11-28; until then the renderer panicked on an edge whose
+/// ends the source did not list, and left out a node whose group it did not
+/// list):
+///
+/// - an edge on a place or a transition the source does not list, or on a
+///   port whose subnet place it does not list, is left undrawn;
+/// - a node whose group the source does not list is drawn among the nodes
+///   in no group;
+/// - a token whose label is `None` is drawn as an empty line.
 pub trait DotSource {
     /// Every place, in id order, with its name, token type and count:
     /// [`Net::places`].
@@ -160,6 +188,15 @@ pub trait DotSource {
     /// Each is drawn as a cluster of the places and transitions whose
     /// `group` it names.
     fn groups(&self) -> impl Iterator<Item = &str>;
+
+    /// Whether the net's definition declared it open: [`Net::is_open`].
+    /// Every place of an open net but a port and a subnet place is drawn
+    /// with a dashed outline (since 0.4.0). The default is false, as a net
+    /// is closed unless its definition says otherwise, so a source of one's
+    /// own that draws an open net says so.
+    fn is_open(&self) -> bool {
+        false
+    }
 
     /// The ids of a place's tokens, oldest first: [`Net::tokens`] without the
     /// values.
@@ -187,6 +224,10 @@ impl DotSource for Net {
         Net::groups(self)
     }
 
+    fn is_open(&self) -> bool {
+        Net::is_open(self)
+    }
+
     fn token_ids(&self, place: PlaceId) -> impl Iterator<Item = TokenId> {
         Net::tokens(self, place).map(|(id, _)| id)
     }
@@ -211,6 +252,10 @@ impl DotSource for Snapshot {
 
     fn groups(&self) -> impl Iterator<Item = &str> {
         Snapshot::groups(self)
+    }
+
+    fn is_open(&self) -> bool {
+        Snapshot::is_open(self)
     }
 
     fn token_ids(&self, place: PlaceId) -> impl Iterator<Item = TokenId> {
@@ -350,7 +395,8 @@ impl Highlight {
 ///
 /// An ordinary exhaustive struct with a [`Default`], like
 /// [`drivers::Limits`](petritype::drivers::Limits), so one field is changed
-/// by naming it and taking the rest:
+/// by naming it and taking the rest. Two styles compare with `==` and `Eq`,
+/// so a renderer can tell when the style it draws with changed:
 ///
 /// ```
 /// use petritype_dot::{RankDir, Style};
@@ -361,7 +407,7 @@ impl Highlight {
 /// };
 /// assert_eq!(wide.max_tokens, 10);
 /// ```
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Style {
     /// Which way Graphviz lays the graph out. Default [`RankDir::TB`].
     pub rankdir: RankDir,
@@ -471,9 +517,12 @@ fn render(source: &impl DotSource, style: &Style, out: &mut String) -> fmt::Resu
         }
     }
     // Where an edge on a place ends: its node, and the cell for a port.
+    // `None` for a place the source does not list, or a port whose subnet
+    // place it does not: a source whose ids disagree has that edge left
+    // undrawn, rather than the drawing refused.
     let end = |place: PlaceId| match cells.get(&place) {
-        Some(&(subnet, position)) => (places[&subnet], Some(position)),
-        None => (places[&place], None),
+        Some(&(subnet, position)) => places.get(&subnet).map(|&node| (node, Some(position))),
+        None => places.get(&place).map(|&node| (node, None)),
     };
     let transitions: HashMap<TransitionId, usize> = source
         .transitions()
@@ -492,26 +541,30 @@ fn render(source: &impl DotSource, style: &Style, out: &mut String) -> fmt::Resu
     writeln!(out, "  node [fontname=\"Helvetica\"];")?;
 
     // The nodes in no group, at the top level: every node of a net with no
-    // groups, in the order it always had.
+    // groups, in the order it always had. A node whose group the source
+    // does not list is drawn here too, so that it is drawn at all.
+    let groups: Vec<&str> = source.groups().collect();
+    let loose = |group: Option<&str>| group.is_none_or(|name| !groups.contains(&name));
     for (index, (id, info)) in source.places().enumerate() {
         // A port of a subnet place is drawn as a cell of that place's box.
-        if info.port_of.is_none() && info.group.is_none() {
+        if info.port_of.is_none() && loose(info.group) {
             writeln!(out, "  {}", place_node(source, style, index, id, info))?;
         }
     }
     for (index, (id, info)) in source.transitions().enumerate() {
-        if info.group.is_none() {
+        if loose(info.group) {
             writeln!(out, "  {}", transition_node(style, index, id, info))?;
         }
     }
     // Each group, in declared order, as a cluster holding its places and
-    // then its transitions, so that Graphviz draws a dashed frame round
-    // them with the group's name as its title. A subnet place in a group is
-    // drawn inside it, its ports in its box.
-    for (position, name) in source.groups().enumerate() {
+    // then its transitions, so that Graphviz draws a dotted frame round
+    // them with the group's name as its title, its dots told apart from
+    // the longer dashes of an open net's places. A subnet place in a group
+    // is drawn inside it, its ports in its box.
+    for (position, &name) in groups.iter().enumerate() {
         writeln!(out, "  subgraph cluster_{position} {{")?;
         writeln!(out, "    label=\"{}\";", escape(name))?;
-        writeln!(out, "    style=dashed;")?;
+        writeln!(out, "    style=dotted;")?;
         for (index, (id, info)) in source.places().enumerate() {
             if info.port_of.is_none() && info.group == Some(name) {
                 writeln!(out, "    {}", place_node(source, style, index, id, info))?;
@@ -556,7 +609,10 @@ fn render(source: &impl DotSource, style: &Style, out: &mut String) -> fmt::Resu
                 ..
             } => {
                 let lit = style.highlights_place(place) && style.highlights_transition(transition);
-                let (node, cell) = end(place);
+                let (Some((node, cell)), Some(to)) = (end(place), transitions.get(&transition))
+                else {
+                    continue;
+                };
                 let mut attrs = input_attrs(
                     kind,
                     filter.as_ref(),
@@ -567,11 +623,7 @@ fn render(source: &impl DotSource, style: &Style, out: &mut String) -> fmt::Resu
                 if let Some(cell) = cell {
                     attrs.push_str(&format!(", tailport=port{cell}"));
                 }
-                Some((
-                    format!("p{node}"),
-                    format!("t{}", transitions[&transition]),
-                    attrs,
-                ))
+                Some((format!("p{node}"), format!("t{to}"), attrs))
             }
             EdgeInfo::Output {
                 transition,
@@ -579,17 +631,19 @@ fn render(source: &impl DotSource, style: &Style, out: &mut String) -> fmt::Resu
                 slot,
             } => {
                 let lit = style.highlights_place(place) && style.highlights_transition(transition);
-                let slot = (outputs[&transition] > 1).then_some(slot);
-                let (node, cell) = end(place);
+                let (Some((node, cell)), Some(from), Some(&outputs)) = (
+                    end(place),
+                    transitions.get(&transition),
+                    outputs.get(&transition),
+                ) else {
+                    continue;
+                };
+                let slot = (outputs > 1).then_some(slot);
                 let mut attrs = output_attrs(slot, lit.then(|| style.colour()));
                 if let Some(cell) = cell {
                     attrs.push_str(&format!(", headport=port{cell}"));
                 }
-                Some((
-                    format!("t{}", transitions[&transition]),
-                    format!("p{node}"),
-                    attrs,
-                ))
+                Some((format!("t{from}"), format!("p{node}"), attrs))
             }
             // `EdgeInfo` is `#[non_exhaustive]`: a kind of edge this renderer
             // has never heard of is left undrawn rather than guessed at.
@@ -635,11 +689,21 @@ fn place_node(
     } else {
         ("black", 1)
     };
-    // A port seen from inside its subnet: a second ring, the border.
-    let peripheries = if info.port { ", peripheries=2" } else { "" };
+    // A port in the drawing of the net that marks it: one dotted ring, the
+    // border where tokens come in (a second ring looked like a place inside
+    // a place). A place of an open net, which takes tokens from outside
+    // anywhere: dashed, filled still. A port of an open net keeps its dots
+    // alone, so the two marks never combine.
+    let node_style = if info.port {
+        "\"filled,dotted\""
+    } else if source.is_open() {
+        "\"filled,dashed\""
+    } else {
+        "filled"
+    };
     format!(
-        "p{index} [shape=oval, style=filled, fillcolor=deepskyblue, \
-         color={colour}, penwidth={penwidth}{peripheries}, label=\"{}\"];",
+        "p{index} [shape=oval, style={node_style}, fillcolor=deepskyblue, \
+         color={colour}, penwidth={penwidth}, label=\"{}\"];",
         escape(&place_label(source, style, id, info.name)),
     )
 }
@@ -679,21 +743,20 @@ fn transition_node(
 }
 
 /// A place's label: its name, then one line per token while there is room.
+/// The tokens are read once, in one pass: the first ones labelled and the
+/// rest only counted, with no list of every token made on the way.
 fn place_label(source: &impl DotSource, style: &Style, place: PlaceId, name: &str) -> String {
     let mut label = String::from(name);
     if !style.show_tokens {
         return label;
     }
-    let tokens: Vec<TokenId> = source.token_ids(place).collect();
-    for token in tokens.iter().take(style.max_tokens) {
+    let mut tokens = source.token_ids(place);
+    for token in tokens.by_ref().take(style.max_tokens) {
         label.push('\n');
-        label.push_str(&source.label(place, *token).unwrap_or_default());
+        label.push_str(&source.label(place, token).unwrap_or_default());
     }
-    if let Some(more) = tokens
-        .len()
-        .checked_sub(style.max_tokens)
-        .filter(|n| *n > 0)
-    {
+    let more = tokens.count();
+    if more > 0 {
         label.push('\n');
         label.push_str(&format!("… and {more} more"));
     }
@@ -730,9 +793,10 @@ fn subnet_label(style: &Style, name: &str, ports: &[(PlaceId, PlaceInfo<'_>)]) -
 /// Text for one field of a Graphviz record label, inside a DOT double-quoted
 /// string: each character a record or the quotes give a meaning
 /// (`\ { } | < > "`) escaped with a backslash, and each line break written
-/// as `\n`, so a name is drawn as it is, whatever characters it holds. The
-/// Python renderer escapes a record the same way.
+/// as `\n`, so a name is drawn as it is, whatever characters it holds, once
+/// [`drawable`]. The Python renderer escapes a record the same way.
 fn record_text(text: &str) -> String {
+    let text = drawable(text);
     let mut out = String::with_capacity(text.len());
     for ch in text.chars() {
         match ch {
@@ -947,18 +1011,42 @@ fn last_segment(path: &str) -> &str {
 /// A string as a DOT double-quoted label.
 ///
 /// A token's label is whatever its `Debug` printed, so it may hold anything:
-/// a quote, a backslash, a newline. The first two are escaped and the third
-/// becomes a `\n`, which Graphviz draws as a line break. That is exactly
-/// what the multi-line labels this crate builds want.
+/// a quote, a backslash, a newline. Once [`drawable`], the first two are
+/// escaped and the third becomes a `\n`, which Graphviz draws as a line
+/// break. That is exactly what the multi-line labels this crate builds
+/// want.
 fn escape(text: &str) -> String {
+    let text = drawable(text);
     let mut out = String::with_capacity(text.len());
     for ch in text.chars() {
         match ch {
             '\\' => out.push_str("\\\\"),
             '"' => out.push_str("\\\""),
             '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
+/// `text` with the characters Graphviz cannot draw as they are made
+/// drawable (since 2026-11-28): a tab becomes four spaces, a carriage
+/// return a line break, a carriage return and a line feed one line break,
+/// and a NUL is left out. Graphviz draws a tab and a carriage return in ways
+/// of its own, and a NUL in its input makes `dot` fail. Only the drawing
+/// changes: a name stays as it is in the net and on the wire. The Python
+/// renderer makes the same choices.
+fn drawable(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '\t' => out.push_str("    "),
+            '\r' => {
+                chars.next_if_eq(&'\n');
+                out.push('\n');
+            }
+            '\0' => {}
             _ => out.push(ch),
         }
     }
@@ -967,7 +1055,9 @@ fn escape(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{escape, join_attrs, last_segment, record_text, short_type_name, transition_label};
+    use super::{
+        drawable, escape, join_attrs, last_segment, record_text, short_type_name, transition_label,
+    };
 
     #[test]
     fn record_text_escapes_what_a_record_or_the_quotes_give_a_meaning() {
@@ -1022,12 +1112,25 @@ mod tests {
         assert_eq!(escape("a\"b"), "a\\\"b");
         assert_eq!(escape("a\\b"), "a\\\\b");
         assert_eq!(escape("a\nb"), "a\\nb");
-        assert_eq!(escape("a\r\tb"), "a\\r\\tb");
         // A `Debug`-printed string arrives already escaped once, and is
         // escaped again on the way into DOT: `q"\` debug-prints as the seven
         // characters `"q\"\\"`, and every backslash and quote in them doubles.
         assert_eq!(format!("{:?}", "q\"\\"), r#""q\"\\""#);
         assert_eq!(escape(r#""q\"\\""#), r#"\"q\\\"\\\\\""#);
+    }
+
+    /// A tab is four spaces, a carriage return a line break, with a line
+    /// feed one line break, and a NUL is left out: in a quoted label and in
+    /// a record's field alike.
+    #[test]
+    fn a_tab_a_carriage_return_and_a_nul_are_made_drawable() {
+        assert_eq!(drawable("a\tb"), "a    b");
+        assert_eq!(drawable("a\rb\r\nc\n\rd"), "a\nb\nc\n\nd");
+        assert_eq!(drawable("a\0b"), "ab");
+        assert_eq!(escape("a\r\tb\0"), "a\\n    b");
+        assert_eq!(escape("one\r\ntwo"), "one\\ntwo");
+        assert_eq!(record_text("Lobby\t3\r\n\0"), "Lobby    3\\n");
+        assert_eq!(drawable("plain"), "plain");
     }
 
     #[test]

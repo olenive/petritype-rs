@@ -204,22 +204,14 @@ fn panel() -> Panel {
     };
     b.control(Control::button("button", "Button", record(&seen)))
         .control(Control::toggle("toggle", "Toggle", false, record(&seen)))
-        .control(Control::slider(
-            "slider",
-            "Slider",
-            0.0,
-            10.0,
-            0.5,
-            2.5,
-            record(&seen),
-        ))
-        .control(Control::select(
-            "select",
-            "Select",
-            ["low", "high"],
-            "low",
-            record(&seen),
-        ))
+        .control(
+            Control::slider("slider", "Slider", 0.0, 10.0, 0.5, 2.5, record(&seen))
+                .expect("a slider a widget can show"),
+        )
+        .control(
+            Control::select("select", "Select", ["low", "high"], "low", record(&seen))
+                .expect("a select a widget can show"),
+        )
         .control(Control::text("text", "Text", Some("hint"), record(&seen)))
         .control(Control::inject(
             "inject",
@@ -250,12 +242,12 @@ fn every_constructor_declares_its_kind_node_action_and_initial() {
         .iter()
         .map(|c| {
             (
-                c.name.as_str(),
-                c.label.as_str(),
-                c.kind.clone(),
-                c.node,
-                c.action,
-                c.initial.clone(),
+                c.name(),
+                c.label(),
+                c.kind().clone(),
+                c.node(),
+                c.action(),
+                c.initial().cloned(),
             )
         })
         .collect();
@@ -440,7 +432,8 @@ fn an_inject_given_another_kind_takes_that_kind_s_value() {
         })
         .with_kind(ControlKind::Text {
             placeholder: Some("name".into()),
-        }),
+        })
+        .expect("a text box"),
     );
     let mut net = b.build().unwrap();
     assert!(matches!(
@@ -607,12 +600,13 @@ fn an_inject_s_make_reads_the_net_before_its_token_goes_in() {
         })
         .with_kind(ControlKind::Text {
             placeholder: Some("name".into()),
-        }),
+        })
+        .expect("a text box"),
     );
     let mut net = b.build().unwrap();
     let car = &net.controls()[0];
     assert_eq!(
-        (car.node, car.action),
+        (car.node(), car.action()),
         (Some(Node::Place(waiting.id())), Some(Action::Inject))
     );
 

@@ -79,8 +79,15 @@ pub struct TransitionDelta {
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "is_zero"))]
     pub failures: u32,
     /// The wall time spent in flight, in milliseconds, as
-    /// [`tick`](crate::Activity::tick) counted it.
-    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "is_zero_f64"))]
+    /// [`tick`](crate::Activity::tick) counted it. Reading refuses one that
+    /// is negative or not finite.
+    #[cfg_attr(
+        feature = "serde",
+        serde(
+            skip_serializing_if = "is_zero_f64",
+            deserialize_with = "crate::checked::finite_non_negative_f64"
+        )
+    )]
     pub in_flight_ms: f64,
     /// Whether the transition was in flight at the end of the delta.
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "is_false"))]

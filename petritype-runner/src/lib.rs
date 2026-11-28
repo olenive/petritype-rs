@@ -51,8 +51,10 @@
 //!
 //! A program that builds a net and fires it from its own code (a game, a
 //! simulation) can be watched too: it gives the net to a [`HostServer`],
-//! which listens on a TCP port, and a viewer attaches to read it. Nothing
-//! is loaded or driven over that connection; see [`Host`].
+//! which listens on a TCP port, and a viewer on the same machine attaches
+//! to read it. Nothing is loaded or driven over that connection, and
+//! nothing on it is authenticated or encrypted, so it is for loopback use;
+//! see [`Host`] and [`HostServer`].
 //!
 //! # Layers
 //!
@@ -66,7 +68,8 @@
 //! - [`main`]: the stdout guard, a reader, a writer, a heartbeat, a thread
 //!   per detachable body, and the loop around the owner.
 //! - [`Host`]: the state machine around a net the program owns, and
-//!   [`HostServer`], the TCP listener in front of it.
+//!   [`HostServer`], the TCP listener in front of it, whose limits a
+//!   [`HostServerConfig`] sets.
 //!
 //! # How a Rust net looks on the wire
 //!
@@ -101,9 +104,10 @@
 //!   net fires nothing more first. `start` is answered when the first body
 //!   of the run has landed, if that body runs inline, and a process whose
 //!   input closes during an inline body ends when the body lands.
-//! - Token labels are the token's `Debug`, cut at 1000 characters; a token
-//!   on a place marked `serializable` also has a JSON form, which is what
-//!   `inject` and `get_token`'s `kind: "json"` need.
+//! - Token labels are the token's `Debug`, cut to 1000 characters, the
+//!   `"..."` that ends a cut one among them; a token on a place marked
+//!   `serializable` also has a JSON form, which is what `inject` and
+//!   `get_token`'s `kind: "json"` need.
 //! - `set_param` sets a net-wide parameter registered with
 //!   `NetBuilder::serializable_param`; its `transition` is ignored.
 //! - A token that carries nets of its own (`petritype::Nested`, a place
@@ -153,6 +157,7 @@
 mod errors;
 mod host;
 mod io;
+mod lines;
 mod owner;
 mod projection;
 pub mod protocol;
@@ -160,7 +165,7 @@ mod registry;
 mod time;
 mod translate;
 
-pub use host::{Host, HostServer};
+pub use host::{Host, HostServer, HostServerConfig};
 pub use io::main;
 pub use owner::{InnerAddress, Input, Outgoing, Owner, StatusCell};
 pub use registry::{Factory, Hosting, LoadError, NetEntry, ParamSpec, Params};

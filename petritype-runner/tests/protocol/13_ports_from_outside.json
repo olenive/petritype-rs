@@ -118,7 +118,8 @@
           "kind": "mutate"
          }
         ]
-       }
+       },
+       "open": true
       },
       "transitions": {
        "Age": {
@@ -347,7 +348,8 @@
           "kind": "mutate"
          }
         ]
-       }
+       },
+       "open": true
       },
       "transitions": {
        "Age": {

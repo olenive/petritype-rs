@@ -343,8 +343,9 @@ concurrent driver's `interleaved: bool` goes.
   entry. A local one reads `net.subnet(place)`.
 - A subnet's view closes only on reset or reload, since a subnet lives as
   long as its net.
-- In the opened net, a port place is drawn as a place with a second ring, so
-  that the border is visible from inside.
+- In the opened net, a port place is drawn with one dotted outline, so that
+  the border is visible from inside. Until 2026-11-28 it had a second ring,
+  which looked like a place nested inside a place.
 - A change of a port place is applied to both views, by §2.2.
 
 ### 6.5 The rest

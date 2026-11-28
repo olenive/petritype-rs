@@ -10,6 +10,7 @@ fn main() {
     let promotions = b.place::<String>("Promotions");
     let notes = b.place::<u32>("Notes");
     let priced = b.place::<String>("Priced");
+    b.port(orders);
 
     b.transition(
         "Price Order",

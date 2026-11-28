@@ -207,7 +207,7 @@ mod tests {
     }
 
     #[test]
-    fn the_net_draws_each_group_as_a_dashed_frame() {
+    fn the_net_draws_each_group_as_a_dotted_frame() {
         let net = build().expect("the net builds");
         let text = petritype_dot::dot(&net);
 
@@ -215,13 +215,13 @@ mod tests {
         assert!(text.contains(concat!(
             "  subgraph cluster_0 {\n",
             "    label=\"Walk\";\n",
-            "    style=dashed;\n",
+            "    style=dotted;\n",
             "    p1 [shape=oval",
         )));
         assert!(text.contains(concat!(
             "  subgraph cluster_1 {\n",
             "    label=\"Eat\";\n",
-            "    style=dashed;\n",
+            "    style=dotted;\n",
             "    p4 [shape=oval",
         )));
         assert_eq!(text.matches(" -> ").count(), 8);

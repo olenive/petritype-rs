@@ -68,7 +68,10 @@ pub struct ParcelParams {
 
 /// `Receiving -Sort-> Sorted -Dispatch-> Dispatched`, `Dispatch` also
 /// mutating `Fleet`, and `Inspection -Inspect-> Receiving`, which refuses a
-/// parcel over 100 kg. Two parcels arrive with the net.
+/// parcel over 100 kg. Two parcels arrive with the net. `Receiving` and
+/// `Inspection` are its ports, where parcels come in from outside: the net
+/// is closed, as every net not declared open is, so a host's `inject` lands
+/// only there.
 pub fn parcel_fleet(params: ParcelParams) -> Result<Net, LoadError> {
     if params.trucks == 0 {
         return Err(LoadError::InvalidParams("trucks must be at least 1".into()));
@@ -81,6 +84,8 @@ pub fn parcel_fleet(params: ParcelParams) -> Result<Net, LoadError> {
     let inspection = b.place::<Parcel>("Inspection");
     b.serializable(receiving);
     b.serializable(inspection);
+    b.port(receiving);
+    b.port(inspection);
     b.seed(
         receiving,
         [Parcel { id: 1, weight: 5 }, Parcel { id: 2, weight: 12 }],
@@ -132,12 +137,13 @@ pub fn parcel_fleet(params: ParcelParams) -> Result<Net, LoadError> {
 }
 
 /// `Inbox -Shelve-> Shelf`, empty at load: a net that waits for parcels to be
-/// injected, so it is hosted 24/7 and idles in between.
+/// injected at `Inbox`, its port, so it is hosted 24/7 and idles in between.
 pub fn parcel_intake(_: &petritype_runner::Params) -> Result<Net, LoadError> {
     let mut b = NetBuilder::new();
     let inbox = b.place::<Parcel>("Inbox");
     let shelf = b.place::<Parcel>("Shelf");
     b.serializable(inbox);
+    b.port(inbox);
     b.transition("Shelve", (TakeEdge(inbox),), (shelf,), |p: Parcel| (p,));
     Ok(b.build()?)
 }
@@ -163,9 +169,10 @@ pub mod conformance {
     }
 
     /// `Receiving -Sort-> Sorting -Stage-> Staging Area -Dispatch Truck->
-    /// Dispatched`, seeded with eight parcels. `Dispatch Truck` takes the
-    /// whole platform, sends slot 0 away and writes slot 1 back to the
-    /// platform; every fourth parcel misses its first truck.
+    /// Dispatched`, seeded with eight parcels. `Receiving` is its port,
+    /// where parcels arrive from outside. `Dispatch Truck` takes the whole
+    /// platform, sends slot 0 away and writes slot 1 back to the platform;
+    /// every fourth parcel misses its first truck.
     pub fn parcel_distribution(_: &petritype_runner::Params) -> Result<Net, LoadError> {
         let mut b = NetBuilder::new();
         let receiving = b.place::<Parcel>("Receiving");
@@ -175,6 +182,7 @@ pub mod conformance {
         for place in [receiving, sorting, staging, dispatched] {
             b.serializable(place);
         }
+        b.port(receiving);
         b.seed(receiving, (1..=8).map(|id| Parcel { id, deferrals: 0 }));
 
         b.transition("Sort", (TakeEdge(receiving),), (sorting,), |p: Parcel| (p,));
@@ -297,8 +305,9 @@ pub fn wildlife_registry() -> Vec<NetEntry> {
 #[allow(dead_code)]
 pub mod shop_net;
 
-/// The shop as §11 seeds it: empty everywhere, every place one a host may
-/// `inject` a string into. No parameters of either kind.
+/// The shop as §11 seeds it: empty everywhere, `Orders` and `Promotions` the
+/// places a host may `inject` a string into, its ports. No parameters of
+/// either kind.
 pub fn shop(_: &petritype_runner::Params) -> Result<Net, LoadError> {
     shop_net::build_shop()
         .map(|shop| shop.net)
@@ -332,8 +341,8 @@ pub fn shop_registry() -> Vec<NetEntry> {
 pub mod traffic_light_net;
 
 /// The light as §11 seeds it: red (`"red"` on the wire) in `Light`, nobody
-/// waiting, every place one a host may `inject` into, a car's name or a
-/// colour's. No parameters of either kind. The net never quiesces: `Change`
+/// waiting, `Waiting` the one place a host may `inject` a car's name into,
+/// its port. No parameters of either kind. The net never quiesces: `Change`
 /// is always fireable.
 pub fn traffic_light(_: &petritype_runner::Params) -> Result<Net, LoadError> {
     traffic_light_net::build_traffic_light()
@@ -550,8 +559,25 @@ pub mod levels {
     /// `Level 1` and `Level 2`, subnet places each holding a `Level`, inner
     /// first; and `Outside`. `Enter` takes the hero from the door into
     /// level 1's lobby, `Climb` from level 1's exit hall into level 2's
-    /// lobby, and `Leave` from level 2's exit hall to `Outside`.
+    /// lobby, and `Leave` from level 2's exit hall to `Outside`. The world
+    /// marks no port and is closed, as every net not declared open is, so a
+    /// host's `inject` by the pair of a level's port on the world is
+    /// refused (`closed_net`).
     pub fn levels(_: &petritype_runner::Params) -> Result<Net, LoadError> {
+        world(false)
+    }
+
+    /// The world of [`levels`] declared open, which the conformance net is
+    /// not: for this runner's own tests, which put a hero into a level's
+    /// port by the pair on the world. It is no conformance net, and the
+    /// example binary does not carry it.
+    #[allow(dead_code)]
+    pub fn open_levels(_: &petritype_runner::Params) -> Result<Net, LoadError> {
+        world(true)
+    }
+
+    /// The world, declared open when `open` is.
+    fn world(open: bool) -> Result<Net, LoadError> {
         let templates = templates();
         let level = || {
             templates
@@ -560,6 +586,9 @@ pub mod levels {
         };
         let mut b = NetBuilder::new();
         b.templates(&templates);
+        if open {
+            b.open();
+        }
         let door = b.place::<Hero>("Door");
         let level_1 = b.subnet_place("Level 1", level()?);
         let level_2 = b.subnet_place("Level 2", level()?);
@@ -757,6 +786,12 @@ pub mod workshop {
     /// putting it on the shelf. The Python library restores tokens on
     /// failure for a whole net and the core for each transition, so both
     /// transitions take `restore`'s value.
+    ///
+    /// `Bench` is the workshop's port, where pots come in, and the workshop
+    /// is declared open, so that a transcript's `inject` addressed to the
+    /// kiln by path lands at `Hatch`, the kiln's port: a closed net shields
+    /// the nets inside it from the program and the runner (PROTOCOL.md §11;
+    /// the Python library since 2026-11-27, this one since 2026-11-28).
     pub fn workshop(params: WorkshopParams) -> Result<Net, LoadError> {
         let templates = templates();
         let the_kiln = templates
@@ -769,6 +804,8 @@ pub mod workshop {
         let shelf = b.place::<String>("Shelf");
         b.serializable(bench);
         b.serializable(shelf);
+        b.port(bench);
+        b.open();
         let hatch = b.port_of::<String>(kiln_place, "Hatch");
         for (name, from) in [("Glaze", bench), ("Unload", hatch)] {
             let mut transition = b.transition(name, (TakeEdge(from),), (shelf,), handle);
@@ -854,6 +891,12 @@ pub mod cellar {
     /// mutates the bottle at the front of the cellar's `Rack`, one year
     /// older, and has no output, so it is fireable whenever the rack holds
     /// a bottle.
+    ///
+    /// The house is declared open, so that a transcript's `inject` by the
+    /// pair on the house brings a bottle into the rack: a closed net refuses
+    /// a write from outside at the pair of a subnet's port, which is never
+    /// one of its own ports. The cellar is closed and takes the bottle
+    /// because `Rack` is its port.
     pub fn cellar(_: &petritype_runner::Params) -> Result<Net, LoadError> {
         let templates = templates();
         let the_cellar = templates
@@ -865,6 +908,7 @@ pub mod cellar {
         let cellar_place = b.subnet_place("Cellar", the_cellar);
         b.serializable(table);
         b.keys(table, KEY_NAMES, keys_of);
+        b.open();
         let rack = b.port_of::<Bottle>(cellar_place, "Rack");
         b.seed(
             table,
@@ -1042,7 +1086,8 @@ pub mod odd_names {
     /// The net as §11 seeds it: [`INBOX`], holding `"Memo"`, and
     /// [`CABINET`], a subnet place holding a cabinet, inner first;
     /// [`FILE_IT`] takes the memo from the inbox into the cabinet's
-    /// [`TRAY`].
+    /// [`TRAY`]. The inbox is the net's port, where a transcript `inject`s
+    /// a note.
     pub fn odd_names(_: &petritype_runner::Params) -> Result<Net, LoadError> {
         let templates = templates();
         let the_cabinet = templates
@@ -1053,6 +1098,7 @@ pub mod odd_names {
         let inbox = b.place::<String>(INBOX);
         let cabinet_place = b.subnet_place(CABINET, the_cabinet);
         b.serializable(inbox);
+        b.port(inbox);
         let tray = b.port_of::<String>(cabinet_place, TRAY);
         b.seed(inbox, ["Memo".to_owned()]);
         b.transition(FILE_IT, (TakeEdge(inbox),), (tray,), |memo: String| (memo,));
@@ -1142,7 +1188,9 @@ pub mod couriers {
     /// parcel more, the order going on to `Loaded`; `Dispatch` takes a call
     /// and the courier it names, which goes on the road, or fails the
     /// firing when it carries nothing. Both restore their inputs on
-    /// failure, as the Python net does for the whole net.
+    /// failure, as the Python net does for the whole net. `Couriers` and
+    /// `Calls` are its ports, where a transcript `inject`s a courier and the
+    /// calls.
     pub fn couriers(_: &petritype_runner::Params) -> Result<Net, LoadError> {
         let mut b = NetBuilder::new();
         let couriers = b.place::<Courier>("Couriers");
@@ -1155,6 +1203,8 @@ pub mod couriers {
         b.serializable(calls);
         b.serializable(loaded);
         b.serializable(on_road);
+        b.port(couriers);
+        b.port(calls);
         b.keys(couriers, ["name"], |c: &Courier| {
             [KeyValue::from(c.name.as_str())]
         });
@@ -1234,11 +1284,29 @@ pub mod roll_call {
     }
 
     /// The template `Squad`: one place, `Members`, of strings and
-    /// serializable, holding no one, and no transition. No parameters.
-    fn squad(_: &Params) -> Result<Net, petritype::BuildError> {
+    /// serializable, holding the names of the template parameter `members`
+    /// in order (no one without it, as a saved squad is rebuilt before its
+    /// marking is loaded), and no transition. No net parameters, so nothing
+    /// of `members` goes on the wire.
+    ///
+    /// Since 2026-11-28 a squad starts with its members: it was built empty
+    /// and filled from outside before, which a squad, closed as every net
+    /// not declared open is, refuses.
+    fn squad(params: &Params) -> Result<Net, petritype::BuildError> {
+        let names = params
+            .get("members")
+            .and_then(serde_json::Value::as_array)
+            .map(|names| {
+                names
+                    .iter()
+                    .filter_map(|name| name.as_str().map(str::to_owned))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
         let mut b = NetBuilder::new();
         let members = b.place::<String>("Members");
         b.serializable(members);
+        b.seed(members, names);
         b.build()
     }
 
@@ -1268,21 +1336,19 @@ pub mod roll_call {
         format!("{leader} {}", members.len())
     }
 
-    /// A squad of these members, built from the template.
+    /// A squad of these members, built from the template with them.
     fn squad_of(templates: &Templates, names: &[&str]) -> Result<Net, LoadError> {
-        let mut squad = templates
-            .build("Squad", &Params::new())
-            .map_err(|error| LoadError::Other(error.to_string()))?;
-        let place = squad
-            .place_ref::<String>("Members")
-            .ok_or_else(|| LoadError::Other("a squad has Members".to_owned()))?;
-        squad.extend(place, names.iter().map(|name| (*name).to_owned()));
-        Ok(squad)
+        let mut params = Params::new();
+        params.insert("members".into(), serde_json::json!(names));
+        templates
+            .build("Squad", &params)
+            .map_err(|error| LoadError::Other(error.to_string()))
     }
 
     /// The net as §11 seeds it: `Barracks`, a place of nets keyed by
     /// `leader`, holding a squad of Ada and Ben and a squad of Cy; `Calls`,
-    /// `Checks`, `Inspections` (keyed by `leader`) and `Roll`, empty. `Call
+    /// `Checks`, `Inspections` (keyed by `leader`) and `Roll`, empty, the
+    /// first three its ports, where a transcript `inject`s requests. `Call
     /// the Roll` reads every squad, `Check the Front` the front one, and
     /// `Inspect` the one an inspection names, each taking its request and
     /// writing one roll line.
@@ -1304,6 +1370,9 @@ pub mod roll_call {
         b.serializable(checks);
         b.serializable(inspections);
         b.serializable(roll);
+        b.port(calls);
+        b.port(checks);
+        b.port(inspections);
         b.keys(barracks, ["leader"], |squad: &Net| {
             [KeyValue::from(
                 members(squad).first().cloned().unwrap_or_default(),
@@ -1404,7 +1473,8 @@ pub mod trays {
     /// a place of nets holding one unit, empty, inner first. `Hand Over`
     /// takes an order and puts it into the front unit's `Orders In`;
     /// `Collect` takes every shot out of the front unit's `Shots Out` into
-    /// `Reports`, guarded on there being one.
+    /// `Reports`, guarded on there being one. `Orders` is the net's port,
+    /// where a transcript `inject`s the order.
     pub fn trays(_: &petritype_runner::Params) -> Result<Net, LoadError> {
         let templates = templates();
         let the_unit = templates
@@ -1418,6 +1488,7 @@ pub mod trays {
         b.serializable(orders);
         b.serializable(field);
         b.serializable(reports);
+        b.port(orders);
         b.seed(field, [the_unit]);
         b.transition(
             "Hand Over",
@@ -1457,8 +1528,8 @@ pub mod trays {
 }
 
 /// The protocol's conformance net `post-office` (PROTOCOL.md §11, §12,
-/// DESIGN §6.9): posts, tokens that are each a net, one closed (it marks
-/// its inbox a port) and one the same but declared open, so that a
+/// DESIGN §6.9): posts, tokens that are each a net, one closed, as every
+/// net not declared open is, and one the same but declared open, so that a
 /// transcript shows a body's write at a port landing, an `inject` by path
 /// landing at a port, refused at a private place of the closed post, and
 /// landing there in the open one, and last a body's write into a private
@@ -1489,8 +1560,8 @@ pub mod post_office {
         b.build()
     }
 
-    /// `Post`, closed since it marks a port, and `Open Post`, the same
-    /// declared open, each under its name. No parameters.
+    /// `Post`, closed as every net not declared open is, and `Open Post`,
+    /// the same declared open, each under its name. No parameters.
     pub fn templates() -> Templates {
         let mut templates = Templates::new();
         templates.register("Post", |_: &Params| post(false));
@@ -1501,8 +1572,11 @@ pub mod post_office {
     /// The net as §11 seeds it: `Letters` holding `"Dear Ada"`,
     /// `Forgeries` holding `"IOU"`, and `Posts`, a place of nets, inner
     /// first, holding a `Post` and then an `Open Post`, both empty. The net
-    /// marks no port, so it is open. `Deliver` takes a letter and puts it
-    /// into the front post's `Inbox`, the port its edge reaches; `Forge`
+    /// is declared open, so that each post is judged by its own rule: a
+    /// closed net shields the nets inside it from the program and the
+    /// runner (PROTOCOL.md §11; the Python library since 2026-11-27, this
+    /// one since 2026-11-28). `Deliver` takes a letter and puts
+    /// it into the front post's `Inbox`, the port its edge reaches; `Forge`
     /// takes a forgery and the front post, writes the forgery into the
     /// post's `Ledger` and returns the post to `Posts`, and the closed post
     /// refuses the write, failing the firing. Neither restores its inputs.
@@ -1525,6 +1599,7 @@ pub mod post_office {
         b.seed(letters, ["Dear Ada".to_owned()]);
         b.seed(forgeries, ["IOU".to_owned()]);
         b.seed(posts, posts_seed);
+        b.open();
         b.transition(
             "Deliver",
             (TakeEdge(letters), MutateEdge(posts).reaching(["Inbox"])),

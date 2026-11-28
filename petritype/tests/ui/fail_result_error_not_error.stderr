@@ -25,7 +25,7 @@ help: the trait `IntoOutcome<Outputs, Failing<M>>` is conditionally implemented 
    |          unsatisfied requirement introduced here: `Whoops: std::error::Error`
    = note: required for `{closure@$DIR/tests/ui/fail_result_error_not_error.rs:22:9: 22:43}` to implement `TransitionBody<(TakeEdge<u32>,), (PlaceRef<u32>,), (_, Result<(u32,), Whoops>)>`
 note: required by a bound in `NetBuilder::transition`
-  --> src/builder.rs
+  --> src/builder/mod.rs
    |
    | impl NetBuilder {
 ...

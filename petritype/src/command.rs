@@ -23,8 +23,7 @@ use crate::place::erase_all;
 pub(crate) const ERASED: &str = "<erased>";
 
 /// An instruction for a net, with the token types forgotten: input that
-/// crosses a thread, or comes from a source that never knew the types
-/// (DESIGN §9).
+/// crosses a thread, or comes from a source that never knew the types.
 ///
 /// In-process code does not need this. A caller holding `&mut Net` and a
 /// [`PlaceRef<T>`] has [`Net::put`], [`Net::extend`], [`Net::set_tokens`],
@@ -38,9 +37,8 @@ pub(crate) const ERASED: &str = "<erased>";
 /// Being data is the whole of it. A `Command` owns its tokens as
 /// `Box<dyn Any + Send + Sync>`, so it is `Send + Sync` and crosses a thread
 /// boundary; [`Net::apply`] is where the type comes back, by comparing each
-/// token's [`TypeId`](std::any::TypeId) with the one its place recorded: the
-/// one runtime type check in the engine (DESIGN §9), and the reason nothing
-/// else in the crate needs one.
+/// token's [`TypeId`](std::any::TypeId) with the one its place recorded: a
+/// check the typed calls, such as [`Net::put`], make when they compile.
 ///
 /// It is not `Clone` and not `PartialEq`: an erased token can be neither
 /// cloned nor compared without the vtable its place holds. Its `Debug` prints
@@ -107,6 +105,7 @@ pub(crate) const ERASED: &str = "<erased>";
 /// let mut b = NetBuilder::new();
 /// let inbox = b.place::<u32>("Inbox");
 /// let out = b.place::<u32>("Out");
+/// b.port(inbox);
 /// let double = b
 ///     .transition("Double", (TakeEdge(inbox),), (out,), |n: u32| (n * 2,))
 ///     .id();
@@ -200,7 +199,7 @@ pub enum Command {
         /// The transition to switch off.
         transition: TransitionId,
     },
-    /// Replace a parameter value: [`Net::set_param`] erased (DESIGN §10).
+    /// Replace a parameter value: [`Net::set_param`] erased.
     ///
     /// The value carries its own type, and that type *is* the address: a
     /// parameter is stored per [`TypeId`](std::any::TypeId), so there is no
@@ -222,6 +221,7 @@ impl Command {
     /// # use petritype::{Command, NetBuilder};
     /// # let mut b = NetBuilder::new();
     /// # let inbox = b.place::<u32>("Inbox");
+    /// # b.port(inbox);
     /// # let mut net = b.build()?;
     /// net.apply(Command::extend(inbox, [1, 2, 3]))?;
     /// assert_eq!(net.count(inbox.id()), 3);
@@ -359,7 +359,7 @@ impl fmt::Debug for Command {
 
 impl Net {
     /// Carries out one erased [`Command`]: the far end of a channel from a UI
-    /// thread, or of a decoder (DESIGN §9).
+    /// thread, or of a decoder.
     ///
     /// Each variant is the typed method of the same name with the type
     /// checked at run time instead of at compile time, and emits exactly what
@@ -390,10 +390,10 @@ impl Net {
     /// [`TypeMismatch`](crate::NetError::TypeMismatch) or, for a
     /// [`SetParam`](Command::SetParam) of a type this net has no parameter
     /// of, [`NoSuchParam`](crate::NetError::NoSuchParam); a token command
-    /// at a place of a [closed](Net::is_closed) net that is not one of its
-    /// ports is [`ClosedNet`](crate::NetError::ClosedNet), and a switch or a
-    /// parameter asked by a body that holds a net marking a port is
-    /// [`HeldByBody`](crate::NetError::HeldByBody) (both since 2026-11-23).
+    /// the rule of [closed nets](Net::is_closed) refuses is
+    /// [`ClosedNet`](crate::NetError::ClosedNet), asked after the place and
+    /// the tokens' type, and a switch or a parameter asked by a body that
+    /// holds the net is [`HeldByBody`](crate::NetError::HeldByBody).
     /// **The net is untouched and silent in every case**: a batch is checked
     /// token by token before any of it is written, so a rejected command is
     /// one an observer never hears about.
@@ -403,6 +403,7 @@ impl Net {
     /// # use std::any::Any;
     /// # let mut b = NetBuilder::new();
     /// # let inbox = b.place::<u32>("Inbox");
+    /// # b.port(inbox);
     /// # let mut net = b.build()?;
     /// // A batch from an untyped sender, the second token of it wrong.
     /// let tokens: Vec<Box<dyn Any + Send + Sync>> = vec![Box::new(1_u32), Box::new("two")];
@@ -416,11 +417,16 @@ impl Net {
     /// ```
     pub fn apply(&mut self, command: Command) -> Result<(), CommandError> {
         match command {
+            // The place and the tokens' type first, then the rule of
+            // closed nets, as the runner answers them (`unknown_place`,
+            // `invalid_token`, then `closed_net`).
             Command::Extend { place, tokens } => {
+                self.check_tokens(place, &tokens, ERASED)?;
                 self.admit(place, ADD)?;
                 self.extend_erased(place, tokens, ERASED)?;
             }
             Command::SetTokens { place, tokens } => {
+                self.check_tokens(place, &tokens, ERASED)?;
                 self.admit(place, SET)?;
                 self.set_erased(place, tokens, ERASED)?;
             }
@@ -430,6 +436,7 @@ impl Net {
                 token,
                 value,
             } => {
+                self.check_tokens(place, std::slice::from_ref(&value), ERASED)?;
                 self.admit(place, REPLACE)?;
                 self.replace_erased(place, token, value, ERASED)?;
             }
@@ -618,7 +625,13 @@ impl Command {
     /// usually looks like from here. A token whose type is not the place's is
     /// [`TypeMismatch`](crate::NetError::TypeMismatch) rather than a `null`
     /// in the output: the place's encoder would quietly produce one, and a
-    /// silently wrong wire message is worse than a rejected one.
+    /// silently wrong wire message is worse than a rejected one. For the
+    /// same reason, since 2026-11-28, a token or a parameter value whose own
+    /// `Serialize` refuses is [`CommandError::CannotEncodeToken`] or
+    /// [`CommandError::CannotEncodeParam`], where the error's text was
+    /// written in its place, and a command at a window onto a subnet's port
+    /// is [`CommandError::PortNotNamed`], where the port's name was written
+    /// as the place's and read back as another place, or as none.
     pub fn to_json(&self, net: &Net) -> Result<JsonCommand, CommandError> {
         match self {
             Command::Extend { place, tokens } => Ok(JsonCommand::Extend {
@@ -652,10 +665,10 @@ impl Command {
             }),
             Command::SetParam { value } => {
                 let (param, to_json) = param_wire(net, &**value)?;
-                Ok(JsonCommand::SetParam {
-                    param,
-                    value: crate::place::json_or_message(to_json, &**value),
-                })
+                match to_json(&**value) {
+                    Ok(value) => Ok(JsonCommand::SetParam { param, value }),
+                    Err(source) => Err(CommandError::CannotEncodeParam { param, source }),
+                }
             }
         }
     }
@@ -719,13 +732,23 @@ fn param_wire(
     }
 }
 
-/// The name of a place, or [`NetError::NoSuchPlace`](crate::NetError::NoSuchPlace).
+/// The name of a place, [`NetError::NoSuchPlace`](crate::NetError::NoSuchPlace),
+/// or [`CommandError::PortNotNamed`] for a window, which a name alone does
+/// not name.
 #[cfg(feature = "serde")]
 fn place_name(net: &Net, place: PlaceId) -> Result<String, CommandError> {
-    net.places
+    let slot = net
+        .places
         .get(place.0 as usize)
-        .map(|slot| slot.meta.name.clone())
-        .ok_or_else(|| CommandError::Net(crate::NetError::NoSuchPlace { place }))
+        .ok_or(CommandError::Net(crate::NetError::NoSuchPlace { place }))?;
+    match slot.meta.window {
+        None => Ok(slot.meta.name.clone()),
+        Some(window) => Err(CommandError::PortNotNamed {
+            place,
+            subnet: net.places[window.subnet.0 as usize].meta.name.clone(),
+            port: slot.meta.name.clone(),
+        }),
+    }
 }
 
 /// The name of a transition, or
@@ -801,7 +824,11 @@ fn encode_all(
         .iter()
         .map(|token| {
             if (**token).type_id() == slot.meta.type_id {
-                Ok(crate::place::json_or_message(to_json, &**token))
+                to_json(&**token).map_err(|source| CommandError::CannotEncodeToken {
+                    place,
+                    name: slot.meta.name.clone(),
+                    source,
+                })
             } else {
                 Err(CommandError::from(crate::NetError::TypeMismatch {
                     place,

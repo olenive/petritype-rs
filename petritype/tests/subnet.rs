@@ -318,6 +318,7 @@ fn mutating_edges_change_a_token_where_it_lies_in_the_port() {
 fn one_body_may_hold_tokens_of_two_ports_and_a_place_of_its_own_at_once() {
     let mut w = world(false, &[hero("Ada", "Knight")]);
     w.b.seed(w.door, [hero("Bo", "Mage")]);
+    w.b.seed(w.hall, [hero("Cy", "Rogue")]);
     let pair = w.b.transition(
         "Swap Classes",
         (MutateEdge(w.lobby), MutateEdge(w.door), MutateEdge(w.hall)),
@@ -329,7 +330,6 @@ fn one_body_may_hold_tokens_of_two_ports_and_a_place_of_its_own_at_once() {
     );
     let swap = pair.id();
     let mut net = w.b.build().expect("a world");
-    net.put(w.hall, hero("Cy", "Rogue"));
     let (ada, cy) = (ids(&net, w.lobby.id())[0], ids(&net, w.hall.id())[0]);
     net.drain_events().for_each(drop);
 
@@ -490,6 +490,8 @@ fn ids_in_a_port_are_the_subnets_and_stay_in_increasing_order() {
     let mut w = world(false, &[hero("Ada", "Knight")]);
     w.b.seed(w.door, [hero("Bo", "Mage"), hero("Cy", "Rogue")]);
     w.b.transition("Enter", (TakeEdge(w.door),), (w.lobby,), |h: Hero| (h,));
+    // Open, so that the program may put a hero at the window.
+    w.b.open();
     let mut net = w.b.build().expect("a world");
     let inner_lobby = w.inner.0;
     // The subnet mints, wherever the token comes from: the outer net, the
@@ -599,6 +601,7 @@ fn keyed_edges_and_queries_see_across_the_border_both_ways() {
 #[test]
 fn a_failed_outer_firing_puts_back_what_it_took_from_two_ports() {
     let mut w = world(false, &[hero("Ada", "Knight"), hero("Bo", "Mage")]);
+    w.b.seed(w.hall, [hero("Cy", "Rogue"), hero("Di", "Bard")]);
     w.b.transition(
         "Ambush",
         (TakeEdge(w.lobby), TakeAllEdge(w.hall)),
@@ -607,7 +610,6 @@ fn a_failed_outer_firing_puts_back_what_it_took_from_two_ports() {
     )
     .restore_tokens_on_failure();
     let mut net = w.b.build().expect("a world");
-    net.extend(w.hall, [hero("Cy", "Rogue"), hero("Di", "Bard")]);
     let (lobby, hall) = (ids(&net, w.lobby.id()), ids(&net, w.hall.id()));
     net.drain_events().for_each(drop);
 
@@ -747,10 +749,11 @@ fn one_firing_on_ports_of_two_subnets_holds_both_still() {
             |h: Hero| (h,),
         )
         .id();
+    // Cy starts in level 1's exit hall, a seed of the world's and so inside
+    // it: the closed world shields its levels from the program.
+    b.seed(hall_one, [hero("Cy", "Rogue")]);
     let mut net = b.build().expect("two levels");
-    let inner_hall = first.hall;
-    net.subnet_scope(one.id(), |level| level.put(inner_hall, hero("Cy", "Rogue")))
-        .expect("free");
+    net.subnet_scope(one.id(), |_| ()).expect("free");
 
     let firing = net.launch(transfer).expect("Cy goes over");
     assert_eq!(
@@ -853,7 +856,10 @@ fn two_restoring_firings_in_flight_on_one_port_both_put_back() {
 
 #[test]
 fn external_input_reaches_a_port_through_the_outer_net() {
-    let w = world(false, &[hero("Ada", "Knight")]);
+    let mut w = world(false, &[hero("Ada", "Knight")]);
+    // Open, so that the program may write at the window: a window is never a
+    // port of the net that holds it.
+    w.b.open();
     let mut net = w.b.build().expect("a world");
     let lobby = w.lobby.id();
 
@@ -1301,6 +1307,7 @@ fn a_port_is_named_by_its_subnet_place_and_its_name() {
     let two = b.subnet_place("Level 2", second.net);
     let lobby_one = b.port_of::<Hero>(one, "Lobby");
     let lobby_two = b.port_of::<Hero>(two, "Lobby");
+    b.seed(lobby_two, [hero("Ada", "Knight")]);
     let mut net = b
         .build()
         .expect("three places named Lobby, one of them this net's");
@@ -1311,7 +1318,6 @@ fn a_port_is_named_by_its_subnet_place_and_its_name() {
         "only its own place"
     );
     assert_ne!(lobby_one, lobby_two);
-    net.put(lobby_two, hero("Ada", "Knight"));
     let counts: Vec<(&str, usize)> = net.places().map(|(_, p)| (p.name, p.count)).collect();
     assert_eq!(
         counts,
@@ -1506,9 +1512,10 @@ fn the_topology_lists_a_subnet_place_its_ports_and_the_edges_on_them() {
 fn a_snapshot_holds_a_snapshot_of_each_subnet_and_a_port_reads_the_same_from_both() {
     let mut w = world(true, &[hero("Ada", "Knight")]);
     w.b.seed(w.door, [hero("Bo", "Mage")]);
+    w.b.seed(w.hall, [hero("Cy", "Rogue")]);
     w.b.transition("Enter", (TakeEdge(w.door),), (w.lobby,), |h: Hero| (h,));
     let mut net = w.b.build().expect("a world");
-    let cy = net.put(w.hall, hero("Cy", "Rogue"));
+    let cy = ids(&net, w.hall.id())[0];
     let lobby = ids(&net, w.lobby.id());
 
     let taken = net.snapshot().expect("every place clones");
@@ -1608,7 +1615,11 @@ fn a_failure_three_subnets_down_names_every_level() {
     let (tower, floor_ref) = holding("Floor", floor);
     let (mut city, tower_ref) = holding("Tower", tower);
 
-    let failed = city.step_deep().expect_err("Sit refuses");
+    let failed = city
+        .step_deep()
+        .expect_err("Sit refuses")
+        .into_firing()
+        .unwrap();
     assert_eq!(failed.transition, sit);
     assert_eq!(
         failed.path,
@@ -1658,7 +1669,11 @@ fn a_failure_through_a_tokens_net_and_a_subnet_names_both_kinds_of_level() {
     b.seed(street, [house]);
     let mut town = b.build().expect("a town");
     let house_token = ids(&town, street.id())[0];
-    let failed = town.step_deep().expect_err("Sit refuses");
+    let failed = town
+        .step_deep()
+        .expect_err("Sit refuses")
+        .into_firing()
+        .unwrap();
     assert_eq!(
         failed.path,
         [
@@ -1696,7 +1711,11 @@ fn a_failure_through_a_tokens_net_and_a_subnet_names_both_kinds_of_level() {
     let shop = b.build().unwrap();
     let worker_token = ids(&shop, bench.id())[0];
     let (mut world, shop_ref) = holding("Workshop", shop);
-    let failed = world.step_deep().expect_err("Work refuses");
+    let failed = world
+        .step_deep()
+        .expect_err("Work refuses")
+        .into_firing()
+        .unwrap();
     assert_eq!(failed.transition, work);
     assert_eq!(
         failed.path,
@@ -1820,11 +1839,79 @@ fn nets_carried_by_tokens_and_subnets_step_inside_each_other() {
     );
 }
 
+impl petritype::style::TokenStyle for Hero {
+    fn style(&self) -> petritype::style::Style {
+        petritype::style::Style::default()
+    }
+}
+
+/// What a port is, beyond its tokens, is its subnet's to declare: an option
+/// that says so, given the port's handle out here, is refused at build as
+/// `BuildError::PortOption` (since 0.4.0; until then the call panicked),
+/// naming the first port given one.
 #[test]
-#[should_panic(expected = "is a port of the subnet place")]
-fn a_ports_keys_are_its_subnets_to_declare() {
-    let mut w = world(false, &[]);
-    heroes_keys(&mut w.b, w.lobby);
+fn a_ports_options_are_its_subnets_to_declare() {
+    use petritype::style::{PlaceStyle, Style};
+    type Call = fn(&mut NetBuilder, PlaceRef<Hero>);
+    let calls: [(&str, Call); 4] = [
+        ("keys", heroes_keys),
+        ("style", |b, port| {
+            b.style(port, |_: &Hero| Style::default())
+        }),
+        ("styled", |b, port| b.styled(port)),
+        ("place_style", |b, port| {
+            b.place_style(port, PlaceStyle::fill_token());
+        }),
+    ];
+    for (method, call) in calls {
+        let mut w = world(false, &[]);
+        call(&mut w.b, w.lobby);
+        call(&mut w.b, w.hall);
+        let error = w.b.build().expect_err("a port's option is its subnet's");
+        assert_eq!(
+            error,
+            BuildError::PortOption {
+                method,
+                place: "Lobby".to_owned(),
+                subnet: "Level 3".to_owned(),
+            },
+            "{method}"
+        );
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "place \"Lobby\" is a port of subnet place \"Level 3\", so `{method}` is not \
+                 called on it here: what a port is, beyond its tokens, is declared in its \
+                 subnet's definition"
+            )
+        );
+    }
+}
+
+/// `serializable` on a port is refused at build as the other options are,
+/// and reported before anything else the build checks, here a duplicate
+/// place name.
+#[cfg(feature = "serde")]
+#[test]
+fn a_ports_json_form_is_its_subnets_to_declare() {
+    let mut level = NetBuilder::new();
+    let lobby = level.place::<u32>("Lobby");
+    level.port(lobby);
+    let level = level.build().expect("a level");
+    let mut b = NetBuilder::new();
+    let level_3 = b.subnet_place("Level 3", level);
+    let door = b.port_of::<u32>(level_3, "Lobby");
+    b.serializable(door);
+    b.place::<u32>("Twice");
+    b.place::<u32>("Twice");
+    assert_eq!(
+        b.build().expect_err("a port's JSON form is its subnet's"),
+        BuildError::PortOption {
+            method: "serializable",
+            place: "Lobby".to_owned(),
+            subnet: "Level 3".to_owned(),
+        }
+    );
 }
 
 // ----- the build errors -----------------------------------------------------------

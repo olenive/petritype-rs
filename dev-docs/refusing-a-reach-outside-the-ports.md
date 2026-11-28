@@ -1,5 +1,16 @@
 # Refusing a reach outside the ports
 
+**2026-11-28: stage two is built in Rust.** Every net is closed unless its
+definition declares it open, so a net that marks no port takes no token
+from outside, and a body is refused the knobs, the controls and firing by
+name of every net it holds. `UNDER_RULE_WITHOUT_PORTS` and
+`Net::is_under_rule` are gone. The owner approved it on 2026-11-27, ahead
+of the notice to the games' agents planned below, so that a drawing and
+the code cannot disagree (`DESIGN.md` §6.9 has the reason). Holding a body
+to its edge's `reaches`, refusing it every closed net inside the one it
+holds, and shielding the nets inside a closed net were built here the same
+day, after Python. What follows is the record as it was.
+
 ## What was decided, and what stage one built (2026-11-23)
 
 Oleg read the findings below and went further than their recommendation
@@ -219,7 +230,8 @@ needs templates and `serde`, a deep copy in Python.
 **A. On for every net that marks a port, for bodies.** The spec's form.
 Breaks nothing counted in §2. Protects every net with ports from the day it
 marks them, with nothing to switch on, and makes its drawing true: the
-ports are ringed and an edge's `reaches` names where it ends inside.
+ports are marked (one dotted outline since 2026-11-28, a second ring before)
+and an edge's `reaches` names where it ends inside.
 
 **B. On only where asked.** A net says so (`b.sealed()`, `sealed=True`),
 or an edge's `reaches` becomes a limit on its body. Breaks nothing until

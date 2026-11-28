@@ -24,10 +24,11 @@
 //!   body, whose token's keys are taken before the body runs and after, and
 //!   through `replace`, which has the old value and the new;
 //! - its inner nets change it, for a nested place whose extractor reads
-//!   them: an inner firing of `step_deep`, and `nested_scope`. There the old
-//!   value is gone by the time the change is known, and the token's entries
-//!   are found by looking through the values of each of its keys
-//!   ([`KeyIndex::forget`]).
+//!   them: `nested_scope`, which reads the token's keys before it lends
+//!   the nets and tells the index of the change afterwards, as for a
+//!   mutating body, and an inner firing of `step_deep`. There the old value
+//!   is gone by the time the change is known, and a key the firing changed
+//!   is found by looking through its values ([`KeyIndex::forget`]).
 //!
 //! An import replaces every place and rebuilds the index from nothing. The
 //! index is never saved: a marking carries values, and keys follow from
@@ -63,6 +64,7 @@ use std::collections::hash_map::Entry;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt;
 
+use crate::deep::Busy;
 use crate::ids::{PlaceId, TokenId};
 use crate::keys::{Filter, KeyValue, Keys, Match, Resolved, keys_or_none, match_of};
 use crate::net::{Net, slot_of};
@@ -102,40 +104,40 @@ impl KeyIndex {
         let Some(keys) = &meta.keys else {
             return;
         };
-        for (name, value) in keys.names.iter().zip(keys.values(value)) {
-            self.postings
-                .entry(name)
-                .or_default()
-                .entry(value)
-                .or_default()
-                .insert((place, token));
-        }
+        let values = keys.values(value);
+        self.enter_values(keys.names.iter().copied(), values, place, token);
     }
 
-    /// Unindexes a token about to leave `place`, or about to change in it,
-    /// found by its keys as they are now.
-    pub(crate) fn leave(
+    /// Unindexes a token that has left `place`, by its key values as they
+    /// were read before it left ([`before`](KeyIndex::before)).
+    ///
+    /// Read first and handed over, so that a key extractor that panics does
+    /// so before anything moves: the token stays in its place and the index
+    /// as it was. The place and the index change together or not at all.
+    pub(crate) fn left(
         &mut self,
         meta: &PlaceMeta,
         place: PlaceId,
         token: TokenId,
-        value: &dyn Any,
+        before: Option<Vec<KeyValue>>,
     ) {
-        let Some(keys) = &meta.keys else {
+        let (Some(keys), Some(before)) = (&meta.keys, before) else {
             return;
         };
-        self.leave_values(keys.names.iter().copied(), keys.values(value), place, token);
+        self.leave_values(keys.names.iter().copied(), before, place, token);
     }
 
     /// The values of a token's keys as they are now, to be handed back to
-    /// [`changed`](KeyIndex::changed) once something has written to it:
-    /// `None` for a place without keys.
+    /// [`changed`](KeyIndex::changed) once something has written to it, or
+    /// to [`left`](KeyIndex::left) once it has left its place: `None` for a
+    /// place without keys.
     pub(crate) fn before(meta: &PlaceMeta, value: &dyn Any) -> Option<Vec<KeyValue>> {
         meta.keys.as_ref().map(|keys| keys.values(value))
     }
 
     /// Reindexes a token that has changed in place, given its key values
-    /// from before the change ([`before`](KeyIndex::before)).
+    /// from before the change ([`before`](KeyIndex::before)). Its new values
+    /// are read once, before its old entries go.
     pub(crate) fn changed(
         &mut self,
         meta: &PlaceMeta,
@@ -152,13 +154,42 @@ impl KeyIndex {
             return;
         }
         self.leave_values(keys.names.iter().copied(), before, place, token);
-        self.enter(meta, place, token, value);
+        self.enter_values(keys.names.iter().copied(), after, place, token);
     }
 
-    /// Reindexes a token whose old value is gone: its entries are found by
-    /// looking through every value of each of its place's keys, then it is
-    /// indexed afresh. For a change the net learns of only afterwards: an
-    /// inner net of a nested token firing, or a `nested_scope` closure.
+    /// Reindexes a token about to be replaced in its place by `new`: both
+    /// values' keys are read first, so an extractor that panics on either
+    /// leaves the index as it was, and the caller then puts `new` in.
+    pub(crate) fn replacing(
+        &mut self,
+        meta: &PlaceMeta,
+        place: PlaceId,
+        token: TokenId,
+        old: &dyn Any,
+        new: &dyn Any,
+    ) {
+        let Some(keys) = &meta.keys else {
+            return;
+        };
+        let after = keys.values(new);
+        let before = keys.values(old);
+        if after == before {
+            return;
+        }
+        self.leave_values(keys.names.iter().copied(), before, place, token);
+        self.enter_values(keys.names.iter().copied(), after, place, token);
+    }
+
+    /// Reindexes a token whose old value is gone, by its value now: for a
+    /// change the net learns of only afterwards, an inner net of a nested
+    /// token firing in a deep step. Its new values are read first, so an
+    /// extractor that panics leaves its old entries where they were.
+    ///
+    /// A token holds one value of each of its place's keys, so a key whose
+    /// new value already lists the token did not change, and is left as it
+    /// is; a key that changed is looked for through each of its values.
+    /// A key that reads a part of the token the firing left alone, an id,
+    /// costs a lookup, not a pass over every value of the key.
     pub(crate) fn forget(
         &mut self,
         meta: &PlaceMeta,
@@ -169,18 +200,21 @@ impl KeyIndex {
         let Some(keys) = &meta.keys else {
             return;
         };
-        for name in keys.names.iter() {
-            if let Entry::Occupied(mut values) = self.postings.entry(name) {
-                values.get_mut().retain(|_, postings| {
-                    postings.remove(&(place, token));
-                    !postings.is_empty()
-                });
-                if values.get().is_empty() {
-                    values.remove();
-                }
+        let after = keys.values(value);
+        for (name, value) in keys.names.iter().zip(after) {
+            let values = self.postings.entry(name).or_default();
+            if values
+                .get(&value)
+                .is_some_and(|postings| postings.contains(&(place, token)))
+            {
+                continue;
             }
+            values.retain(|_, postings| {
+                postings.remove(&(place, token));
+                !postings.is_empty()
+            });
+            values.entry(value).or_default().insert((place, token));
         }
-        self.enter(meta, place, token, value);
     }
 
     /// The place has no tokens left: whatever order it was in, it is in id
@@ -262,6 +296,24 @@ impl KeyIndex {
         candidates
     }
 
+    /// Adds one token to the postings of each of these values.
+    fn enter_values(
+        &mut self,
+        names: impl Iterator<Item = &'static str>,
+        values: Vec<KeyValue>,
+        place: PlaceId,
+        token: TokenId,
+    ) {
+        for (name, value) in names.zip(values) {
+            self.postings
+                .entry(name)
+                .or_default()
+                .entry(value)
+                .or_default()
+                .insert((place, token));
+        }
+    }
+
     /// Removes one token from the postings of each of these values.
     fn leave_values(
         &mut self,
@@ -318,21 +370,20 @@ impl KeyIndex {
             .iter()
             .min_by_key(|sets| sets.iter().map(|postings| postings.len()).sum::<usize>())?;
         let here = (place, TokenId(0))..=(place, TokenId(u64::MAX));
-        let token = fewest
+        // A token the index names and the place does not hold is passed
+        // over, and the next one asked: the answer is always a token that is
+        // there.
+        let at = |token: TokenId| slot.tokens.binary_search_by_key(&token, |(id, _)| *id).ok();
+        fewest
             .iter()
             .filter_map(|postings| {
                 postings
                     .range(here.clone())
                     .map(|&(_, token)| token)
-                    .find(|&token| passes(token))
+                    .filter(|&token| passes(token))
+                    .find_map(|token| at(token).map(|at| (at, token)))
             })
-            .min()?;
-        let at = slot.tokens.binary_search_by_key(&token, |(id, _)| *id);
-        debug_assert!(
-            at.is_ok(),
-            "the index names {token:?} in {place:?}, which does not hold it"
-        );
-        Some((at.ok()?, token))
+            .min_by_key(|&(_, token)| token)
     }
 
     /// Per resolved clause, the postings of the values it accepts; `None`
@@ -400,12 +451,10 @@ impl KeyIndex {
             tokens
                 .into_iter()
                 .filter(move |&token| passes(&clauses, place, token))
+                // A token the index names and the place does not hold is
+                // passed over, as in `first_in`.
                 .filter_map(move |token| {
                     let at = slot.tokens.binary_search_by_key(&token, |(id, _)| *id);
-                    debug_assert!(
-                        at.is_ok(),
-                        "the index names {token:?} in {place:?}, which does not hold it"
-                    );
                     Some((at.ok()?, token))
                 }),
         )
@@ -484,6 +533,41 @@ pub(crate) fn first_resolved(
     }
     slot.meta.keys.as_ref()?;
     index.first_in(slot, place, resolved)
+}
+
+/// [`first_match`] for an edge that passes over busy tokens: the first
+/// token the filter accepts that `busy`, already given for the edge, does
+/// not hold ([`Busy::for_edge`]). With no `busy` it is `first_match`.
+pub(crate) fn first_free_match(
+    places: &[PlaceSlot],
+    params: &[ParamSlot],
+    index: &KeyIndex,
+    place: PlaceId,
+    filter: &Filter,
+    busy: Option<Busy<'_>>,
+) -> Option<(usize, TokenId)> {
+    first_free_resolved(places, index, place, &filter.resolve_in(params), busy)
+}
+
+/// [`first_resolved`] for an edge that passes over busy tokens, as
+/// [`first_free_match`]: the first match, and when `busy` holds it, the
+/// first of the others in queue order that it does not.
+pub(crate) fn first_free_resolved(
+    places: &[PlaceSlot],
+    index: &KeyIndex,
+    place: PlaceId,
+    resolved: &Resolved<'_>,
+    busy: Option<Busy<'_>>,
+) -> Option<(usize, TokenId)> {
+    let found = first_resolved(places, index, place, resolved)?;
+    let Some(busy) = busy else {
+        return Some(found);
+    };
+    let slot = slot_of(places, place)?;
+    if !busy.holds(slot, found.0) {
+        return Some(found);
+    }
+    all_resolved(places, index, place, resolved).find(|&(at, _)| !busy.holds(slot, at))
 }
 
 /// [`first_resolved`] for a window. Its tokens are its port's, indexed by
@@ -696,11 +780,9 @@ impl Net {
                 }
             } else {
                 for &(_, token) in group {
+                    // A token the index names and the place does not hold is
+                    // passed over, as in `first_in`.
                     let found_at = slot.tokens.binary_search_by_key(&token, |(id, _)| *id);
-                    debug_assert!(
-                        found_at.is_ok(),
-                        "the index names {token:?} in {place:?}, which does not hold it"
-                    );
                     if let Ok(position) = found_at {
                         keep(token, &*slot.tokens[position].1);
                     }
@@ -879,6 +961,8 @@ mod tests {
         );
         b.seed(barn, [animal("Cat", "Mammal", 4)]);
         b.seed(pen, [animal("Pig", "Mammal", 4)]);
+        // The tests write every place from outside, by every method.
+        b.open();
         b.transition("Move", (TakeEdge(field),), (barn,), |a: Animal| (a,));
         b.transition("Herd", (TakeAllEdge(field),), (pen,), |all: Vec<Animal>| {
             (all,)
@@ -1110,6 +1194,7 @@ mod tests {
         let field = b.place::<Animal>("Field");
         let out = b.place::<Animal>("Out");
         declare_keys(&mut b, field);
+        b.port(field);
         b.seed(
             field,
             [animal("Hen", "Bird", 2), animal("Cow", "Mammal", 4)],
@@ -1158,6 +1243,7 @@ mod tests {
     fn a_key_that_reads_an_inner_net_follows_it() {
         let mut inner = NetBuilder::new();
         let todo = inner.place::<u32>("Todo");
+        inner.port(todo);
         inner.seed(todo, [1, 2]);
         inner.transition("Done", (TakeEdge(todo),), (), |_: u32| {});
         let inner = inner.build().unwrap();
@@ -1168,6 +1254,9 @@ mod tests {
             [KeyValue::Int(net.count(todo.id()) as i64)]
         });
         b.seed(desk, [inner]);
+        // Open, so that the program may reach the desk's net through
+        // `nested_scope`: a closed net shields the nets inside it.
+        b.open();
         let mut net = b.build().unwrap();
         let todo_is = |net: &Net, n: i64| {
             net.query(&Filter::new().key_in("todo", [KeyValue::Int(n)]))
@@ -1185,6 +1274,67 @@ mod tests {
         net.nested_scope(desk.id(), token, |nets| nets[0].1.put(todo, 9));
         net.index_agrees().unwrap();
         assert_eq!(todo_is(&net, 2), 1);
+    }
+
+    /// Many nested tokens keyed by what a deep step leaves alone (the inner
+    /// net's id) and by what it changes (how much is left to do): after
+    /// every inner firing, in whichever token, and after a `nested_scope`
+    /// that changes nothing or changes the key, the index is what one built
+    /// afresh would be. A deep step finds the token's old entry under a key
+    /// it changed by looking through that key's values, and leaves a key it
+    /// did not change as it is.
+    #[test]
+    fn many_nested_tokens_stay_indexed_under_the_keys_a_step_changes_and_leaves() {
+        let mut todo = None;
+        let mut worker = |n: u32| {
+            let mut inner = NetBuilder::new();
+            let place = inner.place::<u32>("Todo");
+            inner.port(place);
+            inner.seed(place, 0..n);
+            inner.transition("Done", (TakeEdge(place),), (), |_: u32| {});
+            todo = Some(place);
+            inner.build().unwrap()
+        };
+        let workers: Vec<Net> = (0..6).map(&mut worker).collect();
+        let todo = todo.unwrap();
+
+        let mut b = NetBuilder::new();
+        let desk = b.place_nested::<Net>("Desk");
+        b.keys(desk, ["net", "todo"], move |net: &Net| {
+            [
+                KeyValue::Int(net.id().get() as i64),
+                KeyValue::Int(net.count(todo.id()) as i64),
+            ]
+        });
+        b.seed(desk, workers);
+        b.stepping(desk, crate::Stepping::TakeTurns);
+        b.open();
+        let mut net = b.build().unwrap();
+        net.index_agrees().unwrap();
+
+        let mut steps = 0;
+        while net.step_deep().unwrap().is_some() {
+            steps += 1;
+            net.index_agrees().unwrap();
+        }
+        assert_eq!(steps, (0..6).sum::<u32>(), "every todo done");
+        assert_eq!(
+            net.distinct_values("todo", None),
+            [KeyValue::Int(0)],
+            "every worker under 0, and under nothing else"
+        );
+
+        let tokens: Vec<TokenId> = net.tokens(desk.id()).map(|(token, _)| token).collect();
+        net.nested_scope(desk.id(), tokens[2], |nets| nets[0].1.count(todo.id()));
+        net.index_agrees().unwrap();
+        net.nested_scope(desk.id(), tokens[4], |nets| {
+            let inner = &mut nets[0].1;
+            let todo = inner.place_ref::<u32>("Todo").unwrap();
+            inner.put(todo, 9)
+        });
+        net.index_agrees().unwrap();
+        let busy = Filter::new().key_in("todo", [KeyValue::Int(1)]);
+        assert_eq!(net.query_ids(&busy).unwrap(), [(desk.id(), tokens[4])]);
     }
 
     /// A port's tokens are indexed by its subnet, under the port's id
@@ -1220,6 +1370,9 @@ mod tests {
         declare_keys(&mut b, pen);
         let farm = b.subnet_place("Farm", level);
         let w_field = b.port_of::<Animal>(farm, "Field");
+        // The test writes the window from outside, which an open farm lets
+        // through to the level's port.
+        b.open();
         b.seed(pen, [animal("Duck", "Bird", 2), animal("Ram", "Mammal", 4)]);
         b.transition("Let In", (TakeEdge(pen),), (w_field,), |a: Animal| (a,));
         let birds = Filter::new().key_in("class", ["Bird"]);
@@ -1310,5 +1463,22 @@ mod tests {
             net.distinct_values("name", None),
             [KeyValue::from("Yak"), KeyValue::from("Emu")]
         );
+    }
+
+    /// A token the index names and the place does not hold is passed over
+    /// for the next one, where the lookup stopped at it and found nothing.
+    #[test]
+    fn the_first_match_passes_over_a_token_the_place_does_not_hold() {
+        let Farm { mut net, field, .. } = farm();
+        let birds = Filter::new().key_in("class", ["Bird"]);
+        let first =
+            |net: &Net| first_match(&net.places, &net.params, &net.index, field.id(), &birds);
+        let ids: Vec<TokenId> = net.tokens(field.id()).map(|(token, _)| token).collect();
+        let (hen, duck) = (ids[0], ids[2]);
+        assert_eq!(first(&net), Some((0, hen)));
+        // The hen goes behind the index's back: it is named there still, the
+        // oldest bird, and the place holds the cow and the duck.
+        net.places[field.id().0 as usize].tokens.pop_front();
+        assert_eq!(first(&net), Some((1, duck)), "the duck, which is there");
     }
 }

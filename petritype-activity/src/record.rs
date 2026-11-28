@@ -9,6 +9,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use petritype_layout::LayoutNode;
 
+use crate::checkpoints::CheckpointCache;
 use crate::delta::Delta;
 use crate::grid::Grid;
 use crate::model::Activity;
@@ -59,6 +60,9 @@ fn union(a: Option<(u64, u64)>, b: Option<(u64, u64)>) -> Option<(u64, u64)> {
 /// [`standing`](Activity::standing) state first, so that its record starts
 /// from the counts that stood.
 ///
+/// Its arithmetic never overflows: it takes a frame of any length, up to
+/// [`Duration::MAX`], and its count of bins dropped stops at `u64::MAX`.
+///
 /// ```
 /// use std::time::Duration;
 ///
@@ -104,9 +108,17 @@ pub struct Recorder {
     /// How far into the open bin the clock is.
     clock: Duration,
     dropped: u64,
+    /// How many times the recorder was cleared, so that a player following
+    /// it starts afresh after a clear.
+    clears: u64,
 }
 
 impl Recorder {
+    /// The most empty bins one frame closes in a recorder that keeps every
+    /// bin: 2^20, a little over a million, which at 100 ms a bin is more
+    /// than a day.
+    pub const MAX_EMPTY_BINS: u64 = 1 << 20;
+
     /// A recorder of bins `bin_width` wide, rounded to whole milliseconds
     /// and at least one, keeping the last `capacity` bins (at least one), or
     /// every bin for `None`. `start` is when the first bin opens, for the
@@ -122,6 +134,7 @@ impl Recorder {
             open: Bin::default(),
             clock: Duration::ZERO,
             dropped: 0,
+            clears: 0,
         }
     }
 
@@ -129,38 +142,53 @@ impl Recorder {
     /// on by `elapsed`. Each bin boundary the clock crosses closes the open
     /// bin and opens the next, so a long frame closes several, those after
     /// the first empty.
+    ///
+    /// A ring drops what it cannot keep, however long the frame. A recorder
+    /// that keeps every bin closes at most
+    /// [`MAX_EMPTY_BINS`](Recorder::MAX_EMPTY_BINS) empty bins for one
+    /// frame, so that one frame of a clock that jumped, or of a machine
+    /// that slept for days, cannot fill memory: the frame's time past them
+    /// is not recorded, and the bins after it are dated as if it had not
+    /// passed.
     pub fn observe(&mut self, delta: Delta, elapsed: Duration) {
         if self.open.delta.is_empty() {
             self.open.delta = delta;
         } else {
             self.open.delta.absorb(&delta);
         }
-        self.clock += elapsed;
+        // In nanoseconds, as a `u128`, which holds two durations' sum.
         let width = self.bin_width.as_nanos();
-        let crossed = self.clock.as_nanos() / width;
+        let clock = self.clock.as_nanos() + elapsed.as_nanos();
+        let crossed = clock / width;
+        self.clock = duration_of_nanos(clock % width);
         if crossed == 0 {
             return;
         }
-        self.clock = Duration::from_nanos((self.clock.as_nanos() % width) as u64);
         let open = std::mem::take(&mut self.open);
         self.close(open);
         let mut empty = u64::try_from(crossed - 1).unwrap_or(u64::MAX);
-        // More empty bins than the ring keeps: what it holds now is gone,
-        // and so are the empty ones beyond its capacity, all at once.
-        if let Some(capacity) = self.capacity
-            && empty > capacity as u64
-        {
-            let mut standing = Delta::default();
-            for bin in &self.bins {
-                standing = standing_of(&standing, &bin.delta);
+        match self.capacity {
+            // More empty bins than the ring keeps: what it holds now is
+            // gone, and so are the empty ones beyond its capacity, all at
+            // once.
+            Some(capacity) if empty > capacity as u64 => {
+                let mut standing = Delta::default();
+                for bin in &self.bins {
+                    standing = standing_of(&standing, &bin.delta);
+                }
+                self.dropped = self
+                    .dropped
+                    .saturating_add(self.bins.len() as u64)
+                    .saturating_add(empty - capacity as u64);
+                self.bins.clear();
+                self.bins.push_back(Bin {
+                    delta: standing,
+                    log: None,
+                });
+                empty = capacity as u64 - 1;
             }
-            self.dropped += self.bins.len() as u64 + (empty - capacity as u64);
-            self.bins.clear();
-            self.bins.push_back(Bin {
-                delta: standing,
-                log: None,
-            });
-            empty = capacity as u64 - 1;
+            None => empty = empty.min(Self::MAX_EMPTY_BINS),
+            Some(_) => {}
         }
         for _ in 0..empty {
             self.close(Bin::default());
@@ -196,15 +224,22 @@ impl Recorder {
 
     /// Drops every bin and the open one, keeping the width and the
     /// capacity: the recorder begins again from here, its start moved on by
-    /// the time recorded, and nothing dropped.
+    /// the time recorded, and nothing dropped. A [`Player`] following it
+    /// starts afresh at its next [`follow`](Player::follow).
     pub fn clear(&mut self) {
-        let elapsed = (self.dropped + self.bins.len() as u64) * self.bin_width_ms()
-            + self.clock.as_millis() as u64;
-        self.start_unix_ms = self.start_unix_ms.map(|start| start + elapsed);
+        let elapsed = self
+            .dropped
+            .saturating_add(self.bins.len() as u64)
+            .saturating_mul(self.bin_width_ms())
+            .saturating_add(u64::try_from(self.clock.as_millis()).unwrap_or(u64::MAX));
+        self.start_unix_ms = self
+            .start_unix_ms
+            .map(|start| start.saturating_add(elapsed));
         self.bins.clear();
         self.open = Bin::default();
         self.clock = Duration::ZERO;
         self.dropped = 0;
+        self.clears = self.clears.wrapping_add(1);
     }
 
     /// How many closed bins are kept.
@@ -235,13 +270,14 @@ impl Recorder {
     }
 
     fn bin_width_ms(&self) -> u64 {
-        self.bin_width.as_millis() as u64
+        u64::try_from(self.bin_width.as_millis()).unwrap_or(u64::MAX)
     }
 
-    /// When the bin of absolute index `absolute` opened.
+    /// When the bin of absolute index `absolute` opened, stopping at
+    /// `u64::MAX`.
     fn start_of(&self, absolute: u64) -> Option<u64> {
         self.start_unix_ms
-            .map(|start| start + absolute * self.bin_width_ms())
+            .map(|start| start.saturating_add(absolute.saturating_mul(self.bin_width_ms())))
     }
 
     /// A bin closed into the ring, the oldest dropped past the capacity
@@ -252,7 +288,7 @@ impl Recorder {
             let Some(oldest) = self.bins.pop_front() else {
                 break;
             };
-            self.dropped += 1;
+            self.dropped = self.dropped.saturating_add(1);
             if let Some(next) = self.bins.front_mut() {
                 oldest.delta.carry_into(&mut next.delta);
             }
@@ -267,6 +303,14 @@ fn standing_of(earlier: &Delta, later: &Delta) -> Delta {
     later.carry_into(&mut standing);
     earlier.carry_into(&mut standing);
     standing
+}
+
+/// A duration of `nanos` nanoseconds, which is under `u64::MAX`
+/// milliseconds.
+fn duration_of_nanos(nanos: u128) -> Duration {
+    const NANOS_PER_SEC: u128 = 1_000_000_000;
+    let secs = u64::try_from(nanos / NANOS_PER_SEC).unwrap_or(u64::MAX);
+    Duration::new(secs, (nanos % NANOS_PER_SEC) as u32)
 }
 
 /// Milliseconds since the Unix epoch, 0 for a time before it.
@@ -322,16 +366,26 @@ pub(crate) fn file_stem(net: &str, start_unix_ms: Option<u64>) -> String {
 /// [`Player`] folds to any bin from a checkpoint. Under the firings clock
 /// the picture is the same at any bin width.
 ///
+/// The bin width is private, so that it is at least one millisecond:
+/// [`new`](Record::new) takes it and [`bin_width_ms`](Record::bin_width_ms)
+/// reads it.
+///
 /// With the `serde` feature it is written as JSON by `write_json`, the grid
-/// with its cells' nodes and names, and read back by `read_json`.
+/// with its cells' nodes and names, and read back by `read_json`. Reading
+/// refuses a bin width of 0, a grid that is not one (see [`Grid`]), and a
+/// time in flight or a setting that is negative or not finite.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Record {
     /// Where each node's cell goes, and each node's name: the key to the
     /// record's ids and to its [tensor](Record::tensor).
     pub grid: Grid,
-    /// How wide each bin is, in milliseconds.
-    pub bin_width_ms: u64,
+    /// How wide each bin is, in milliseconds, at least one.
+    #[cfg_attr(
+        feature = "serde",
+        serde(deserialize_with = "crate::checked::at_least_one_ms")
+    )]
+    bin_width_ms: u64,
     /// When the first bin opened, in milliseconds since the Unix epoch, or
     /// `None` for an undated record.
     pub start_unix_ms: Option<u64>,
@@ -343,6 +397,44 @@ pub struct Record {
 }
 
 impl Record {
+    /// A record of no bin on `grid`, each bin `bin_width` wide, rounded
+    /// down to whole milliseconds and at least one, as
+    /// [`Recorder::new`] rounds it; undated and with no settings. Its
+    /// [`bins`](Record::bins), start and settings are fields to fill.
+    ///
+    /// ```
+    /// use std::time::Duration;
+    ///
+    /// use petritype::NetBuilder;
+    /// use petritype_activity::{Bin, Grid, Record};
+    /// use petritype_layout::Layout;
+    ///
+    /// let net = NetBuilder::new().build()?;
+    /// let grid = Grid::from_layout(&Layout::default(), &net.topology());
+    /// let mut record = Record::new(grid, Duration::from_micros(2500));
+    /// record.bins = vec![Bin::default(); 4];
+    /// assert_eq!(record.bin_width_ms(), 2);
+    /// assert_eq!(record.duration(), Duration::from_millis(8));
+    /// assert_eq!(Record::new(record.grid.clone(), Duration::ZERO).bin_width_ms(), 1);
+    /// # Ok::<(), petritype::BuildError>(())
+    /// ```
+    pub fn new(grid: Grid, bin_width: Duration) -> Record {
+        Record {
+            grid,
+            bin_width_ms: u64::try_from(bin_width.as_millis())
+                .unwrap_or(u64::MAX)
+                .max(1),
+            start_unix_ms: None,
+            settings: None,
+            bins: Vec::new(),
+        }
+    }
+
+    /// How wide each bin is, in whole milliseconds, at least one.
+    pub fn bin_width_ms(&self) -> u64 {
+        self.bin_width_ms
+    }
+
     /// How many bins it holds.
     pub fn len(&self) -> usize {
         self.bins.len()
@@ -370,11 +462,13 @@ impl Record {
     }
 
     /// The bins folded one by one through a [fresh model](Record::model)
-    /// run by `settings`.
+    /// run by `settings`, which keeps no account
+    /// ([`take_delta`](Activity::take_delta) of it is empty), since nobody
+    /// records a replay.
     pub fn replay(&self, settings: ActivitySettings) -> Replay<'_> {
         Replay {
             record: self,
-            activity: self.model(settings),
+            activity: self.model(settings).without_account(),
             next: 0,
         }
     }
@@ -418,13 +512,27 @@ impl Record {
     }
 
     /// The record laid out as time by rows by columns by channels, a
-    /// [`Tensor`]: a frame per bin, a pixel per cell of the grid, and the
-    /// eight [channels](Tensor::CHANNELS) per pixel.
+    /// [`Tensor`]: a frame per bin, a pixel per position of the grid, and
+    /// the eight [channels](Tensor::CHANNELS) per pixel, four bytes each.
+    ///
+    /// # Panics
+    ///
+    /// When the tensor's values, its bins times the grid's positions times
+    /// eight, are more than a `usize` counts. Holding them in memory fails
+    /// long before on most machines.
     pub fn tensor(&self) -> Tensor {
         let (rows, columns) = (self.grid.rows(), self.grid.columns());
         let channels = Tensor::CHANNELS.len();
-        let frame = rows * columns * channels;
-        let mut data = vec![0.0_f32; self.bins.len() * frame];
+        let frame = rows
+            .checked_mul(columns)
+            .and_then(|positions| positions.checked_mul(channels))
+            .expect("a grid's positions times eight fit in a usize");
+        let values = self
+            .bins
+            .len()
+            .checked_mul(frame)
+            .expect("a tensor's values fit in a usize");
+        let mut data = vec![0.0_f32; values];
         let width = self.bin_width_ms.max(1) as f64;
         // Each place's standing count, carried from the last bin that set
         // it.
@@ -569,12 +677,11 @@ pub struct Player {
     record: Record,
     /// The absolute index of the record's first bin.
     first: u64,
+    /// The clears of the recorder followed, as it last counted them.
+    clears: u64,
     settings: ActivitySettings,
-    every: usize,
-    /// The model before the bin of each absolute index, folded.
-    checkpoints: BTreeMap<u64, Activity>,
-    /// The model after the bin of an absolute index, as `at` last left it.
-    current: Option<(u64, Activity)>,
+    /// The model after each bin, folded.
+    folds: CheckpointCache<Activity>,
     /// The model before any bin: every level at 0.
     fresh: Activity,
 }
@@ -587,13 +694,12 @@ impl Player {
     /// every `checkpoint_every` bins (at least one).
     pub fn new(record: &Record, settings: ActivitySettings, checkpoint_every: usize) -> Self {
         Self {
-            fresh: record.model(settings.clone()),
+            fresh: record.model(settings.clone()).without_account(),
             record: record.clone(),
             first: 0,
+            clears: 0,
             settings,
-            every: checkpoint_every.max(1),
-            checkpoints: BTreeMap::new(),
-            current: None,
+            folds: CheckpointCache::new(checkpoint_every),
         }
     }
 
@@ -609,51 +715,26 @@ impl Player {
     ) -> Self {
         let mut player = Player::new(&recorder.record(grid, None), settings, checkpoint_every);
         player.first = recorder.dropped();
+        player.clears = recorder.clears;
         player
     }
 
     /// The model after the bin at `index`, counted from the record's
     /// first, clamped to the last; the fresh model when there is no bin.
+    /// The model keeps no account ([`take_delta`](Activity::take_delta) of
+    /// it is empty), since nobody records a player.
     pub fn at(&mut self, index: usize) -> &Activity {
-        if self.record.bins.is_empty() {
+        let Some(held) = (self.record.bins.len() as u64).checked_sub(1) else {
             return &self.fresh;
-        }
-        let last = self.first + self.record.bins.len() as u64 - 1;
-        let target = (self.first + index as u64).min(last);
-        // Where to fold from: the model as `at` last left it, if it stands
-        // at or before the target with every bin after it kept; else the
-        // nearest checkpoint; else the fresh model at the first bin.
-        let from_current = self
-            .current
-            .as_ref()
-            .is_some_and(|(after, _)| *after <= target && *after + 1 >= self.first);
-        let checkpoint = self
-            .checkpoints
-            .range(self.first..=target + 1)
-            .next_back()
-            .map(|(&before, _)| before);
-        let (mut next, mut activity) = match (from_current, checkpoint) {
-            (true, Some(before)) if before > self.current.as_ref().map_or(0, |c| c.0 + 1) => {
-                (before, self.checkpoints[&before].clone())
-            }
-            (true, _) => {
-                let (after, activity) = self.current.take().expect("checked above");
-                (after + 1, activity)
-            }
-            (false, Some(before)) => (before, self.checkpoints[&before].clone()),
-            (false, None) => (self.first, self.fresh.clone()),
         };
-        let width = self.record.bin_width();
-        while next <= target {
-            let bin = &self.record.bins[(next - self.first) as usize];
-            activity.apply_delta(&bin.delta);
-            activity.tick(width);
-            next += 1;
-            if next % self.every as u64 == 0 && !self.checkpoints.contains_key(&next) {
-                self.checkpoints.insert(next, activity.clone());
-            }
-        }
-        &self.current.insert((target, activity)).1
+        let (first, bins, width) = (self.first, &self.record.bins, self.record.bin_width());
+        let last = first.saturating_add(held);
+        let target = first.saturating_add(index as u64);
+        self.folds
+            .fold(first, last, target, &self.fresh, |activity, k| {
+                activity.apply_delta(&bins[(k - first) as usize].delta);
+                activity.tick(width);
+            })
     }
 
     /// The record played, as the player holds it.
@@ -680,7 +761,7 @@ impl Player {
 
     /// How many bins apart the checkpoints are.
     pub fn checkpoint_every(&self) -> usize {
-        self.every
+        self.folds.every()
     }
 
     /// The settings the bins are folded under.
@@ -692,9 +773,8 @@ impl Player {
     /// checkpoint, which the next pass makes again.
     pub fn set_settings(&mut self, settings: ActivitySettings) {
         if settings != self.settings {
-            self.checkpoints.clear();
-            self.current = None;
-            self.fresh = self.record.model(settings.clone());
+            self.folds.clear();
+            self.fresh = self.record.model(settings.clone()).without_account();
             self.settings = settings;
         }
     }
@@ -703,19 +783,21 @@ impl Player {
     /// [`following`](Player::following): the bins it closed since are
     /// added, and those it dropped are dropped here too, with the
     /// checkpoints before them. The bins kept keep their absolute indices. A
-    /// recorder cleared since, or of another width, gives its bins afresh.
+    /// recorder cleared since, or of another width, gives its bins afresh,
+    /// with every fold dropped.
     pub fn follow(&mut self, recorder: &Recorder) {
         let width_ms = recorder.bin_width_ms();
-        let (theirs, end) = (
-            recorder.dropped(),
-            recorder.dropped() + recorder.len() as u64,
-        );
-        if theirs < self.first || width_ms != self.record.bin_width_ms {
+        let theirs = recorder.dropped();
+        let end = theirs.saturating_add(recorder.len() as u64);
+        if recorder.clears != self.clears
+            || theirs < self.first
+            || width_ms != self.record.bin_width_ms
+        {
             self.record.bins = recorder.bins.iter().cloned().collect();
             self.record.bin_width_ms = width_ms;
             self.first = theirs;
-            self.checkpoints.clear();
-            self.current = None;
+            self.clears = recorder.clears;
+            self.folds.clear();
         } else {
             let dropped = theirs > self.first;
             let gone = (theirs - self.first).min(self.record.bins.len() as u64) as usize;
@@ -729,21 +811,13 @@ impl Player {
             {
                 mine.clone_from(its);
             }
-            let have = self.first + self.record.bins.len() as u64;
+            let have = self.first.saturating_add(self.record.bins.len() as u64);
             for absolute in have..end {
                 if let Some(bin) = recorder.bin(absolute) {
                     self.record.bins.push(bin.clone());
                 }
             }
-            let first = self.first;
-            self.checkpoints.retain(|&before, _| before >= first);
-            if self
-                .current
-                .as_ref()
-                .is_some_and(|(after, _)| *after + 1 < first)
-            {
-                self.current = None;
-            }
+            self.folds.forget_before(self.first);
         }
         self.record.start_unix_ms = recorder.start_of(self.first);
     }
@@ -770,13 +844,18 @@ impl Player {
 ///
 /// A transition's cell has only the first four, and a place's only the
 /// last four.
+///
+/// The shape and the data are private, so that the data is always as long
+/// as the shape says: [`new`](Tensor::new) checks it, and
+/// [`shape`](Tensor::shape), [`data`](Tensor::data) and
+/// [`into_data`](Tensor::into_data) read them.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Tensor {
     /// Bins, rows, columns and channels.
-    pub shape: [usize; 4],
+    shape: [usize; 4],
     /// Every value, row-major: the channel varies fastest, then the column,
     /// the row and the bin.
-    pub data: Vec<f32>,
+    data: Vec<f32>,
 }
 
 impl Tensor {
@@ -791,6 +870,41 @@ impl Tensor {
         "balance",
         "count",
     ];
+
+    /// The tensor of `shape`, bins, rows, columns and channels, holding
+    /// `data` row-major, the channel varying fastest; `None` unless the
+    /// channels are the eight [`CHANNELS`](Tensor::CHANNELS) and `data`
+    /// holds one value for each place in the shape.
+    ///
+    /// ```
+    /// use petritype_activity::Tensor;
+    ///
+    /// let tensor = Tensor::new([1, 2, 1, 8], vec![0.0; 16]).expect("16 values for 1 by 2 by 1 by 8");
+    /// assert_eq!(tensor.get(0, 1, 0, 7), Some(0.0));
+    /// assert!(Tensor::new([1, 2, 1, 8], vec![0.0; 15]).is_none());
+    /// assert!(Tensor::new([1, 2, 2, 4], vec![0.0; 16]).is_none(), "four channels");
+    /// ```
+    pub fn new(shape: [usize; 4], data: Vec<f32>) -> Option<Tensor> {
+        let [t, r, c, k] = shape;
+        let values = t.checked_mul(r)?.checked_mul(c)?.checked_mul(k)?;
+        (k == Tensor::CHANNELS.len() && values == data.len()).then_some(Tensor { shape, data })
+    }
+
+    /// Bins, rows, columns and channels.
+    pub fn shape(&self) -> [usize; 4] {
+        self.shape
+    }
+
+    /// Every value, row-major: the channel varies fastest, then the column,
+    /// the row and the bin.
+    pub fn data(&self) -> &[f32] {
+        &self.data
+    }
+
+    /// The values, handed over, for a caller that keeps them.
+    pub fn into_data(self) -> Vec<f32> {
+        self.data
+    }
 
     /// The value at a bin, row, column and channel, or `None` outside the
     /// shape.
@@ -1143,7 +1257,7 @@ mod tests {
         let fine = recorder.record(&grid, Some(&settings));
         assert_eq!(fine.len(), 9);
         let coarse = fine.coarsen(3);
-        assert_eq!((coarse.len(), coarse.bin_width_ms), (3, 300));
+        assert_eq!((coarse.len(), coarse.bin_width_ms()), (3, 300));
         assert_eq!(coarse.duration(), fine.duration());
         for (k, bin) in coarse.bins.iter().enumerate() {
             let mut sum = Delta::default();
@@ -1202,10 +1316,8 @@ mod tests {
         assert_eq!(slower, levels(again.activity()));
         assert_ne!(slower, folds[10].0);
         // No bins: the fresh model.
-        let empty = Record {
-            bins: Vec::new(),
-            ..record
-        };
+        let mut empty = record;
+        empty.bins.clear();
         assert_eq!(Player::new(&empty, settings, 64).at(5).firings(), 0);
     }
 
@@ -1399,8 +1511,8 @@ mod tests {
         recorder.observe(Delta::default(), ms(100));
         let record = recorder.record(&grid, None);
         let tensor = record.tensor();
-        assert_eq!(tensor.shape, [4, 3, 2, 8]);
-        assert_eq!(tensor.data.len(), 4 * 3 * 2 * 8);
+        assert_eq!(tensor.shape(), [4, 3, 2, 8]);
+        assert_eq!(tensor.data().len(), 4 * 3 * 2 * 8);
         let at = |node| {
             let cell = grid.cell_of(node).expect("a cell");
             (cell.row, cell.column)
@@ -1468,7 +1580,7 @@ mod tests {
             .iter()
             .map(|&b| f32::from_le_bytes(b))
             .collect();
-        assert_eq!(values, tensor.data);
+        assert_eq!(values, tensor.data());
     }
 
     #[test]
@@ -1477,12 +1589,10 @@ mod tests {
             &Layout::default(),
             &NetBuilder::new().build().unwrap().topology(),
         );
-        let dated = |ms| Record {
-            grid: grid.clone(),
-            bin_width_ms: 100,
-            start_unix_ms: ms,
-            settings: None,
-            bins: Vec::new(),
+        let dated = |start| {
+            let mut record = Record::new(grid.clone(), ms(100));
+            record.start_unix_ms = start;
+            record
         };
         assert_eq!(
             dated(Some(1_792_499_696_789)).file_name("parcel"),

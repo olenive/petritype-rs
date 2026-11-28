@@ -29,7 +29,7 @@ use std::fmt;
 use std::sync::Arc;
 
 use crate::error::NetError;
-use crate::ids::{PlaceId, TokenId};
+use crate::ids::{NetId, PlaceId, TokenId};
 use crate::net::Net;
 use crate::param::ParamSlot;
 use crate::place::PlaceSlot;
@@ -308,17 +308,18 @@ impl fmt::Debug for KeysVtable {
 ///
 /// A filter is also what a keyed input edge carries
 /// ([`TakeWhereEdge`](crate::TakeWhereEdge),
-/// [`MutateWhereEdge`](crate::MutateWhereEdge)): there it is asked of the
+/// [`MutateWhereEdge`](crate::MutateWhereEdge),
+/// [`ReadWhereEdge`](crate::ReadWhereEdge)): there it is asked of the
 /// tokens of the edge's one place, and its `places` and `prefix` are not
-/// consulted (DESIGN §8.3).
+/// consulted.
 ///
 /// With the `serde` feature it is `Serialize` and `Deserialize` in the
 /// protocol's shape (PROTOCOL.md §13.2): `{"clauses": [{"key", "values"} |
 /// {"key", "param"} | {"key", "input"}], "places"?, "prefix"?}`, `clauses` defaulting to none
 /// and the two restrictions written only when set. The one difference is
 /// that `places` holds the core's [`PlaceId`]s, as everything the core
-/// serialises does (DESIGN §19.2). The protocol names places by name; a
-/// runner maps one to the other, as it does for every edge and event.
+/// serialises does. The protocol names places by name; a runner maps one to
+/// the other, as it does for every edge and event.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Filter {
@@ -373,6 +374,11 @@ pub enum Clause {
     /// `serde` facility, so without that feature this clause accepts nothing
     /// at all.
     ///
+    /// The JSON is written once per value, when a clause first asks, and
+    /// kept until the value is set again (since 2026-11-28): a value changed
+    /// behind the net's back, by interior mutability, is one the clause
+    /// does not see, as a key is not.
+    ///
     /// `IsParam` rather than `Param`: a variant of that name beside
     /// [`Param`](crate::Param) makes the compiler spell out
     /// `petritype::Param<T>` in every error that mentions a parameter input.
@@ -388,12 +394,13 @@ pub enum Clause {
     ///
     /// It has a meaning only in the filter of a keyed edge
     /// ([`TakeWhereEdge`](crate::TakeWhereEdge),
-    /// [`MutateWhereEdge`](crate::MutateWhereEdge)), whose transition reads
+    /// [`MutateWhereEdge`](crate::MutateWhereEdge),
+    /// [`ReadWhereEdge`](crate::ReadWhereEdge)), whose transition reads
     /// `input.place` through another edge, the *source*, which gives one
     /// token. The edge whose filter holds such a clause is *bound* to its
     /// source, and the firing chooses the two tokens as a pair: the oldest
-    /// source token that has a match, with the oldest match for it (DESIGN
-    /// §8.3). [`build`](crate::NetBuilder::build) checks the rest
+    /// source token that has a match, with the oldest match for it.
+    /// [`build`](crate::NetBuilder::build) checks the rest
     /// ([`BuildError::BoundSourceNotAnInput`](crate::BuildError::BoundSourceNotAnInput)
     /// and the four after it).
     ///
@@ -412,14 +419,42 @@ pub enum Clause {
 ///
 /// With the `serde` feature it is `{"place": 1, "key": "courier"}`, the
 /// place by the core's id; a runner names it as the protocol does,
-/// `{"place": "Orders", "key": "courier"}`.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+/// `{"place": "Orders", "key": "courier"}`. The net is not written, and
+/// reads back as `None`.
+///
+/// Two keys compare, and hash, by `place` and `key` alone: `net` is what a
+/// build checks the handle by, not part of what the key names, so a key
+/// read back from JSON equals the one [`Filter::key_is_input`] made.
+#[derive(Clone, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct InputKey {
     /// The source place: another input place of the same transition.
     pub place: PlaceId,
     /// The key the source place declares, whose value is accepted.
     pub key: String,
+    /// The net whose handle named the place, as
+    /// [`Filter::key_is_input`] records it (since 2026-11-28), or `None`
+    /// for a key made otherwise, such as one read from JSON, which a build
+    /// takes to be its own net's. A build refuses a key of another net's
+    /// place ([`BoundSourceNotAnInput`](crate::BuildError::BoundSourceNotAnInput)),
+    /// whatever the place's id names in the net being built.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    pub net: Option<NetId>,
+}
+
+impl PartialEq for InputKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.place == other.place && self.key == other.key
+    }
+}
+
+impl Eq for InputKey {}
+
+impl std::hash::Hash for InputKey {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.place.hash(state);
+        self.key.hash(state);
+    }
 }
 
 impl Filter {
@@ -487,6 +522,12 @@ impl Filter {
     /// assert_eq!(orders_given, [0, 1], "Bravo, the unit the order named");
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
+    ///
+    /// The clause keeps the net `input` came from ([`InputKey::net`]), so
+    /// that [`build`](crate::NetBuilder::build) refuses a handle from
+    /// another builder with
+    /// [`BoundSourceNotAnInput`](crate::BuildError::BoundSourceNotAnInput)
+    /// rather than reading whichever place of its own has that id.
     pub fn key_is_input<T>(
         mut self,
         key: impl Into<String>,
@@ -498,6 +539,7 @@ impl Filter {
             input: InputKey {
                 place: input.id(),
                 key: input_key.into(),
+                net: Some(input.net()),
             },
         });
         self
@@ -560,6 +602,18 @@ impl Filter {
     /// token's keys at a time. A [`Clause::IsInput`] accepts nothing until a
     /// firing [binds](Resolved::bind) it to a source token.
     pub(crate) fn resolve(&self, param: impl Fn(&str) -> Option<KeyValue>) -> Resolved<'_> {
+        self.resolve_with(|name| Accepts::One(param(name)))
+    }
+
+    /// [`resolve`](Filter::resolve) against a net's (or a snapshot's)
+    /// parameters, by wire name, each read as its slot keeps it.
+    pub(crate) fn resolve_in<'f>(&'f self, params: &'f [ParamSlot]) -> Resolved<'f> {
+        self.resolve_with(|name| Accepts::Param(param_key(params, name)))
+    }
+
+    /// The clauses resolved, `param` saying what a [`Clause::IsParam`]
+    /// naming a parameter accepts.
+    fn resolve_with<'f>(&'f self, param: impl Fn(&str) -> Accepts<'f>) -> Resolved<'f> {
         Resolved {
             clauses: self
                 .clauses
@@ -572,7 +626,7 @@ impl Filter {
                     },
                     Clause::IsParam { key, param: name } => ResolvedClause {
                         key,
-                        accepts: Accepts::One(param(name)),
+                        accepts: param(name),
                         input: None,
                     },
                     Clause::IsInput { key, input } => ResolvedClause {
@@ -583,12 +637,6 @@ impl Filter {
                 })
                 .collect(),
         }
-    }
-
-    /// [`resolve`](Filter::resolve) against a net's (or a snapshot's)
-    /// parameters, by wire name.
-    pub(crate) fn resolve_in(&self, params: &[ParamSlot]) -> Resolved<'_> {
-        self.resolve(|name| param_key(params, name))
     }
 }
 
@@ -610,11 +658,13 @@ pub(crate) struct ResolvedClause<'f> {
 
 /// What a resolved clause accepts: the values written in it, or the one
 /// value a parameter had (or nothing, for a parameter that could not be
-/// read as a key value).
+/// read as a key value), or the one a source token has for its key.
 #[derive(Debug)]
 enum Accepts<'f> {
     Values(&'f [KeyValue]),
     One(Option<KeyValue>),
+    /// A net parameter's value, as its slot keeps it read.
+    Param(Option<&'f KeyValue>),
 }
 
 impl ResolvedClause<'_> {
@@ -623,6 +673,7 @@ impl ResolvedClause<'_> {
         match &self.accepts {
             Accepts::Values(values) => values,
             Accepts::One(value) => value.as_slice(),
+            Accepts::Param(value) => value.map_or(&[], std::slice::from_ref),
         }
     }
 
@@ -658,17 +709,16 @@ impl Resolved<'_> {
 /// string, an integer or a boolean. Without the `serde` feature there are no
 /// wire names, and the answer is always `None`.
 #[cfg(feature = "serde")]
-pub(crate) fn param_key(params: &[ParamSlot], name: &str) -> Option<KeyValue> {
-    let slot = params
+fn param_key<'p>(params: &'p [ParamSlot], name: &str) -> Option<&'p KeyValue> {
+    params
         .iter()
-        .find(|slot| slot.name.as_deref() == Some(name))?;
-    let json = (slot.to_json?)(&*slot.value).ok()?;
-    KeyValue::from_json(&json)
+        .find(|slot| slot.name.as_deref() == Some(name))?
+        .key()
 }
 
 /// Without `serde`, no parameter has a wire name: see [`Clause::IsParam`].
 #[cfg(not(feature = "serde"))]
-pub(crate) fn param_key(_params: &[ParamSlot], _name: &str) -> Option<KeyValue> {
+fn param_key<'p>(_params: &'p [ParamSlot], _name: &str) -> Option<&'p KeyValue> {
     None
 }
 
@@ -691,10 +741,13 @@ pub struct Match {
     pub keys: Keys,
     /// Its [`label`](Net::label), cut at the net's label limit.
     pub label: String,
-    /// Its JSON value ([`Net::json`]), or `None` for a place not marked
-    /// serializable.
+    /// Its JSON value, or why it has none ([`Net::json`]); `None` for a
+    /// place not marked serializable. Since 2026-11-28 a token whose
+    /// `Serialize` refuses, or that holds a `NaN` or an infinity, is
+    /// `Some(Err(..))`, where the refusal's text, or `null` for the number,
+    /// stood in for the value.
     #[cfg(feature = "serde")]
-    pub json: Option<serde_json::Value>,
+    pub json: Option<Result<serde_json::Value, crate::NoJsonForm>>,
 }
 
 // ----- the read API -------------------------------------------------------------
@@ -713,6 +766,7 @@ impl Net {
     ///
     /// let mut b = NetBuilder::new();
     /// let names = b.place::<String>("Names");
+    /// b.port(names);
     /// b.keys(names, ["initial", "long"], |name: &String| {
     ///     [name[..1].into(), (name.len() > 4).into()]
     /// });
@@ -788,6 +842,7 @@ impl Net {
     ///
     /// let mut b = NetBuilder::new();
     /// let names = b.place::<String>("Names");
+    /// b.port(names);
     /// b.keys(names, ["initial"], |name: &String| [name[..1].into()]);
     /// let mut net = b.build()?;
     /// net.put(names, "Ada".to_owned());
@@ -851,6 +906,7 @@ impl Net {
     ///
     /// let mut b = NetBuilder::new();
     /// let names = b.place::<String>("Names");
+    /// b.port(names);
     /// b.keys(names, ["initial"], |name: &String| [name[..1].into()]);
     /// let mut net = b.build()?;
     /// net.put(names, "Ada".to_owned());
@@ -924,7 +980,7 @@ pub(crate) fn match_of(
         json: slot
             .meta
             .to_json
-            .map(|to_json| crate::place::json_or_message(to_json, value)),
+            .map(|to_json| crate::place::json_of(to_json, value)),
     }
 }
 

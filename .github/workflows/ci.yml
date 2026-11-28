@@ -1,7 +1,8 @@
 # The gate, as `just check` runs it locally: the workspace suite with serde,
 # the core crate alone, clippy with warnings denied, the formatting check and
-# the docs with warnings denied. One recipe here and there, so the two never
-# drift apart.
+# the docs with warnings denied, clippy and the docs also for each crate with
+# a `serde` feature built without it. One recipe here and there, so the two
+# never drift apart.
 #
 # The Python repository is checked out beside this one, as the two sit on a
 # developer's disk, so that the runner's tests replay the protocol

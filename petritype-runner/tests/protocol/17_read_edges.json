@@ -92,17 +92,20 @@
         {
          "name": "Calls",
          "type_name": "<label>",
-         "serializable": true
+         "serializable": true,
+         "port": true
         },
         {
          "name": "Checks",
          "type_name": "<label>",
-         "serializable": true
+         "serializable": true,
+         "port": true
         },
         {
          "name": "Inspections",
          "type_name": "<label>",
          "serializable": true,
+         "port": true,
          "key_names": [
           "leader"
          ]
@@ -586,17 +589,20 @@
         {
          "name": "Calls",
          "type_name": "<label>",
-         "serializable": true
+         "serializable": true,
+         "port": true
         },
         {
          "name": "Checks",
          "type_name": "<label>",
-         "serializable": true
+         "serializable": true,
+         "port": true
         },
         {
          "name": "Inspections",
          "type_name": "<label>",
          "serializable": true,
+         "port": true,
          "key_names": [
           "leader"
          ]

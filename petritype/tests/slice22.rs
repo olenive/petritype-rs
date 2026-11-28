@@ -49,13 +49,15 @@ struct Shop {
 }
 
 /// The shop of `examples/shop/net.rs`, declared into `b`, nothing seeded:
-/// four places of strings, `Price Order` taking an order and surveying the
-/// promotions.
+/// four places of strings, `Orders` and `Promotions` its ports, `Price Order`
+/// taking an order and surveying the promotions.
 fn declare_shop(b: &mut NetBuilder) -> Shop {
     let orders = b.place::<String>("Orders");
     let promotions = b.place::<String>("Promotions");
     let priced = b.place::<String>("Priced");
     let discounts = b.place::<String>("Discounts Applied");
+    b.port(orders);
+    b.port(promotions);
     let price_order = b
         .transition(
             "Price Order",
@@ -147,8 +149,9 @@ fn colours(net: &Net, light: PlaceRef<Colour>) -> Vec<Colour> {
 }
 
 /// The traffic light of `examples/traffic_light/net.rs`, declared into `b`,
-/// red seeded in `Light` (its controls and its style left out: they are
-/// `tests/controls.rs`'s and the example's): `Go`, guarded on green and someone waiting,
+/// red seeded in `Light` and `Waiting` its port (its controls and its style
+/// left out: they are `tests/controls.rs`'s and the example's): `Go`,
+/// guarded on green and someone waiting,
 /// drains `Waiting` and snapshots `Light`, writing the cars to `Passed`;
 /// `Change`, unguarded, takes the light and writes the next colour back.
 /// `go` says whether `Go` keeps its guard and whether it fails, restoring
@@ -157,6 +160,7 @@ fn declare_light(b: &mut NetBuilder, go: Go) -> Junction {
     let light = b.place::<Colour>("Light");
     let waiting = b.place::<String>("Waiting");
     let passed = b.place::<String>("Passed");
+    b.port(waiting);
     b.seed(light, [Colour::Red]);
     let Go { guarded, jammed } = go;
     let mut drain = b.transition(
@@ -348,6 +352,7 @@ fn an_empty_place_holds_nothing_back_and_a_guard_still_does() {
     let inbox = b.place::<u32>("Inbox");
     let notes = b.place::<u32>("Notes");
     let sums = b.place::<usize>("Sums");
+    b.port(inbox);
     let open = Arc::new(AtomicUsize::new(1));
     let gate = Arc::clone(&open);
     let sum = b
@@ -454,7 +459,8 @@ fn consumed_lists_what_a_drain_took_oldest_first() {
     );
 
     let (mut net, junction) = junction_with(UNGUARDED);
-    net.set_tokens(junction.light, [Colour::Green]);
+    // The light turns green by its own `Change`: `Light` is not a port.
+    net.fire(junction.change).unwrap();
     net.drain_events().for_each(drop);
     assert_eq!(net.step().unwrap(), Some(junction.go));
     let events: Vec<Event> = net.drain_events().collect();
@@ -600,14 +606,16 @@ fn a_failing_go_restores_the_cars_oldest_first_with_their_ids() {
         guarded: true,
         jammed: true,
     });
-    net.set_tokens(junction.light, [Colour::Green]);
+    // The light turns green by its own `Change`: `Light` is not a port.
+    assert_eq!(net.step().unwrap(), Some(junction.change));
+    assert_eq!(colours(&net, junction.light), [Colour::Green]);
     let lamp = ids(&net, junction.light);
     let cars = net.extend(junction.waiting, [s("Car 1"), s("Car 2")]);
     net.drain_events().for_each(drop);
 
     let firing = net.launch(junction.go).unwrap();
     let late = net.put(junction.waiting, s("Car 3"));
-    let failure = net.distribute(firing.run()).expect_err("the signal jams");
+    let failure = NetError::from(net.distribute(firing.run()).expect_err("the signal jams"));
     assert!(matches!(failure, NetError::FiringFailed(ref f) if f.restored));
 
     let events: Vec<Event> = net.drain_events().collect();
@@ -637,7 +645,8 @@ fn a_failing_go_restores_the_cars_oldest_first_with_their_ids() {
         guarded: false,
         jammed: true,
     });
-    net.set_tokens(junction.light, [Colour::Green]);
+    net.fire(junction.change).unwrap();
+    assert_eq!(colours(&net, junction.light), [Colour::Green]);
     let lamp = ids(&net, junction.light);
     net.drain_events().for_each(drop);
     net.fire(junction.go).expect_err("still jammed");
@@ -732,8 +741,8 @@ fn a_survey_of_a_place_that_cannot_clone_is_refused() {
     ));
 }
 
-/// A drain or a survey reads its place through the one edge a transition
-/// may have into it.
+/// A drain or a survey shares its place with no other edge of its
+/// transition.
 #[test]
 fn a_drain_or_a_survey_reads_its_place_like_any_other_edge() {
     let mut b = NetBuilder::new();
@@ -747,7 +756,7 @@ fn a_drain_or_a_survey_reads_its_place_like_any_other_edge() {
     );
     assert!(matches!(
         b.build(),
-        Err(BuildError::DuplicateInputPlace { ref transition, ref place })
+        Err(BuildError::EdgeCannotSharePlace { ref transition, ref place, kind: EdgeKind::Drain })
             if transition == "Twice" && place == "Waiting"
     ));
 
@@ -762,7 +771,10 @@ fn a_drain_or_a_survey_reads_its_place_like_any_other_edge() {
     );
     assert!(matches!(
         b.build(),
-        Err(BuildError::DuplicateInputPlace { .. })
+        Err(BuildError::EdgeCannotSharePlace {
+            kind: EdgeKind::Survey,
+            ..
+        })
     ));
 }
 

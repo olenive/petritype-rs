@@ -76,11 +76,11 @@
           "generation": 1, "marking_version": 0, "running": false,
           "topology": {
             "places": [
-              {"name": "Receiving", "type_name": "parcel_runner::nets::Parcel", "serializable": true},
+              {"name": "Receiving", "type_name": "parcel_runner::nets::Parcel", "serializable": true, "port": true},
               {"name": "Sorted", "type_name": "parcel_runner::nets::Parcel", "serializable": false},
               {"name": "Fleet", "type_name": "parcel_runner::nets::Fleet", "serializable": false},
               {"name": "Dispatched", "type_name": "parcel_runner::nets::Parcel", "serializable": false},
-              {"name": "Inspection", "type_name": "parcel_runner::nets::Parcel", "serializable": true}
+              {"name": "Inspection", "type_name": "parcel_runner::nets::Parcel", "serializable": true, "port": true}
             ],
             "transitions": [
               {"name": "Sort", "detail": {"params": [], "detachable": true}},

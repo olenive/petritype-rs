@@ -7,7 +7,7 @@ use std::any::{Any, TypeId, type_name};
 use std::borrow::Borrow;
 use std::fmt;
 
-use crate::closed::{ADD, PUT, REMOVE, REPLACE, SET, SET_PARAM};
+use crate::closed::{ADD, DRAIN_EVENTS, PUT, REMOVE, REPLACE, SET, SET_PARAM};
 use crate::command::ERASED;
 use crate::edge::EdgeInfo;
 use crate::error::NetError;
@@ -77,14 +77,18 @@ pub struct Net {
     /// ([`NetBuilder::open`](crate::NetBuilder::open)): part of the
     /// definition, never saved. See [`is_open`](Net::is_open).
     pub(crate) open: bool,
-    /// Whether any of the net's own places is a port, fixed at build: what
-    /// puts a net under the rule of closed nets in stage one (see
-    /// [`is_closed`](Net::is_closed)).
-    pub(crate) marks_ports: bool,
     /// The mark of the firing whose body holds this net, if one does: a
     /// [`Weak`](std::sync::Weak) to that firing's hold, which lapses when
-    /// the firing ends (DESIGN §6.9). Never saved, forked or copied.
-    pub(crate) held: Option<std::sync::Weak<crate::closed::Hold>>,
+    /// the firing ends, and what the body may write here (DESIGN §6.9).
+    /// Never saved, forked or copied.
+    pub(crate) held: Option<crate::closed::Mark>,
+    /// The nearest closed net around this one, while a
+    /// [`nested_scope`](Net::nested_scope) or
+    /// [`subnet_scope`](Net::subnet_scope) has lent it from inside one: a
+    /// [`Weak`](std::sync::Weak) to the name that scope keeps, which lapses
+    /// when the scope ends, however it ends (DESIGN §6.9). Never saved,
+    /// forked or copied.
+    pub(crate) shield: Option<std::sync::Weak<str>>,
     /// True while [`press`](Net::press) runs one of this net's own
     /// controls' handlers, which are inside the net and write where they
     /// like.
@@ -105,6 +109,11 @@ pub struct Net {
     /// [`query`](Net::query) starts from (DESIGN §8.3). Kept in step by every
     /// method that moves or changes a token, never saved.
     pub(crate) index: KeyIndex,
+    /// Whether one of this net's own places holds nets, a nested place or a
+    /// subnet place, whatever its stepping rule: what a deep step walks.
+    /// Fixed at build, as the places are, so a flat net's deep step is its
+    /// own step and nothing more.
+    pub(crate) holds_nets: bool,
     /// The template that built this net, if one did: what lets it be saved
     /// and [forked](Net::fork) (DESIGN §6.6). Set by
     /// [`Templates::build`](crate::Templates::build), never by the builder.
@@ -172,8 +181,8 @@ pub struct PlaceInfo<'a> {
     /// Whether the place was declared with
     /// [`NetBuilder::place_nested`](crate::NetBuilder::place_nested): its
     /// tokens carry nets of their own, which [`Net::nested`] reads and
-    /// [`Net::step_deep`] runs (DESIGN §6.6). A renderer may badge such a
-    /// place, or offer to open a token.
+    /// [`Net::step_deep`] runs. A renderer may badge such a place, or offer
+    /// to open a token.
     pub nested: bool,
     /// How the nets the place holds take their turns beside this net
     /// ([`Stepping`]), as [`Net::stepping`] reads it: inner first, take
@@ -185,9 +194,9 @@ pub struct PlaceInfo<'a> {
     pub stepping: Option<Stepping>,
     /// The keys the place derives from each of its tokens, in the order
     /// [`NetBuilder::keys`](crate::NetBuilder::keys) declared them; empty for
-    /// a place without keys (DESIGN §8.3). What a viewer lists in a filter
-    /// bar, before any token is there to ask. Borrowed from the net, so that
-    /// `PlaceInfo` stays `Copy`.
+    /// a place without keys. What a viewer lists in a filter bar, before any
+    /// token is there to ask. Borrowed from the net, so that `PlaceInfo`
+    /// stays `Copy`.
     pub key_names: &'a [&'static str],
     /// How the place itself is drawn, as declared with
     /// [`NetBuilder::place_style`](crate::NetBuilder::place_style); `None`
@@ -210,10 +219,10 @@ pub struct PlaceInfo<'a> {
     pub port_of: Option<PlaceId>,
     /// The name of the group the place is in, as
     /// [`NetBuilder::in_group`](crate::NetBuilder::in_group) put it there,
-    /// or `None` for a place in no group (DESIGN §6.8). A subnet place may
-    /// be in one; the place this net has for a port is in none, since it is
-    /// drawn in its subnet place's box. Only drawings read it: being in a
-    /// group changes nothing about how the net runs.
+    /// or `None` for a place in no group. A subnet place may be in one; the
+    /// place this net has for a port is in none, since it is drawn in its
+    /// subnet place's box. Only drawings read it: being in a group changes
+    /// nothing about how the net runs.
     pub group: Option<&'a str>,
 }
 
@@ -244,7 +253,7 @@ impl Net {
     }
 
     /// The names of the net's groups, in the order they were declared,
-    /// which is the order drawings place them in (DESIGN §6.8).
+    /// which is the order drawings place them in.
     ///
     /// A group is a named set of places and transitions, declared with
     /// [`NetBuilder::group`](crate::NetBuilder::group), that only drawings
@@ -367,6 +376,7 @@ impl Net {
     /// # use petritype::{NetBuilder, TakeEdge};
     /// # let mut b = NetBuilder::new();
     /// # let inbox = b.place::<u32>("Inbox");
+    /// # b.port(inbox);
     /// # let out = b.place::<u32>("Out");
     /// # b.transition("Double", (TakeEdge(inbox),), (out,), |n: u32| (n * 2,));
     /// # let mut net = b.build()?;
@@ -406,15 +416,16 @@ impl Net {
     /// handle was.
     ///
     /// For code that holds a net it did not build: a body handed a token
-    /// whose inner net it reaches into (DESIGN §6.6), which knows the inner
-    /// places by name and type but was never given their handles. The type
-    /// is checked by [`TypeId`], so a wrong guess is `None` rather than a
-    /// handle that would panic later.
+    /// whose inner net it reaches into, which knows the inner places by name
+    /// and type but was never given their handles. The type is checked by
+    /// [`TypeId`], so a wrong guess is `None` rather than a handle that
+    /// would panic later.
     ///
     /// ```
     /// # use petritype::NetBuilder;
     /// let mut b = NetBuilder::new();
     /// let door = b.place::<String>("Door");
+    /// b.port(door);
     /// let mut net = b.build()?;
     ///
     /// let found = net.place_ref::<String>("Door").expect("a String place");
@@ -537,13 +548,42 @@ impl Net {
     /// [`serializable`](crate::NetBuilder::serializable); an ordinary place
     /// has no serialiser recorded and returns `None`, as does an unknown
     /// place or token.
+    ///
+    /// Inside the `Some`, the JSON, or [`NoJsonForm`](crate::NoJsonForm) for
+    /// a token that has none now: its own `Serialize` refused, or it holds a
+    /// `NaN` or an infinity, which JSON has no number for (since
+    /// 2026-11-28; until then this was a bare value, the refusal's text
+    /// standing in for it and `null` for such a number). A program that
+    /// wants something to show falls back on [`debug`](Net::debug).
+    ///
+    /// ```
+    /// use petritype::NetBuilder;
+    /// use serde_json::json;
+    ///
+    /// let mut b = NetBuilder::new();
+    /// let readings = b.place::<f64>("Readings");
+    /// b.serializable(readings);
+    /// b.seed(readings, [2.5, f64::NAN]);
+    /// let net = b.build()?;
+    /// let tokens: Vec<_> = net.tokens(readings.id()).map(|(token, _)| token).collect();
+    ///
+    /// assert_eq!(net.json(readings.id(), tokens[0]), Some(Ok(json!(2.5))));
+    /// let none = net.json(readings.id(), tokens[1]).unwrap().unwrap_err();
+    /// assert!(none.message.contains("NaN"), "{none}");
+    /// assert_eq!(net.debug(readings.id(), tokens[1]).as_deref(), Some("NaN"));
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
     #[cfg(feature = "serde")]
-    pub fn json(&self, place: PlaceId, token: TokenId) -> Option<serde_json::Value> {
+    pub fn json(
+        &self,
+        place: PlaceId,
+        token: TokenId,
+    ) -> Option<Result<serde_json::Value, crate::NoJsonForm>> {
         json_in(&self.places, place, token)
     }
 
     /// The current value of the parameter of type `T`, or `None` if this net
-    /// has no parameter of that type (DESIGN §10).
+    /// has no parameter of that type.
     ///
     /// The borrow is the net's own value, not a clone: a body is handed a
     /// copy because it may run elsewhere, but a reader holding `&Net` can
@@ -633,9 +673,13 @@ impl Net {
         self.state_counter
     }
 
-    /// How many firings have completed: the statistic
-    /// [`state_counter`](Net::state_counter) is deliberately not. Always zero
-    /// until transitions arrive.
+    /// How many firings of this net's own transitions have succeeded since
+    /// it was built, restored or forked: one for each
+    /// [`Event::Fired`](crate::Event::Fired) and each
+    /// [`Event::Distributed`](crate::Event::Distributed) it logs, drained or
+    /// not. A failed firing is not counted, and neither is a firing of a net
+    /// inside this one, which that net counts. The statistic
+    /// [`state_counter`](Net::state_counter) is deliberately not.
     pub fn fired_count(&self) -> u64 {
         self.fired_count
     }
@@ -674,13 +718,29 @@ impl Net {
     /// # use petritype::{Event, NetBuilder};
     /// # let mut b = NetBuilder::new();
     /// # let inbox = b.place::<u32>("Inbox");
+    /// # b.port(inbox);
     /// # let mut net = b.build().unwrap();
     /// let token = net.put(inbox, 7);
     /// let events: Vec<Event> = net.drain_events().collect();
     /// assert_eq!(events, [Event::Added { place: inbox.id(), token }]);
     /// assert_eq!(net.drain_events().count(), 0);
     /// ```
+    ///
+    /// # Panics
+    ///
+    /// When a body of the net around this one holds it (since 2026-11-28):
+    /// its events go to the log of the net around it, which lifts them as
+    /// the firing ends, so the body's firing fails with
+    /// [`NetError::HeldByBody`]. A body reads the net's marking instead.
     pub fn drain_events(&mut self) -> std::vec::Drain<'_, Event> {
+        self.admit_knob_or_panic(DRAIN_EVENTS);
+        self.take_events()
+    }
+
+    /// [`drain_events`](Net::drain_events) without the check: the engine's
+    /// own lifting of an inner net's events into the log of the net around
+    /// it, which a body that holds the inner net does not stop.
+    pub(crate) fn take_events(&mut self) -> std::vec::Drain<'_, Event> {
         self.events.drain(..)
     }
 
@@ -701,9 +761,11 @@ impl Net {
     /// If `place` does not belong to this net. A `PlaceRef` is only valid
     /// for the net built from the builder that handed it out.
     ///
-    /// If this net is [closed](Net::is_closed) and `place` is not one of
-    /// its ports, with the message of the [`NetError::ClosedNet`] that
-    /// [`try_extend`](Net::try_extend) returns instead (since 2026-11-23).
+    /// If the rule of [closed nets](Net::is_closed) refuses the write (a
+    /// place of a closed net that is not one of its ports since 2026-11-23,
+    /// each [`ClosedRefusal`](crate::ClosedRefusal) since 2026-11-28), with
+    /// the message of the [`NetError::ClosedNet`] that
+    /// [`try_extend`](Net::try_extend) returns instead.
     /// A program in the right writes nothing new, and a body that meets it
     /// fails its firing with the error. A write that should land is put
     /// right by marking the place as a port, starting the net with the
@@ -741,8 +803,9 @@ impl Net {
     /// # Errors
     ///
     /// [`NetError::NoSuchPlace`] if `place` belongs to another net, and
-    /// [`NetError::ClosedNet`] if this net is [closed](Net::is_closed) and
-    /// `place` is not one of its ports.
+    /// [`NetError::ClosedNet`] when the rule of [closed nets](Net::is_closed)
+    /// refuses the write, at a place of a closed net that is not one of its
+    /// ports for one.
     pub fn try_extend<T, I>(
         &mut self,
         place: PlaceRef<T>,
@@ -764,8 +827,8 @@ impl Net {
     ///
     /// If `place` does not belong to this net, and, with the message of
     /// the [`NetError::ClosedNet`] that [`try_put`](Net::try_put) returns
-    /// instead, if this net is [closed](Net::is_closed) and `place` is not
-    /// one of its ports (since 2026-11-23). A program in the right changes
+    /// instead, if the rule of [closed nets](Net::is_closed) refuses the
+    /// write (since 2026-11-23). A program in the right changes
     /// nothing, and a body that meets it fails its firing with the error.
     pub fn put<T: Send + Sync + 'static>(&mut self, place: PlaceRef<T>, token: T) -> TokenId {
         self.push_typed(place, token, "put")
@@ -777,8 +840,9 @@ impl Net {
     /// # Errors
     ///
     /// [`NetError::NoSuchPlace`] if `place` belongs to another net, and
-    /// [`NetError::ClosedNet`] if this net is [closed](Net::is_closed) and
-    /// `place` is not one of its ports.
+    /// [`NetError::ClosedNet`] when the rule of [closed nets](Net::is_closed)
+    /// refuses the write, at a place of a closed net that is not one of its
+    /// ports for one.
     pub fn try_put<T: Send + Sync + 'static>(
         &mut self,
         place: PlaceRef<T>,
@@ -804,9 +868,9 @@ impl Net {
     ///
     /// If `place` does not belong to this net, and, with the message of
     /// the [`NetError::ClosedNet`] that [`try_set_tokens`](Net::try_set_tokens)
-    /// returns instead, if this net is [closed](Net::is_closed) and `place`
-    /// is not one of its ports (since 2026-11-23). Either is checked before
-    /// the place is emptied.
+    /// returns instead, if the rule of [closed nets](Net::is_closed)
+    /// refuses the write (since 2026-11-23). Either is checked before the
+    /// place is emptied.
     pub fn set_tokens<T, I>(&mut self, place: PlaceRef<T>, tokens: I)
     where
         T: Send + Sync + 'static,
@@ -827,8 +891,9 @@ impl Net {
     /// # Errors
     ///
     /// [`NetError::NoSuchPlace`] if `place` belongs to another net, and
-    /// [`NetError::ClosedNet`] if this net is [closed](Net::is_closed) and
-    /// `place` is not one of its ports.
+    /// [`NetError::ClosedNet`] when the rule of [closed nets](Net::is_closed)
+    /// refuses the write, at a place of a closed net that is not one of its
+    /// ports for one.
     pub fn try_set_tokens<T, I>(&mut self, place: PlaceRef<T>, tokens: I) -> Result<(), NetError>
     where
         T: Send + Sync + 'static,
@@ -849,10 +914,9 @@ impl Net {
     ///
     /// # Errors
     ///
-    /// [`NetError::NoSuchPlace`], [`NetError::ClosedNet`] if this net is
-    /// [closed](Net::is_closed) and `place` is not one of its ports (since
-    /// 2026-11-23), or [`NetError::NoSuchToken`]; the net is unchanged in
-    /// each case.
+    /// [`NetError::NoSuchPlace`], [`NetError::ClosedNet`] when the rule of
+    /// [closed nets](Net::is_closed) refuses the write (since 2026-11-23),
+    /// or [`NetError::NoSuchToken`]; the net is unchanged in each case.
     pub fn remove(&mut self, place: PlaceId, token: TokenId) -> Result<(), NetError> {
         if place.0 as usize >= self.places.len() {
             return Err(NetError::NoSuchPlace { place });
@@ -866,11 +930,14 @@ impl Net {
                 name: slot.meta.name.clone(),
                 token,
             })?;
+            // Its keys before it moves, so that a key extractor that panics
+            // leaves it in its place, and the index as it was.
+            let keys = KeyIndex::before(&slot.meta, &*slot.tokens[index].1);
             let (_, mut value) = slot
                 .tokens
                 .remove(index)
                 .expect("the position was just found");
-            holder.index.leave(&slot.meta, at, token, &*value);
+            holder.index.left(&slot.meta, at, token, keys);
             if slot.tokens.is_empty() {
                 holder.index.emptied(at);
             }
@@ -896,9 +963,9 @@ impl Net {
     /// # Errors
     ///
     /// [`NetError::NoSuchPlace`] if the handle is from another net,
-    /// [`NetError::ClosedNet`] if this net is [closed](Net::is_closed) and
-    /// `place` is not one of its ports (since 2026-11-23), or
-    /// [`NetError::NoSuchToken`]; the net is unchanged in each case. Unlike
+    /// [`NetError::ClosedNet`] when the rule of [closed nets](Net::is_closed)
+    /// refuses the write (since 2026-11-23), or [`NetError::NoSuchToken`];
+    /// the net is unchanged in each case. Unlike
     /// the infallible half of this API, `replace` has somewhere to report a
     /// foreign handle, so it does. ([`NetError::TypeMismatch`] is kept as a
     /// defensive check: a stamped handle always indexes a place of its own
@@ -915,7 +982,7 @@ impl Net {
         self.replace_erased(place.id(), token, Box::new(value), type_name::<T>())
     }
 
-    /// Replaces the value of the parameter of type `T` (DESIGN §10).
+    /// Replaces the value of the parameter of type `T`.
     ///
     /// Emits [`ParamChanged`](Event::ParamChanged) and so bumps
     /// [`state_counter`](Net::state_counter) once. The type name is all the
@@ -958,8 +1025,7 @@ impl Net {
     /// Parameters are fixed at [`build`](crate::NetBuilder::build): this adds
     /// none, and the net is unchanged and silent when it refuses.
     /// [`NetError::HeldByBody`] when a body of the net around this one holds
-    /// it and it marks a port (since 2026-11-23): its parameters are the
-    /// program's.
+    /// it: its parameters are the program's.
     pub fn set_param<T: Clone + Send + Sync + 'static>(
         &mut self,
         value: T,
@@ -1134,7 +1200,7 @@ impl Net {
     /// batch whose third token is of the wrong type would leave the first two
     /// behind, and an observer would have seen two
     /// [`Added`](Event::Added) events for a command that was rejected.
-    fn check_tokens(
+    pub(crate) fn check_tokens(
         &self,
         place: PlaceId,
         tokens: &[ErasedToken],
@@ -1231,11 +1297,12 @@ impl Net {
                 None => Vec::new(),
             };
             // Same token, same id, same place in the queue: only its keys
-            // may have changed.
+            // may have changed. Both values' keys are read before either
+            // changes, so a key extractor that panics on the new value
+            // leaves the old one in place and indexed.
             holder
                 .index
-                .leave(&slot.meta, at, token, &*slot.tokens[index].1);
-            holder.index.enter(&slot.meta, at, token, &*value);
+                .replacing(&slot.meta, at, token, &*slot.tokens[index].1, &*value);
             slot.tokens[index].1 = value;
             outgoing
         };
@@ -1262,7 +1329,7 @@ impl Net {
         let Some(index) = param_slot_index(&self.params, type_id) else {
             return Err(NetError::NoSuchParam { type_name: ERASED });
         };
-        self.params[index].value = value;
+        self.params[index].set(value);
         let type_name = self.params[index].type_name;
         self.emit(Event::ParamChanged { type_name });
         Ok(())
@@ -1322,11 +1389,19 @@ impl Net {
         let slot = &mut holder.places[at.0 as usize];
         let nested = slot.meta.nested;
         let (meta, index) = (&slot.meta, &mut holder.index);
+        // Every token's keys before any moves, so that a key extractor that
+        // panics leaves the place and the index as they were.
+        let keys: Vec<_> = slot
+            .tokens
+            .iter()
+            .map(|(_, value)| KeyIndex::before(meta, &**value))
+            .collect();
         let removed: Vec<(TokenId, Vec<Event>)> = slot
             .tokens
             .drain(..)
-            .map(|(token, mut value)| {
-                index.leave(meta, at, token, &*value);
+            .zip(keys)
+            .map(|((token, mut value), keys)| {
+                index.left(meta, at, token, keys);
                 let lifted = match nested {
                     Some(nested) => lift_from(nested, &mut value, place, token),
                     None => Vec::new(),
@@ -1363,13 +1438,14 @@ impl fmt::Debug for Net {
             .field("resettable", &self.resettable)
             .field("open", &self.open)
             .field("held", &self.is_held())
+            .field("shielded_by", &self.live_shield())
             .field("pending_events", &self.events.len())
             .field(
                 "controls",
                 &self
                     .controls
                     .iter()
-                    .map(|control| control.name.as_str())
+                    .map(|control| control.name())
                     .collect::<Vec<_>>(),
             )
             .field("groups", &self.groups)
@@ -1557,20 +1633,18 @@ pub(crate) fn debug_in(
     Some((slot.meta.debug)(&*slot.tokens[index].1))
 }
 
-/// One token as JSON, for a place that recorded an encoder.
+/// One token as JSON, or why it has none, for a place that recorded an
+/// encoder.
 #[cfg(feature = "serde")]
 pub(crate) fn json_in(
     places: &[impl Borrow<PlaceSlot>],
     place: PlaceId,
     token: TokenId,
-) -> Option<serde_json::Value> {
+) -> Option<Result<serde_json::Value, crate::NoJsonForm>> {
     let slot = slot_of(places, place)?;
     let to_json = slot.meta.to_json?;
     let index = slot.position(token)?;
-    Some(crate::place::json_or_message(
-        to_json,
-        &*slot.tokens[index].1,
-    ))
+    Some(crate::place::json_of(to_json, &*slot.tokens[index].1))
 }
 
 /// Cuts `text` to `limit` characters, on a character boundary, appending
